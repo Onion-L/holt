@@ -65,6 +65,33 @@ pub struct WorkspaceDoc {
     doc: LoroDoc,
 }
 
+impl crate::WorkspaceRegistry for WorkspaceDoc {
+    fn read_all(&self) -> Result<WorkspaceState, DocError> {
+        WorkspaceDoc::read_all(self)
+    }
+    fn upsert_device(&mut self, value: &Device) -> Result<(), DocError> {
+        WorkspaceDoc::upsert_device(self, value)
+    }
+    fn upsert_space(&mut self, value: &Space) -> Result<(), DocError> {
+        WorkspaceDoc::upsert_space(self, value)
+    }
+    fn upsert_chat(&mut self, value: &Chat) -> Result<(), DocError> {
+        WorkspaceDoc::upsert_chat(self, value)
+    }
+    fn upsert_session(&mut self, value: &Session) -> Result<(), DocError> {
+        WorkspaceDoc::upsert_session(self, value)
+    }
+    fn delete_space(&mut self, id: &str) -> Result<DeletedSpace, DocError> {
+        WorkspaceDoc::delete_space(self, id)
+    }
+    fn set_chat_archived(&mut self, id: &str, archived: bool) -> Result<bool, DocError> {
+        WorkspaceDoc::set_chat_archived(self, id, archived)
+    }
+    fn set_chat_seen(&mut self, id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
+        WorkspaceDoc::set_chat_seen(self, id, at)
+    }
+}
+
 impl Default for WorkspaceDoc {
     fn default() -> Self {
         Self::new()

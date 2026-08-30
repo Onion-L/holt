@@ -349,6 +349,33 @@ pub struct RegistryDoc {
     generation: u64,
 }
 
+impl crate::WorkspaceRegistry for RegistryDoc {
+    fn read_all(&self) -> Result<WorkspaceState, DocError> {
+        RegistryDoc::read_all(self)
+    }
+    fn upsert_device(&mut self, value: &Device) -> Result<(), DocError> {
+        RegistryDoc::upsert_device(self, value)
+    }
+    fn upsert_space(&mut self, value: &Space) -> Result<(), DocError> {
+        RegistryDoc::upsert_space(self, value)
+    }
+    fn upsert_chat(&mut self, value: &Chat) -> Result<(), DocError> {
+        RegistryDoc::upsert_chat(self, value)
+    }
+    fn upsert_session(&mut self, value: &Session) -> Result<(), DocError> {
+        RegistryDoc::upsert_session(self, value)
+    }
+    fn delete_space(&mut self, id: &str) -> Result<DeletedSpace, DocError> {
+        RegistryDoc::delete_space(self, id)
+    }
+    fn set_chat_archived(&mut self, id: &str, archived: bool) -> Result<bool, DocError> {
+        RegistryDoc::set_chat_archived(self, id, archived)
+    }
+    fn set_chat_seen(&mut self, id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
+        RegistryDoc::set_chat_seen(self, id, at)
+    }
+}
+
 impl RegistryDoc {
     pub fn new(device_id: impl Into<String>) -> Self {
         Self {

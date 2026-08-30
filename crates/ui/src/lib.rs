@@ -42,6 +42,7 @@ pub mod theme;
 pub mod theme_library;
 pub mod transcript;
 pub mod typography;
+mod watch_coordinator;
 
 use std::path::PathBuf;
 

@@ -38,6 +38,7 @@ use holt_rpc::{RpcClient, RpcError, memory_client, methods};
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
 };
+use crate::watch_coordinator::WatchCoordinator;
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -1123,7 +1124,6 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
         // restart or RPC drop ends the stream, and a bare return here froze
         // the sidebar until app restart — new chats, renames and archives
         // from every device silently stopped arriving.
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         loop {
             let mut rx = match handle
                 .client()
@@ -1136,12 +1136,14 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
                     continue;
                 }
             };
             while let Some(value) = rx.recv().await {
-                let parsed: Vec<Chat> = match serde_json::from_value(value) {
+                let parsed: Vec<Chat> = match WatchCoordinator::decode(value) {
                     Ok(parsed) => parsed,
                     Err(err) => {
                         tracing::warn!(error = %err, "dropping malformed chats frame");
@@ -1162,7 +1164,9 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
         }
     })
 }
@@ -1173,7 +1177,6 @@ fn spawn_change_request_watch(
     target: ChangeRequestWatchKey,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         loop {
             let params = watch_params(&target);
 
@@ -1207,13 +1210,15 @@ fn spawn_change_request_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
                     continue;
                 }
             };
 
             while let Some(value) = subscription.recv().await {
-                let snapshot: CheckoutChangeRequestStatus = match serde_json::from_value(value) {
+                let snapshot: CheckoutChangeRequestStatus = match WatchCoordinator::decode(value) {
                     Ok(snapshot) => snapshot,
                     Err(err) => {
                         tracing::warn!(
@@ -1245,7 +1250,9 @@ fn spawn_change_request_watch(
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
         }
     })
 }
@@ -1262,7 +1269,6 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
         // them for the rest of the app's life (Working dots staled out
         // to nothing after 45s, and Idle/Completed transitions never arrived
         // again — "the session never completes").
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         loop {
             let mut rx = match handle
                 .client()
@@ -1275,12 +1281,14 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
                     continue;
                 }
             };
             while let Some(value) = rx.recv().await {
-                let parsed: T = match serde_json::from_value(value) {
+                let parsed: T = match WatchCoordinator::decode(value) {
                     Ok(parsed) => parsed,
                     Err(err) => {
                         tracing::warn!(method, error = %err, "dropping malformed watch frame");
@@ -1303,7 +1311,9 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
         }
     })
 }
@@ -1322,7 +1332,6 @@ fn spawn_transcript_watch(
         // its engine-side room are the ONLY transcript delivery path). The
         // task itself is dropped by select_chat/apply_chats when the chat is
         // deselected or deleted, so retrying can't outlive relevance.
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": chat_id });
             let mut rx = match handle
@@ -1336,12 +1345,14 @@ fn spawn_transcript_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
                     continue 'resubscribe;
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let frame: TranscriptFrame = match WatchCoordinator::decode(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -1349,7 +1360,9 @@ fn spawn_transcript_watch(
                         // copy, so resubscribe for a fresh reset — delayed,
                         // in case the reset itself is what can't parse.
                         tracing::warn!(error = %err, "malformed transcript frame; resubscribing");
-                        cx.background_executor().timer(RETRY_DELAY).await;
+                        cx.background_executor()
+                            .timer(WatchCoordinator::RETRY_DELAY)
+                            .await;
                         continue 'resubscribe;
                     }
                 };
@@ -1377,7 +1390,9 @@ fn spawn_transcript_watch(
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
         }
     })
 }
@@ -1392,7 +1407,6 @@ fn spawn_subagent_watch(
     doc_id: String,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": doc_id });
             let mut rx = match handle
@@ -1406,16 +1420,20 @@ fn spawn_subagent_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
                     continue 'resubscribe;
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let frame: TranscriptFrame = match WatchCoordinator::decode(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         tracing::warn!(error = %err, "malformed subagent frame; resubscribing");
-                        cx.background_executor().timer(RETRY_DELAY).await;
+                        cx.background_executor()
+                            .timer(WatchCoordinator::RETRY_DELAY)
+                            .await;
                         continue 'resubscribe;
                     }
                 };
@@ -1441,7 +1459,9 @@ fn spawn_subagent_watch(
             if this.update(cx, |_, _| {}).is_err() {
                 return;
             }
-            cx.background_executor().timer(RETRY_DELAY).await;
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
         }
     })
 }
