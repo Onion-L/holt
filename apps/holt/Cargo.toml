@@ -1,0 +1,22 @@
+[package]
+name = "holt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "holt"
+path = "src/main.rs"
+
+[dependencies]
+holt-engine.workspace = true
+holt-ui.workspace = true
+mimalloc.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

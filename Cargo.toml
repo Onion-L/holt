@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/theme",
+    "crates/proto",
+    "crates/doc",
+    "crates/engine",
+    "crates/rpc",
+    "crates/ui",
+    "crates/syntax",
+    "apps/holt",
+]
+# The vendored gpui fork keeps its own (trimmed) workspace root.
+exclude = ["vendor/gpui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+holt-proto = { path = "crates/proto" }
+holt-doc = { path = "crates/doc" }
+holt-engine = { path = "crates/engine" }
+holt-rpc = { path = "crates/rpc" }
+holt-ui = { path = "crates/ui" }
+holt-syntax = { path = "crates/syntax" }
+holt-theme = { path = "crates/theme" }
+
+# CRDT
+loro = "1.13"
+
+gpui = { path = "vendor/gpui/crates/gpui" }
+gpui_platform = { path = "vendor/gpui/crates/gpui_platform", features = [
+    "wayland",
+    "x11",
+    "font-kit",
+    "runtime_shaders",
+] }
+gpui_tokio = { path = "vendor/gpui/crates/gpui_tokio" }
+
+# diffs
+similar = "2"
+
+# async / net
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+libc = "0.2"
+gethostname = "1"
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+json5 = "0.4"
+plist = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# misc
+# Global allocator for the binaries: returns freed pages to the OS. System
+# malloc (macOS libmalloc especially) retains the churn high-water mark as
+# permanent RSS - measured as the top residency cause in docs/memory-plan.md.
+mimalloc = "0.1"
+anyhow = "1"
+tempfile = "3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+notify = "7"
+portable-pty = "0.8"
+alacritty_terminal = "0.26"
+pulldown-cmark = "0.12"
+unicode-segmentation = "1"
+fontdb = "0.23"
+ttf-parser = "0.25.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+ignore = "0.4"
+nucleo-matcher = "0.3"
+
+[profile.release]
+# Thin LTO buys most of fat LTO's size/speed win at a fraction of the link
+# time; strip debug symbols.
+lto = "thin"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
