@@ -618,12 +618,12 @@ impl Render for ProvidersPage {
 fn bordered_input(theme: &Theme, input: Entity<ComposerInput>) -> gpui::Div {
     div()
         .h(px(36.0))
-        .px(px(10.0))
+        .px(px(12.0))
         .flex()
         .items_center()
         .rounded(px(Theme::CONTROL_RADIUS))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.input_glass_bg())
         .child(input)
 }
@@ -649,7 +649,7 @@ fn provider_controls_height(models: &Loadable<Vec<Model>>, revealed: bool, varia
         Loadable::Idle | Loadable::Loading => 138.0,
         Loadable::Error(_) => 40.0,
         Loadable::Ready(models) if models.is_empty() => 32.0,
-        Loadable::Ready(models) => (models.len() as f32 * 36.0).min(216.0),
+        Loadable::Ready(models) => (models.len() as f32 * 32.0).min(192.0),
     };
     180.0 + list_height + if revealed { 28.0 } else { 0.0 } + if variants { 34.0 } else { 0.0 }
 }
@@ -731,7 +731,7 @@ fn provider_model_list(
             .into_any_element(),
         Loadable::Ready(models) => {
             let count = models.len();
-            let height = (count as f32 * 36.0).min(216.0);
+            let height = (count as f32 * 32.0).min(192.0);
             let provider_prefix = format!("{provider_id}/");
             let models = Arc::new(models);
             let row_models = Arc::clone(&models);
@@ -741,22 +741,18 @@ fn provider_model_list(
                 count,
                 move |range, _window, _cx| {
                     range
-                        .filter_map(|row| row_models.get(row).map(|model| (row, model)))
-                        .map(|(row, model)| {
+                        .filter_map(|row| row_models.get(row))
+                        .map(|model| {
                             let raw_id =
                                 model.id.strip_prefix(&provider_prefix).unwrap_or(&model.id);
                             div()
-                                .h(px(36.0))
-                                .px(px(12.0))
-                                .when(row > 0, |el| {
-                                    el.border_t_1().border_color(crate::theme::hairline(0.06))
-                                })
+                                .h(px(32.0))
                                 .flex()
                                 .items_center()
                                 .gap(px(12.0))
                                 .child(
                                     div()
-                                        .w(px(180.0))
+                                        .w(px(200.0))
                                         .flex_none()
                                         .truncate()
                                         .text_size(crate::typography::ui_rems(12.0))
@@ -780,10 +776,6 @@ fn provider_model_list(
             )
             .h(px(height))
             .w_full()
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(crate::theme::hairline(0.08))
-            .bg(crate::theme::ink(0.02))
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .into_any_element()
         }

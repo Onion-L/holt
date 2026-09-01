@@ -13,3 +13,4 @@ edge/dist/
 
 # Strip upstream git history from nested vendored crates.
 vendor/**/.git
+.scratch
