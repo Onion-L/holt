@@ -1,5 +1,11 @@
-//! Settings → Appearance: system behavior, independent light/dark variants,
-//! and the optional interactive accent overlay.
+//! Settings → Appearance: the page assembling the mode switch, theme
+//! selectors, accent/surface controls, theme library, and font pickers.
+//!
+//! `fonts` — interface font/size pickers and keyboard navigation.
+//! `previews` — theme preview miniatures.
+//! `theme_selector` — per-appearance theme menus, accent and surface.
+//! `import` — the VS Code theme import flow and modal.
+//! `library` — custom-theme library rows and the review dialog.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -283,186 +289,8 @@ impl Render for AppearancePage {
             .render_import_dialog(window.viewport_size(), &theme, window, cx)
             .or_else(|| self.render_review_dialog(window.viewport_size(), &theme, cx));
 
-        let font_rows: Vec<AnyElement> = availability
-            .choices()
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(ix, family)| {
-                let available = availability.is_available(&family);
-                let selected = family == effective_font;
-                let focused = family == self.selected_font;
-                let label = SharedString::from(family.label().to_owned());
-                popover::menu_row_nav(
-                    &theme,
-                    selected,
-                    focused,
-                    format!("interface-font-option-{ix}"),
-                )
-                .id(("interface-font-option", ix))
-                .when(available, |row| {
-                    row.on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.selected_font = family.clone();
-                        this.commit_font(cx);
-                    }))
-                })
-                .when(!available, |row| row.opacity(0.45))
-                .child(div().flex_1().min_w_0().truncate().child(label))
-                .child(div().w(px(18.0)).flex_none().when(selected, |slot| {
-                    slot.child(
-                        icons::icon(icons::CHECK)
-                            .size(px(14.0))
-                            .text_color(theme.accent),
-                    )
-                }))
-                .into_any_element()
-            })
-            .collect();
-
-        let font_menu = popover::popover_card(&theme)
-            .id("interface-font-scroll")
-            .w(px(220.0))
-            .font_family(fixed.clone())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_font_menu(cx)))
-            .max_h(px(320.0))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .children(font_rows)
-            .into_any_element();
-
-        let font_trigger = div()
-            .id("interface-font-dropdown")
-            .relative()
-            .w(px(220.0))
-            .h(px(36.0))
-            .px(px(11.0))
-            .rounded(px(9.0))
-            .border_1()
-            .border_color(if self.font_menu.is_open() {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .bg(crate::theme::ink(0.025))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .cursor_pointer()
-            .track_focus(&self.font_focus)
-            .on_key_down(
-                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_font_key_down(event, cx)),
-            )
-            .on_click(cx.listener(|this, _, window, cx| {
-                window.focus(&this.font_focus, cx);
-                this.toggle_font_menu(cx);
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(SharedString::from(effective_font.label().to_owned())),
-            )
-            .child(
-                icons::icon(icons::ALT_ARROW_DOWN)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(theme.text_muted),
-            )
-            .when_some(self.font_menu.get(), |trigger, _| {
-                trigger.child(popover::anchored_menu_below(
-                    "interface-font-menu",
-                    font_menu,
-                    self.font_menu.closing_since(),
-                ))
-            });
-
-        let size_rows: Vec<AnyElement> = UiFontSize::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(ix, size)| {
-                popover::menu_row_nav(
-                    &theme,
-                    size == typography::font_size(cx),
-                    size == self.selected_size,
-                    format!("interface-font-size-option-{ix}"),
-                )
-                .id(("interface-font-size-option", ix))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.selected_size = size;
-                    this.commit_size(window, cx);
-                }))
-                .child(div().flex_1().child(size.label()))
-                .child(div().w(px(18.0)).flex_none().when(
-                    size == typography::font_size(cx),
-                    |slot| {
-                        slot.child(
-                            icons::icon(icons::CHECK)
-                                .size(px(14.0))
-                                .text_color(theme.accent),
-                        )
-                    },
-                ))
-                .into_any_element()
-            })
-            .collect();
-
-        let size_menu = popover::popover_card(&theme)
-            .w(px(128.0))
-            .font_family(fixed.clone())
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_size_menu(cx)))
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .children(size_rows)
-            .into_any_element();
-
-        let size_trigger = div()
-            .id("interface-font-size-dropdown")
-            .relative()
-            .w(px(128.0))
-            .h(px(36.0))
-            .px(px(11.0))
-            .rounded(px(9.0))
-            .border_1()
-            .border_color(if self.size_menu.is_open() {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .bg(crate::theme::ink(0.025))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .cursor_pointer()
-            .track_focus(&self.size_focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                this.on_size_key_down(event, window, cx)
-            }))
-            .on_click(cx.listener(|this, _, window, cx| {
-                window.focus(&this.size_focus, cx);
-                this.toggle_size_menu(cx);
-            }))
-            .child(div().flex_1().child(typography::font_size(cx).label()))
-            .child(
-                icons::icon(icons::ALT_ARROW_DOWN)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(theme.text_muted),
-            )
-            .when_some(self.size_menu.get(), |trigger, _| {
-                trigger.child(popover::anchored_menu_below(
-                    "interface-font-size-menu",
-                    size_menu,
-                    self.size_menu.closing_since(),
-                ))
-            });
+        let (font_trigger, size_trigger) =
+            self.render_font_controls(&theme, &availability, &effective_font, &fixed, cx);
 
         div()
             .id("appearance-page")
