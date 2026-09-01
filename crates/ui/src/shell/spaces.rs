@@ -12,6 +12,42 @@ use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_pa
 use gpui::FocusHandle;
 use holt_proto::{ChatIndicator, DriveEntry, DriveListing, FolderListing, Space};
 
+/// Interruptible height tween for the sidebar's group/archive disclosures.
+/// The rendered element owns the frame clock; this state preserves the current
+/// interpolated height when a second click reverses an in-flight transition.
+#[derive(Clone, Copy)]
+pub(crate) struct SidebarDisclosureMotion {
+    pub(super) epoch: u64,
+    pub(super) from: f32,
+    pub(super) to: f32,
+    started: std::time::Instant,
+}
+
+impl SidebarDisclosureMotion {
+    fn new(epoch: u64, from: f32, to: f32) -> Self {
+        Self {
+            epoch,
+            from,
+            to,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn current(self) -> f32 {
+        let total = motion::COLLAPSE.total().as_secs_f32();
+        let raw = if total > 0.0 {
+            self.started.elapsed().as_secs_f32() / total
+        } else {
+            1.0
+        };
+        motion::lerp(self.from, self.to, motion::COLLAPSE.progress(raw))
+    }
+
+    fn animating(self) -> bool {
+        self.started.elapsed() < motion::COLLAPSE.total() + spaces::SIDEBAR_DISCLOSURE_TWEEN_GRACE
+    }
+}
+
 struct ActiveChatRow {
     status: ChatIndicator,
     chat: holt_proto::Chat,
@@ -2454,7 +2490,7 @@ impl Shell {
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::compare_sidebar_chats;
+    use super::{SidebarDisclosureMotion, compare_sidebar_chats, motion};
     use crate::settings::SidebarSort;
 
     fn chat(id: &str) -> holt_proto::Chat {
@@ -2483,5 +2519,13 @@ mod tests {
         let beta = chat("beta");
         assert!(compare_sidebar_chats(SidebarSort::Created, &alpha, &beta).is_lt());
         assert!(compare_sidebar_chats(SidebarSort::LastUpdated, &alpha, &beta).is_lt());
+    }
+
+    #[test]
+    fn sidebar_disclosure_motion_lands_exactly_on_its_target() {
+        let mut tween = SidebarDisclosureMotion::new(1, 240.0, 0.0);
+        tween.started = std::time::Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
+        assert_eq!(tween.current(), 0.0);
+        assert!(!tween.animating());
     }
 }
