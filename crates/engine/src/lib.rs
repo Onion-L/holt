@@ -29,6 +29,7 @@ pub mod provider_settings;
 pub mod providers;
 mod rpc;
 mod store;
+mod tools;
 
 use agent::AgentRuntime;
 use credentials::HoltCredentialStore;

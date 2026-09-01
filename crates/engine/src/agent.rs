@@ -7,17 +7,20 @@ use std::{
 };
 
 use chrono::Utc;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, TranscriptFrame};
-use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus};
+use holt_doc::{
+    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, TranscriptFrame,
+    sanitize_tool_call, summarize_tool_output,
+};
+use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall};
 use pi_core::{
     agent::{
         agent_loop::{AgentEventSink, pass_through_llm_messages, run_agent_loop},
-        types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage},
+        types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentToolResult},
     },
     ai::{
         compat,
         types::{
-            AssistantContent, Context as PiContext, Model as PiModel, RoleUser,
+            AssistantContent, BlockContent, Context as PiContext, Model as PiModel, RoleUser,
             SimpleStreamOptions, ThinkingLevel as ProviderThinkingLevel, UserContent, UserMessage,
         },
     },
@@ -140,6 +143,118 @@ fn user_agent_message(text: String, timestamp: i64) -> AgentMessage {
     })
 }
 
+/// Decode a pi-core tool call into the transcript's decoded shape. Heavy
+/// inputs (write content, edit strings) decode here and are stripped by the
+/// render-only policy below; unknown tools keep their raw input so the chip
+/// can still name them.
+fn decode_tool_call(
+    name: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> TranscriptToolCall {
+    let arg = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    match name {
+        "bash" => TranscriptToolCall::Exec {
+            command: arg("command").unwrap_or_default(),
+        },
+        "read" => TranscriptToolCall::ReadFile {
+            path: arg("path").unwrap_or_default(),
+        },
+        "write" => TranscriptToolCall::WriteFile {
+            path: arg("path").unwrap_or_default(),
+            content: None,
+        },
+        "edit" => TranscriptToolCall::EditFile {
+            path: arg("path").unwrap_or_default(),
+            old_string: None,
+            new_string: None,
+        },
+        other => TranscriptToolCall::Unknown {
+            name: other.to_owned(),
+            input: Some(serde_json::Value::Object(arguments.clone())),
+        },
+    }
+}
+
+fn transcript_tool_call(tool_call: &pi_core::ai::types::ToolCall) -> TranscriptToolCall {
+    sanitize_tool_call(&decode_tool_call(&tool_call.name, &tool_call.arguments))
+}
+
+/// The one-line output summary persisted on the resolved tool part.
+fn tool_output_summary(result: &AgentToolResult) -> Option<String> {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            BlockContent::Text(text) => Some(text.text.as_str()),
+            BlockContent::Image(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    summarize_tool_output(&text)
+}
+
+/// Stamp a tool result onto the matching Tool part, wherever its entry sits.
+fn resolve_tool_part(
+    chat: &ChatRuntime,
+    tool_call_id: &str,
+    is_error: bool,
+    output: Option<String>,
+) {
+    let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+    let mut changed = false;
+    for entry in transcript.iter_mut() {
+        let hit = entry
+            .parts
+            .iter_mut()
+            .find(|part| matches!(part, MessagePart::Tool { id, .. } if id == tool_call_id));
+        if let Some(MessagePart::Tool {
+            resolved,
+            is_error: part_error,
+            output: part_output,
+            ..
+        }) = hit
+        {
+            *resolved = true;
+            *part_error = is_error;
+            *part_output = output.clone();
+            changed = true;
+        }
+        if changed {
+            break;
+        }
+    }
+    drop(transcript);
+    if changed {
+        chat.publish();
+    }
+}
+
+/// A run that ends early (abort, loop error) leaves tool parts without their
+/// results; settle them so no chip stays "in call" forever.
+fn settle_unresolved_tools(chat: &ChatRuntime) {
+    let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+    let mut changed = false;
+    for entry in transcript.iter_mut() {
+        for part in entry.parts.iter_mut() {
+            if let MessagePart::Tool { resolved, .. } = part
+                && !*resolved
+            {
+                *resolved = true;
+                changed = true;
+            }
+        }
+    }
+    drop(transcript);
+    if changed {
+        chat.publish();
+    }
+}
+
 fn assistant_parts(message: &AgentMessage) -> Vec<MessagePart> {
     let AgentMessage::Assistant(message) = message else {
         return Vec::new();
@@ -157,7 +272,22 @@ fn assistant_parts(message: &AgentMessage) -> Vec<MessagePart> {
                     text: thinking.thinking.clone(),
                 });
             }
-            AssistantContent::Thinking(_) | AssistantContent::ToolCall(_) => {}
+            AssistantContent::ToolCall(tool_call) => parts.push(MessagePart::Tool {
+                id: tool_call.id.clone(),
+                call: transcript_tool_call(tool_call),
+                is_error: false,
+                resolved: false,
+                output: None,
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            }),
+            AssistantContent::Thinking(_) => {}
         }
     }
     if let Some(error) = message.error_message.as_ref() {
@@ -224,36 +354,72 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     } = run;
     let entry_id = uuid::Uuid::new_v4().to_string();
     let sink_chat = chat.clone();
-    let sink_entry_id = entry_id.clone();
     let sink_device_id = runtime.device_id.clone();
+    let sink_run_entry = entry_id.clone();
+    // One transcript entry per assistant message — every tool round-trip
+    // adds another, so the live entry id rotates on each MessageStart.
+    // (Tool results update existing parts by tool-call id, not by entry.)
+    let live_entry: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let sink_live = live_entry.clone();
     let emit: AgentEventSink = Arc::new(move |event| {
         let chat = sink_chat.clone();
-        let entry_id = sink_entry_id.clone();
+        let live_entry = sink_live.clone();
         let device_id = sink_device_id.clone();
+        let run_entry = sink_run_entry.clone();
         Box::pin(async move {
             match event {
                 AgentEvent::MessageStart { message }
-                | AgentEvent::MessageUpdate { message, .. } => {
-                    if matches!(&*message, AgentMessage::Assistant(_)) {
-                        update_assistant_entry(
-                            &chat,
-                            &entry_id,
-                            &message,
-                            MessageStatus::Streaming,
-                            &device_id,
-                        );
-                    }
+                    if matches!(&*message, AgentMessage::Assistant(_)) =>
+                {
+                    let entry_id = uuid::Uuid::new_v4().to_string();
+                    *live_entry.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry_id.clone());
+                    update_assistant_entry(
+                        &chat,
+                        &entry_id,
+                        &message,
+                        MessageStatus::Streaming,
+                        &device_id,
+                    );
                 }
-                AgentEvent::MessageEnd { message } => {
-                    if matches!(&*message, AgentMessage::Assistant(_)) {
-                        update_assistant_entry(
-                            &chat,
-                            &entry_id,
-                            &message,
-                            MessageStatus::Complete,
-                            &device_id,
-                        );
-                    }
+                AgentEvent::MessageUpdate { message, .. }
+                    if matches!(&*message, AgentMessage::Assistant(_)) =>
+                {
+                    let entry_id = live_entry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
+                        .unwrap_or(run_entry);
+                    update_assistant_entry(
+                        &chat,
+                        &entry_id,
+                        &message,
+                        MessageStatus::Streaming,
+                        &device_id,
+                    );
+                }
+                AgentEvent::MessageEnd { message }
+                    if matches!(&*message, AgentMessage::Assistant(_)) =>
+                {
+                    let entry_id = live_entry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone()
+                        .unwrap_or(run_entry);
+                    update_assistant_entry(
+                        &chat,
+                        &entry_id,
+                        &message,
+                        MessageStatus::Complete,
+                        &device_id,
+                    );
+                }
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    resolve_tool_part(&chat, &tool_call_id, is_error, tool_output_summary(&result));
                 }
                 _ => {}
             }
@@ -296,10 +462,12 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         vec![prompt_message],
         AgentContext {
             system_prompt: format!(
-                "You are a coding assistant working in {cwd}. This runtime currently exposes no tools."
+                "You are a coding assistant working in {cwd}. \
+                 Use the read, write, edit and bash tools to inspect and \
+                 change files whenever the task needs it."
             ),
             messages: history.clone(),
-            tools: None,
+            tools: Some(crate::tools::execution_tools(&cwd)),
         },
         config,
         emit,
@@ -321,6 +489,26 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             let mut stored = chat.history.write().unwrap_or_else(|e| e.into_inner());
             *stored = history;
             stored.extend(messages);
+            drop(stored);
+            // An interrupted loop never sends the closing MessageEnd, so its
+            // last entry would stream forever — settle it here.
+            let end_status = if cancel.is_cancelled() || errored {
+                MessageStatus::Aborted
+            } else {
+                MessageStatus::Complete
+            };
+            let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+            let mut settled = false;
+            for entry in transcript.iter_mut() {
+                if entry.status == Some(MessageStatus::Streaming) {
+                    entry.status = Some(end_status);
+                    settled = true;
+                }
+            }
+            drop(transcript);
+            if settled {
+                chat.publish();
+            }
             errored
         }
         Err(error) => {
@@ -342,6 +530,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             true
         }
     };
+    settle_unresolved_tools(&chat);
     *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
     runtime.set_session(
         &chat_id,
@@ -356,11 +545,21 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pi_core::ai::types::{AssistantMessage, TextContent, ThinkingContent, ToolCall};
+
+    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            content_type: Default::default(),
+            id: "call-1".into(),
+            name: name.into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            thought_signature: None,
+            namespace: None,
+        }
+    }
 
     #[test]
     fn assistant_message_maps_text_and_reasoning_to_doc_parts() {
-        use pi_core::ai::types::{AssistantMessage, TextContent, ThinkingContent};
-
         let message = AgentMessage::Assistant(Box::new(AssistantMessage {
             content: vec![
                 AssistantContent::Thinking(ThinkingContent {
@@ -387,5 +586,122 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn assistant_message_maps_tool_calls_to_tool_parts() {
+        let message = AgentMessage::Assistant(Box::new(AssistantMessage {
+            content: vec![AssistantContent::ToolCall(tool_call(
+                "bash",
+                serde_json::json!({ "command": "ls -la" }),
+            ))],
+            ..Default::default()
+        }));
+        assert_eq!(
+            assistant_parts(&message),
+            vec![MessagePart::Tool {
+                id: "call-1".into(),
+                call: TranscriptToolCall::Exec {
+                    command: "ls -la".into(),
+                },
+                is_error: false,
+                resolved: false,
+                output: None,
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn tool_calls_decode_to_known_shapes_and_strip_heavy_inputs() {
+        assert_eq!(
+            transcript_tool_call(&tool_call("read", serde_json::json!({ "path": "a.rs" }))),
+            TranscriptToolCall::ReadFile {
+                path: "a.rs".into()
+            }
+        );
+        // Write content is stripped before it can reach the doc.
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "write",
+                serde_json::json!({ "path": "a.rs", "content": "lots of text" })
+            )),
+            TranscriptToolCall::WriteFile {
+                path: "a.rs".into(),
+                content: None,
+            }
+        );
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "edit",
+                serde_json::json!({ "path": "a.rs", "edits": [{ "oldText": "x", "newText": "y" }] })
+            )),
+            TranscriptToolCall::EditFile {
+                path: "a.rs".into(),
+                old_string: None,
+                new_string: None,
+            }
+        );
+        // Unknown tools degrade to a named chip, input intact (the policy
+        // strips non-spawn inputs).
+        let decoded = transcript_tool_call(&tool_call(
+            "web_search",
+            serde_json::json!({ "query": "holt" }),
+        ));
+        assert!(matches!(
+            decoded,
+            TranscriptToolCall::Unknown { ref name, input: None } if name == "web_search"
+        ));
+    }
+
+    #[test]
+    fn resolve_tool_part_stamps_the_matching_chip() {
+        let chat = ChatRuntime::new();
+        chat.transcript.write().unwrap().push(SessionMessageEntry {
+            id: "entry-1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Tool {
+                id: "call-9".into(),
+                call: TranscriptToolCall::Exec {
+                    command: "sleep 1".into(),
+                },
+                is_error: false,
+                resolved: false,
+                output: None,
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            }],
+            created_at: 0,
+            device_id: "device".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        });
+        resolve_tool_part(&chat, "call-9", true, Some("boom".into()));
+        let transcript = chat.transcript.read().unwrap();
+        let Some(MessagePart::Tool {
+            resolved,
+            is_error,
+            output,
+            ..
+        }) = transcript[0].parts.first()
+        else {
+            panic!("expected a tool part");
+        };
+        assert!(*resolved);
+        assert!(*is_error);
+        assert_eq!(output.as_deref(), Some("boom"));
     }
 }

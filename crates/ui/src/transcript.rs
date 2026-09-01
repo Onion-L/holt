@@ -5461,6 +5461,10 @@ fn chip_header_row(
     };
     let running = tool.subagent_ref.is_some()
         && matches!(tool.subagent_status, Some(SubagentStatus::Running));
+    // An ordinary tool mid-call (part not yet resolved): same trailing
+    // spinner the subagent chip gets, so "what is it doing" is visible
+    // without opening anything.
+    let pending = !tool.is_thought && !tool.resolved && tool.subagent_ref.is_none();
     let failed = tool.is_error
         || (tool.subagent_ref.is_some()
             && matches!(tool.subagent_status, Some(SubagentStatus::Failed)));
@@ -5558,6 +5562,18 @@ fn chip_header_row(
                     "subagent-chip-{}",
                     tool.subagent_ref.as_deref().unwrap_or_default()
                 ),
+                2.0,
+                theme.glyph,
+                view,
+                cx,
+            )))
+        })
+        .when(pending, |row| {
+            row.child(div().flex_none().child(crate::loaders::mini_glyph_spinner(
+                SharedString::from(format!(
+                    "tool-chip-{}",
+                    fnv1a(format!("{:?}", tool.call).as_bytes())
+                )),
                 2.0,
                 theme.glyph,
                 view,

@@ -69,8 +69,11 @@ from Settings live in `provider-settings.json`; they are merged into
 
 The implemented agent slice is intentionally narrow: provider configuration,
 provider/model discovery, `createChat`, chat/session watches, `QueueCommand`
-run/interrupt, and streamed transcript frames. Tools, durable sessions,
-steering, worktrees, and uploads remain outside this slice.
+run/interrupt, and streamed transcript frames. The run loop mounts pi-core's
+built-in read/write/edit/bash tools (via `engine::tools`, a local
+`ExecutionEnv` rooted at the chat's cwd); the transcript folds their calls
+and results into `MessagePart::Tool` chips. Durable sessions, steering,
+worktrees, and uploads remain outside this slice.
 
 ## Provenance notes
 
