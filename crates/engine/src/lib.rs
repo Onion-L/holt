@@ -52,11 +52,13 @@ pub mod credentials;
 pub mod instance_lock;
 pub mod provider_settings;
 pub mod providers;
+mod store;
 
 use credentials::HoltCredentialStore;
 pub use instance_lock::InstanceLock;
 use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
+use store::{load_chats, load_or_create_device_id, load_spaces, persist_chats, persist_spaces};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -769,56 +771,6 @@ async fn run_agent_command(run: AgentRun) {
     );
 }
 
-fn spaces_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("spaces.json")
-}
-
-fn chats_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("chats.json")
-}
-
-fn load_chats(data_dir: &Path) -> Result<Vec<Chat>, EngineError> {
-    let path = chats_path(data_dir);
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            EngineError::Other(format!("could not read {}: {error}", path.display()))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn persist_chats(data_dir: &Path, chats: &[Chat]) -> Result<(), EngineError> {
-    let path = chats_path(data_dir);
-    let temp_path = data_dir.join("chats.json.tmp");
-    let bytes =
-        serde_json::to_vec_pretty(chats).map_err(|error| EngineError::Other(error.to_string()))?;
-    std::fs::write(&temp_path, bytes)?;
-    std::fs::rename(temp_path, path)?;
-    Ok(())
-}
-
-fn load_spaces(data_dir: &Path) -> Result<Vec<Space>, EngineError> {
-    let path = spaces_path(data_dir);
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            EngineError::Other(format!("could not read {}: {error}", path.display()))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn persist_spaces(data_dir: &Path, spaces: &[Space]) -> Result<(), EngineError> {
-    let path = spaces_path(data_dir);
-    let temp_path = data_dir.join("spaces.json.tmp");
-    let bytes =
-        serde_json::to_vec_pretty(spaces).map_err(|error| EngineError::Other(error.to_string()))?;
-    std::fs::write(&temp_path, bytes)?;
-    std::fs::rename(temp_path, path)?;
-    Ok(())
-}
-
 /// A watch stream that emits `value` once, then stays open (never changes).
 fn static_watch(value: serde_json::Value) -> RpcReply {
     use futures::StreamExt;
@@ -1104,20 +1056,6 @@ impl RpcService for StubEngine {
             _ => Err(RpcError::UnknownMethod(method.to_string())),
         }
     }
-}
-
-/// Stable per-installation device id, persisted at `{data_dir}/device-id`.
-fn load_or_create_device_id(data_dir: &Path) -> Result<String, EngineError> {
-    let path = data_dir.join("device-id");
-    if let Ok(id) = std::fs::read_to_string(&path) {
-        let id = id.trim();
-        if !id.is_empty() {
-            return Ok(id.to_string());
-        }
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    std::fs::write(&path, &id)?;
-    Ok(id)
 }
 
 #[cfg(test)]
