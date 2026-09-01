@@ -272,7 +272,7 @@ pub struct ToolItem {
     pub is_error: bool,
     pub resolved: bool,
     /// Expandable detail: a code-block of output lines, or a real diff
-    /// section rendered by the changes pane's component (ACP harnesses).
+    /// section rendered by the changes pane's component (ACP providers).
     /// Precomputed here because rows are cached by fingerprint — diffing and
     /// tokenizing per paint would run on every scroll frame.
     pub detail: Option<Arc<ToolDetail>>,
@@ -1367,7 +1367,7 @@ pub fn rows_for_entry(
                             version: message.len() as u64,
                             turn_start: false,
                             kind: RowKind::ErrorChip {
-                                // Harness-generated; the chip is one line.
+                                // Provider-generated; the chip is one line.
                                 message: single_line(message).into(),
                             },
                             entry_id: entry_id.clone(),
@@ -1652,7 +1652,7 @@ struct ChipAffordance {
 }
 
 /// Line cap for a FETCHED full output (a defensive ceiling, not a doc cap —
-/// the harness bounds outputs at 4KiB, so this is rarely reached).
+/// the provider bounds outputs at 4KiB, so this is rarely reached).
 const FULL_OUTPUT_MAX_LINES: usize = 400;
 
 /// Build the upgraded detail from a fetched sidecar blob. Diff blobs parse

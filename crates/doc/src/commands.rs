@@ -304,8 +304,8 @@ mod tests {
     fn run_request() -> RunRequest {
         RunRequest {
             prompt: "hello".into(),
-            harness: None,
-            model: None,
+            provider: holt_proto::ProviderId("openai".into()),
+            model: "openai/gpt-5.4".into(),
             reasoning: None,
             model_options: Default::default(),
             cwd: "/tmp".into(),
@@ -313,7 +313,6 @@ mod tests {
             auto_approve: false,
             attachments: Vec::new(),
             worktree: None,
-            resume: None,
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Session navigation — the horizontal tab strip is gone (wing 2026-08-10):
 //! the activity sidebar IS the session list, and the titlebar names the
-//! selected session (harness brand icon + title). A `+` new-session button
+//! selected session (provider brand icon + title). A `+` new-session button
 //! lives in the titlebar's left control cluster while an existing session is
 //! selected. `UiSettings.open_tabs` is legacy — no longer read or written.
 
@@ -113,7 +113,7 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [harness icon + session title] … [toggle-changes]`.
+    /// `[new-session +] [provider icon + session title] … [toggle-changes]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
     /// animated left inset, the toggle-changes button on git projects).
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -123,10 +123,10 @@ impl Shell {
         // drag region, and buttons. A session appends its project as a muted
         // folder tag right of the title (the composer footer no longer
         // carries it).
-        let (title, target, harness, on_canvas): (
+        let (title, target, provider, on_canvas): (
             SharedString,
             Option<SharedString>,
-            Option<holt_proto::HarnessId>,
+            Option<holt_proto::ProviderId>,
             bool,
         ) = {
             let state = self.state.read(cx);
@@ -143,7 +143,7 @@ impl Shell {
                             &chat.title.clone().unwrap_or_else(|| "New session".into()),
                         )),
                         Some(SharedString::from(folder)),
-                        chat.config.as_ref().map(|c| c.harness),
+                        chat.config.as_ref().map(|c| c.provider.clone()),
                         false,
                     )
                 }
@@ -294,7 +294,7 @@ impl Shell {
                         .items_center()
                         .gap(px(6.0))
                         .when_some(
-                            harness.map(crate::pickers::harness_brand_icon),
+                            provider.as_ref().map(crate::pickers::provider_brand_icon),
                             |el, (path, tint)| {
                                 el.child(
                                     icon(path)

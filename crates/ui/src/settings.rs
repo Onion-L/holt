@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 pub mod appearance;
 pub mod archived;
 pub mod composer;
-pub mod harnesses;
 pub mod notifications;
+pub mod providers;
 pub mod shortcuts;
 pub mod widgets;
 
@@ -198,9 +198,9 @@ pub struct UiSettings {
     pub sidebar_organization: SidebarOrganization,
     /// Timestamp used to order active sessions (newest first).
     pub sidebar_sort: SidebarSort,
-    /// Optional harness branding and repository metadata shown below each
+    /// Optional provider branding and repository metadata shown below each
     /// session title.
-    pub sidebar_show_harness: bool,
+    pub sidebar_show_provider: bool,
     pub sidebar_show_branch: bool,
     pub sidebar_show_pull_request: bool,
     /// The last selected space — restored on boot when the row still exists;
@@ -273,7 +273,7 @@ impl Default for UiSettings {
             sidebar_grouped: false,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
-            sidebar_show_harness: true,
+            sidebar_show_provider: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
             last_space_id: None,
@@ -772,7 +772,7 @@ mod tests {
             sidebar_grouped: true,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::Created,
-            sidebar_show_harness: false,
+            sidebar_show_provider: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,
             last_space_id: Some("space-1".into()),

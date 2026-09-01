@@ -21,7 +21,7 @@ pub const TOOL_OUTPUT_SUMMARY_MAX: usize = 160;
 /// sidecar is PARKED as of 2026-08-10, so this IS the whole record in the
 /// doc — the full text survives only in the host's local run journal):
 ///
-/// - Markdown code fences are stripped first — ACP harnesses fence every
+/// - Markdown code fences are stripped first — ACP providers fence every
 ///   output, so the fence is transport wrapping, never content (pre-fix,
 ///   every summary read "```console…").
 /// - Outputs that fit [`TOOL_OUTPUT_SUMMARY_MAX`] chars ride whole — a
@@ -67,7 +67,7 @@ pub fn summarize_tool_output(text: &str) -> Option<String> {
 
 /// Per-file diff stats persisted in place of inline diff text (t3's shape).
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
-/// only because the claude harness emits none. Full diff text lives in the
+/// only because the claude provider emits none. Full diff text lives in the
 /// sidecar behind `diff_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -439,7 +439,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 }
             }
         }
-        // AvailableCommands feeds the engine's per-harness command cache, not
+        // AvailableCommands feeds the engine's per-provider command cache, not
         // the transcript. UserMessage becomes its own doc ENTRY (the engine's
         // subagent sink writes it), never a part of the assistant message.
         AgentEvent::AssistantMessageCompleted { .. }
@@ -740,11 +740,10 @@ mod tests {
         fold_event_into_parts(
             &mut parts,
             &AgentEvent::SessionStarted {
-                harness: holt_proto::HarnessId::Mock,
+                provider: "mock".into(),
                 model: "m".into(),
                 tools: vec![],
                 cwd: "/".into(),
-                session_id: "s".into(),
                 assistant_message_id: "a".into(),
             },
         );

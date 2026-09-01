@@ -325,7 +325,7 @@ pub fn popover_card(theme: &Theme) -> gpui::Div {
 }
 
 /// [`popover_card`] without the `p-1` inset — for popovers that manage their
-/// own internal panes (the harness/model picker's rail + list split).
+/// own internal panes (the provider/model picker's rail + list split).
 pub fn popover_card_flush(theme: &Theme) -> gpui::Div {
     popover_card(theme).p(px(0.0))
 }

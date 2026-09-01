@@ -1,25 +1,42 @@
-//! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
+//! Agent-side wire types: provider/model run configuration and streaming events.
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HarnessId {
-    ClaudeCode,
-    Codex,
-    Cursor,
-    /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
-    Grok,
-    /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
-    Hermes,
-    /// The pi coding agent (pi.dev), driven over ACP via the `pi-acp` adapter.
-    Pi,
-    /// SST's opencode agent, driven natively over its own HTTP/SSE server
-    /// protocol (`opencode serve` — the same wire the opencode desktop app
-    /// speaks).
-    Opencode,
-    /// Test harness; never shown in production pickers.
-    Mock,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderId(pub String);
+
+impl ProviderId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ProviderId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl From<String> for ProviderId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ProviderId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Provider {
+    pub id: ProviderId,
+    pub name: String,
+    pub abbreviation: String,
+    pub configured: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -32,7 +49,7 @@ pub enum ReasoningLevel {
     XHigh,
     Max,
     Ultra,
-    /// xhigh + harness-specific setting.
+    /// xhigh + provider-specific setting.
     Ultracode,
     /// Prompt-prefix driven (Claude).
     Ultrathink,
@@ -59,6 +76,7 @@ pub enum SteeringMode {
 #[serde(rename_all = "camelCase")]
 pub struct Model {
     pub id: String,
+    pub provider: ProviderId,
     pub label: String,
     /// Short tagline rendered under the name in the model picker (11px muted),
     /// mirroring the Electron app's `ModelInfo.description`.
@@ -66,6 +84,8 @@ pub struct Model {
     pub description: Option<String>,
     #[serde(default)]
     pub reasoning_levels: Vec<ReasoningLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub options: Vec<ModelOption>,
 }
@@ -90,28 +110,22 @@ pub struct ModelOptionChoice {
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {
     pub prompt: String,
-    /// The harness picked at send time. Rides the command plane so
-    /// claim-on-first-command (chat row still in flight on the registry
-    /// channel) dispatches — and records — the picked harness instead of the
-    /// engine default. Additive + serde-defaulted for wire compat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness: Option<HarnessId>,
-    pub model: Option<String>,
+    /// Concrete provider/model pair resolved by the composer before send.
+    pub provider: ProviderId,
+    pub model: String,
     pub reasoning: Option<ReasoningLevel>,
-    /// Harness-specific option selections (option id -> choice id), JSON round-tripped.
+    /// Provider-specific option selections (option id -> choice id), JSON round-tripped.
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
     pub sandbox: SandboxLevel,
     #[serde(default)]
     pub auto_approve: bool,
-    /// Harness-native session id to resume, if any.
-    pub resume: Option<String>,
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
     /// refs (holt's `withAttachments` transport — that's what persists in the
-    /// doc); this field additionally lets a harness inline the bytes as image
+    /// doc); this field additionally lets a provider inline the bytes as image
     /// content blocks. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
@@ -251,7 +265,7 @@ impl ToolCall {
 }
 
 /// Spawn-input keys that carry a child model, in precedence order. Drivers
-/// disagree on the spelling, so the lookup is by key set, not by harness —
+/// disagree on the spelling, so the lookup is by key set, not by provider —
 /// a new adapter naming it any of these needs no code change here.
 pub const SUBAGENT_MODEL_KEYS: [&str; 4] = ["model", "modelId", "model_id", "subagent_model"];
 
@@ -323,7 +337,7 @@ pub enum DoneStatus {
     Errored,
 }
 
-/// The normalized streaming event every harness emits.
+/// The normalized streaming event emitted by Holt's agent runtime.
 ///
 /// Mirrors holt's `AgentEvent` tagged enum.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -331,13 +345,11 @@ pub enum DoneStatus {
 pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
     SessionStarted {
-        harness: HarnessId,
+        provider: String,
         model: String,
         #[serde(default)]
         tools: Vec<String>,
         cwd: String,
-        /// Harness-native session id (used for resume).
-        session_id: String,
         assistant_message_id: String,
     },
     TextDelta {
@@ -359,7 +371,7 @@ pub enum AgentEvent {
     ToolResult {
         id: String,
         is_error: bool,
-        /// Tool output text, capped by the emitting harness (ACP tool-call
+        /// Tool output text, capped by the emitting provider (ACP tool-call
         /// content; claude/codex adapters never populate it). The doc-side
         /// fold applies its own byte cap before anything persists.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,7 +380,7 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
-    /// Kept as a harness passthrough (rate-limit probes); never persisted to docs.
+    /// Kept as a provider passthrough (rate-limit probes); never persisted to docs.
     #[serde(rename_all = "camelCase")]
     Usage {
         input_tokens: u64,
@@ -376,7 +388,7 @@ pub enum AgentEvent {
     },
     /// The agent advertised (or changed) its slash-command set — ACP
     /// `available_commands_update`. The engine caches the latest list per
-    /// harness for the composer's `/` popup; never persisted to docs.
+    /// provider for the composer's `/` popup; never persisted to docs.
     #[serde(rename_all = "camelCase")]
     AvailableCommands {
         commands: Vec<SlashCommand>,
@@ -503,8 +515,7 @@ mod tests {
 
     #[test]
     fn run_request_attachments_default_and_round_trip() {
-        // Old-wire JSON without the field parses (additive compat)…
-        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let old = r#"{"prompt":"p","provider":"openai","model":"openai/gpt-5.4","reasoning":null,"cwd":".","sandbox":"workspace-write"}"#;
         let req: RunRequest = serde_json::from_str(old).unwrap();
         assert!(req.attachments.is_empty());
         // …and an empty list serializes away (old readers never see it).
@@ -522,8 +533,7 @@ mod tests {
 
     #[test]
     fn run_request_worktree_default_and_round_trip() {
-        // Old-wire JSON without the field parses (additive compat)…
-        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let old = r#"{"prompt":"p","provider":"openai","model":"openai/gpt-5.4","reasoning":null,"cwd":".","sandbox":"workspace-write"}"#;
         let req: RunRequest = serde_json::from_str(old).unwrap();
         assert!(req.worktree.is_none());
         // …and `None` serializes away (old readers never see it).
@@ -541,13 +551,5 @@ mod tests {
         assert_eq!(json["worktree"]["repoPath"], "/repos/holt");
         let round: RunRequest = serde_json::from_value(json).unwrap();
         assert_eq!(round.worktree, req.worktree);
-    }
-
-    #[test]
-    fn harness_id_uses_kebab_case() {
-        assert_eq!(
-            serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
-            "\"claude-code\""
-        );
     }
 }

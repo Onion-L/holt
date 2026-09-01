@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{HarnessId, ReasoningLevel, SandboxLevel};
+use crate::{ProviderId, ReasoningLevel, SandboxLevel};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +75,8 @@ impl Space {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfig {
-    pub harness: HarnessId,
-    pub model: Option<String>,
+    pub provider: ProviderId,
+    pub model: String,
     pub reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
@@ -113,7 +113,7 @@ pub struct Chat {
     /// Canonical id of the repo checkout/worktree this chat operates in.
     pub checkout_id: Option<String>,
     /// Repository identity captured for this conversation immediately before
-    /// its harness run. Unlike `branch`, this is never inferred from another
+    /// its provider run. Unlike `branch`, this is never inferred from another
     /// chat sharing the same checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_context: Option<ConversationSourceContext>,
@@ -121,17 +121,6 @@ pub struct Chat {
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// Harness-native session id of the chat's latest run — engine-owned resume
-    /// continuity across engine restarts (holt's `chats.harness_session_id`).
-    /// Empty string = explicit
-    /// "do not resume" tombstone after a rejected resume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness_session_id: Option<String>,
-    /// Cwd the harness session was created under. Harness session stores are
-    /// cwd-scoped (claude keys conversations by project directory), so resume
-    /// is only injected when the next run launches from the same cwd.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness_session_cwd: Option<String>,
     /// The space this chat belongs to. Invariant: `Some` for every UI-created
     /// chat; rows with a missing/dangling space id are not rendered (the host
     /// device's repair sweep deletes its own danglers).
@@ -331,7 +320,7 @@ pub struct DriveListing {
 
 /// A workspace-relative file or directory returned by `SearchFiles`.
 /// Contents deliberately never cross this boundary: mentioning a path leaves
-/// the harness to read it through its normal workspace tools when needed.
+/// the provider to read it through its normal workspace tools when needed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSearchMatch {
@@ -465,100 +454,6 @@ pub enum AuthState {
         user: UserProfile,
         org_id: Option<String>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAccount {
-    pub id: String,
-    pub harness: HarnessId,
-    pub email: Option<String>,
-    pub plan_label: Option<String>,
-    pub active: bool,
-    #[serde(default)]
-    pub usage_windows: Vec<AgentUsageWindow>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization: Option<String>,
-    /// How the CLI is signed in (`oauth` account vs raw `api-key`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_kind: Option<AgentAuthKind>,
-    /// False for a live login whose credentials we could not read (e.g. macOS
-    /// Keychain denied) — shown, but not re-activatable.
-    #[serde(default)]
-    pub switchable: bool,
-    /// Epoch millis of the slot's last snapshot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub saved_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentAuthKind {
-    Oauth,
-    ApiKey,
-}
-
-/// Everything the Accounts settings page renders, rebuilt after every mutation.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAccountsSnapshot {
-    pub accounts: Vec<AgentAccount>,
-    pub warnings: Vec<AgentAccountWarning>,
-}
-
-/// A per-harness detection warning (e.g. Keychain denied reading the live login).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAccountWarning {
-    pub harness: HarnessId,
-    pub message: String,
-}
-
-/// `StartAgentLogin` reply: open `url`, then either paste the code back
-/// (`CompleteAgentLogin`) or poll until the browser flow lands (`PollAgentLogin`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLoginStart {
-    pub login_id: String,
-    pub url: String,
-    pub mode: AgentLoginMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentLoginMode {
-    /// Claude: the user pastes the OAuth code back into the app.
-    PasteCode,
-    /// Codex: the CLI's loopback callback completes in the browser; poll until done.
-    Browser,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLoginPoll {
-    pub status: AgentLoginStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentLoginStatus {
-    Pending,
-    Done,
-    Error,
-}
-
-/// CLI plan rate-limit window (accounts settings meters) — NOT app token accounting.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUsageWindow {
-    pub label: String,
-    /// 0.0..=1.0
-    pub used_fraction: f32,
-    pub resets_at: Option<DateTime<Utc>>,
 }
 
 /// An open PTY session on the owning device (`OpenTerminal` reply).

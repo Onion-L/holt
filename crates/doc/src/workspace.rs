@@ -10,7 +10,7 @@
 //!   gitDetected, gitCheckedAt?, checkoutId?, createdAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
 //!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
-//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?}
+//!   providerSessionId?, providerSessionCwd?, spaceId?, lastSeenAt?}
 //! - `sessions`: LoroMap keyed by chatId → row map {chatId, deviceId, status, startedAt?,
 //!   updatedAt}
 //! - `meta`: LoroMap {schemaVersion} — in-band detection for future destructive changes
@@ -291,12 +291,6 @@ impl WorkspaceDoc {
         row.insert("createdAt", chat.created_at.timestamp_millis())?;
         // Preserved on full-row upserts (set_chat_activity/set_chat_host read →
         // modify → upsert; dropping these here would silently amnesia the chat).
-        set_opt_str(&row, "harnessSessionId", chat.harness_session_id.as_deref())?;
-        set_opt_str(
-            &row,
-            "harnessSessionCwd",
-            chat.harness_session_cwd.as_deref(),
-        )?;
         set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         self.doc.commit();
@@ -401,8 +395,8 @@ impl WorkspaceDoc {
 
     /// Retarget the chat onto another folder — the mid-session "switch to an
     /// existing worktree" move (t3code `reuseExistingWorktree`). LWW set;
-    /// `false` when no such row. Harness resume is cwd-scoped, so the next
-    /// run in the new folder starts a fresh harness conversation by design.
+    /// `false` when no such row. Provider resume is cwd-scoped, so the next
+    /// run in the new folder starts a fresh provider conversation by design.
     pub fn set_chat_cwd(&self, chat_id: &str, cwd: &str) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {
             return Ok(false);
@@ -429,26 +423,6 @@ impl WorkspaceDoc {
             return Ok(false);
         };
         row.insert("config", LoroValue::from(serde_json::to_value(config)?))?;
-        self.doc.commit();
-        Ok(true)
-    }
-
-    /// Host-side resume continuity: the harness-native session id of the chat's
-    /// latest run and the cwd it was created under (holt stored the same pair
-    /// on the chats table). An empty
-    /// `session_id` is the explicit "do not resume" tombstone written after a
-    /// harness rejects a resume. `false` when no such row.
-    pub fn set_chat_harness_session(
-        &self,
-        chat_id: &str,
-        session_id: &str,
-        cwd: &str,
-    ) -> Result<bool, DocError> {
-        let Some(row) = self.existing_row("chats", chat_id) else {
-            return Ok(false);
-        };
-        row.insert("harnessSessionId", session_id)?;
-        row.insert("harnessSessionCwd", cwd)?;
         self.doc.commit();
         Ok(true)
     }
@@ -687,7 +661,7 @@ pub(crate) struct RawChat {
     checkout_id: Option<String>,
     #[serde(default)]
     source_context: Option<holt_proto::ConversationSourceContext>,
-    /// LENIENT: a config this build can't decode (a harness/reasoning/sandbox
+    /// LENIENT: a config this build can't decode (a provider/reasoning/sandbox
     /// id from a NEWER peer — field incident: pre-v0.2.10 laptops dropped
     /// every `"opencode"` chat row wholesale, so new sessions silently never
     /// appeared in the sidebar) degrades to `None` instead of failing the
@@ -702,10 +676,6 @@ pub(crate) struct RawChat {
     #[serde(default)]
     created_at: i64,
     #[serde(default)]
-    harness_session_id: Option<String>,
-    #[serde(default)]
-    harness_session_cwd: Option<String>,
-    #[serde(default)]
     space_id: Option<String>,
     #[serde(default)]
     last_seen_at: Option<i64>,
@@ -714,7 +684,7 @@ pub(crate) struct RawChat {
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
-/// peer's harness id, reasoning level or sandbox mode) cost the CONFIG, not
+/// peer's provider id, reasoning level or sandbox mode) cost the CONFIG, not
 /// the row. Mirrors the transcript salvage rule: a missing field must cost
 /// at most what the field carried.
 fn lenient_chat_config<'de, D>(deserializer: D) -> Result<Option<ChatConfig>, D::Error>
@@ -746,8 +716,6 @@ impl From<RawChat> for Chat {
             last_message_preview: raw.last_message_preview,
             last_message_at: raw.last_message_at.map(dt),
             created_at: dt(raw.created_at),
-            harness_session_id: raw.harness_session_id,
-            harness_session_cwd: raw.harness_session_cwd,
             space_id: raw.space_id,
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
@@ -782,7 +750,7 @@ impl From<RawSession> for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use holt_proto::{HarnessId, SandboxLevel};
+    use holt_proto::{ProviderId, SandboxLevel};
 
     fn ts(ms: i64) -> DateTime<Utc> {
         dt(ms)
@@ -810,8 +778,8 @@ mod tests {
             checkout_id: None,
             source_context: None,
             config: Some(ChatConfig {
-                harness: HarnessId::Mock,
-                model: Some("mock-1".into()),
+                provider: ProviderId("mock".into()),
+                model: "mock-1".into(),
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
@@ -819,8 +787,6 @@ mod tests {
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),
-            harness_session_id: None,
-            harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,
@@ -873,8 +839,8 @@ mod tests {
             serde_json::Value::String("1m".into()),
         );
         let config = ChatConfig {
-            harness: HarnessId::ClaudeCode,
-            model: Some("claude-fable-5".into()),
+            provider: ProviderId("anthropic".into()),
+            model: "claude-fable-5".into(),
             reasoning: Some(holt_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,

@@ -8,8 +8,8 @@ fn run_request_attachments_survive_command_round_trip() {
     let doc = SessionDoc::init("chat-1").unwrap();
     let request = holt_proto::RunRequest {
         prompt: "p".into(),
-        harness: None,
-        model: None,
+        provider: holt_proto::ProviderId("openai".into()),
+        model: "openai/gpt-5.4".into(),
         reasoning: None,
         model_options: Default::default(),
         cwd: "/tmp".into(),
@@ -17,7 +17,6 @@ fn run_request_attachments_survive_command_round_trip() {
         auto_approve: true,
         attachments: vec!["/tmp/a.png".into()],
         worktree: None,
-        resume: None,
     };
     doc.queue_command(&SessionCommandEntry {
         id: "c1".into(),

@@ -4,7 +4,7 @@
 //! tested, not asserted.
 
 use super::*;
-use holt_proto::{HarnessId, SandboxLevel, SessionStatus};
+use holt_proto::{ProviderId, SandboxLevel, SessionStatus};
 
 fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap_or(DateTime::UNIX_EPOCH)
@@ -259,8 +259,8 @@ fn chat(id: &str, device_id: &str) -> Chat {
         checkout_id: None,
         source_context: None,
         config: Some(ChatConfig {
-            harness: HarnessId::Mock,
-            model: Some("mock-1".into()),
+            provider: ProviderId("mock".into()),
+            model: "mock-1".into(),
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
@@ -268,8 +268,6 @@ fn chat(id: &str, device_id: &str) -> Chat {
         last_message_preview: None,
         last_message_at: None,
         created_at: ts(2_000),
-        harness_session_id: None,
-        harness_session_cwd: None,
         space_id: None,
         last_seen_at: None,
         room_gen: None,
@@ -454,12 +452,7 @@ fn pre_epoch_snapshots_resync_in_full_once() {
 }
 
 #[test]
-fn future_harness_chat_rows_stay_visible_without_their_config() {
-    // Field incident: a pre-v0.2.10 client received rows whose
-    // config.harness said "opencode" — a variant it didn't have — and
-    // dropped the WHOLE row ("skipping malformed registry row"), so new
-    // sessions silently never appeared in that device's sidebar. Unknown
-    // config values must cost the config, not the row.
+fn future_provider_chat_rows_keep_their_provider_qualified_config() {
     let mut ws = RegistryDoc::new("dev-a");
     ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
     let fields: std::collections::BTreeMap<String, serde_json::Value> = [
@@ -469,7 +462,7 @@ fn future_harness_chat_rows_stay_visible_without_their_config() {
         (
             "config".to_owned(),
             json!({
-                "harness": "harness-from-the-future",
+                "provider": "provider-from-the-future",
                 "model": "novel/model",
                 "sandbox": "workspace-write",
             }),
@@ -491,12 +484,11 @@ fn future_harness_chat_rows_stay_visible_without_their_config() {
     );
 
     let chats = ws.read_chats().unwrap();
-    assert_eq!(chats.len(), 2, "the future-harness row must not vanish");
+    assert_eq!(chats.len(), 2, "the future-provider row must not vanish");
     let newcomer = chats.iter().find(|c| c.id == "chat-2").expect("visible");
-    assert_eq!(
-        newcomer.config, None,
-        "unknown config degrades, row survives"
-    );
+    let config = newcomer.config.as_ref().expect("config remains valid");
+    assert_eq!(config.provider.as_str(), "provider-from-the-future");
+    assert_eq!(config.model, "novel/model");
     // The well-formed sibling keeps its config untouched.
     assert!(chats.iter().any(|c| c.id == "chat-1" && c.config.is_some()));
 }
@@ -638,7 +630,7 @@ fn two_docs_converge_through_a_server() {
 /// claim-on-first-command lands with NEWER clocks than the viewer's earlier
 /// `createChat`. The claim writes only the fields it knows, so the viewer's
 /// `config`/`title` must still land on merge (a full-row claim's `Null`
-/// writes deleted them — the missing-harness-icon clobber).
+/// writes deleted them — the missing-provider-icon clobber).
 #[test]
 fn late_create_chat_config_survives_a_prior_claim() {
     let mut viewer = RegistryDoc::new("dev-viewer");

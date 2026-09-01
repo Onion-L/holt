@@ -1490,18 +1490,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ready, serde_json::json!({ "ready": true }));
-        let harnesses = handle
+        let providers = handle
             .client()
-            .call(methods::LIST_HARNESSES, serde_json::json!({}))
+            .call(methods::LIST_PROVIDERS, serde_json::json!({}))
             .await
             .unwrap();
-        assert_eq!(harnesses, serde_json::json!([]));
+        assert!(
+            providers
+                .as_array()
+                .is_some_and(|providers| !providers.is_empty())
+        );
         assert!(matches!(
             handle
                 .client()
                 .call(methods::QUEUE_COMMAND, serde_json::json!({}))
                 .await,
-            Err(RpcError::UnknownMethod(method)) if method == methods::QUEUE_COMMAND
+            Err(RpcError::Failed(_))
         ));
     }
 
@@ -1522,8 +1526,6 @@ mod tests {
             last_message_preview: None,
             last_message_at: last_msg_min.map(|m| base + TimeDelta::minutes(m)),
             created_at: base + TimeDelta::minutes(created_min),
-            harness_session_id: None,
-            harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,
@@ -1892,8 +1894,8 @@ mod tests {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
         let config = holt_proto::ChatConfig {
-            harness: holt_proto::HarnessId::ClaudeCode,
-            model: Some("claude-fable-5".into()),
+            provider: holt_proto::ProviderId("anthropic".into()),
+            model: "claude-fable-5".into(),
             reasoning: Some(holt_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: holt_proto::SandboxLevel::WorkspaceWrite,
@@ -1916,8 +1918,8 @@ mod tests {
         state.apply_chat_config(
             "missing",
             holt_proto::ChatConfig {
-                harness: holt_proto::HarnessId::ClaudeCode,
-                model: None,
+                provider: holt_proto::ProviderId("anthropic".into()),
+                model: "openai/gpt-5.4".into(),
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 sandbox: holt_proto::SandboxLevel::WorkspaceWrite,

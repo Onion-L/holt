@@ -49,7 +49,7 @@ use std::path::PathBuf;
 use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
-pub use holt_proto::HarnessId;
+pub use holt_proto::ProviderId;
 pub use state::EngineBootConfig;
 
 /// Everything the headed binary passes in (config/env resolution lives in

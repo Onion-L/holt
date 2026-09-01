@@ -1,18 +1,12 @@
 //! Stable conversation links shared by sidebar copy actions and inbound URL routing.
 
-use holt_proto::{AuthState, Chat, HarnessId, WorkspaceScope};
+use holt_proto::{AuthState, WorkspaceScope};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationDeepLink {
     pub chat_id: String,
     pub workspace: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HarnessConversationLink {
-    pub label: &'static str,
-    pub url: String,
 }
 
 /// Opaque locator: enough to reject links for a different local/synced
@@ -67,20 +61,6 @@ pub fn parse_holt_conversation_link(url: &str) -> Result<ConversationDeepLink, &
     })
 }
 
-/// Only return schemes verified against the harness app. Hermes exposes a
-/// candidate scheme, but its contract is not stable enough to put on users'
-/// clipboards yet.
-pub fn harness_conversation_link(chat: &Chat) -> Option<HarnessConversationLink> {
-    let id = chat.harness_session_id.as_deref()?.trim();
-    if id.is_empty() || chat.config.as_ref()?.harness != HarnessId::Codex {
-        return None;
-    }
-    Some(HarnessConversationLink {
-        label: "Codex conversation link",
-        url: format!("codex://threads/{}", encode_component(id)),
-    })
-}
-
 fn encode_component(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
@@ -117,34 +97,6 @@ fn decode_component(value: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn harness_chat(harness: HarnessId) -> Chat {
-        Chat {
-            id: "chat".into(),
-            device_id: "device".into(),
-            title: None,
-            archived: false,
-            cwd: None,
-            branch: None,
-            checkout_id: None,
-            source_context: None,
-            config: Some(holt_proto::ChatConfig {
-                harness,
-                model: None,
-                reasoning: None,
-                model_options: Default::default(),
-                sandbox: holt_proto::SandboxLevel::WorkspaceWrite,
-            }),
-            last_message_preview: None,
-            last_message_at: None,
-            created_at: chrono::DateTime::UNIX_EPOCH,
-            harness_session_id: Some("thread/one".into()),
-            harness_session_cwd: None,
-            space_id: None,
-            last_seen_at: None,
-            room_gen: None,
-        }
-    }
 
     #[test]
     fn holt_link_round_trips_reserved_characters() {
@@ -214,16 +166,5 @@ mod tests {
             )
             .is_some()
         );
-    }
-
-    #[test]
-    fn codex_link_is_exact_and_unverified_harnesses_are_omitted() {
-        assert_eq!(
-            harness_conversation_link(&harness_chat(HarnessId::Codex))
-                .unwrap()
-                .url,
-            "codex://threads/thread%2Fone"
-        );
-        assert!(harness_conversation_link(&harness_chat(HarnessId::Hermes)).is_none());
     }
 }

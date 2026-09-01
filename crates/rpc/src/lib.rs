@@ -28,10 +28,10 @@ pub use server::serve_connection;
 /// RPC method names — single source of truth for both ends.
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
-    pub const LIST_HARNESSES: &str = "ListHarnesses";
-    /// Flip a harness's enablement on the target device (Settings → Agents);
-    /// replies with the device's fresh `ListHarnesses` catalog.
-    pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
+    pub const LIST_PROVIDERS: &str = "ListProviders";
+    pub const SAVE_PROVIDER_KEY: &str = "SaveProviderKey";
+    pub const REVEAL_PROVIDER_KEY: &str = "RevealProviderKey";
+    pub const REMOVE_PROVIDER_KEY: &str = "RemoveProviderKey";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
@@ -116,13 +116,6 @@ pub mod methods {
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
-    pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
-    pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
-    pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
-    pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
-    pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
-    pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
-    pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

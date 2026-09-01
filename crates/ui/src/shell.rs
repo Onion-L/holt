@@ -32,8 +32,8 @@ use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
-use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
+use crate::settings::providers::ProvidersPage;
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
     self, CHAT_PANEL_MIN, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN,
@@ -315,8 +315,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 /// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
-    /// Which harnesses the composer offers (enable/disable toggles).
-    Harnesses,
+    Providers,
     Appearance,
     Notifications,
     Shortcuts,
@@ -325,7 +324,7 @@ pub enum SettingsSection {
 
 impl SettingsSection {
     pub const ALL: [SettingsSection; 5] = [
-        SettingsSection::Harnesses,
+        SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
         SettingsSection::Shortcuts,
@@ -336,7 +335,7 @@ impl SettingsSection {
     /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
-            SettingsSection::Harnesses => "Agents",
+            SettingsSection::Providers => "Providers",
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Notifications => "Notifications",
             SettingsSection::Shortcuts => "Shortcuts",
@@ -557,7 +556,7 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
             .any(|((old_key, _), (new_key, _))| old_key != new_key)
 }
 
-/// Exact active-session row height. Harness identity lives on the title line
+/// Exact active-session row height. Provider identity lives on the title line
 /// and the Working glyph lives in the status corner, so neither adds a third
 /// line. Compact rows omit the metadata line and its preceding gap entirely;
 /// branch / pull-request rows add the exact height of their tallest child.
@@ -579,7 +578,7 @@ pub(super) fn chat_row_height(shows_branch: bool, shows_pull_request: bool) -> f
 }
 /// Flex gap between sidebar list items.
 const SIDEBAR_LIST_GAP: f32 = 2.0;
-/// Harness/title geometry follows the row hierarchy: active multi-line cards
+/// Provider/title geometry follows the row hierarchy: active multi-line cards
 /// keep identity close on the standard 8px rhythm, while the one-line archived
 /// shelf gives its larger mark a little more separation.
 const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
@@ -717,7 +716,7 @@ pub struct Shell {
     pub(super) archived_open: bool,
     pub(super) archived_shown: usize,
     /// Archived slim row under the pointer — swaps its time label for the
-    /// Unarchive affordance and restores the dimmed harness mark (t3code's
+    /// Unarchive affordance and restores the dimmed provider mark (t3code's
     /// settled-row hover).
     pub(super) archived_hover: Option<String>,
     /// Ephemeral collapsed project sections, keyed by organization + id.
@@ -765,7 +764,7 @@ pub struct Shell {
     appearance_page: Option<Entity<AppearancePage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
-    harnesses_page: Option<Entity<HarnessesPage>>,
+    providers_page: Option<Entity<ProvidersPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
@@ -950,8 +949,8 @@ impl Shell {
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
         let route = match std::env::var("HOLT_OPEN_ROUTE").ok().as_deref() {
-            Some("settings") | Some("settings/harnesses") => {
-                Route::Settings(SettingsSection::Harnesses)
+            Some("settings") | Some("settings/providers") => {
+                Route::Settings(SettingsSection::Providers)
             }
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
@@ -966,7 +965,7 @@ impl Shell {
         };
         // More capture knobs of the same kind: `HOLT_OPEN_DIALOG=rename|delete`
         // opens that dialog for the first chat once chats land; `=model` pops
-        // the combined harness/model menu once the shell is Ready;
+        // the combined provider/model menu once the shell is Ready;
         // `HOLT_FORCE_GATE=failed` renders that gate regardless of real
         // connection state (display-only — for styling passes).
         let debug_dialog = std::env::var("HOLT_OPEN_DIALOG").ok();
@@ -1012,7 +1011,7 @@ impl Shell {
             appearance_page: None,
             notifications_page: None,
             shortcuts_page: None,
-            harnesses_page: None,
+            providers_page: None,
             shortcuts_sub: None,
             notifications_sub: None,
             chat_menu: popover::Popup::default(),
@@ -1940,43 +1939,16 @@ impl Shell {
         cx.notify();
     }
 
-    fn copy_harness_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
-        let link = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .and_then(crate::links::harness_conversation_link);
-        if let Some(link) = link {
-            cx.write_to_clipboard(ClipboardItem::new_string(link.url));
-            self.sidebar_notice = Some(format!("{} copied", link.label).into());
-        }
-        self.close_chat_menu(cx);
-        cx.notify();
-    }
-
-    fn copy_harness_session_id(&mut self, chat_id: &str, cx: &mut Context<Self>) {
-        let id = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .and_then(|chat| chat.harness_session_id.clone());
-        if let Some(id) = id.filter(|id| !id.trim().is_empty()) {
-            cx.write_to_clipboard(ClipboardItem::new_string(id));
-            self.sidebar_notice = Some("Harness session ID copied".into());
-        }
-        self.close_chat_menu(cx);
-        cx.notify();
-    }
-
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
-        // Recreate per visit: the page's ListHarnesses load re-probes which
+        if section != SettingsSection::Providers
+            && let Some(page) = self.providers_page.as_ref()
+        {
+            page.update(cx, |page, cx| page.clear_revealed(cx));
+        }
+        // Recreate per visit: the page's ListProvideres load re-probes which
         // CLIs are installed, so installing one shows up on the next open.
-        if section == SettingsSection::Harnesses {
-            self.harnesses_page = None;
+        if section == SettingsSection::Providers {
+            self.providers_page = None;
         }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
@@ -1985,6 +1957,9 @@ impl Shell {
     }
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = self.providers_page.as_ref() {
+            page.update(cx, |page, cx| page.clear_revealed(cx));
+        }
         self.route = Route::Chat;
         self.nav.push(NavEntry::Chat(self.active_chat.clone()));
         cx.notify();
@@ -2008,6 +1983,11 @@ impl Shell {
     /// points at `entry` (back/forward moved the index); the selection change
     /// this triggers dedups against `current()` in [`Self::on_state_changed`].
     fn apply_nav(&mut self, entry: NavEntry, cx: &mut Context<Self>) {
+        if !matches!(entry, NavEntry::Settings(SettingsSection::Providers))
+            && let Some(page) = self.providers_page.as_ref()
+        {
+            page.update(cx, |page, cx| page.clear_revealed(cx));
+        }
         match entry {
             NavEntry::Chat(chat_id) => {
                 self.route = Route::Chat;
@@ -2017,6 +1997,11 @@ impl Shell {
                 }
             }
             NavEntry::Settings(section) => {
+                if section != SettingsSection::Providers
+                    && let Some(page) = self.providers_page.as_ref()
+                {
+                    page.update(cx, |page, cx| page.clear_revealed(cx));
+                }
                 self.route = Route::Settings(section);
             }
         }
@@ -2027,12 +2012,12 @@ impl Shell {
     /// Lazily create the entity for a settings section and return it renderable.
     fn settings_outlet(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> AnyElement {
         match section {
-            SettingsSection::Harnesses => {
-                if self.harnesses_page.is_none() {
+            SettingsSection::Providers => {
+                if self.providers_page.is_none() {
                     let state = self.state.clone();
-                    self.harnesses_page = Some(cx.new(|cx| HarnessesPage::new(state, cx)));
+                    self.providers_page = Some(cx.new(|cx| ProvidersPage::new(state, cx)));
                 }
-                match &self.harnesses_page {
+                match &self.providers_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -2774,7 +2759,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let section_icon = |item: SettingsSection| match item {
-            SettingsSection::Harnesses => icons::WIDGET,
+            SettingsSection::Providers => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Notifications => icons::BELL,
             SettingsSection::Shortcuts => icons::KEYBOARD,
@@ -2872,7 +2857,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row: context + status on line one, harness + title on line
+    /// One session row: context + status on line one, provider + title on line
     /// two, and source metadata below. Working uses the live thread glyph in
     /// the status corner. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
@@ -2884,7 +2869,7 @@ impl Shell {
         space_name: SharedString,
         branch: Option<SharedString>,
         change_request: Option<holt_proto::ChangeRequestSummary>,
-        harness: Option<holt_proto::HarnessId>,
+        provider: Option<holt_proto::ProviderId>,
         status: holt_proto::ChatIndicator,
         selected: bool,
         archived: bool,
@@ -3169,7 +3154,7 @@ impl Shell {
                     )
                     .child(div().text_color(subline).child(corner)),
             )
-            // Line 2: harness identity belongs directly with the title,
+            // Line 2: provider identity belongs directly with the title,
             // instead of floating as unrelated metadata below it.
             .child(
                 div()
@@ -3179,7 +3164,7 @@ impl Shell {
                     .items_center()
                     .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
                     .when_some(
-                        harness.map(crate::pickers::harness_brand_icon),
+                        provider.as_ref().map(crate::pickers::provider_brand_icon),
                         |el, (path, tint)| {
                             el.child(
                                 icon(path)
@@ -3488,7 +3473,7 @@ impl Shell {
             .cursor_pointer()
             .hover(|style| style.bg(theme.glass_hover()).text_color(theme.text))
             .on_click(
-                cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::Harnesses, cx)),
+                cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::Providers, cx)),
             )
             .child(
                 icon(icons::SETTINGS_MINIMALISTIC)
@@ -3581,23 +3566,7 @@ impl Shell {
                             .child(SharedString::from("Delete…")),
                     ),
                 ChatMenuPage::Copy => {
-                    let chat = self
-                        .state
-                        .read(cx)
-                        .chats
-                        .iter()
-                        .find(|chat| chat.id == chat_id)
-                        .cloned();
-                    let harness_link = chat
-                        .as_ref()
-                        .and_then(crate::links::harness_conversation_link);
-                    let session_id = chat
-                        .as_ref()
-                        .and_then(|chat| chat.harness_session_id.as_deref())
-                        .is_some_and(|id| !id.trim().is_empty());
                     let holt_id = chat_id.clone();
-                    let harness_id = chat_id.clone();
-                    let session_chat_id = chat_id.clone();
                     menu.child(
                         popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
                             .id("chat-copy-back")
@@ -3628,44 +3597,6 @@ impl Shell {
                             )
                             .child(SharedString::from("Holt conversation link")),
                     )
-                    .when_some(harness_link, |menu, link| {
-                        menu.child(
-                            popover::menu_row(
-                                &theme,
-                                false,
-                                format!("chat-copy-harness-{chat_id}"),
-                            )
-                            .id("chat-copy-harness")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_harness_conversation_link(&harness_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from(link.label)),
-                        )
-                    })
-                    .when(session_id, |menu| {
-                        menu.child(
-                            popover::menu_row(
-                                &theme,
-                                false,
-                                format!("chat-copy-session-{chat_id}"),
-                            )
-                            .id("chat-copy-session")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_harness_session_id(&session_chat_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Harness session ID")),
-                        )
-                    })
                 }
             }
             .into_any_element();
@@ -5368,7 +5299,7 @@ impl Render for Shell {
             // Native Settings menu item and the platform convention (Cmd+, on
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                this.open_settings(SettingsSection::Harnesses, cx)
+                this.open_settings(SettingsSection::Providers, cx)
             }))
             // Chat-scoped, unlike new-session — `cycle_session` holds the guard
             // and says why.
@@ -5444,7 +5375,7 @@ impl Render for Shell {
                     }
                 }
                 // Capture knob: `HOLT_OPEN_DIALOG=model` pops the combined
-                // harness/model menu (needs `window`, so it fires here rather
+                // provider/model menu (needs `window`, so it fires here rather
                 // than in `on_state_changed`).
                 if self.debug_dialog.as_deref() == Some("model") {
                     self.debug_dialog = None;
@@ -5907,7 +5838,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_harness_geometry_reflects_row_hierarchy() {
+    fn sidebar_provider_geometry_reflects_row_hierarchy() {
         assert_eq!(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP, Theme::SPACE_SM);
         assert!(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP < SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP);
         assert!(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE < SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE);
@@ -5993,7 +5924,7 @@ mod tests {
     fn nav_push_then_back_and_forward() {
         let mut nav = NavHistory::new(chat("a"));
         nav.push(chat("b"));
-        nav.push(NavEntry::Settings(SettingsSection::Harnesses));
+        nav.push(NavEntry::Settings(SettingsSection::Providers));
         assert!(nav.can_back());
         assert!(!nav.can_forward());
 
@@ -6012,7 +5943,7 @@ mod tests {
         assert_eq!(nav.forward(), Some(chat("b")));
         assert_eq!(
             nav.forward(),
-            Some(NavEntry::Settings(SettingsSection::Harnesses))
+            Some(NavEntry::Settings(SettingsSection::Providers))
         );
         assert!(!nav.can_forward());
         assert_eq!(nav.forward(), None);
@@ -6061,12 +5992,12 @@ mod tests {
     #[test]
     fn nav_settings_sections_are_distinct_entries() {
         let mut nav = NavHistory::new(chat("a"));
-        nav.push(NavEntry::Settings(SettingsSection::Harnesses));
+        nav.push(NavEntry::Settings(SettingsSection::Providers));
         nav.push(NavEntry::Settings(SettingsSection::Shortcuts));
         assert_eq!(nav.len(), 3, "section changes are navigations");
         assert_eq!(
             nav.back(),
-            Some(NavEntry::Settings(SettingsSection::Harnesses))
+            Some(NavEntry::Settings(SettingsSection::Providers))
         );
         assert_eq!(nav.back(), Some(chat("a")));
     }

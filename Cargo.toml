@@ -27,6 +27,7 @@ holt-rpc = { path = "crates/rpc" }
 holt-ui = { path = "crates/ui" }
 holt-syntax = { path = "crates/syntax" }
 holt-theme = { path = "crates/theme" }
+pi-core-rs = { path = "../pi-core-rs" }
 
 # CRDT
 loro = "1.13"

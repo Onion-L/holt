@@ -26,7 +26,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use holt_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
 use holt_proto::{
-    FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
+    FileSearchMatch, ProviderId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
     UserInputQuestion,
 };
 use holt_rpc::{RpcError, methods};
@@ -3292,7 +3292,7 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
 }
 
 /// Slash-command completion state: like [`FileMentionState`] but the
-/// candidate list is fetched once per harness (`ListCommands`) and filtered
+/// candidate list is fetched once per provider (`ListCommands`) and filtered
 /// locally per keystroke — no RPC, debounce, or skeleton churn while typing.
 #[derive(Debug, Clone, Default)]
 struct SlashState {
@@ -3300,8 +3300,8 @@ struct SlashState {
     /// Indices into the cached command list, filter-ranked for the query.
     filtered: Vec<usize>,
     active: Option<usize>,
-    /// Harness the popup is showing commands for (cache key).
-    harness: Option<HarnessId>,
+    /// Provider the popup is showing commands for (cache key).
+    provider: Option<ProviderId>,
     request: u64,
     loading: bool,
     error: Option<SharedString>,
@@ -3358,7 +3358,7 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 pub struct Composer {
     state: Entity<AppState>,
     input: Entity<ComposerInput>,
-    /// Composer actions row: repo/branch/harness-model/traits (§1.7).
+    /// Composer actions row: repo/branch/provider-model/traits (§1.7).
     /// Shared with the shell's new-session canvas, which renders the
     /// project target selector ([`Pickers::render_target_selectors`]).
     pickers: Entity<Pickers>,
@@ -3381,9 +3381,9 @@ pub struct Composer {
     mention: FileMentionState,
     slash_task: Option<Task<()>>,
     slash: SlashState,
-    /// Advertised commands per harness (one `ListCommands` per harness per
+    /// Advertised commands per provider (one `ListCommands` per provider per
     /// composer lifetime; the engine caches discovery on its side too).
-    slash_cache: HashMap<HarnessId, Vec<SlashCommand>>,
+    slash_cache: HashMap<ProviderId, Vec<SlashCommand>>,
     /// Slash-popup row scroll — the stack overflows into a wheel/keyboard-
     /// scrollable list once it outgrows the card.
     slash_scroll: gpui::ScrollHandle,
@@ -3606,7 +3606,7 @@ impl Composer {
     }
 
     /// Capture-knob passthrough (`HOLT_OPEN_DIALOG=model`): open the
-    /// combined harness/model menu.
+    /// combined provider/model menu.
     pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pickers
             .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
@@ -4169,7 +4169,7 @@ impl Composer {
     // ---- slash commands ---------------------------------------------------
 
     /// Track the `/` token on every edit: open/refresh the popup, fetch the
-    /// harness's command list on first open, filter locally per keystroke.
+    /// provider's command list on first open, filter locally per keystroke.
     fn update_slash(&mut self, text: &str, cursor: usize, cx: &mut Context<Self>) {
         let token = slash_token(text, cursor);
         let still_dismissed = token.as_ref().is_some_and(|token| {
@@ -4183,32 +4183,32 @@ impl Composer {
             return;
         }
         self.slash.dismissed = None;
-        let harness = self.pickers.read(cx).resolved(cx).harness;
-        let harness_changed = self.slash.harness != harness;
-        if token == self.slash.token && !harness_changed {
+        let provider = self.pickers.read(cx).resolved(cx).provider;
+        let provider_changed = self.slash.provider != provider;
+        if token == self.slash.token && !provider_changed {
             self.refilter_slash(cx);
             return;
         }
         self.slash.token = token.clone();
-        self.slash.harness = harness;
+        self.slash.provider = provider.clone();
         self.slash.error = None;
         if token.is_none() {
             self.slash.active = None;
             self.sync_mention_controls(cx);
             return;
         }
-        // No resolved harness (catalog still loading): empty popup, no fetch.
-        let Some(harness) = harness else {
+        // No resolved provider (catalog still loading): empty popup, no fetch.
+        let Some(provider) = provider else {
             self.slash.loading = false;
             self.refilter_slash(cx);
             return;
         };
-        if self.slash_cache.contains_key(&harness) {
+        if self.slash_cache.contains_key(&provider) {
             self.slash.loading = false;
             self.refilter_slash(cx);
             return;
         }
-        // First open for this harness: one ListCommands against the engine
+        // First open for this provider: one ListCommands against the engine
         // (it owns the agent binary).
         self.slash.request = self.slash.request.wrapping_add(1);
         self.slash.loading = true;
@@ -4219,7 +4219,7 @@ impl Composer {
         };
         let request = self.slash.request;
         self.slash_task = Some(cx.spawn(async move |this, cx| {
-            let params = serde_json::json!({ "harness": harness });
+            let params = serde_json::json!({ "providerId": provider });
             let result = engine.client().call(methods::LIST_COMMANDS, params).await;
             this.update(cx, |composer, cx| {
                 if composer.slash.request != request {
@@ -4229,7 +4229,7 @@ impl Composer {
                 match result {
                     Ok(value) => match serde_json::from_value::<Vec<SlashCommand>>(value) {
                         Ok(commands) => {
-                            composer.slash_cache.insert(harness, commands);
+                            composer.slash_cache.insert(provider, commands);
                         }
                         Err(err) => tracing::warn!(%err, "slash command decode failed"),
                     },
@@ -4255,8 +4255,9 @@ impl Composer {
             .unwrap_or_default();
         let commands = self
             .slash
-            .harness
-            .and_then(|h| self.slash_cache.get(&h))
+            .provider
+            .as_ref()
+            .and_then(|provider| self.slash_cache.get(provider))
             .map(Vec::as_slice)
             .unwrap_or_default();
         let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
@@ -4301,8 +4302,9 @@ impl Composer {
             .and_then(|active| self.slash.filtered.get(active))
             .and_then(|&ix| {
                 self.slash
-                    .harness
-                    .and_then(|h| self.slash_cache.get(&h))
+                    .provider
+                    .as_ref()
+                    .and_then(|provider| self.slash_cache.get(provider))
                     .and_then(|c| c.get(ix))
             })
             .cloned()
@@ -4323,7 +4325,7 @@ impl Composer {
         self.slash = SlashState {
             request,
             dismissed,
-            harness: self.slash.harness,
+            provider: self.slash.provider.clone(),
             ..SlashState::default()
         };
         self.sync_mention_controls(cx);
@@ -4338,8 +4340,9 @@ impl Composer {
         self.slash.token.as_ref()?;
         let commands = self
             .slash
-            .harness
-            .and_then(|h| self.slash_cache.get(&h))
+            .provider
+            .as_ref()
+            .and_then(|provider| self.slash_cache.get(provider))
             .map(Vec::as_slice)
             .unwrap_or_default();
         // Full pill width at the mention card's height budget — both composer
@@ -4679,13 +4682,10 @@ impl Composer {
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         if state.selected_chat.is_some() {
-            return false;
+            return !self.pickers.read(cx).can_send(cx);
         }
-        // New-chat canvas: needs a project AND a runnable agent. The
-        // no-agents check only fires once the catalog is loaded — offline
-        // and still-loading states must not block (the harness resolves from
-        // the remembered default and the engine reports real failures).
-        state.selected_space_row().is_none() || self.pickers.read(cx).no_agents_available()
+        // New-chat canvas: needs a project and a configured provider/model.
+        state.selected_space_row().is_none() || !self.pickers.read(cx).can_send(cx)
     }
 
     fn button_mode(&self, cx: &App) -> SendButtonMode {
@@ -5127,14 +5127,13 @@ impl Composer {
                     SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: content.clone(),
-                            harness: resolved.harness,
-                            model: resolved.model.clone(),
+                            provider: resolved.provider.clone().ok_or_else(|| "Configure a provider before sending".to_string())?,
+                            model: resolved.model.clone().ok_or_else(|| "Choose a model before sending".to_string())?,
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
                             sandbox: SandboxLevel::WorkspaceWrite,
                             auto_approve: false,
-                            resume: None,
                             attachments: attachment_paths,
                             worktree: run_worktree,
                         },

@@ -914,14 +914,6 @@ impl RegistryDoc {
             ),
             ("lastMessageAt", opt_ms(chat.last_message_at)),
             ("createdAt", json!(chat.created_at.timestamp_millis())),
-            (
-                "harnessSessionId",
-                opt_str(chat.harness_session_id.as_deref()),
-            ),
-            (
-                "harnessSessionCwd",
-                opt_str(chat.harness_session_cwd.as_deref()),
-            ),
             ("spaceId", opt_str(chat.space_id.as_deref())),
             ("lastSeenAt", opt_ms(chat.last_seen_at)),
             (
@@ -1073,8 +1065,8 @@ impl RegistryDoc {
     }
 
     /// Retarget the chat onto another folder — the mid-session "switch to an
-    /// existing worktree" move. Harness resume is cwd-scoped, so the next run
-    /// in the new folder starts a fresh harness conversation by design.
+    /// existing worktree" move. Provider resume is cwd-scoped, so the next run
+    /// in the new folder starts a fresh provider conversation by design.
     pub fn set_chat_cwd(&mut self, chat_id: &str, cwd: &str) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);
@@ -1119,29 +1111,6 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("config", value)]),
-        );
-        Ok(true)
-    }
-
-    /// Host-side resume continuity. An empty `session_id` is the explicit
-    /// "do not resume" tombstone written after a harness rejects a resume.
-    pub fn set_chat_harness_session(
-        &mut self,
-        chat_id: &str,
-        session_id: &str,
-        cwd: &str,
-    ) -> Result<bool, DocError> {
-        if !self.row_exists(KIND_CHATS, chat_id) {
-            return Ok(false);
-        }
-        self.write(
-            KIND_CHATS,
-            chat_id,
-            OpKind::Update,
-            fields([
-                ("harnessSessionId", json!(session_id)),
-                ("harnessSessionCwd", json!(cwd)),
-            ]),
         );
         Ok(true)
     }
@@ -1296,14 +1265,6 @@ impl RegistryDoc {
                     ),
                     ("lastMessageAt", opt_ms(chat.last_message_at)),
                     ("createdAt", json!(chat.created_at.timestamp_millis())),
-                    (
-                        "harnessSessionId",
-                        opt_str(chat.harness_session_id.as_deref()),
-                    ),
-                    (
-                        "harnessSessionCwd",
-                        opt_str(chat.harness_session_cwd.as_deref()),
-                    ),
                     ("spaceId", opt_str(chat.space_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                 ]),

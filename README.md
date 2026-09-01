@@ -1,16 +1,15 @@
 # Holt
 
-A desktop UI shell for a coding agent — **desktop frontend only**:
+A desktop coding agent built around a Rust UI and an in-process Rust agent loop:
 
-- No agent drivers — the claude-code / codex / ACP / opencode / cursor harness
-  layer is gone. `crates/engine` is now a stub backend slot.
+- Holt is the only coding agent. Model services are configured as providers;
+  local coding-agent CLIs are not interchangeable runtimes.
 - No cloud — edge worker, multi-device sync, accounts/auth, updates, and the
   iOS/landing apps are deleted.
 - No daemon/CLI — the app is headed-only and embeds its backend in-process
   over the memory RPC transport.
 
-The intended backend is a from-scratch Rust agent core (pi-core-rs); it plugs
-in by implementing the `RpcService` method surface in `crates/engine`.
+`crates/engine` adapts `pi-core-rs` behind Holt's typed `RpcService` boundary.
 
 ## Run
 
@@ -18,9 +17,8 @@ in by implementing the `RpcService` method surface in `crates/engine`.
 cargo run --release -p holt
 ```
 
-Data lives under `~/.holt` (override with `HOLT_DATA_DIR`). Expect an empty
-shell: no chats, no agents, and backend mutations fail until a real engine is
-wired in.
+Data lives under `~/.holt` (override with `HOLT_DATA_DIR`). Configure a provider
+API key in Settings → Providers before starting a model run.
 
 ## Layout
 

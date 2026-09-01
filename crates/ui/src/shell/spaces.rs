@@ -797,10 +797,10 @@ impl Shell {
                 let time_ago: SharedString =
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
                 let is_selected = selected.as_deref() == Some(chat.id.as_str());
-                let harness = self
+                let provider = self
                     .settings
-                    .sidebar_show_harness
-                    .then(|| chat.config.as_ref().map(|c| c.harness))
+                    .sidebar_show_provider
+                    .then(|| chat.config.as_ref().map(|c| c.provider.clone()))
                     .flatten();
                 let height = super::chat_row_height(branch.is_some(), change_request.is_some());
                 // Only rows a jump slot can reach wear a chip; row 10 onward
@@ -822,7 +822,7 @@ impl Shell {
                     folder.into(),
                     branch.map(SharedString::from),
                     change_request,
-                    harness,
+                    provider,
                     status,
                     is_selected,
                     false,
@@ -901,7 +901,7 @@ impl Shell {
 
     /// The sidebar's archived shelf — a direct port of t3code's settled
     /// shelf: header is label + hairline + chevron ("Archived (N)" closed,
-    /// "Archived" open), rows are 36px SLIM one-liners (dimmed harness mark,
+    /// "Archived" open), rows are 36px SLIM one-liners (dimmed provider mark,
     /// title, time-ago right — the time yields to Unarchive on row hover),
     /// and the tail pages behind an explicit "Show N more" row (initial 10,
     /// +25 a click). `None` when nothing is archived under the current
@@ -986,10 +986,10 @@ impl Shell {
                 .into();
                 let time_ago: SharedString =
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
-                let brand = if self.settings.sidebar_show_harness {
+                let brand = if self.settings.sidebar_show_provider {
                     chat.config
                         .as_ref()
-                        .map(|c| crate::pickers::harness_brand_icon(c.harness))
+                        .map(|c| crate::pickers::provider_brand_icon(&c.provider))
                 } else {
                     None
                 };
@@ -2471,8 +2471,6 @@ mod tests {
             last_message_preview: None,
             last_message_at: Some(Utc.timestamp_opt(10, 0).unwrap()),
             created_at: Utc.timestamp_opt(5, 0).unwrap(),
-            harness_session_id: None,
-            harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,

@@ -37,7 +37,7 @@ impl InstanceLock {
         {
             use std::os::unix::io::AsRawFd;
             // Bounded EWOULDBLOCK retries: a fork→exec window in ANY process
-            // that inherited the previous holder's fd (git scans, harness
+            // that inherited the previous holder's fd (git scans, provider
             // spawns — fds are duplicated between fork and CLOEXEC-at-exec)
             // keeps the flock alive for a few milliseconds after release. A
             // real second engine holds it forever; transient artifacts clear

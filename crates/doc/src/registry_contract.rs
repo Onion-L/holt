@@ -60,8 +60,6 @@ mod tests {
             last_message_preview: None,
             last_message_at: None,
             created_at: now,
-            harness_session_id: None,
-            harness_session_cwd: None,
             space_id: Some(space.id.clone()),
             last_seen_at: None,
             room_gen: None,

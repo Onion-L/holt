@@ -3,7 +3,7 @@
 //!
 //! A small JSON file beside `ui-settings.json` (that file is the shell's and
 //! is saved debounced from its own boot-time copy, so the composer keeps its
-//! own file rather than racing it): last harness, last model per harness
+//! own file rather than racing it): last provider, last model per provider
 //! (id + label, so the chip names the pick before the model list loads),
 //! and last reasoning level. Written synchronously on every pick (picks are
 //! rare); corrupt or missing files fall back to defaults.
@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use holt_proto::{HarnessId, ReasoningLevel};
+use holt_proto::ReasoningLevel;
 
 const FILE_NAME: &str = "composer-defaults.json";
 
-/// Remembered model per harness — id plus display label, mirroring holt's
-/// `modelByHarness` storing the full `Model` object "so the pill never flashes
+/// Remembered model per provider — id plus display label, mirroring holt's
+/// `modelByProvider` storing the full `Model` object "so the pill never flashes
 /// a raw id or 'Default'".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,26 +28,17 @@ pub struct RememberedModel {
     pub label: String,
 }
 
-/// One starred model in the picker (t3code client-settings `favorites`,
-/// keyed `provider:model`) — harness + model id, insertion-ordered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FavoriteModel {
-    pub harness: HarnessId,
-    pub model: String,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ComposerDefaults {
-    /// Last harness picked on the new-chat canvas.
-    pub harness: Option<HarnessId>,
-    /// Last model picked, per harness (restored on harness switch).
-    pub model_by_harness: HashMap<HarnessId, RememberedModel>,
+    /// Last provider picked on the new-chat canvas.
+    pub provider: Option<String>,
+    /// Last model picked, per provider (restored on provider switch).
+    pub model_by_provider: HashMap<String, RememberedModel>,
     /// Last reasoning level picked (global, like holt's `reasoning` key).
     pub reasoning: Option<ReasoningLevel>,
     /// Every model label ever seen (id → label), fed from catalog loads.
-    /// The chip's fallback while a harness's list is still loading — a
+    /// The chip's fallback while a provider's list is still loading — a
     /// session whose configured model differs from the remembered pick
     /// would otherwise flash the raw id on switch.
     pub model_labels: HashMap<String, String>,
@@ -56,8 +47,6 @@ pub struct ComposerDefaults {
     pub project: Option<String>,
     /// Remembered "Don't work in a project" opt-out.
     pub no_project: bool,
-    /// Starred models (the picker's favorites rail), in starring order.
-    pub favorites: Vec<FavoriteModel>,
 }
 
 impl ComposerDefaults {
@@ -90,46 +79,21 @@ impl ComposerDefaults {
         data_dir.join(FILE_NAME)
     }
 
-    /// The remembered model for a harness, if any.
-    pub fn model_for(&self, harness: HarnessId) -> Option<&RememberedModel> {
-        self.model_by_harness.get(&harness)
+    /// The remembered model for a provider, if any.
+    pub fn model_for(&self, provider: &str) -> Option<&RememberedModel> {
+        self.model_by_provider.get(provider)
     }
 
-    /// Remember a pick (holt `saveDefaults({ harness, modelByHarness })`).
-    pub fn remember_model(&mut self, harness: HarnessId, id: String, label: String) {
-        self.harness = Some(harness);
-        self.model_by_harness
-            .insert(harness, RememberedModel { id, label });
+    /// Remember a pick (holt `saveDefaults({ provider, modelByProvider })`).
+    pub fn remember_model(&mut self, provider: String, id: String, label: String) {
+        self.provider = Some(provider.clone());
+        self.model_by_provider
+            .insert(provider, RememberedModel { id, label });
     }
 
     /// The cached display label for a model id, if ever seen.
     pub fn label_for(&self, id: &str) -> Option<&str> {
         self.model_labels.get(id).map(String::as_str)
-    }
-
-    /// Whether a model is starred.
-    pub fn is_favorite(&self, harness: HarnessId, model: &str) -> bool {
-        self.favorites
-            .iter()
-            .any(|f| f.harness == harness && f.model == model)
-    }
-
-    /// Star/unstar a model; returns whether it is starred AFTER the toggle.
-    pub fn toggle_favorite(&mut self, harness: HarnessId, model: &str) -> bool {
-        if let Some(at) = self
-            .favorites
-            .iter()
-            .position(|f| f.harness == harness && f.model == model)
-        {
-            self.favorites.remove(at);
-            false
-        } else {
-            self.favorites.push(FavoriteModel {
-                harness,
-                model: model.to_string(),
-            });
-            true
-        }
     }
 
     /// Merge a loaded catalog into the label cache. Returns whether anything
@@ -157,21 +121,21 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let mut defaults = ComposerDefaults {
-            harness: Some(HarnessId::ClaudeCode),
+            provider: Some("anthropic".into()),
             reasoning: Some(ReasoningLevel::XHigh),
             ..Default::default()
         };
         defaults.remember_model(
-            HarnessId::ClaudeCode,
+            "anthropic".into(),
             "claude-fable-5".into(),
             "Fable 5".into(),
         );
-        defaults.remember_model(HarnessId::Codex, "gpt-5.2-codex".into(), "GPT-5.2".into());
+        defaults.remember_model("openai".into(), "gpt-5.2-codex".into(), "GPT-5.2".into());
         defaults.save(dir.path()).unwrap();
         let loaded = ComposerDefaults::load(dir.path());
         assert_eq!(loaded, defaults);
         assert_eq!(
-            loaded.model_for(HarnessId::ClaudeCode).map(|m| &*m.label),
+            loaded.model_for("anthropic").map(|m| &*m.label),
             Some("Fable 5")
         );
     }
@@ -191,32 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn favorites_toggle_and_persist() {
-        let dir = tempfile::tempdir().unwrap();
+    fn remember_model_updates_provider_and_row() {
         let mut defaults = ComposerDefaults::default();
-        assert!(defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(defaults.toggle_favorite(HarnessId::Codex, "gpt-5.2-codex"));
-        assert!(defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        // Same id under a different harness is a distinct star.
-        assert!(!defaults.is_favorite(HarnessId::Codex, "claude-opus-5"));
-        defaults.save(dir.path()).unwrap();
-        assert_eq!(ComposerDefaults::load(dir.path()), defaults);
-        // Untoggle removes, preserving the other's order.
-        assert!(!defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(!defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(defaults.is_favorite(HarnessId::Codex, "gpt-5.2-codex"));
-    }
-
-    #[test]
-    fn remember_model_updates_harness_and_row() {
-        let mut defaults = ComposerDefaults::default();
-        defaults.remember_model(HarnessId::Codex, "m1".into(), "One".into());
-        defaults.remember_model(HarnessId::Codex, "m2".into(), "Two".into());
-        assert_eq!(defaults.harness, Some(HarnessId::Codex));
-        assert_eq!(
-            defaults.model_for(HarnessId::Codex).map(|m| &*m.id),
-            Some("m2")
-        );
-        assert!(defaults.model_for(HarnessId::ClaudeCode).is_none());
+        defaults.remember_model("openai".into(), "m1".into(), "One".into());
+        defaults.remember_model("openai".into(), "m2".into(), "Two".into());
+        assert_eq!(defaults.provider.as_deref(), Some("openai"));
+        assert_eq!(defaults.model_for("openai").map(|m| &*m.id), Some("m2"));
+        assert!(defaults.model_for("anthropic").is_none());
     }
 }
