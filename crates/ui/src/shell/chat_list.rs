@@ -134,7 +134,6 @@ impl Shell {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Providers => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
-            SettingsSection::Notifications => icons::BELL,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };

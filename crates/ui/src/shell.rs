@@ -32,7 +32,6 @@ use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
-use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::providers::ProvidersPage;
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
@@ -186,16 +185,14 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 pub enum SettingsSection {
     Providers,
     Appearance,
-    Notifications,
     Shortcuts,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 5] = [
+    pub const ALL: [SettingsSection; 4] = [
         SettingsSection::Providers,
         SettingsSection::Appearance,
-        SettingsSection::Notifications,
         SettingsSection::Shortcuts,
         SettingsSection::Archived,
     ];
@@ -206,7 +203,6 @@ impl SettingsSection {
         match self {
             SettingsSection::Providers => "Providers",
             SettingsSection::Appearance => "Appearance",
-            SettingsSection::Notifications => "Notifications",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Archived => "Archived sessions",
         }
@@ -429,11 +425,9 @@ pub struct Shell {
     nav: NavHistory,
     archived_page: Option<Entity<ArchivedPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
-    notifications_page: Option<Entity<NotificationsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     providers_page: Option<Entity<ProvidersPage>>,
     shortcuts_sub: Option<Subscription>,
-    notifications_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
     chat_menu: popover::Popup<ChatMenuState>,
     rename_dialog: Option<RenameChatDialog>,
@@ -459,9 +453,6 @@ pub struct Shell {
     sidebar_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
-    /// Last seen session status per chat — the chime trigger compares against
-    /// it (a row's FIRST appearance never chimes, so boot stays silent).
-    sound_prev: std::collections::HashMap<String, holt_proto::SessionStatus>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
     mutate_task: Option<Task<()>>,
@@ -620,7 +611,6 @@ impl Shell {
                 Route::Settings(SettingsSection::Providers)
             }
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
-            Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
@@ -676,11 +666,9 @@ impl Shell {
             nav,
             archived_page: None,
             appearance_page: None,
-            notifications_page: None,
             shortcuts_page: None,
             providers_page: None,
             shortcuts_sub: None,
-            notifications_sub: None,
             chat_menu: popover::Popup::default(),
             rename_dialog: None,
             delete_confirm: None,
@@ -693,7 +681,6 @@ impl Shell {
             chat_status_hover: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
             space_boot_applied: false,
-            sound_prev: std::collections::HashMap::new(),
             sidebar_notice: None,
             mutate_task: None,
             boot,
@@ -814,85 +801,6 @@ impl Shell {
                     );
                     cx.notify();
                 });
-            }
-        }
-        // Session chimes (herdr semantics, `sound::sound_for_transition`): a
-        // question rings whenever a session flips to AwaitingInput, a
-        // completion rings on the Working→Idle edge — for ANY session. A
-        // row's first appearance only seeds the baseline, so boot
-        // (restored rows) and fresh sends stay silent. Desktop banners
-        // (`notify::post`) ride the SAME edges and gates behind their own
-        // settings flag — one detector, two outputs, so the banner can never
-        // fire where the chime wouldn't.
-        //
-        // STALENESS-GATED like the dot (`effective_indicator`), for the same
-        // reason: raw row statuses include the past. A dead turn's Working row
-        // (host killed mid-run, Idle write lost to a wedged room) seeded
-        // prev=Working here, and the moment the old Idle finally synced in —
-        // typically piggybacked on the round-trip of a fresh send — the chime
-        // heard a phantom Working→Idle and rang "done" on send (user report
-        // 2026-07-31). The dot never showed that ghost; the chime must judge
-        // by the identical clock.
-        //
-        // SEND-PENDING-GATED too (`AppState::send_pending`): a send whose
-        // queued command the host hasn't executed yet can still surface a
-        // phantom Working→Idle (a stale Working row crossing the 45s gate on
-        // the send's own re-render, or a late old Idle row) — the done-chime
-        // stays quiet for that chat until the host acks, while the baseline
-        // keeps tracking silently so the ghost edge never fires later. The
-        // question chime is NOT gated: an instant AwaitingInput ack should
-        // still ring.
-        {
-            let now = Utc::now();
-            type Ping = (String, holt_proto::SessionStatus, bool, Option<String>);
-            let sessions: Vec<Ping> = {
-                let state = state.read(cx);
-                state
-                    .sessions
-                    .iter()
-                    .map(|s| {
-                        use holt_proto::view::Indicator;
-                        let status = match holt_proto::view::effective_indicator(Some(s), now) {
-                            Indicator::Working => holt_proto::SessionStatus::Working,
-                            Indicator::AwaitingInput => holt_proto::SessionStatus::AwaitingInput,
-                            Indicator::Errored => holt_proto::SessionStatus::Errored,
-                            Indicator::None => holt_proto::SessionStatus::Idle,
-                        };
-                        let send_pending = state.send_pending(&s.chat_id, now);
-                        let title = state
-                            .chats
-                            .iter()
-                            .find(|c| c.id == s.chat_id)
-                            .and_then(|c| c.title.clone());
-                        (s.chat_id.clone(), status, send_pending, title)
-                    })
-                    .collect()
-            };
-            // Background-only banners: `active_window()` is app-level (any
-            // Holt window being key), so a ping for a *background chat* in a
-            // focused app still stays a chime — you're already looking at
-            // Holt; the sidebar dot carries the rest.
-            let app_focused = cx.active_window().is_some();
-            for (chat_id, status, send_pending, title) in sessions {
-                let prev = self.sound_prev.insert(chat_id, status);
-                if let Some(prev) = prev
-                    && let Some(sound) = crate::sound::sound_for_transition(prev, status)
-                    && !(send_pending && sound == crate::sound::Sound::Done)
-                {
-                    if self.settings.sound_enabled {
-                        crate::sound::play(sound);
-                    }
-                    if self.settings.notifications_enabled
-                        && !(self.settings.notifications_background_only && app_focused)
-                    {
-                        let title = title.unwrap_or_else(|| "New session".into());
-                        let body = match sound {
-                            crate::sound::Sound::Done => "Run finished",
-                            crate::sound::Sound::Request => "Waiting on your input",
-                        };
-                        crate::notify::post(&title, body);
-                    }
-                }
             }
         }
         // Boot: restore the last selected space once the first spaces frame
@@ -1353,39 +1261,6 @@ impl Shell {
                     self.appearance_page = Some(cx.new(AppearancePage::new));
                 }
                 match &self.appearance_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Notifications => {
-                if self.notifications_page.is_none() {
-                    let page = cx.new(|cx| {
-                        NotificationsPage::new(
-                            self.settings.sound_enabled,
-                            self.settings.notifications_enabled,
-                            self.settings.notifications_background_only,
-                            cx,
-                        )
-                    });
-                    // Persist the flags whenever the page flips one.
-                    self.notifications_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &NotificationsEvent, cx| {
-                            let NotificationsEvent::Changed {
-                                sound,
-                                desktop,
-                                background_only,
-                            } = *event;
-                            this.settings.sound_enabled = sound;
-                            this.settings.notifications_enabled = desktop;
-                            this.settings.notifications_background_only = background_only;
-                            this.schedule_save(cx);
-                            cx.notify();
-                        },
-                    ));
-                    self.notifications_page = Some(page);
-                }
-                match &self.notifications_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }

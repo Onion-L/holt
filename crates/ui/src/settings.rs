@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 pub mod appearance;
 pub mod archived;
 pub mod composer;
-pub mod notifications;
 pub mod providers;
 pub mod shortcuts;
 pub mod widgets;
@@ -225,15 +224,6 @@ pub struct UiSettings {
     /// list. Kept for file compatibility; no longer read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space_order: Vec<String>,
-    /// Session notification chimes (done / awaiting-input). `HOLT_DISABLE_SOUND`
-    /// overrides.
-    pub sound_enabled: bool,
-    /// Desktop banner notifications on the same transitions.
-    /// `HOLT_DISABLE_NOTIFICATIONS` overrides.
-    pub notifications_enabled: bool,
-    /// Suppress the banner while a Holt window is focused (the chime covers
-    /// the foreground case).
-    pub notifications_background_only: bool,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, holt `sessionPanels` parity). Kept for file
@@ -281,9 +271,6 @@ impl Default for UiSettings {
             space_filter: None,
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
-            sound_enabled: true,
-            notifications_enabled: true,
-            notifications_background_only: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -783,9 +770,6 @@ mod tests {
                 vec!["b".to_string(), "a".to_string()],
             )]),
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
-            sound_enabled: false,
-            notifications_enabled: false,
-            notifications_background_only: false,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,
@@ -887,15 +871,6 @@ mod tests {
         assert_eq!(loaded.accent, holt_theme::AccentSelection::ThemeDefault);
         assert_eq!(loaded.surface, holt_theme::SurfacePreference::ThemeDefault);
         assert_eq!(loaded.sidebar_width, 300.0);
-        assert!(!loaded.sound_enabled, "other keys still parse");
-        assert!(
-            loaded.notifications_enabled,
-            "pre-banner files default banners on"
-        );
-        assert!(
-            loaded.notifications_background_only,
-            "pre-banner files default background-only on"
-        );
     }
 
     #[test]
@@ -926,7 +901,6 @@ mod tests {
             crate::typography::UiFontFamily::Geist
         );
         assert_eq!(loaded.sidebar_width, 300.0);
-        assert!(!loaded.sound_enabled);
         assert_eq!(
             loaded.ui_font_size,
             crate::typography::UiFontSize::default()
@@ -943,7 +917,6 @@ mod tests {
         .unwrap();
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.ui_font_size.pixels(), 18.0);
-        assert!(!loaded.sound_enabled);
     }
 
     #[test]
