@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-01T00:00:00.000Z",
+  "title": "Design System: Holt",
+  "extensions": {
+    "colorMeta": {
+      "accent-dark": { "role": "primary", "displayName": "Holt Indigo (dark)", "canonical": "oklch(67.3% 0.182 276.9)", "tonalRamp": ["#20186b", "#302590", "#4436b4", "#5c4bd2", "#8b7cf6", "#aaa0fa", "#c9c3fd", "#e7e4ff"] },
+      "accent-light": { "role": "primary", "displayName": "Holt Indigo (light)", "canonical": "oklch(51.1% 0.262 277.0)", "tonalRamp": ["#21166c", "#302295", "#4435ba", "#5b43e8", "#7864ed", "#9b8cf3", "#bdb4f8", "#dfdcfd"] },
+      "background-dark": { "role": "neutral", "displayName": "Obsidian", "canonical": "#060606", "tonalRamp": ["#060606", "#0d0d0d", "#171719", "#242426", "#343438", "#55555a", "#85858a", "#e8e8ea"] },
+      "background-light": { "role": "neutral", "displayName": "Paper", "canonical": "#ffffff", "tonalRamp": ["#303035", "#62626a", "#797981", "#b4b4bb", "#d5d5da", "#ededf0", "#f3f3f5", "#ffffff"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Settings titles and high-level empty states." },
+      "code": { "displayName": "Code", "purpose": "Terminal, diffs, paths, and inline code." }
+    },
+    "shadows": [
+      { "name": "menu-lift", "value": "0 4px 16px rgba(0,0,0,0.22)", "purpose": "Anchored menus and pickers." },
+      { "name": "panel-lift", "value": "0 12px 32px rgba(0,0,0,0.28)", "purpose": "Dialogs and large floating command surfaces." }
+    ],
+    "motion": [
+      { "name": "state-transition", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Short ease-out feedback for hover, focus, and menu entry." }
+    ],
+    "breakpoints": [
+      { "name": "window-min", "value": "900px", "purpose": "Minimum headed window width." }
+    ]
+  },
+  "components": [
+    { "name": "Primary Button", "kind": "button", "refersTo": "button-primary", "description": "Compact action button for submit and confirm.", "html": "<button class=\"ds-btn-primary\">Run</button>", "css": ".ds-btn-primary{background:#5b43e8;color:#fff;border:0;border-radius:6px;padding:8px 12px;font:500 12px/1.3 Geist,sans-serif;transition:background .16s cubic-bezier(.22,1,.36,1)}.ds-btn-primary:hover{background:#7864ed}.ds-btn-primary:focus-visible{outline:2px solid #8b7cf6;outline-offset:2px}" },
+    { "name": "Ghost Button", "kind": "button", "refersTo": "button-ghost", "description": "Quiet secondary action in toolbars and menus.", "html": "<button class=\"ds-btn-ghost\">Cancel</button>", "css": ".ds-btn-ghost{background:transparent;color:#303035;border:0;border-radius:6px;padding:6px 8px;font:500 12px/1.3 Geist,sans-serif}.ds-btn-ghost:hover{background:rgba(0,0,0,.06)}.ds-btn-ghost:focus-visible{outline:2px solid #5b43e8;outline-offset:2px}" },
+    { "name": "Input", "kind": "input", "refersTo": "input", "description": "Single-line field for search and composition.", "html": "<input class=\"ds-input\" placeholder=\"Ask Holt\" />", "css": ".ds-input{background:#fff;color:#303035;border:1px solid rgba(0,0,0,.12);border-radius:6px;padding:8px 10px;font:400 13px/1.5 Geist,sans-serif}.ds-input:focus{outline:2px solid #5b43e8;outline-offset:1px}" },
+    { "name": "Selected Chip", "kind": "chip", "refersTo": "chip-selected", "description": "Selected filter, model, or picker option.", "html": "<span class=\"ds-chip-selected\">Holt</span>", "css": ".ds-chip-selected{display:inline-block;background:rgba(91,67,232,.12);color:#5b43e8;border-radius:8px;padding:4px 8px;font:500 12px/1.3 Geist,sans-serif;box-shadow:inset 0 0 0 1px rgba(91,67,232,.3)}" },
+    { "name": "Panel", "kind": "card", "refersTo": "panel", "description": "Primary content plane or floating card.", "html": "<section class=\"ds-panel\">Transcript</section>", "css": ".ds-panel{background:#fff;color:#303035;border:1px solid rgba(0,0,0,.12);border-radius:10px;padding:16px;font:400 13px/1.5 Geist,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.12)}" }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Workbench",
+    "overview": "Holt is a native engineering surface: compact, dependable, and legible at a glance. The interface keeps the coding task primary while chrome recedes into carefully ordered planes. Dark and light appearances are authored as distinct scenes, not inverted screenshots. Frosted shell surfaces can carry atmosphere, while content remains anchored by explicit borders, tonal layers, and predictable desktop affordances.\n\nThe visual language is focused, precise, and calm. It rejects dashboard decoration, nested cards, hidden state, ambiguous icons, and web-shaped UI. Motion is feedback for a state change, never a performance. Density is intentional, with generous breathing room at panel boundaries and tighter rhythm inside controls.",
+    "keyCharacteristics": ["Near-achromatic surfaces with a single Holt indigo accent.", "Geist for interface text, Geist Mono for code and terminal output.", "Small radii and restrained elevation; selection is carried by tonal wash and an inset ring.", "Keyboard-first, explicit states across menus, pickers, transcript, terminal, and composer."],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "Indigo is the only general-purpose accent. Do not introduce decorative gradients or unrelated saturated colors; semantic colors appear only when communicating status.", "section": "colors" },
+      { "name": "The Two-Texture Rule", "body": "Never use the mono face for ordinary prose, and never render code or terminal output in proportional Geist.", "section": "typography" },
+      { "name": "The Flat-by-Default Rule", "body": "Resting content is flat. Elevation appears only for a floating layer or an interaction state, and never as a permanent stack of nested cards.", "section": "elevation" }
+    ],
+    "dos": ["Do keep the coding task primary and chrome quiet.", "Do use authored dark/light accent pairs so interactive text meets contrast in each appearance.", "Do make provider, model, and execution state explicit before an action runs.", "Do preserve keyboard focus, reduced-motion behavior, and labels for icon-only controls.", "Do use 4/8/12/16px spacing steps and 6/10/16px radius steps consistently."],
+    "donts": ["Don't add dashboard decoration, nested cards, or animation that competes with the task.", "Don't hide state, use ambiguous icons, or introduce web-shaped UI that feels foreign in a native tool.", "Don't use colored side-stripe borders, gradient text, or glassmorphism as a default surface treatment.", "Don't create identical card grids with icon-plus-heading-plus-copy repeated across a screen.", "Don't use a modal as the first thought when inline or progressive disclosure can work.", "Don't use `#000` or `#fff` for text or decoration outside the authored theme surfaces."]
+  }
+}
