@@ -15,6 +15,59 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString, Styled as _, Svg, svg};
 
+macro_rules! provider_assets {
+    ($(($const_name:ident, $path:literal)),+ $(,)?) => {
+        $(pub const $const_name: &str = concat!("providers/", $path, ".svg");)+
+
+        const PROVIDER_ASSET_PATHS: &[&str] = &[
+            $(concat!("providers/", $path, ".svg")),+
+        ];
+
+        fn load_provider_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+            match path {
+                $(concat!("providers/", $path, ".svg") => Some(Cow::Borrowed(
+                    include_bytes!(concat!("../assets/providers/", $path, ".svg")).as_slice(),
+                )),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+provider_assets![
+    (PROVIDER_ANT_LING, "ant-ling"),
+    (PROVIDER_ANTHROPIC, "anthropic"),
+    (PROVIDER_ANTHROPIC_DARK, "anthropic-dark"),
+    (PROVIDER_ANTHROPIC_LIGHT, "anthropic-light"),
+    (PROVIDER_BASETEN, "baseten"),
+    (PROVIDER_CEREBRAS, "cerebras"),
+    (PROVIDER_DEEPSEEK, "deepseek"),
+    (PROVIDER_FIREWORKS, "fireworks"),
+    (PROVIDER_GITHUB_COPILOT, "github-copilot"),
+    (PROVIDER_GOOGLE, "google"),
+    (PROVIDER_GROQ, "groq"),
+    (PROVIDER_HUGGINGFACE, "huggingface"),
+    (PROVIDER_KIMI_CODING, "kimi-coding"),
+    (PROVIDER_MINIMAX, "minimax"),
+    (PROVIDER_MINIMAX_DARK, "minimax-dark"),
+    (PROVIDER_MINIMAX_LIGHT, "minimax-light"),
+    (PROVIDER_MISTRAL, "mistral"),
+    (PROVIDER_MOONSHOTAI, "moonshotai"),
+    (PROVIDER_NVIDIA, "nvidia"),
+    (PROVIDER_OPENAI, "openai"),
+    (PROVIDER_OPENAI_LIGHT, "openai-light"),
+    (PROVIDER_OPENCODE, "opencode"),
+    (PROVIDER_OPENCODE_DARK, "opencode-dark"),
+    (PROVIDER_OPENCODE_LIGHT, "opencode-light"),
+    (PROVIDER_OPENROUTER, "openrouter"),
+    (PROVIDER_QWEN, "qwen"),
+    (PROVIDER_TOGETHER, "together"),
+    (PROVIDER_VERCEL_AI_GATEWAY, "vercel-ai-gateway"),
+    (PROVIDER_XAI, "xai"),
+    (PROVIDER_XIAOMI, "xiaomi"),
+    (PROVIDER_ZAI, "zai"),
+];
+
 macro_rules! icon_assets {
     ($(($const_name:ident, $path:literal)),+ $(,)?) => {
         $(pub const $const_name: &str = concat!("icons/", $path, ".svg");)+
@@ -28,7 +81,7 @@ macro_rules! icon_assets {
                     $(concat!("icons/", $path, ".svg") => Some(Cow::Borrowed(
                         include_bytes!(concat!("../assets/icons/", $path, ".svg")).as_slice(),
                     )),)+
-                    _ => None,
+                    _ => load_provider_asset(path),
                 })
             }
 
@@ -36,8 +89,10 @@ macro_rules! icon_assets {
                 let all = [$(concat!("icons/", $path, ".svg")),+];
                 Ok(all
                     .iter()
+                    .copied()
+                    .chain(PROVIDER_ASSET_PATHS.iter().copied())
                     .filter(|p| p.starts_with(path))
-                    .map(|p| SharedString::from(*p))
+                    .map(SharedString::from)
                     .collect())
             }
         }
@@ -164,9 +219,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_registered_icon_loads_and_parses() {
+    fn every_registered_asset_loads_and_parses() {
         let assets = Assets;
-        for path in assets.list("icons/").unwrap() {
+        for path in assets.list("").unwrap() {
             let bytes = assets
                 .load(&path)
                 .unwrap()
@@ -185,6 +240,7 @@ mod tests {
     #[test]
     fn list_filters_by_prefix() {
         assert!(!Assets.list("icons/").unwrap().is_empty());
+        assert_eq!(Assets.list("providers/").unwrap().len(), 31);
         assert!(Assets.list("fonts/").unwrap().is_empty());
     }
 }

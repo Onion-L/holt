@@ -36,7 +36,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Entity watches: `WatchChats`, `WatchSpaces`, `WatchSessions`
   (each emits `Vec<T>` snapshots), `WatchConnectivity`, `WatchTransfers`.
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
-  `RevealProviderKey`, `RemoveProviderKey`.
+  `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`.
 - Catalog: provider-scoped `ListModels`, plus `ListCommands`.
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
@@ -57,6 +57,15 @@ Provider credentials live in `provider-credentials.json` under the Holt data
 directory. Writes are atomic, Unix permissions are `0600`, malformed files fail
 startup, and credentials enter the agent loop as per-request snapshots. The UI
 only sees secrets through the dedicated reveal RPC.
+
+Provider availability is derived from credentials alone: a provider is
+offered once its key is configured; there is no separate enable toggle.
+`ListProviders` groups sibling built-ins that share a `pi-core-rs`
+`organization_id` (e.g. `minimax` + `minimax-cn`) into one row per
+organization; the row's `variants` carry the concrete provider ids that the
+key, model-list, and run RPCs address. Provider-scoped custom model IDs added
+from Settings live in `provider-settings.json`; they are merged into
+`ListModels` and resolved through the provider's existing API transport.
 
 The implemented agent slice is intentionally narrow: provider configuration,
 provider/model discovery, `createChat`, chat/session watches, `QueueCommand`

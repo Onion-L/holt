@@ -989,7 +989,7 @@ impl Shell {
                 let brand = if self.settings.sidebar_show_provider {
                     chat.config
                         .as_ref()
-                        .map(|c| crate::pickers::provider_brand_icon(&c.provider))
+                        .and_then(|c| crate::pickers::provider_brand_icon(&c.provider))
                 } else {
                     None
                 };

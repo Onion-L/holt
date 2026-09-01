@@ -30,13 +30,49 @@ impl From<&str> for ProviderId {
     }
 }
 
+/// A concrete provider under a [`Provider`] row: the unit every per-provider
+/// RPC (`SaveProviderKey`, `ListModels`, `AddProviderModel`, run requests)
+/// addresses by id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVariant {
+    pub id: ProviderId,
+    pub name: String,
+    pub configured: bool,
+}
+
+/// One provider-catalog row. Standalone providers carry a single variant that
+/// repeats the row `id`; organizations group sibling providers (`minimax` +
+/// `minimax-cn`) so the settings page shows one card per organization and the
+/// expanded panel picks a variant. The row `id` is the organization key —
+/// never a runnable provider by itself when `variants` is longer than one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {
     pub id: ProviderId,
     pub name: String,
     pub abbreviation: String,
+    /// True when any variant has a stored key.
     pub configured: bool,
+    pub variants: Vec<ProviderVariant>,
+}
+
+impl Provider {
+    /// Flatten the row into concrete per-variant descriptors — the shape the
+    /// composer and model picker operate on (`provider/model` addressing).
+    /// Flattened rows carry no further variants.
+    pub fn concrete_providers(&self) -> Vec<Provider> {
+        self.variants
+            .iter()
+            .map(|variant| Provider {
+                id: variant.id.clone(),
+                name: variant.name.clone(),
+                abbreviation: self.abbreviation.clone(),
+                configured: variant.configured,
+                variants: Vec::new(),
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -311,6 +311,11 @@ pub const EASE_TAILWIND: CubicBezier = CubicBezier::new(0.4, 0.0, 0.2, 1.0);
 /// CSS `transition-colors` default: 150ms over [`EASE_TAILWIND`] — the temporal
 /// blend every interactive hover wash rides in the original.
 pub const HOVER_FADE: MotionSpec = MotionSpec::new(150, EASE_TAILWIND);
+/// Compact toggle state change: quick enough for settings, with a soft stop.
+pub const TOGGLE: MotionSpec = MotionSpec::new(180, EASE_OUT_EXPO);
+/// Provider settings disclosure: calm reveal, quicker dismissal.
+pub const PROVIDER_EXPAND: MotionSpec = MotionSpec::new(220, EASE_OUT_EXPO);
+pub const PROVIDER_COLLAPSE: MotionSpec = MotionSpec::new(160, EASE);
 /// Holt loader pulse period: 2.4s.
 pub const HOLT_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.

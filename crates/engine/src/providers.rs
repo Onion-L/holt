@@ -1,21 +1,27 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, collections::HashSet, sync::Arc};
 
-use holt_proto::{Model as HoltModel, Provider as HoltProvider, ProviderId, ReasoningLevel};
+use holt_proto::{
+    Model as HoltModel, Provider as HoltProvider, ProviderId, ProviderVariant, ReasoningLevel,
+};
 use pi_core::ai::{
-    models::{CreateModelsOptions, Models},
+    models::{CreateModelsOptions, Models, Provider as CoreProvider},
     providers::builtin::{builtin_models, builtin_providers},
     types::Model as CoreModel,
 };
 
-use crate::credentials::HoltCredentialStore;
+use crate::{credentials::HoltCredentialStore, provider_settings::ProviderSettingsStore};
 
 pub struct ProviderAdapter {
     pub models: Arc<Models>,
     pub credentials: Arc<HoltCredentialStore>,
+    pub settings: Arc<ProviderSettingsStore>,
 }
 
 impl ProviderAdapter {
-    pub fn new(credentials: Arc<HoltCredentialStore>) -> Self {
+    pub fn new(
+        credentials: Arc<HoltCredentialStore>,
+        settings: Arc<ProviderSettingsStore>,
+    ) -> Self {
         let models = builtin_models(CreateModelsOptions {
             credentials: Some(credentials.clone()),
             ..Default::default()
@@ -23,9 +29,14 @@ impl ProviderAdapter {
         Self {
             models,
             credentials,
+            settings,
         }
     }
 
+    /// One catalog row per organization (single-provider rows included), in
+    /// first-seen builtin order. Sibling providers sharing an
+    /// `organization_id` collapse into one row whose `id` is the organization
+    /// key; each row's variants carry the concrete, RPC-addressable ids.
     pub async fn providers(&self) -> Vec<HoltProvider> {
         let configured: HashSet<String> = self
             .credentials
@@ -33,19 +44,47 @@ impl ProviderAdapter {
             .await
             .into_iter()
             .collect();
-        eligible_providers()
-            .into_iter()
-            .map(|provider| HoltProvider {
+        let mut rows: Vec<HoltProvider> = Vec::new();
+        let mut row_index: HashMap<String, usize> = HashMap::new();
+        for provider in eligible_providers() {
+            let variant = ProviderVariant {
                 id: ProviderId(provider.id().to_string()),
                 name: provider.name().to_string(),
-                abbreviation: abbreviation(provider.name(), provider.id()),
                 configured: configured.contains(provider.id()),
-            })
-            .collect()
+            };
+            let org_key = provider
+                .organization_id()
+                .unwrap_or_else(|| provider.id())
+                .to_string();
+            match row_index.get(&org_key) {
+                Some(&index) => {
+                    if variant.configured {
+                        rows[index].configured = true;
+                    }
+                    rows[index].variants.push(variant);
+                }
+                None => {
+                    row_index.insert(org_key.clone(), rows.len());
+                    rows.push(HoltProvider {
+                        id: ProviderId(org_key),
+                        name: provider.name().to_string(),
+                        abbreviation: abbreviation(provider.name(), provider.id()),
+                        configured: variant.configured,
+                        variants: vec![variant],
+                    });
+                }
+            }
+        }
+        rows
     }
 
     pub fn models_for(&self, provider_id: &str) -> Vec<HoltModel> {
-        project_models(self.models.get_models(Some(provider_id)))
+        let custom_ids: HashSet<String> = self
+            .settings
+            .custom_models_for(provider_id)
+            .into_iter()
+            .collect();
+        project_models(self.core_models_for(provider_id), &custom_ids)
     }
 
     pub fn resolve_model(
@@ -59,9 +98,14 @@ impl ProviderAdapter {
         if qualified_provider != provider_id {
             return Err("provider and model do not match".into());
         }
-        self.models
-            .get_model(provider_id, model_id)
+        self.core_models_for(provider_id)
+            .into_iter()
+            .find(|model| model.id == model_id)
             .ok_or_else(|| format!("unknown model: {qualified_id}"))
+    }
+
+    pub fn can_add_custom_model(&self, provider_id: &str) -> bool {
+        !self.models.get_models(Some(provider_id)).is_empty()
     }
 
     pub fn is_eligible(provider_id: &str) -> bool {
@@ -69,9 +113,29 @@ impl ProviderAdapter {
             .iter()
             .any(|provider| provider.id() == provider_id)
     }
+
+    fn core_models_for(&self, provider_id: &str) -> Vec<CoreModel> {
+        let mut models = self.models.get_models(Some(provider_id));
+        let Some(template) = models.first().cloned() else {
+            return models;
+        };
+        for custom_id in self.settings.custom_models_for(provider_id) {
+            if models.iter().any(|model| model.id == custom_id) {
+                continue;
+            }
+            let mut model = template.clone();
+            model.id = custom_id.clone();
+            model.name = custom_id;
+            model.reasoning = false;
+            model.thinking_level_map = None;
+            model.cost = Default::default();
+            models.push(model);
+        }
+        models
+    }
 }
 
-fn eligible_providers() -> Vec<Arc<dyn pi_core::ai::models::Provider>> {
+fn eligible_providers() -> Vec<Arc<dyn CoreProvider>> {
     builtin_providers()
         .into_iter()
         .filter(|provider| provider.auth().api_key.is_some())
@@ -109,8 +173,8 @@ fn abbreviation(name: &str, id: &str) -> String {
         .collect()
 }
 
-fn project_models(mut models: Vec<CoreModel>) -> Vec<HoltModel> {
-    models.retain(|model| !dated_snapshot(&model.id));
+fn project_models(mut models: Vec<CoreModel>, custom_ids: &HashSet<String>) -> Vec<HoltModel> {
+    models.retain(|model| custom_ids.contains(&model.id) || !dated_snapshot(&model.id));
     models.sort_by_key(|model| (model.id.ends_with("-latest"), model.id.clone()));
 
     let mut seen_names = HashSet::new();

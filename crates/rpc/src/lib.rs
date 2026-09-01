@@ -32,6 +32,7 @@ pub mod methods {
     pub const SAVE_PROVIDER_KEY: &str = "SaveProviderKey";
     pub const REVEAL_PROVIDER_KEY: &str = "RevealProviderKey";
     pub const REMOVE_PROVIDER_KEY: &str = "RemoveProviderKey";
+    pub const ADD_PROVIDER_MODEL: &str = "AddProviderModel";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";

@@ -5,7 +5,10 @@
 
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
 
-use crate::theme::{Theme, ink};
+use crate::{
+    motion::{self, AnimationExt as _},
+    theme::{Theme, ink},
+};
 
 /// Shared typography for a settings component's title and description. The
 /// Shortcuts page established this compact rhythm; list-style settings reuse
@@ -241,6 +244,47 @@ pub fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
                 .rounded_full()
                 .bg(if on { theme.on_solid } else { ink(0.7) }),
         )
+}
+
+/// Toggle switch transitioning between two committed states. The outer hit
+/// target keeps fixed geometry, so the animation never moves surrounding rows.
+pub fn animated_toggle_switch(
+    theme: &Theme,
+    on: bool,
+    animation_key: impl Into<SharedString>,
+) -> gpui::Div {
+    let animation_key = animation_key.into();
+    let from_x = if on { 2.0 } else { 16.0 };
+    let to_x = if on { 16.0 } else { 2.0 };
+    let from_track = if on { ink(0.15) } else { theme.text };
+    let to_track = if on { theme.text } else { ink(0.15) };
+    let from_knob = if on { ink(0.7) } else { theme.on_solid };
+    let to_knob = if on { theme.on_solid } else { ink(0.7) };
+    let knob = div()
+        .absolute()
+        .top(px(2.0))
+        .size(px(14.0))
+        .rounded_full()
+        .with_animation(
+            SharedString::from(format!("{animation_key}-knob")),
+            motion::TOGGLE.animation(),
+            move |knob, progress| {
+                knob.left(px(motion::lerp(from_x, to_x, progress)))
+                    .bg(motion::mix(from_knob, to_knob, progress))
+            },
+        );
+    let track = div()
+        .w(px(32.0))
+        .h(px(18.0))
+        .rounded_full()
+        .relative()
+        .child(knob)
+        .with_animation(
+            SharedString::from(format!("{animation_key}-track")),
+            motion::TOGGLE.animation(),
+            move |track, progress| track.bg(motion::mix(from_track, to_track, progress)),
+        );
+    div().flex_none().w(px(32.0)).h(px(18.0)).child(track)
 }
 
 /// A small quiet ghost action (`rounded-lg px-2.5 py-1.5 text-[12px]

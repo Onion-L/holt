@@ -3164,7 +3164,9 @@ impl Shell {
                     .items_center()
                     .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
                     .when_some(
-                        provider.as_ref().map(crate::pickers::provider_brand_icon),
+                        provider
+                            .as_ref()
+                            .and_then(crate::pickers::provider_brand_icon),
                         |el, (path, tint)| {
                             el.child(
                                 icon(path)

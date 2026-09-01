@@ -50,10 +50,12 @@ use tokio_util::sync::CancellationToken;
 
 pub mod credentials;
 pub mod instance_lock;
+pub mod provider_settings;
 pub mod providers;
 
 use credentials::HoltCredentialStore;
 pub use instance_lock::InstanceLock;
+use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 
 #[derive(Debug, thiserror::Error)]
@@ -194,7 +196,8 @@ impl StubEngine {
             load_chats(&config.data_dir)?,
         ));
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
-        let providers = Arc::new(ProviderAdapter::new(credentials));
+        let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
+        let providers = Arc::new(ProviderAdapter::new(credentials, provider_settings));
         Ok(Self {
             engine_info: EngineInfo {
                 device_id,
@@ -1001,6 +1004,29 @@ impl RpcService for StubEngine {
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::ADD_PROVIDER_MODEL => {
+                let provider = required_string(&params, "providerId")?;
+                let submitted = required_string(&params, "modelId")?.trim();
+                let qualified_prefix = format!("{provider}/");
+                let model = submitted
+                    .strip_prefix(&qualified_prefix)
+                    .unwrap_or(submitted);
+                if !ProviderAdapter::is_eligible(provider) {
+                    return Err(RpcError::BadParams(
+                        "unknown or unsupported provider".into(),
+                    ));
+                }
+                if !self.providers.can_add_custom_model(provider) {
+                    return Err(RpcError::BadParams(
+                        "provider has no model template for custom IDs".into(),
+                    ));
+                }
+                self.providers
+                    .settings
+                    .add_custom_model(provider, model)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::LIST_MODELS => {
                 let provider = required_string(&params, "providerId")?;
                 RpcReply::value(&self.providers.models_for(provider))
@@ -1227,10 +1253,63 @@ mod tests {
     fn provider_catalog_uses_provider_qualified_model_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(HoltCredentialStore::load(dir.path()).unwrap());
-        let models = ProviderAdapter::new(store).models_for("openai");
+        let settings = Arc::new(ProviderSettingsStore::load(dir.path()).unwrap());
+        let models = ProviderAdapter::new(store, settings).models_for("openai");
         assert!(!models.is_empty());
         assert!(models.iter().all(|model| model.id.contains('/')));
         assert!(models.iter().any(|model| model.id == "openai/gpt-5.4"));
+    }
+
+    #[tokio::test]
+    async fn custom_provider_model_is_listed_resolved_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().into(),
+        };
+        let engine = StubEngine::assemble(&config).unwrap();
+        engine
+            .handle(
+                methods::ADD_PROVIDER_MODEL,
+                serde_json::json!({
+                    "providerId": "openai",
+                    "modelId": "openai/gpt-private-2026-09-01"
+                }),
+            )
+            .await
+            .unwrap();
+
+        let custom_id = "openai/gpt-private-2026-09-01";
+        let RpcReply::Value(models) = engine
+            .handle(
+                methods::LIST_MODELS,
+                serde_json::json!({"providerId": "openai"}),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert!(models.as_array().unwrap().iter().any(|model| {
+            model["id"] == custom_id && model["label"] == "gpt-private-2026-09-01"
+        }));
+        assert_eq!(
+            engine
+                .providers
+                .resolve_model("openai", custom_id)
+                .unwrap()
+                .id,
+            "gpt-private-2026-09-01"
+        );
+        drop(engine);
+
+        let restored = StubEngine::assemble(&config).unwrap();
+        assert!(
+            restored
+                .providers
+                .models_for("openai")
+                .iter()
+                .any(|model| model.id == custom_id)
+        );
     }
 
     #[tokio::test]
@@ -1318,6 +1397,132 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|provider| provider["id"] == "openai" && provider["configured"] == false)
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_groups_variants_by_organization() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = StubEngine::assemble(&EngineConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        engine
+            .handle(
+                methods::SAVE_PROVIDER_KEY,
+                serde_json::json!({"providerId": "minimax-cn", "key": "secret"}),
+            )
+            .await
+            .unwrap();
+
+        let RpcReply::Value(providers) = engine
+            .handle(methods::LIST_PROVIDERS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert!(
+            !providers.to_string().contains("secret"),
+            "catalog leaks credentials"
+        );
+        let providers = providers.as_array().unwrap();
+        let minimax = providers
+            .iter()
+            .find(|row| row["id"] == "minimax")
+            .expect("minimax organization row missing");
+        assert_eq!(minimax["configured"], true);
+        let variants: Vec<&str> = minimax["variants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|variant| variant["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(variants, ["minimax", "minimax-cn"]);
+        assert!(
+            minimax["variants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variant| variant["id"] == "minimax-cn" && variant["configured"] == true)
+        );
+        assert!(
+            minimax["variants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variant| variant["id"] == "minimax" && variant["configured"] == false)
+        );
+    }
+
+    #[tokio::test]
+    async fn run_against_unconfigured_variant_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().into(),
+        };
+        let engine = StubEngine::assemble(&config).unwrap();
+        engine
+            .handle(
+                methods::SAVE_PROVIDER_KEY,
+                serde_json::json!({"providerId": "minimax-cn", "key": "secret"}),
+            )
+            .await
+            .unwrap();
+
+        let run = |provider: &'static str| {
+            serde_json::json!({
+                "chatId": "chat-1",
+                "command": {
+                    "kind": "run",
+                    "messageId": "message-1",
+                    "request": {
+                        "prompt": "hello",
+                        "provider": provider,
+                        "model": format!("{provider}/MiniMax-M2"),
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": dir.path(),
+                        "sandbox": "workspace-write"
+                    }
+                }
+            })
+        };
+        // Sibling variant configured; the international one has no key.
+        let error = match engine.handle(methods::QUEUE_COMMAND, run("minimax")).await {
+            Err(error) => error,
+            Ok(_) => panic!("unconfigured variant accepted a run"),
+        };
+        assert!(error.to_string().contains("not configured"));
+
+        engine
+            .handle(
+                methods::SAVE_PROVIDER_KEY,
+                serde_json::json!({"providerId": "minimax", "key": "secret-2"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .providers
+                .credentials
+                .reveal_key("minimax")
+                .await
+                .as_deref(),
+            Some("secret-2")
+        );
+        drop(engine);
+
+        // Keys are per-variant and survive restart.
+        let restored = StubEngine::assemble(&config).unwrap();
+        assert_eq!(
+            restored
+                .providers
+                .credentials
+                .reveal_key("minimax-cn")
+                .await
+                .as_deref(),
+            Some("secret")
         );
     }
 

@@ -30,6 +30,7 @@ use holt_rpc::methods;
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
 /// pagination plumbing).
 const MAX_REF_ROWS: usize = 300;
+const PROVIDER_TOOLTIP_DELAY: Duration = Duration::from_secs(1);
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
@@ -67,6 +68,27 @@ impl gpui::Global for ProviderCatalogChanged {}
 /// re-fetch from the engine (the source of truth).
 pub fn bump_provider_catalog(cx: &mut App) {
     cx.default_global::<ProviderCatalogChanged>();
+}
+
+struct ProviderNameTooltip {
+    name: SharedString,
+}
+
+impl Render for ProviderNameTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .shadow_md()
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text)
+            .child(self.name.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -661,8 +683,8 @@ impl Pickers {
             return Some(config.provider.clone());
         }
         // New-chat canvas: the remembered last-used provider (sticky defaults),
-        // when the loaded catalog still offers it (it may have been disabled
-        // in Settings → Providers since).
+        // when the loaded catalog still offers it (its key may have been
+        // removed in Settings → Providers since).
         if let Some(provider) = self.defaults.provider.as_ref() {
             let provider_id = ProviderId(provider.clone());
             let offered = match self.providers.ready() {
@@ -766,9 +788,9 @@ impl Pickers {
         let Some(selected) = self.effective_provider(cx) else {
             return false;
         };
-        providers
+        offered_providers(providers)
             .iter()
-            .any(|provider| provider.id == selected && provider.configured)
+            .any(|provider| provider.id == selected)
             && self.resolved(cx).model.is_some()
     }
 
@@ -1416,7 +1438,10 @@ impl Pickers {
         let mut descriptors = offered_providers(list);
         if let Some(effective) = self.effective_provider(cx)
             && !descriptors.iter().any(|d| d.id == effective)
-            && let Some(descriptor) = list.iter().find(|d| d.id == effective)
+            && let Some(descriptor) = list
+                .iter()
+                .flat_map(|row| row.concrete_providers())
+                .find(|d| d.id == effective)
         {
             descriptors.insert(0, descriptor.clone());
         }
@@ -2702,9 +2727,9 @@ impl Pickers {
         let searching = !query.is_empty();
         let descriptors = self.rail_descriptors(cx);
         // No-agents empty state: the catalog loaded but offers nothing
-        // runnable (every enabled provider is missing its CLI, or nothing is
-        // enabled) and there's no committed chat provider to force-include —
-        // guidance instead of an empty tab row.
+        // runnable (no provider has a key configured) and there's no
+        // committed chat provider to force-include — guidance instead of an
+        // empty tab row.
         if descriptors.is_empty() {
             return div()
                 .p(px(16.0))
@@ -2736,7 +2761,7 @@ impl Pickers {
         }
         let rows = self.model_rows(cx);
 
-        // ── tabs: one abbreviation per configured provider —
+        // ── tabs: one brand mark per configured provider —
         //    ACROSS THE TOP (user request; was a left rail). The
         //    viewed tab wears a 2px accent bar sitting on the row's bottom
         //    hairline. Tabs never hide: a live search only filters the
@@ -2756,6 +2781,26 @@ impl Pickers {
             let is_viewed = effective.as_ref() == Some(&provider);
             let is_disabled = locked && !is_viewed;
             let abbreviation = descriptor.abbreviation.clone();
+            let provider_name: SharedString = descriptor.name.clone().into();
+            let brand_mark: AnyElement = match provider_brand_icon(&provider) {
+                Some((path, tint)) => crate::icons::icon(path)
+                    .size(px(18.0))
+                    .text_color(tint.unwrap_or(if is_viewed {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    }))
+                    .into_any_element(),
+                None => div()
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(if is_viewed {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    })
+                    .child(SharedString::from(abbreviation))
+                    .into_any_element(),
+            };
             let picked_provider = provider.clone();
             tabs = tabs.child(
                 div()
@@ -2777,16 +2822,14 @@ impl Pickers {
                         this.pick_provider(picked_provider.clone(), cx);
                         cx.notify();
                     }))
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(10.0))
-                            .text_color(if is_viewed {
-                                theme.text
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(SharedString::from(abbreviation)),
-                    )
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| ProviderNameTooltip {
+                            name: provider_name.clone(),
+                        })
+                        .into()
+                    })
+                    .tooltip_show_delay(PROVIDER_TOOLTIP_DELAY)
+                    .child(brand_mark)
                     .when(is_viewed, |el| el.child(tab_indicator(theme.accent))),
             );
         }
@@ -2953,7 +2996,8 @@ impl Pickers {
         let is_selected = Some(row.provider.clone()) == effective
             && self.selected_model(cx).map(|m| m.id.as_str()) == Some(row.model.id.as_str());
         let is_active = ix == self.active;
-        let (icon_path, tint) = provider_brand_icon(&row.provider);
+        let (icon_path, tint) =
+            provider_brand_icon(&row.provider).unwrap_or((crate::icons::BOT, None));
         let label: SharedString = row.model.label.clone().into();
         let provider_name = row.provider_name.clone();
         // Provider attribution (field report: several connected opencode
@@ -3376,19 +3420,85 @@ pub(crate) fn normalize_model_rows(models: Vec<Model>) -> Vec<Model> {
         .collect()
 }
 
-pub(crate) fn provider_brand_icon(provider: &ProviderId) -> (&'static str, Option<gpui::Hsla>) {
-    let _ = provider;
-    (crate::icons::BOT, None)
+pub(crate) fn provider_brand_icon(
+    provider: &ProviderId,
+) -> Option<(&'static str, Option<gpui::Hsla>)> {
+    provider_brand_icon_for(provider, crate::theme::current_appearance()).map(|path| (path, None))
 }
 
-pub fn visible_providers(list: &[Provider]) -> Vec<Provider> {
-    list.to_vec()
+fn provider_brand_icon_for(
+    provider: &ProviderId,
+    appearance: crate::theme::Appearance,
+) -> Option<&'static str> {
+    use crate::icons;
+
+    let dark = appearance.is_dark();
+    Some(match provider.as_str() {
+        "ant-ling" => icons::PROVIDER_ANT_LING,
+        "anthropic" => {
+            if dark {
+                icons::PROVIDER_ANTHROPIC_DARK
+            } else {
+                icons::PROVIDER_ANTHROPIC_LIGHT
+            }
+        }
+        "baseten" => icons::PROVIDER_BASETEN,
+        "cerebras" => icons::PROVIDER_CEREBRAS,
+        "deepseek" => icons::PROVIDER_DEEPSEEK,
+        "fireworks" => icons::PROVIDER_FIREWORKS,
+        "github-copilot" => icons::PROVIDER_GITHUB_COPILOT,
+        "google" => icons::PROVIDER_GOOGLE,
+        "groq" => icons::PROVIDER_GROQ,
+        "huggingface" => icons::PROVIDER_HUGGINGFACE,
+        "kimi-coding" | "moonshot-kimi" => icons::PROVIDER_KIMI_CODING,
+        "minimax" | "minimax-cn" => {
+            if dark {
+                icons::PROVIDER_MINIMAX_DARK
+            } else {
+                icons::PROVIDER_MINIMAX_LIGHT
+            }
+        }
+        "mistral" => icons::PROVIDER_MISTRAL,
+        "moonshot" | "moonshotai" | "moonshotai-cn" => icons::PROVIDER_MOONSHOTAI,
+        "nvidia" => icons::PROVIDER_NVIDIA,
+        "openai" => {
+            if dark {
+                // This supplied variant is the white mark for dark surfaces.
+                icons::PROVIDER_OPENAI_LIGHT
+            } else {
+                icons::PROVIDER_OPENAI
+            }
+        }
+        "opencode" | "opencode-go" => {
+            if dark {
+                icons::PROVIDER_OPENCODE_DARK
+            } else {
+                icons::PROVIDER_OPENCODE_LIGHT
+            }
+        }
+        "openrouter" => icons::PROVIDER_OPENROUTER,
+        "qwen" | "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual" => {
+            icons::PROVIDER_QWEN
+        }
+        "together" => icons::PROVIDER_TOGETHER,
+        "vercel-ai-gateway" => icons::PROVIDER_VERCEL_AI_GATEWAY,
+        "xai" => icons::PROVIDER_XAI,
+        "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" => {
+            icons::PROVIDER_XIAOMI
+        }
+        "zai" | "zai-coding-cn" => icons::PROVIDER_ZAI,
+        _ => return None,
+    })
 }
 
-/// Providers available to the composer are the configured catalog entries.
+/// Providers available to the composer: every configured variant, flattened
+/// from organization rows back into concrete providers. The picker keeps
+/// `provider/model` addressing — organization grouping lives on the settings
+/// page, so a configured `minimax-cn` is offered even when its `minimax`
+/// sibling has no key.
 pub fn offered_providers(list: &[Provider]) -> Vec<Provider> {
-    visible_providers(list)
-        .into_iter()
+    list.iter()
+        .flat_map(|row| row.concrete_providers())
         .filter(|provider| provider.configured)
         .collect()
 }
@@ -3517,7 +3627,7 @@ impl Render for Pickers {
         let chip_label_loading =
             !no_providers && model_label.is_empty() && (catalog_loading || models_loading);
         let provider_icon: (&'static str, Option<gpui::Hsla>) = match self.effective_provider(cx) {
-            Some(provider) => provider_brand_icon(&provider),
+            Some(provider) => provider_brand_icon(&provider).unwrap_or((crate::icons::BOT, None)),
             None if no_providers => (crate::icons::TERMINAL, Some(theme.text_muted)),
             None => (crate::icons::BOT, Some(theme.text_muted)),
         };
@@ -3621,6 +3731,77 @@ impl Render for Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holt_proto::ProviderVariant;
+
+    #[test]
+    fn every_eligible_provider_has_a_brand_icon() {
+        let ids = [
+            "ant-ling",
+            "anthropic",
+            "baseten",
+            "cerebras",
+            "deepseek",
+            "fireworks",
+            "github-copilot",
+            "google",
+            "groq",
+            "huggingface",
+            "kimi-coding",
+            "minimax",
+            "minimax-cn",
+            "mistral",
+            "moonshotai",
+            "moonshotai-cn",
+            "nvidia",
+            "opencode",
+            "opencode-go",
+            "openai",
+            "openrouter",
+            "qwen-token-plan",
+            "qwen-token-plan-cn",
+            "qwen-token-plan-individual",
+            "together",
+            "vercel-ai-gateway",
+            "xai",
+            "xiaomi",
+            "xiaomi-token-plan-ams",
+            "xiaomi-token-plan-cn",
+            "xiaomi-token-plan-sgp",
+            "zai",
+            "zai-coding-cn",
+        ];
+        for id in ids {
+            let provider = ProviderId(id.into());
+            assert!(
+                provider_brand_icon_for(&provider, crate::theme::Appearance::Light).is_some(),
+                "missing light icon for {id}"
+            );
+            assert!(
+                provider_brand_icon_for(&provider, crate::theme::Appearance::Dark).is_some(),
+                "missing dark icon for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn themed_provider_icons_select_the_matching_variant() {
+        let anthropic = ProviderId("anthropic".into());
+        assert_eq!(
+            provider_brand_icon_for(&anthropic, crate::theme::Appearance::Light),
+            Some(crate::icons::PROVIDER_ANTHROPIC_LIGHT)
+        );
+        assert_eq!(
+            provider_brand_icon_for(&anthropic, crate::theme::Appearance::Dark),
+            Some(crate::icons::PROVIDER_ANTHROPIC_DARK)
+        );
+        assert!(
+            provider_brand_icon_for(
+                &ProviderId("future-provider".into()),
+                crate::theme::Appearance::Dark
+            )
+            .is_none()
+        );
+    }
 
     #[test]
     fn reasoning_defaults_to_high_when_supported() {
@@ -3632,24 +3813,32 @@ mod tests {
     }
 
     #[test]
-    fn configured_providers_only_are_offered() {
+    fn only_configured_variants_are_offered() {
+        let variant = |id: &str, configured: bool| ProviderVariant {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            configured,
+        };
+        let row = |id: &str, variants: Vec<ProviderVariant>| Provider {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            abbreviation: id[..2].to_ascii_uppercase(),
+            configured: variants.iter().any(|v| v.configured),
+            variants,
+        };
         let providers = vec![
-            Provider {
-                id: "openai".into(),
-                name: "OpenAI".into(),
-                abbreviation: "OA".into(),
-                configured: true,
-            },
-            Provider {
-                id: "anthropic".into(),
-                name: "Anthropic".into(),
-                abbreviation: "AN".into(),
-                configured: false,
-            },
+            row("openai", vec![variant("openai", true)]),
+            row("anthropic", vec![variant("anthropic", false)]),
+            row(
+                "minimax",
+                vec![variant("minimax", false), variant("minimax-cn", true)],
+            ),
         ];
         let offered = offered_providers(&providers);
-        assert_eq!(offered.len(), 1);
-        assert_eq!(offered[0].id.as_str(), "openai");
+        let ids: Vec<&str> = offered.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["openai", "minimax-cn"]);
+        // The flattened row keeps the variant's own display name.
+        assert_eq!(offered[1].name, "minimax-cn");
     }
 
     #[test]
