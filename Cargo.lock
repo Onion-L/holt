@@ -2864,6 +2864,7 @@ name = "holt-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "holt-proto",
  "holt-rpc",
@@ -2872,6 +2873,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
  "uuid",
 ]
 

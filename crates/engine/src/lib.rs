@@ -12,12 +12,18 @@
 //! - [`InstanceLock`] — single-instance guard on the data dir.
 //! - [`registry`] — the harness-descriptor types the settings/picker UI reads.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::RwLock,
+};
 
 use async_trait::async_trait;
-use holt_proto::{AuthState, Device, DriveEntry, DriveListing, FolderEntry, FolderListing};
+use chrono::Utc;
+use holt_proto::{AuthState, Device, DriveEntry, DriveListing, FolderEntry, FolderListing, Space};
 pub use holt_proto::{EngineInfo, HarnessId, WorkspaceScope};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
+use serde::Deserialize;
+use tokio::sync::watch;
 
 pub mod instance_lock;
 pub mod registry;
@@ -45,6 +51,9 @@ pub struct EngineConfig {
 /// shell boots: no chats, no spaces, no devices, no harnesses.
 pub struct StubEngine {
     engine_info: EngineInfo,
+    data_dir: PathBuf,
+    spaces: RwLock<Vec<Space>>,
+    spaces_tx: watch::Sender<serde_json::Value>,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -56,11 +65,18 @@ impl StubEngine {
         std::fs::create_dir_all(&config.data_dir)?;
         let lock = InstanceLock::acquire(&config.data_dir)?;
         let device_id = load_or_create_device_id(&config.data_dir)?;
+        let spaces = load_spaces(&config.data_dir)?;
+        let spaces_value =
+            serde_json::to_value(&spaces).map_err(|error| EngineError::Other(error.to_string()))?;
+        let (spaces_tx, _) = watch::channel(spaces_value);
         Ok(Self {
             engine_info: EngineInfo {
                 device_id,
                 workspace_scope: WorkspaceScope::Local,
             },
+            data_dir: config.data_dir.clone(),
+            spaces: RwLock::new(spaces),
+            spaces_tx,
             _instance_lock: lock,
         })
     }
@@ -68,6 +84,96 @@ impl StubEngine {
     pub fn engine_info(&self) -> &EngineInfo {
         &self.engine_info
     }
+
+    fn watch_spaces(&self) -> RpcReply {
+        let receiver = self.spaces_tx.subscribe();
+        let stream =
+            futures::stream::unfold((receiver, true), |(mut receiver, first)| async move {
+                if !first && receiver.changed().await.is_err() {
+                    return None;
+                }
+                let value = receiver.borrow().clone();
+                Some((value, (receiver, false)))
+            });
+        RpcReply::Stream(Box::pin(stream))
+    }
+
+    fn create_space(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: CreateSpaceParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.space_id.trim().is_empty()
+            || params.device_id.trim().is_empty()
+            || params.path.trim().is_empty()
+        {
+            return Err(RpcError::BadParams(
+                "spaceId, deviceId, and path must not be empty".into(),
+            ));
+        }
+
+        let mut spaces = self
+            .spaces
+            .write()
+            .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+        if spaces.iter().any(|space| {
+            space.id == params.space_id
+                || (space.device_id == params.device_id && space.path == params.path)
+        }) {
+            return RpcReply::value(&serde_json::json!({}));
+        }
+        spaces.push(Space {
+            id: params.space_id,
+            device_id: params.device_id,
+            path: params.path,
+            name: None,
+            git_detected: params.git_detected,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: Utc::now(),
+        });
+        persist_spaces(&self.data_dir, &spaces).map_err(|error| {
+            spaces.pop();
+            RpcError::Failed(error.to_string())
+        })?;
+        let value =
+            serde_json::to_value(&*spaces).map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.spaces_tx.send_replace(value);
+        RpcReply::value(&serde_json::json!({}))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSpaceParams {
+    space_id: String,
+    device_id: String,
+    path: String,
+    #[serde(default)]
+    git_detected: bool,
+}
+
+fn spaces_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("spaces.json")
+}
+
+fn load_spaces(data_dir: &Path) -> Result<Vec<Space>, EngineError> {
+    let path = spaces_path(data_dir);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+            EngineError::Other(format!("could not read {}: {error}", path.display()))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn persist_spaces(data_dir: &Path, spaces: &[Space]) -> Result<(), EngineError> {
+    let path = spaces_path(data_dir);
+    let temp_path = data_dir.join("spaces.json.tmp");
+    let bytes =
+        serde_json::to_vec_pretty(spaces).map_err(|error| EngineError::Other(error.to_string()))?;
+    std::fs::write(&temp_path, bytes)?;
+    std::fs::rename(temp_path, path)?;
+    Ok(())
 }
 
 /// A watch stream that emits `value` once, then stays open (never changes).
@@ -245,10 +351,10 @@ impl RpcService for StubEngine {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 Ok(static_watch(value))
             }
-            methods::WATCH_CHATS
-            | methods::WATCH_SPACES
-            | methods::WATCH_SESSIONS
-            | methods::WATCH_TRANSFERS => Ok(static_watch(serde_json::json!([]))),
+            methods::WATCH_CHATS | methods::WATCH_SESSIONS | methods::WATCH_TRANSFERS => {
+                Ok(static_watch(serde_json::json!([])))
+            }
+            methods::WATCH_SPACES => Ok(self.watch_spaces()),
             methods::WATCH_CONNECTIVITY => {
                 // Default = state Disabled ("no edge transports on this
                 // profile — hide the pill"), no chat rooms.
@@ -270,6 +376,12 @@ impl RpcService for StubEngine {
 
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),
+
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("createSpace") =>
+            {
+                self.create_space(params)
+            }
 
             // Everything the stub has no data for — mutations, terminals,
             // repos, uploads — reports as an unknown method: that is the
@@ -369,5 +481,57 @@ mod tests {
             !drives.drives.iter().any(|d| d.path != "/"
                 && std::fs::canonicalize(&d.path).is_ok_and(|p| p == Path::new("/")))
         );
+    }
+
+    #[tokio::test]
+    async fn create_space_updates_watch_and_survives_restart() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let engine = StubEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "createSpace",
+                    "spaceId": "space-1",
+                    "deviceId": engine.engine_info().device_id,
+                    "path": "/tmp/project",
+                    "gitDetected": true,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let update = spaces.next().await.unwrap();
+        assert_eq!(update.as_array().unwrap().len(), 1);
+        assert_eq!(update[0]["id"], "space-1");
+        assert_eq!(update[0]["path"], "/tmp/project");
+        drop(spaces);
+        drop(engine);
+
+        let engine = StubEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        let restored = spaces.next().await.unwrap();
+        assert_eq!(restored.as_array().unwrap().len(), 1);
+        assert_eq!(restored[0]["id"], "space-1");
     }
 }
