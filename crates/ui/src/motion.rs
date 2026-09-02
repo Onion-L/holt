@@ -320,6 +320,10 @@ pub const PROVIDER_COLLAPSE: MotionSpec = MotionSpec::new(160, EASE);
 pub const HOLT_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
 pub const GRADIENT_SPIN: MotionSpec = MotionSpec::new(750, EASE);
+/// Three-dot pulse period: 1.2s — the wave crosses dot→dot in 400ms
+/// (stagger 1/3), calm enough to read as "working", quick enough that a
+/// 2px dot still shows life.
+pub const DOT_PULSE: MotionSpec = MotionSpec::new(1200, EASE);
 
 // ---------------------------------------------------------------------------
 // Element helpers (paint-layer entrances/exits)
@@ -767,6 +771,7 @@ mod tests {
         assert_eq!(CHEVRON.duration_ms, 200);
         assert_eq!(HOLT_PULSE.duration_ms, 2400);
         assert_eq!(GRADIENT_SPIN.duration_ms, 750);
+        assert_eq!(DOT_PULSE.duration_ms, 1200);
         assert_eq!(EASE_OUT_EXPO, CubicBezier::new(0.16, 1.0, 0.3, 1.0));
     }
 

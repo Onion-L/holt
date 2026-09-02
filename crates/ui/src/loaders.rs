@@ -1,20 +1,20 @@
-//! Loaders: the holt pulse loader, the gradient matrix spinner, and the boot
+//! Loaders: the holt pulse loader, the three-dot pulse spinners, and the boot
 //! splash content. All motion routes through `crate::motion` pure helpers, so
 //! the math is unit-tested and these elements are testable-by-compile.
 //!
-//! Rendering pattern: each cell is its own `with_animation` repeating element
-//! sharing one period; per-cell offsets come from [`motion::staggered_phase`],
-//! so all cells stay phase-locked (they start on the same frame) without a
-//! shared clock. Cells animate inside fixed-size slots — opacity and inner size
+//! Rendering pattern: each cell is its own repeating element sharing one
+//! period; per-cell offsets come from [`motion::staggered_phase`], so all
+//! cells stay phase-locked (they start on the same frame) without a shared
+//! clock. Cells animate inside fixed-size slots — opacity and inner size
 //! are paint-local and never move surrounding layout. Reduced motion snaps every
 //! cell to its rest state automatically (gpui `reduce_motion`).
 
 use gpui::{
-    AnyElement, App, EntityId, IntoElement, ParentElement, PathBuilder, SharedString, Styled,
+    AnyElement, App, Div, EntityId, IntoElement, ParentElement, PathBuilder, SharedString, Styled,
     canvas, div, point, px,
 };
 
-use crate::motion::{self, GRADIENT_SPIN, HOLT_PULSE, PULSE_STAGGER, SPLASH_OUT};
+use crate::motion::{self, DOT_PULSE, HOLT_PULSE, PULSE_STAGGER, SPLASH_OUT};
 use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`holt_proto::motion`) so both animate the
@@ -103,51 +103,29 @@ pub fn holt_loader(
         }))
 }
 
-pub use holt_proto::motion::{GSPIN_DIM, GSPIN_ROW_TINTS};
+pub use holt_proto::motion::GSPIN_DIM;
 
-/// The gradient matrix spinner (WorkingIndicator), ported from holt's
-/// gradient-spin.tsx: a 3×3 grid of round cells tinted per row from the
-/// sunrise gradient. Each cell pulses opacity once per 750ms period; the
-/// per-cell phase follows the "arrow-up" pattern (the pulse enters at the
-/// bottom edge and converges toward the top-center cell), so the wave reads
-/// as travelling upward.
+/// The working indicator (the old 3×3 gradient matrix, flattened): three dots
+/// in a row riding one pulse wave left→right, one accent step each — the
+/// theme's [`GlyphPalette`] (light→mid→deep), so the indicator follows the
+/// user's accent instead of the old hardcoded sunrise brand tints. Dots rest
+/// dim ([`GSPIN_DIM`]) inside fixed-size slots, so the row never shifts
+/// layout. `cell_px` keeps the old matrix-cell meaning; dots run 1.75× so the
+/// slimmed row keeps a similar visual mass at the call sites.
 pub fn gradient_spinner(
     _id: &'static str,
-    _theme: &Theme,
+    theme: &Theme,
     cell_px: f32,
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
-    let center = (MATRIX_SIDE as f32 - 1.0) / 2.0;
-    let max = MATRIX_SIDE as f32 - 1.0 + center;
-    let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(cell_px / 2.0))
-        .children((0..MATRIX_SIDE).map(move |row| {
-            let tint: gpui::Hsla = gpui::rgb(GSPIN_ROW_TINTS[row]).into();
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(cell_px / 2.0))
-                .children((0..MATRIX_SIDE).map(move |col| {
-                    // Distance of this cell from the wave origin, normalized
-                    // into a phase offset (gradient-spin's `--gspin-phase`).
-                    let d = MATRIX_SIDE as f32 - 1.0 - row as f32 + (col as f32 - center).abs();
-                    let phase = if max == 0.0 { 0.0 } else { d / (max + 1.0) };
-                    div()
-                        .size(px(cell_px))
-                        .rounded(px(cell_px / 2.0))
-                        .bg(tint)
-                        .opacity(motion::gspin_opacity(delta + phase, GSPIN_DIM))
-                }))
-        }))
+    let delta = motion::pulse_delta(&DOT_PULSE, view, cx);
+    three_dot_pulse(delta, cell_px * 1.75, theme.glyph.rows())
 }
 
-/// A 2×3 activity glyph sized for compact status slots. Its color is an
-/// explicit accent-preset role supplied by the caller, while brightness snakes
-/// around the grid's perimeter as a tiny radial chase.
+/// Three-pulse activity dots sized for compact status slots. Its color is an
+/// explicit accent-preset role supplied by the caller, tinting the dots as the
+/// wave sweeps left→right.
 pub fn mini_glyph_spinner(
     key: impl Into<SharedString>,
     cell_px: f32,
@@ -159,7 +137,7 @@ pub fn mini_glyph_spinner(
 }
 
 /// Grayscale variant for surfaces where an accent would pull focus (the
-/// sidebar connection line): same grid, snake, and timing, color left to the
+/// sidebar connection line): same dots, wave, and timing, color left to the
 /// caller.
 pub fn mini_mono_spinner(
     key: impl Into<SharedString>,
@@ -178,32 +156,42 @@ fn mini_spinner_tinted(
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
-    const COLS: usize = 2;
-    const ROWS: usize = 3;
-    /// Clockwise ring position of each `(row, col)` cell, top-left first:
-    /// (0,0) → (0,1) → (1,1) → (2,1) → (2,0) → (1,0).
-    const RING: [[usize; COLS]; ROWS] = [[0, 1], [5, 2], [4, 3]];
-    const RING_LEN: f32 = (COLS * ROWS) as f32;
     let _key = key.into();
-    let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
+    let delta = motion::pulse_delta(&DOT_PULSE, view, cx);
+    // Compact slots: dots 1.5× the old cell unit so the wave still reads at
+    // 2px-scale call sites.
+    three_dot_pulse(delta, cell_px * 1.5, row_tints)
+}
+
+/// The shared three-dot pulse paint: round dots in a row, each breathing
+/// opacity [`GSPIN_DIM`]→1 and scale 0.9→1 inside a FIXED-size slot, staggered
+/// a third of the period so the crest hands off dot to dot. Reduce motion pins
+/// [`motion::pulse_delta`] at phase 0 — three quiet dim dots, nothing
+/// scheduled.
+fn three_dot_pulse(delta: f32, dot_px: f32, tints: [gpui::Hsla; 3]) -> Div {
+    /// Dot stagger as a fraction of the period: the wave crosses dot→dot in
+    /// 400ms of the 1.2s [`DOT_PULSE`].
+    const DOT_STAGGER: f32 = 1.0 / 3.0;
     div()
         .flex()
-        .flex_col()
-        .gap(px(cell_px / 2.0))
-        .children((0..ROWS).map(move |row| {
-            let tint = row_tints[row];
+        .flex_row()
+        .items_center()
+        .gap(px(dot_px / 2.0))
+        .children((0..3).map(move |i| {
+            // Fixed slot; the dot breathes inside it (paint-local).
             div()
+                .size(px(dot_px))
                 .flex()
-                .flex_row()
-                .gap(px(cell_px / 2.0))
-                .children((0..COLS).map(move |col| {
-                    let phase = RING[row][col] as f32 / RING_LEN;
+                .items_center()
+                .justify_center()
+                .child({
+                    let phase = motion::staggered_phase(delta, i, DOT_STAGGER);
                     div()
-                        .size(px(cell_px))
-                        .rounded(px(cell_px / 2.0))
-                        .bg(tint)
-                        .opacity(motion::gspin_opacity(delta + phase, GSPIN_DIM))
-                }))
+                        .rounded(px(dot_px / 2.0))
+                        .bg(tints[i])
+                        .opacity(motion::lerp(GSPIN_DIM, 1.0, motion::pulse_wave(phase)))
+                        .size(px(dot_px * motion::pulse_scale(phase)))
+                })
         }))
 }
 
@@ -317,7 +305,7 @@ pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App)
 const _: () = {
     assert!(SPLASH_OUT.delay_ms == 150);
     assert!(HOLT_PULSE.duration_ms == 2400);
-    assert!(GRADIENT_SPIN.duration_ms == 750);
+    assert!(DOT_PULSE.duration_ms == 1200);
 };
 
 #[cfg(test)]
