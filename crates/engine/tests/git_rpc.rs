@@ -4,10 +4,22 @@
 //! The fixture repos have no remotes unless a test adds one — branch listing
 //! and switching must work fully offline.
 
+use futures::StreamExt as _;
 use git2::Repository;
 use holt_engine::{EngineConfig, StubEngine};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use tempfile::TempDir;
+
+/// Body of the fixture's movable file — large enough for git's rename
+/// similarity signatures to pair a rename reliably (tiny files fall under
+/// the detection threshold).
+fn movable_body() -> String {
+    let mut body = String::new();
+    for line in 0..50 {
+        body.push_str(&format!("shared movable content line {line}\n"));
+    }
+    body
+}
 
 struct Fixture {
     /// Where the repository's working tree lives.
@@ -21,11 +33,12 @@ impl Fixture {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         repo.set_head("refs/heads/main").unwrap();
+        let movable: &'static str = Box::leak(movable_body().into_boxed_str());
         let base = commit_on(
             &repo,
             "refs/heads/main",
             None,
-            &[("README.md", "hello\n")],
+            &[("README.md", "hello\n"), ("movable.txt", movable)],
             "initial",
         );
         // Sibling branches ahead of main, each adding its own file. Built
@@ -34,14 +47,22 @@ impl Fixture {
             &repo,
             "refs/heads/feature",
             Some(base),
-            &[("README.md", "hello\n"), ("feature.txt", "feature work\n")],
+            &[
+                ("README.md", "hello\n"),
+                ("movable.txt", movable),
+                ("feature.txt", "feature work\n"),
+            ],
             "feature",
         );
         commit_on(
             &repo,
             "refs/heads/alpha",
             Some(base),
-            &[("README.md", "hello\n"), ("alpha.txt", "a\n")],
+            &[
+                ("README.md", "hello\n"),
+                ("movable.txt", movable),
+                ("alpha.txt", "a\n"),
+            ],
             "alpha",
         );
         // Materialize main into the working tree so the fixture starts clean.
@@ -558,4 +579,474 @@ async fn list_refs_on_a_non_repo_reports_gits_message() {
     };
     assert!(matches!(error, RpcError::Failed(_)));
     assert!(error.to_string().to_lowercase().contains("repository"));
+}
+
+// ---- checkout identity + working-tree diffs (git-capability issue 03) ----
+
+use holt_proto::{CheckoutDiff, GetCheckoutFileDiffTextRequest, Space};
+
+async fn register_space(engine: &StubEngine, fixture: &Fixture, space_id: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createSpace",
+                "spaceId": space_id,
+                "deviceId": engine.engine_info().device_id,
+                "path": fixture.repo_path(),
+                "gitDetected": true,
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+async fn first_space(engine: &StubEngine) -> Space {
+    let RpcReply::Stream(mut spaces) = engine
+        .handle(methods::WATCH_SPACES, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSpaces did not return a stream");
+    };
+    let value = spaces.next().await.expect("spaces snapshot");
+    let spaces: Vec<Space> = serde_json::from_value(value).unwrap();
+    spaces.into_iter().next().expect("one registered space")
+}
+
+async fn working_tree_diff(engine: &StubEngine, cwd: &str) -> CheckoutDiff {
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_DIFF,
+            serde_json::json!({
+                "cwd": cwd,
+                "mode": "workingTree",
+                "chatId": "chat-1",
+            }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetCheckoutDiff did not return a value");
+    };
+    serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn create_space_mints_identity_and_chat_inherits_it() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    let space = first_space(&engine).await;
+    let checkout_id = space.checkout_id.expect("checkout identity minted");
+    assert_eq!(checkout_id.len(), 64, "sha256 hex");
+    assert!(checkout_id.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Chats inherit the space's identity as they already do.
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": "chat-1",
+                "spaceId": "space-1",
+            }),
+        )
+        .await
+        .unwrap();
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let value = chats.next().await.unwrap();
+    let chat: holt_proto::Chat =
+        serde_json::from_value(value.as_array().unwrap()[0].clone()).unwrap();
+    assert_eq!(chat.checkout_id.as_deref(), Some(checkout_id.as_str()));
+}
+
+#[tokio::test]
+async fn worktree_space_mints_a_distinct_identity() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    let wt_path = wt_dir.path().join("wt");
+    let repo = fixture.repo();
+    let feature_ref = repo
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap()
+        .into_reference();
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(&feature_ref));
+    repo.worktree("wt-identity", &wt_path, Some(&options))
+        .unwrap();
+    drop(feature_ref);
+    drop(repo);
+
+    let engine = fixture.engine();
+    // Same repo, two checkouts (main + linked worktree): the spaces never
+    // cross-contaminate because the identities differ.
+    for (space_id, path) in [
+        ("space-main", fixture.repo_path()),
+        ("space-wt", wt_path.display().to_string()),
+    ] {
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "createSpace",
+                    "spaceId": space_id,
+                    "deviceId": engine.engine_info().device_id,
+                    "path": path,
+                    "gitDetected": true,
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    let RpcReply::Stream(mut spaces) = engine
+        .handle(methods::WATCH_SPACES, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let value = spaces.next().await.unwrap();
+    let spaces: Vec<Space> = serde_json::from_value(value).unwrap();
+    let ids: Vec<&str> = spaces
+        .iter()
+        .map(|s| s.checkout_id.as_deref().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "worktree checkout identity must differ");
+}
+
+#[tokio::test]
+async fn persisted_spaces_are_backfilled_with_identity_on_load() {
+    let fixture = Fixture::new();
+    // A pre-feature row: git-detected, no checkout identity.
+    std::fs::write(
+        fixture.data_dir.path().join("spaces.json"),
+        serde_json::to_vec_pretty(&serde_json::json!([{
+            "id": "space-old",
+            "deviceId": "device-old",
+            "path": fixture.repo_path(),
+            "gitDetected": true,
+            "createdAt": "2026-01-01T00:00:00Z",
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let engine = fixture.engine();
+    let space = first_space(&engine).await;
+    let backfilled = space.checkout_id.expect("identity backfilled on load");
+    assert_eq!(backfilled.len(), 64);
+}
+
+#[tokio::test]
+async fn watch_emits_snapshot_then_live_frames_and_rekeys_on_commit() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    let RpcReply::Stream(mut items) = engine
+        .handle(methods::WATCH_CHECKOUT_DIFFS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchCheckoutDiffs did not return a stream");
+    };
+
+    // Opening snapshot: a full list; the fixture tree is clean.
+    let first = tokio::time::timeout(std::time::Duration::from_secs(15), items.next())
+        .await
+        .expect("snapshot within timeout")
+        .expect("snapshot present");
+    let list: Vec<CheckoutDiff> = serde_json::from_value(first).unwrap();
+    assert_eq!(list.len(), 1, "one watched checkout");
+    assert!(list[0].patch.trim().is_empty());
+    assert!(list[0].files.is_empty());
+    assert_eq!(
+        list[0].cwd,
+        std::fs::canonicalize(fixture.repo_dir.path())
+            .unwrap()
+            .display()
+            .to_string(),
+        "the frame's cwd is the canonical checkout root"
+    );
+    let clean_checksum = list[0].checksum.clone();
+
+    // Let the watch loop finish seeding before mutating.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // A working-tree edit lands as a frame within a beat.
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "dirty\n").unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(15), items.next())
+        .await
+        .expect("edit frame within timeout")
+        .expect("frame present");
+    let dirty: CheckoutDiff = serde_json::from_value(frame).unwrap();
+    assert!(dirty.patch.contains("+dirty"), "patch: {}", dirty.patch);
+    assert_ne!(dirty.checksum, clean_checksum);
+
+    // Committing the edit cleans the tree but re-keys via HEAD.
+    let repo = fixture.repo();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("README.md")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let sig = signature();
+    {
+        let tree = repo.find_tree(tree_id).unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "commit the edit",
+            &tree,
+            &[&head_commit],
+        )
+        .unwrap();
+    }
+    drop(repo);
+
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(15), items.next())
+        .await
+        .expect("commit frame within timeout")
+        .expect("frame present");
+    let committed: CheckoutDiff = serde_json::from_value(frame).unwrap();
+    assert!(
+        committed.patch.trim().is_empty(),
+        "tree is clean after the commit"
+    );
+    assert_ne!(
+        committed.checksum, dirty.checksum,
+        "the HEAD component re-keys the capture"
+    );
+    assert_ne!(committed.checksum, clean_checksum);
+}
+
+#[tokio::test]
+async fn get_checkout_diff_working_tree_matches_the_watch_frame() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "via rpc\n").unwrap();
+
+    let RpcReply::Stream(mut items) = engine
+        .handle(methods::WATCH_CHECKOUT_DIFFS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(15), items.next())
+        .await
+        .expect("snapshot within timeout")
+        .unwrap();
+    // The snapshot carries the dirty state (recomputed at subscribe).
+    let list: Vec<CheckoutDiff> = serde_json::from_value(frame).unwrap();
+    let watched = &list[0];
+
+    let served = working_tree_diff(&engine, &fixture.repo_path()).await;
+    assert_eq!(served.checksum, watched.checksum);
+    assert_eq!(served.patch, watched.patch);
+    assert_eq!(served.files, watched.files);
+    assert_eq!(served.additions, watched.additions);
+    assert_eq!(served.deletions, watched.deletions);
+    assert_eq!(served.checkout_id, watched.checkout_id);
+}
+
+#[tokio::test]
+async fn working_tree_diff_reports_renames_binary_and_counts() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // Unstaged modification.
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "hello modified\n",
+    )
+    .unwrap();
+    // Staged addition.
+    std::fs::write(fixture.repo_dir.path().join("staged.txt"), "staged line\n").unwrap();
+    let repo = fixture.repo();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("staged.txt")).unwrap();
+    index.write().unwrap();
+    drop(repo);
+    // Rename with a content tweak (similarity high enough for git's
+    // rename detection to pair the delete with the untracked add).
+    std::fs::rename(
+        fixture.repo_dir.path().join("movable.txt"),
+        fixture.repo_dir.path().join("moved.txt"),
+    )
+    .unwrap();
+    let mut moved = movable_body();
+    moved.push_str("plus a rename tweak\n");
+    std::fs::write(fixture.repo_dir.path().join("moved.txt"), moved).unwrap();
+    // Untracked binary.
+    std::fs::write(
+        fixture.repo_dir.path().join("blob.bin"),
+        [0u8, 1, 0, 0, 255, 0, 7],
+    )
+    .unwrap();
+
+    let diff = working_tree_diff(&engine, &fixture.repo_path()).await;
+    let summary = |path: &str| {
+        diff.files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap_or_else(|| panic!("{path} missing from {:#?}", diff.files))
+    };
+    let readme = summary("README.md");
+    assert_eq!(readme.status, "modified");
+    assert_eq!(readme.additions, 1);
+    assert_eq!(readme.deletions, 1);
+    let staged = summary("staged.txt");
+    assert_eq!(staged.status, "added");
+    assert_eq!(staged.additions, 1);
+    let moved = summary("moved.txt");
+    assert_eq!(moved.status, "renamed");
+    assert_eq!(moved.old_path.as_deref(), Some("movable.txt"));
+    let blob = summary("blob.bin");
+    assert_eq!(blob.status, "added");
+    assert!(blob.binary, "binary flagged without a text dump");
+
+    assert!(diff.patch.contains("rename from movable.txt"));
+    assert!(
+        !diff.patch.contains("blob.bin\u{0}"),
+        "no binary bytes dumped"
+    );
+    assert_eq!(
+        diff.additions,
+        diff.files.iter().map(|f| f.additions).sum::<u32>()
+    );
+    assert_eq!(
+        diff.deletions,
+        diff.files.iter().map(|f| f.deletions).sum::<u32>()
+    );
+    assert!(!diff.truncated);
+}
+
+#[tokio::test]
+async fn huge_patch_truncates_but_file_summaries_stay_complete() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    // ~6 MiB of unique added lines: past the 3 MiB patch cap.
+    let mut big = String::with_capacity(6 * 1024 * 1024 + 16);
+    for line in 0..600_000 {
+        big.push_str(&format!("big line {line}\n"));
+    }
+    std::fs::write(fixture.repo_dir.path().join("big.txt"), &big).unwrap();
+
+    let diff = working_tree_diff(&engine, &fixture.repo_path()).await;
+    assert!(diff.truncated, "past the 3 MiB cap");
+    assert!(diff.patch.len() < 5 * 1024 * 1024, "patch stays bounded");
+    // The summary list is complete even though the patch text is cut.
+    assert!(diff.files.iter().any(|file| file.path == "big.txt"));
+    let big_file = diff
+        .files
+        .iter()
+        .find(|file| file.path == "big.txt")
+        .unwrap();
+    assert_eq!(big_file.additions, 600_000);
+}
+
+#[tokio::test]
+async fn file_diff_text_serves_old_new_sides_binary_and_staleness() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "edited\n").unwrap();
+    let current = working_tree_diff(&engine, &fixture.repo_path()).await;
+
+    let request = |checksum: String, path: &str| GetCheckoutFileDiffTextRequest {
+        checkout_id: current.checkout_id.clone(),
+        cwd: fixture.repo_path(),
+        path: path.to_string(),
+        mode: "workingTree".into(),
+        base_ref: None,
+        chat_id: Some("chat-1".into()),
+        commit_sha: None,
+        diff_checksum: checksum,
+    };
+
+    // Fresh request: old from the HEAD blob, new from the workdir file.
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(request(current.checksum.clone(), "README.md")).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert_eq!(text.old_text.as_deref(), Some("hello\n"));
+    assert_eq!(text.new_text.as_deref(), Some("edited\n"));
+    assert!(!text.stale);
+    assert!(!text.binary);
+    assert!(!text.truncated);
+    assert!(text.old_content_hash.is_some());
+
+    // A newer edit makes the pinned capture stale.
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "edited again\n").unwrap();
+    let newer = working_tree_diff(&engine, &fixture.repo_path()).await;
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(request(newer.checksum, "README.md")).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert!(!text.stale, "pinned to the fresh capture");
+
+    // Binary content: flagged, no text.
+    std::fs::write(fixture.repo_dir.path().join("data.bin"), [1u8, 0, 2, 0]).unwrap();
+    let binary_state = working_tree_diff(&engine, &fixture.repo_path()).await;
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(request(binary_state.checksum, "data.bin")).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert!(text.binary);
+    assert!(text.old_text.is_none());
+    assert!(text.new_text.is_none());
+    assert!(text.new_content_hash.is_some());
+
+    // A side past 1 MiB truncates with the flag set.
+    let huge = "x".repeat(2 * 1024 * 1024);
+    std::fs::write(fixture.repo_dir.path().join("huge.txt"), &huge).unwrap();
+    let huge_state = working_tree_diff(&engine, &fixture.repo_path()).await;
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(request(huge_state.checksum, "huge.txt")).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert!(text.truncated, "2 MiB side truncates at 1 MiB");
+    assert!(text.new_text.as_deref().unwrap().len() <= 1024 * 1024);
 }

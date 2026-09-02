@@ -112,16 +112,26 @@ impl StubEngine {
         }) {
             return RpcReply::value(&serde_json::json!({}));
         }
-        spaces.push(Space {
+        // Mint the canonical checkout identity at create time (ADR-0002):
+        // sha256(deviceId ‖ NUL ‖ git_dir) for folders that are git work
+        // trees. A git_detected path that discovers no repo stays untagged.
+        let space = Space {
+            checkout_id: params
+                .git_detected
+                .then(|| {
+                    crate::git::discover_git_dir(std::path::Path::new(&params.path))
+                        .map(|git_dir| crate::git::checkout_identity(&params.device_id, &git_dir))
+                })
+                .flatten(),
             id: params.space_id,
             device_id: params.device_id,
             path: params.path,
             name: None,
             git_detected: params.git_detected,
             git_checked_at: None,
-            checkout_id: None,
             created_at: Utc::now(),
-        });
+        };
+        spaces.push(space);
         persist_spaces(&self.data_dir, &spaces).map_err(|error| {
             spaces.pop();
             RpcError::Failed(error.to_string())
@@ -669,9 +679,55 @@ impl RpcService for StubEngine {
                 let chat = self.runtime.chat(chat_id);
                 Ok(Self::watch_transcript(chat))
             }
-            methods::SUBSCRIBE_TERMINAL
-            | methods::WATCH_CHECKOUT_DIFFS
-            | methods::WATCH_CHECKOUT_CHANGE_REQUEST => Ok(pending_stream()),
+            methods::SUBSCRIBE_TERMINAL | methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
+                Ok(pending_stream())
+            }
+
+            // Live checkout-diff awareness (git-capability issue 03): the
+            // hub owns one watcher per git space; first subscriber starts
+            // it, last stops it.
+            methods::WATCH_CHECKOUT_DIFFS => Ok(self.watch.subscribe()),
+
+            // The diff family. Working-tree mode is the live capture; the
+            // scoped modes (branch, commit, turn) arrive with their slices.
+            methods::GET_CHECKOUT_DIFF => {
+                let cwd = required_string(&params, "cwd")?;
+                let mode = required_string(&params, "mode")?;
+                match mode {
+                    "workingTree" => {
+                        let diff = self
+                            .git
+                            .working_tree(cwd, &self.engine_info.device_id)
+                            .await
+                            .map_err(RpcError::Failed)?;
+                        RpcReply::value(&diff)
+                    }
+                    other => Err(RpcError::Failed(format!(
+                        "{other} diffs are not available yet"
+                    ))),
+                }
+            }
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT => {
+                let request: holt_proto::GetCheckoutFileDiffTextRequest =
+                    holt_rpc::parse_params(params)?;
+                match request.mode.as_str() {
+                    "" | "workingTree" => {
+                        let text = self
+                            .git
+                            .working_tree_file_text(
+                                &request.cwd,
+                                &self.engine_info.device_id,
+                                &request,
+                            )
+                            .await
+                            .map_err(RpcError::Failed)?;
+                        RpcReply::value(&text)
+                    }
+                    other => Err(RpcError::Failed(format!(
+                        "{other} diffs are not available yet"
+                    ))),
+                }
+            }
 
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),

@@ -14,7 +14,7 @@
 //!   RPC seam.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -25,6 +25,7 @@ use tokio::sync::watch;
 mod agent;
 pub mod credentials;
 mod git;
+mod git_watch;
 pub mod instance_lock;
 mod local_fs;
 pub mod provider_settings;
@@ -61,11 +62,14 @@ pub struct EngineConfig {
 pub struct StubEngine {
     engine_info: EngineInfo,
     data_dir: PathBuf,
-    spaces: RwLock<Vec<Space>>,
+    spaces: Arc<RwLock<Vec<Space>>>,
     spaces_tx: watch::Sender<serde_json::Value>,
     runtime: Arc<AgentRuntime>,
     providers: Arc<ProviderAdapter>,
     git: git::Git,
+    /// The `WatchCheckoutDiffs` hub — live checkout-diff awareness over the
+    /// git-detected spaces.
+    watch: Arc<git_watch::WatchHub>,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -77,9 +81,20 @@ impl StubEngine {
         std::fs::create_dir_all(&config.data_dir)?;
         let lock = InstanceLock::acquire(&config.data_dir)?;
         let device_id = load_or_create_device_id(&config.data_dir)?;
-        let spaces = load_spaces(&config.data_dir)?;
-        let spaces_value =
-            serde_json::to_value(&spaces).map_err(|error| EngineError::Other(error.to_string()))?;
+        let mut spaces = load_spaces(&config.data_dir)?;
+        // Lazy checkout-identity backfill (ADR-0002): git-detected spaces
+        // persisted before this feature gain their canonical identity now.
+        let backfilled = backfill_checkout_ids(&device_id, &mut spaces);
+        if backfilled {
+            store::persist_spaces(&config.data_dir, &spaces)?;
+        }
+        let spaces = Arc::new(RwLock::new(spaces));
+        let spaces_value = {
+            let spaces = spaces
+                .read()
+                .map_err(|_| EngineError::Other("spaces lock poisoned".into()))?;
+            serde_json::to_value(&*spaces).map_err(|error| EngineError::Other(error.to_string()))?
+        };
         let (spaces_tx, _) = watch::channel(spaces_value);
         let runtime = Arc::new(AgentRuntime::new(
             device_id.clone(),
@@ -89,17 +104,25 @@ impl StubEngine {
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
         let providers = Arc::new(ProviderAdapter::new(credentials, provider_settings));
+        let git = git::Git::new();
+        let watch = Arc::new(git_watch::WatchHub::new(
+            git.clone(),
+            device_id.clone(),
+            spaces.clone(),
+            spaces_tx.subscribe(),
+        ));
         Ok(Self {
             engine_info: EngineInfo {
                 device_id,
                 workspace_scope: WorkspaceScope::Local,
             },
             data_dir: config.data_dir.clone(),
-            spaces: RwLock::new(spaces),
+            spaces,
             spaces_tx,
             runtime,
             providers,
-            git: git::Git::new(),
+            git,
+            watch,
             _instance_lock: lock,
         })
     }
@@ -107,6 +130,20 @@ impl StubEngine {
     pub fn engine_info(&self) -> &EngineInfo {
         &self.engine_info
     }
+}
+
+/// Stamp git-detected spaces that predate checkout identities with their
+/// canonical id (ADR-0002). Returns whether anything changed.
+fn backfill_checkout_ids(device_id: &str, spaces: &mut [Space]) -> bool {
+    let mut changed = false;
+    for space in spaces {
+        if space.git_detected && space.checkout_id.is_none() {
+            space.checkout_id = git::discover_git_dir(Path::new(&space.path))
+                .map(|git_dir| git::checkout_identity(device_id, &git_dir));
+            changed |= space.checkout_id.is_some();
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
