@@ -35,19 +35,24 @@ fn system_prompt(cwd: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{cwd}}", cwd)
 }
 
-/// The run's system prompt: the coding-agent template plus the
-/// metadata-only skill block (ADR-0006), from a fresh catalog scan of the
-/// chat's three roots — so skills added, edited, or removed since the last
-/// turn are already reflected here.
-async fn run_system_prompt(skills: &crate::skills::Skills, cwd: &str) -> String {
-    let mut prompt = system_prompt(cwd);
+/// The run's system prompt plus the catalog it was built from: the
+/// coding-agent template with the metadata-only skill block appended
+/// (ADR-0006), from a fresh scan of the chat's three roots — so skills
+/// added, edited, or removed since the last turn are already reflected.
+/// The catalog rides along: it is also what collapses reads of a skill's
+/// `SKILL.md` into chips while decoding tool calls for the transcript.
+async fn run_system_prompt(
+    skills: &crate::skills::Skills,
+    cwd: &str,
+) -> (String, crate::skills::Catalog) {
     let catalog = skills.catalog(Some(cwd)).await;
+    let mut prompt = system_prompt(cwd);
     let block = crate::skills::skills_block(&catalog.winners);
     if !block.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&block);
     }
-    prompt
+    (prompt, catalog)
 }
 
 pub(crate) struct ChatRuntime {
@@ -357,7 +362,17 @@ fn part_char_len(part: &MessagePart) -> usize {
 /// text/thinking/error part ids: a run folds every message into ONE entry, so
 /// per-message ids (`t0`, `r1`, …) must not collide across its messages — the
 /// UI keys rows by `entry_id#part_id`.
-fn assistant_parts(message: &AgentMessage, id_base: usize) -> Vec<MessagePart> {
+///
+/// `skill_files` maps this run's catalog `SKILL.md` paths (normalized
+/// absolute) to skill names: a read of one collapses to the same skill chip
+/// an invocation uses (ADR-0006) — the file's content reached the model
+/// context through the tool result, and never enters the transcript.
+fn assistant_parts(
+    message: &AgentMessage,
+    id_base: usize,
+    cwd: &str,
+    skill_files: &HashMap<String, String>,
+) -> Vec<MessagePart> {
     let AgentMessage::Assistant(message) = message else {
         return Vec::new();
     };
@@ -374,21 +389,27 @@ fn assistant_parts(message: &AgentMessage, id_base: usize) -> Vec<MessagePart> {
                     text: thinking.thinking.clone(),
                 });
             }
-            AssistantContent::ToolCall(tool_call) => parts.push(MessagePart::Tool {
-                id: tool_call.id.clone(),
-                call: transcript_tool_call(tool_call),
-                is_error: false,
-                resolved: false,
-                output: None,
-                diff: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
-                diff_stats: None,
-                subagent_ref: None,
-                subagent_status: None,
-                subagent_tail: None,
-            }),
+            AssistantContent::ToolCall(tool_call) => {
+                if let Some(part) = skill_read_part(tool_call, cwd, skill_files) {
+                    parts.push(part);
+                } else {
+                    parts.push(MessagePart::Tool {
+                        id: tool_call.id.clone(),
+                        call: transcript_tool_call(tool_call),
+                        is_error: false,
+                        resolved: false,
+                        output: None,
+                        diff: None,
+                        output_ref: None,
+                        output_bytes: None,
+                        diff_ref: None,
+                        diff_stats: None,
+                        subagent_ref: None,
+                        subagent_status: None,
+                        subagent_tail: None,
+                    });
+                }
+            }
             AssistantContent::Thinking(_) => {}
         }
     }
@@ -399,6 +420,28 @@ fn assistant_parts(message: &AgentMessage, id_base: usize) -> Vec<MessagePart> {
         });
     }
     parts
+}
+
+/// A read-tool call on a catalog skill's `SKILL.md`, collapsed to the skill
+/// chip. Paths match after resolving the call's argument against the run's
+/// cwd; any other file — including other `.md` files inside a skill's
+/// directory — decodes as an ordinary read.
+fn skill_read_part(
+    tool_call: &pi_core::ai::types::ToolCall,
+    cwd: &str,
+    skill_files: &HashMap<String, String>,
+) -> Option<MessagePart> {
+    if tool_call.name != "read" {
+        return None;
+    }
+    let path = tool_call.arguments.get("path")?.as_str()?;
+    let resolved = crate::tools::to_absolute(cwd, path);
+    let name = skill_files.get(&resolved)?;
+    Some(MessagePart::Skill {
+        id: tool_call.id.clone(),
+        name: name.clone(),
+        file: resolved,
+    })
 }
 
 /// Insert or refresh the run's live entry. `created_at` is stamped once at
@@ -462,6 +505,15 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         cancel,
         skills,
     } = run;
+    // The run's fresh skill catalog: one scan feeds the system-prompt block
+    // AND the transcript's SKILL.md read collapsing — both see the same
+    // live view of the roots.
+    let (system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
+    let skill_files: HashMap<String, String> = catalog
+        .winners
+        .iter()
+        .map(|(skill, _)| (skill.file_path.clone(), skill.name.clone()))
+        .collect();
     let entry_id = uuid::Uuid::new_v4().to_string();
     let sink_chat = chat.clone();
     let sink_device_id = runtime.device_id.clone();
@@ -477,12 +529,16 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let sink_base = base_parts.clone();
     let sink_last_publish = Arc::new(Mutex::new(None::<Instant>));
     let sink_run_start = Instant::now();
+    let sink_cwd = cwd.clone();
+    let sink_skill_files: Arc<HashMap<String, String>> = Arc::new(skill_files);
     let emit: AgentEventSink = Arc::new(move |event| {
         let chat = sink_chat.clone();
         let base_parts = sink_base.clone();
         let device_id = sink_device_id.clone();
         let run_entry = sink_run_entry.clone();
         let last_publish = sink_last_publish.clone();
+        let cwd = sink_cwd.clone();
+        let skill_files = sink_skill_files.clone();
         Box::pin(async move {
             // Debug trace of the event cadence: answers "did the reply
             // stream?" without a debugger — deltas arriving bunched here are
@@ -503,7 +559,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                 {
                     let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len()));
+                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
                     drop(base);
                     trace("start", parts.iter().map(part_char_len).sum(), true);
                     update_assistant_entry(
@@ -529,7 +585,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                     };
                     let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len()));
+                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
                     drop(base);
                     trace("delta", parts.iter().map(part_char_len).sum(), due);
                     update_assistant_entry(
@@ -546,7 +602,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                 {
                     let mut base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len()));
+                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
                     *base = parts.clone();
                     drop(base);
                     // The next message's first delta must publish immediately.
@@ -608,7 +664,6 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             Ok(compat::stream_simple(model, context, options))
         },
     );
-    let system_prompt = run_system_prompt(&skills, &cwd).await;
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {
@@ -732,7 +787,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new()),
             vec![
                 MessagePart::Reasoning {
                     id: "r0".into(),
@@ -748,7 +803,7 @@ mod tests {
         // generated part ids continue after the base so row keys never
         // collide.
         assert_eq!(
-            assistant_parts(&message, 2),
+            assistant_parts(&message, 2, "/tmp/x", &HashMap::new()),
             vec![
                 MessagePart::Reasoning {
                     id: "r2".into(),
@@ -789,8 +844,9 @@ mod tests {
         let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
 
         // No skills: the template stands alone.
-        let bare = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (bare, bare_catalog) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
         assert_eq!(bare, system_prompt(&cwd.to_string_lossy()));
+        assert!(bare_catalog.winners.is_empty());
 
         write_skill(
             &personal,
@@ -802,10 +858,19 @@ mod tests {
             "hidden",
             "name: hidden\ndescription: Manual only.\ndisable-model-invocation: true\n",
         );
-        let prompt = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (prompt, catalog) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
         assert!(prompt.starts_with(&system_prompt(&cwd.to_string_lossy())));
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("<name>grill</name>"));
+        // The catalog the run would hand its transcript decoder: every
+        // winner's file path maps to its name.
+        let skill_files: HashMap<String, String> = catalog
+            .winners
+            .iter()
+            .map(|(skill, _)| (skill.file_path.clone(), skill.name.clone()))
+            .collect();
+        assert!(skill_files.keys().all(|path| path.ends_with("/grill/SKILL.md")
+            || path.ends_with("/hidden/SKILL.md")));
         // disable-model-invocation stays out of the advertisement but is
         // still cataloged — and content never appears at all.
         assert!(!prompt.contains("hidden"));
@@ -821,7 +886,7 @@ mod tests {
                 &format!("name: bulk-{i:03}\ndescription: {long}\n"),
             );
         }
-        let capped = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
         let template_len = system_prompt(&cwd.to_string_lossy()).chars().count();
         assert!(capped.chars().count() <= template_len + 2 + crate::skills::SKILL_LISTING_BUDGET);
     }
@@ -836,7 +901,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new()),
             vec![MessagePart::Tool {
                 id: "call-1".into(),
                 call: TranscriptToolCall::Exec {
@@ -896,6 +961,79 @@ mod tests {
         assert!(matches!(
             decoded,
             TranscriptToolCall::Unknown { ref name, input: None } if name == "web_search"
+        ));
+    }
+
+    #[test]
+    fn catalog_skill_md_reads_collapse_to_the_skill_chip() {
+        let skill_files: HashMap<String, String> =
+            HashMap::from([("/roots/grill/SKILL.md".to_string(), "grill".to_string())]);
+        let read = |path: &str| {
+            let message = AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![AssistantContent::ToolCall(tool_call(
+                    "read",
+                    serde_json::json!({ "path": path }),
+                ))],
+                ..Default::default()
+            }));
+            assistant_parts(&message, 0, "/roots", &skill_files)
+        };
+        // The advertised location, absolute…
+        assert_eq!(
+            read("/roots/grill/SKILL.md"),
+            vec![MessagePart::Skill {
+                id: "call-1".into(),
+                name: "grill".into(),
+                file: "/roots/grill/SKILL.md".into(),
+            }]
+        );
+        // …and the same file reached through a relative path.
+        assert_eq!(
+            read("grill/SKILL.md"),
+            vec![MessagePart::Skill {
+                id: "call-1".into(),
+                name: "grill".into(),
+                file: "/roots/grill/SKILL.md".into(),
+            }]
+        );
+        // Any other file — including another `.md` inside the skill's own
+        // directory — renders as an ordinary read.
+        assert_eq!(
+            read("/roots/grill/notes.md"),
+            vec![MessagePart::Tool {
+                id: "call-1".into(),
+                call: TranscriptToolCall::ReadFile {
+                    path: "/roots/grill/notes.md".into(),
+                },
+                is_error: false,
+                resolved: false,
+                output: None,
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            }]
+        );
+        // An empty catalog (the file stopped being a skill) renders the
+        // plain read again — detection keys off the live catalog.
+        let message = AgentMessage::Assistant(Box::new(AssistantMessage {
+            content: vec![AssistantContent::ToolCall(tool_call(
+                "read",
+                serde_json::json!({ "path": "/roots/grill/SKILL.md" }),
+            ))],
+            ..Default::default()
+        }));
+        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new());
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Tool {
+                call: TranscriptToolCall::ReadFile { .. },
+                ..
+            }
         ));
     }
 
@@ -987,7 +1125,7 @@ mod tests {
         // First message creates the entry, later ones replace its parts in
         // place — same id, same created_at (the delta protocol keys appends
         // off an unchanged entry and the strip stamps once).
-        let mut first_parts = assistant_parts(&text("hello"), 0);
+        let mut first_parts = assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new());
         update_assistant_entry(
             &chat,
             "run-1",
@@ -997,7 +1135,12 @@ mod tests {
             true,
         );
         let created_at = chat.transcript.read().unwrap()[0].created_at;
-        let second = assistant_parts(&text(" world"), first_parts.len());
+        let second = assistant_parts(
+            &text(" world"),
+            first_parts.len(),
+            "/tmp/x",
+            &HashMap::new(),
+        );
         first_parts.extend(second);
         update_assistant_entry(
             &chat,

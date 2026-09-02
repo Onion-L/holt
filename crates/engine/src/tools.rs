@@ -89,7 +89,10 @@ fn normalize_absolute(path: &str) -> String {
     out
 }
 
-fn to_absolute(cwd: &str, path: &str) -> String {
+/// Resolve a tool-call path argument against `cwd` (the env's "addressed
+/// path" shape: lexical, no symlink resolution). Also used engine-side to
+/// match read targets against the skill catalog.
+pub(crate) fn to_absolute(cwd: &str, path: &str) -> String {
     let joined = if Path::new(path).is_absolute() {
         path.to_string()
     } else {
