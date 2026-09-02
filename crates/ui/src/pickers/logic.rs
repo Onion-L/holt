@@ -1,0 +1,1089 @@
+//! Pure picker logic and domain types (feature-inventory §1.7): the draft
+//! config the pickers accumulate, checkout-plan types, default/traits
+//! resolution, folder-browser navigation, model-list normalization, provider
+//! flattening, and provider brand icons. No GPUI types live here so catalog
+//! and checkout behavior stays cheap to test; the [`super`] facade re-exports
+//! every public name at `crate::pickers`.
+
+use holt_proto::{
+    ChatConfig, FolderListing, Model, Provider, ProviderId, ReasoningLevel, SandboxLevel,
+};
+
+// ---------------------------------------------------------------------------
+// Draft config (what the pickers accumulate)
+// ---------------------------------------------------------------------------
+
+/// Everything a new chat is configured with before the first send. The folder
+/// comes from the selected SPACE — the draft only carries the git extras (ref
+/// + checkout kind) and the run config.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DraftConfig {
+    pub provider: Option<ProviderId>,
+    pub model: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
+    /// option id → choice id (only non-defaults are meaningful).
+    pub model_options: serde_json::Map<String, serde_json::Value>,
+    /// The picked ref (base branch in NewWorktree mode; a worktree's branch
+    /// when reusing one). `None` = the repo's current branch.
+    pub branch: Option<String>,
+    /// Where the new session runs (the t3code env-mode).
+    pub checkout: CheckoutKind,
+}
+
+/// Where a new session runs (t3code's env-mode: `local | worktree`). "Current
+/// worktree" is NOT a third mode — it's `Local` when the picked ref is already
+/// materialized as a worktree (the session reuses that checkout's path).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckoutKind {
+    /// The space's own folder — or the picked ref's existing worktree.
+    #[default]
+    Local,
+    /// A fresh isolated worktree created off the picked base ref on send.
+    NewWorktree,
+}
+
+/// The resolved on-send checkout action (composer consumes this — see
+/// [`super::Pickers::checkout_plan`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckoutPlan {
+    /// Run in the space folder as-is. `branch` is the checkout's branch (the
+    /// picked or current ref), carried onto `createChat` so the session names
+    /// it from the first frame; `None` = refs never loaded.
+    CurrentCheckout { branch: Option<String> },
+    /// Reuse the picked ref's existing worktree (a cwd override; no git).
+    ReuseWorktree { path: String, branch: String },
+    /// `CreateWorktree` off `base` on send (holt mints a `holt/<name>`
+    /// branch). `base: None` = refs never loaded — send falls back to the
+    /// space folder rather than failing.
+    NewWorktree { base: Option<String> },
+}
+
+/// The fully-resolved run configuration the composer sends: concrete provider,
+/// model and reasoning (never a "default" passthrough once the catalog is
+/// loaded), plus the explicit non-default option picks.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResolvedRunConfig {
+    pub provider: Option<ProviderId>,
+    pub model: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
+    pub model_options: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ResolvedRunConfig {
+    /// The `ChatConfig` recorded on `Mutate createChat` (needs a known provider).
+    pub fn chat_config(&self) -> Option<ChatConfig> {
+        Some(ChatConfig {
+            provider: self.provider.clone()?,
+            model: self.model.clone()?,
+            reasoning: self.reasoning,
+            model_options: self.model_options.clone(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure: default resolution (no "Default" placeholders — a concrete pick always)
+// ---------------------------------------------------------------------------
+
+/// The provider's default model: the first catalog row (both curated catalogs
+/// lead with the flagship — holt's `pickDefaultModel` Opus preference maps to
+/// the same row here).
+pub fn default_model(models: &[Model]) -> Option<&Model> {
+    models.first()
+}
+
+/// A model's default reasoning: X-High when the ladder offers it (holt
+/// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
+/// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
+pub fn default_reasoning(ladder: &[ReasoningLevel]) -> Option<ReasoningLevel> {
+    // The recommended default is High (user-corrected — not X-High globally);
+    // fall to Medium then the ladder's first entry for shorter ladders.
+    if ladder.contains(&ReasoningLevel::High) {
+        return Some(ReasoningLevel::High);
+    }
+    if ladder.contains(&ReasoningLevel::Medium) {
+        return Some(ReasoningLevel::Medium);
+    }
+    ladder.first().copied()
+}
+
+/// Clamp a picked/remembered level to what the model actually offers: keep it
+/// when the ladder lists it, else fall to the model's default (never a stale
+/// or foreign level — holt use-run-config.ts's derived-model discipline).
+pub fn clamp_reasoning(
+    level: Option<ReasoningLevel>,
+    ladder: &[ReasoningLevel],
+) -> Option<ReasoningLevel> {
+    match level {
+        Some(level) if ladder.contains(&level) => Some(level),
+        _ => default_reasoning(ladder),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure: labels + traits summary
+// ---------------------------------------------------------------------------
+
+pub fn reasoning_label(level: ReasoningLevel) -> &'static str {
+    match level {
+        ReasoningLevel::Minimal => "Minimal",
+        ReasoningLevel::Low => "Low",
+        ReasoningLevel::Medium => "Medium",
+        ReasoningLevel::High => "High",
+        ReasoningLevel::XHigh => "X-High",
+        ReasoningLevel::Max => "Max",
+        ReasoningLevel::Ultra => "Ultra",
+        ReasoningLevel::Ultracode => "Ultracode",
+        ReasoningLevel::Ultrathink => "Ultrathink",
+    }
+}
+
+/// The TraitsPicker trigger summary: the effective reasoning level plus every
+/// model option's effective choice — the explicit pick when one is saved and
+/// still offered, else the option's default — joined with " · " ("High · 1M ·
+/// Fast", Cursor's "Agent · Balance"). Defaults are spelled out rather than
+/// hidden so the run's configuration reads without opening the popover; `None`
+/// only when the model has nothing to describe (no ladder, no options).
+pub fn traits_summary(
+    model: Option<&Model>,
+    reasoning: Option<ReasoningLevel>,
+    selections: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(level) = reasoning {
+        parts.push(reasoning_label(level).to_string());
+    }
+    if let Some(model) = model {
+        for option in &model.options {
+            let choice_id = selections
+                .get(&option.id)
+                .and_then(|v| v.as_str())
+                .filter(|id| option.choices.iter().any(|c| c.id == *id))
+                .unwrap_or(&option.default_choice);
+            if let Some(choice) = option.choices.iter().find(|c| c.id == choice_id) {
+                parts.push(choice.label.clone());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+/// Whether any trait departs from its default — the trigger brightens only
+/// then, so a customized run still stands out now that the summary always
+/// names the effective choices.
+pub fn traits_customized(
+    model: Option<&Model>,
+    reasoning: Option<ReasoningLevel>,
+    ladder: &[ReasoningLevel],
+    selections: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if reasoning != default_reasoning(ladder) {
+        return true;
+    }
+    model.is_some_and(|model| {
+        model.options.iter().any(|option| {
+            selections
+                .get(&option.id)
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| {
+                    id != option.default_choice && option.choices.iter().any(|c| c.id == id)
+                })
+        })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Pure: folder-browser navigation (used by the shell's add-space flow)
+// ---------------------------------------------------------------------------
+
+/// Parent of an absolute path; `None` at the filesystem root.
+pub fn parent_path(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None; // was "/" (or empty)
+    }
+    match trimmed.rfind('/') {
+        Some(0) => Some("/".to_string()),
+        Some(at) => Some(trimmed[..at].to_string()),
+        None => None,
+    }
+}
+
+/// Join a listing path and an entry name.
+pub fn child_path(base: &str, name: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+/// The create row's input validation, as a pure function: the submit
+/// affordance is enabled only for a name that is non-empty after trimming,
+/// and the submitted name is that trimmed value. Everything past this
+/// (ref-format legality, duplicates) is git's to judge.
+pub(crate) fn branch_create_name(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Byte length of `name`'s prefix matching `query`, compared char-for-char
+/// case-insensitively; `None` when `query` isn't a prefix of `name`. The
+/// length indexes into `name` (not `query`) so the completion suffix keeps
+/// the folder's real casing: `("Documents", "doc") → Some(3)` → `"uments"`.
+pub fn completion_prefix_len(name: &str, query: &str) -> Option<usize> {
+    let mut len = 0;
+    let mut name_chars = name.chars();
+    for qc in query.chars() {
+        let nc = name_chars.next()?;
+        if !nc.to_lowercase().eq(qc.to_lowercase()) {
+            return None;
+        }
+        len += nc.len_utf8();
+    }
+    Some(len)
+}
+
+/// Resolve a typed path segment against folder `names` (slash-descend):
+/// exact match first — case-SENSITIVE before case-insensitive, so `GitHub/`
+/// picks a `GitHub` sibling over `github` — then a unique case-insensitive
+/// prefix. Ambiguity resolves to `None`: the slash stays in the query.
+pub fn segment_target(names: &[&str], query: &str) -> Option<usize> {
+    if let Some(ix) = names.iter().position(|n| *n == query) {
+        return Some(ix);
+    }
+    if let Some(ix) = names
+        .iter()
+        .position(|n| completion_prefix_len(n, query) == Some(n.len()))
+    {
+        return Some(ix);
+    }
+    let mut hits = names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| completion_prefix_len(n, query).is_some());
+    let (ix, _) = hits.next()?;
+    hits.next().is_none().then_some(ix)
+}
+
+/// Interpret a palette query as a typed path jump: absolute (`/disk2/projects`)
+/// or home-relative (`~`, `~/github`). Returns the absolute path to browse,
+/// trailing slash trimmed. `home` is the local machine's resolved home —
+/// `None` until the first listing lands, when `~` can't expand yet. A query
+/// like `~foo` is a folder name, not a path.
+pub fn typed_path_target(query: &str, home: Option<&str>) -> Option<String> {
+    let query = query.trim();
+    if let Some(rest) = query.strip_prefix('~') {
+        let home = home?.trim_end_matches('/');
+        if rest.is_empty() {
+            return Some(home.to_string());
+        }
+        let rest = rest.strip_prefix('/')?.trim_end_matches('/');
+        return Some(if rest.is_empty() {
+            home.to_string()
+        } else {
+            format!("{home}/{rest}")
+        });
+    }
+    if query.starts_with('/') {
+        let trimmed = query.trim_end_matches('/');
+        return Some(if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        });
+    }
+    None
+}
+
+/// Breadcrumb segments for a path: `(label, full path)`, root first.
+pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![("/".to_string(), "/".to_string())];
+    let mut acc = String::new();
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        acc.push('/');
+        acc.push_str(segment);
+        out.push((segment.to_string(), acc.clone()));
+    }
+    out
+}
+
+/// Directory rows of a listing (files never render in the browser).
+pub fn browser_rows(listing: &FolderListing) -> Vec<&holt_proto::FolderEntry> {
+    listing.entries.iter().filter(|e| e.is_dir).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Pure: catalog hygiene + flattening
+// ---------------------------------------------------------------------------
+
+/// Display-side model-list hygiene for backend-served catalogs: the
+/// `default` alias row drops when a real row exists, and an orphan
+/// `<model>[1m]` variant presents as its base id with the Context Window
+/// trait pinned to 1M. Idempotent over already-clean lists. The send path
+/// recomposes the advertised id from the base + trait (`pick_model_value`),
+/// so a folded pick still runs.
+pub(crate) fn normalize_model_rows(models: Vec<Model>) -> Vec<Model> {
+    fn strip_1m(id: &str) -> Option<&str> {
+        id.strip_suffix("[1m]").or_else(|| id.strip_suffix("-1m"))
+    }
+    let ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+    let has_real = ids.iter().any(|id| !id.eq_ignore_ascii_case("default"));
+    models
+        .into_iter()
+        .filter_map(|mut model| {
+            if has_real && model.id.eq_ignore_ascii_case("default") {
+                return None;
+            }
+            if let Some(base) = strip_1m(&model.id.clone()) {
+                if ids.iter().any(|other| other == base) {
+                    // The bare base is listed too — the engine already gave
+                    // it the Context Window trait; the variant row is noise.
+                    return None;
+                }
+                model.id = base.to_string();
+                // "Opus (1M context)" → "Opus".
+                if let Some(at) = model.label.rfind(" (")
+                    && model.label.ends_with(')')
+                {
+                    model.label.truncate(at);
+                    while model.label.ends_with(' ') {
+                        model.label.pop();
+                    }
+                }
+                if !model.options.iter().any(|o| o.id == "contextWindow") {
+                    model.options.push(holt_proto::ModelOption {
+                        id: "contextWindow".into(),
+                        label: "Context Window".into(),
+                        choices: vec![
+                            holt_proto::ModelOptionChoice {
+                                id: "200k".into(),
+                                label: "200K".into(),
+                            },
+                            holt_proto::ModelOptionChoice {
+                                id: "1m".into(),
+                                label: "1M".into(),
+                            },
+                        ],
+                        default_choice: "1m".into(),
+                    });
+                }
+            }
+            Some(model)
+        })
+        .collect()
+}
+
+/// Providers available to the composer: every configured variant, flattened
+/// from organization rows back into concrete providers. The picker keeps
+/// `provider/model` addressing — organization grouping lives on the settings
+/// page, so a configured `minimax-cn` is offered even when its `minimax`
+/// sibling has no key.
+pub fn offered_providers(list: &[Provider]) -> Vec<Provider> {
+    list.iter()
+        .flat_map(|row| row.concrete_providers())
+        .filter(|provider| provider.configured)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Pure: provider brand icons
+// ---------------------------------------------------------------------------
+
+/// The appearance-aware icon path for a provider (the GPUI-tinted wrapper
+/// lives in `provider_model`; this stays free of GPUI types).
+pub(super) fn provider_brand_icon_for(
+    provider: &ProviderId,
+    appearance: crate::theme::Appearance,
+) -> Option<&'static str> {
+    use crate::icons;
+
+    let dark = appearance.is_dark();
+    Some(match provider.as_str() {
+        "ant-ling" => icons::PROVIDER_ANT_LING,
+        "anthropic" => {
+            if dark {
+                icons::PROVIDER_ANTHROPIC_DARK
+            } else {
+                icons::PROVIDER_ANTHROPIC_LIGHT
+            }
+        }
+        "baseten" => icons::PROVIDER_BASETEN,
+        "cerebras" => icons::PROVIDER_CEREBRAS,
+        "deepseek" => icons::PROVIDER_DEEPSEEK,
+        "fireworks" => icons::PROVIDER_FIREWORKS,
+        "github-copilot" => icons::PROVIDER_GITHUB_COPILOT,
+        "google" => icons::PROVIDER_GOOGLE,
+        "groq" => icons::PROVIDER_GROQ,
+        "huggingface" => icons::PROVIDER_HUGGINGFACE,
+        "kimi-coding" | "moonshot-kimi" => icons::PROVIDER_KIMI_CODING,
+        "minimax" | "minimax-cn" => {
+            if dark {
+                icons::PROVIDER_MINIMAX_DARK
+            } else {
+                icons::PROVIDER_MINIMAX_LIGHT
+            }
+        }
+        "mistral" => icons::PROVIDER_MISTRAL,
+        "moonshot" | "moonshotai" | "moonshotai-cn" => icons::PROVIDER_MOONSHOTAI,
+        "nvidia" => icons::PROVIDER_NVIDIA,
+        "openai" => {
+            if dark {
+                // This supplied variant is the white mark for dark surfaces.
+                icons::PROVIDER_OPENAI_LIGHT
+            } else {
+                icons::PROVIDER_OPENAI
+            }
+        }
+        "opencode" | "opencode-go" => {
+            if dark {
+                icons::PROVIDER_OPENCODE_DARK
+            } else {
+                icons::PROVIDER_OPENCODE_LIGHT
+            }
+        }
+        "openrouter" => icons::PROVIDER_OPENROUTER,
+        "qwen" | "qwen-token-plan" | "qwen-token-plan-cn" | "qwen-token-plan-individual" => {
+            icons::PROVIDER_QWEN
+        }
+        "together" => icons::PROVIDER_TOGETHER,
+        "vercel-ai-gateway" => icons::PROVIDER_VERCEL_AI_GATEWAY,
+        "xai" => icons::PROVIDER_XAI,
+        "xiaomi" | "xiaomi-token-plan-ams" | "xiaomi-token-plan-cn" | "xiaomi-token-plan-sgp" => {
+            icons::PROVIDER_XIAOMI
+        }
+        "zai" | "zai-coding-cn" => icons::PROVIDER_ZAI,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use holt_proto::ProviderVariant;
+
+    fn model(id: &str, label: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            provider: ProviderId("test".into()),
+            label: label.to_string(),
+            description: None,
+            reasoning_levels: Vec::new(),
+            default_reasoning: None,
+            options: Vec::new(),
+            custom: false,
+        }
+    }
+
+    #[test]
+    fn every_eligible_provider_has_a_brand_icon() {
+        let ids = [
+            "ant-ling",
+            "anthropic",
+            "baseten",
+            "cerebras",
+            "deepseek",
+            "fireworks",
+            "github-copilot",
+            "google",
+            "groq",
+            "huggingface",
+            "kimi-coding",
+            "minimax",
+            "minimax-cn",
+            "mistral",
+            "moonshotai",
+            "moonshotai-cn",
+            "nvidia",
+            "opencode",
+            "opencode-go",
+            "openai",
+            "openrouter",
+            "qwen-token-plan",
+            "qwen-token-plan-cn",
+            "qwen-token-plan-individual",
+            "together",
+            "vercel-ai-gateway",
+            "xai",
+            "xiaomi",
+            "xiaomi-token-plan-ams",
+            "xiaomi-token-plan-cn",
+            "xiaomi-token-plan-sgp",
+            "zai",
+            "zai-coding-cn",
+        ];
+        for id in ids {
+            let provider = ProviderId(id.into());
+            assert!(
+                provider_brand_icon_for(&provider, crate::theme::Appearance::Light).is_some(),
+                "missing light icon for {id}"
+            );
+            assert!(
+                provider_brand_icon_for(&provider, crate::theme::Appearance::Dark).is_some(),
+                "missing dark icon for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn themed_provider_icons_select_the_matching_variant() {
+        let anthropic = ProviderId("anthropic".into());
+        assert_eq!(
+            provider_brand_icon_for(&anthropic, crate::theme::Appearance::Light),
+            Some(crate::icons::PROVIDER_ANTHROPIC_LIGHT)
+        );
+        assert_eq!(
+            provider_brand_icon_for(&anthropic, crate::theme::Appearance::Dark),
+            Some(crate::icons::PROVIDER_ANTHROPIC_DARK)
+        );
+        assert!(
+            provider_brand_icon_for(
+                &ProviderId("future-provider".into()),
+                crate::theme::Appearance::Dark
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn reasoning_defaults_to_high_when_supported() {
+        assert_eq!(
+            default_reasoning(&[ReasoningLevel::Low, ReasoningLevel::High]),
+            Some(ReasoningLevel::High)
+        );
+        assert_eq!(default_reasoning(&[]), None);
+    }
+
+    #[test]
+    fn only_configured_variants_are_offered() {
+        let variant = |id: &str, configured: bool| ProviderVariant {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            configured,
+        };
+        let row = |id: &str, variants: Vec<ProviderVariant>| Provider {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            abbreviation: id[..2].to_ascii_uppercase(),
+            configured: variants.iter().any(|v| v.configured),
+            variants,
+        };
+        let providers = vec![
+            row("openai", vec![variant("openai", true)]),
+            row("anthropic", vec![variant("anthropic", false)]),
+            row(
+                "minimax",
+                vec![variant("minimax", false), variant("minimax-cn", true)],
+            ),
+        ];
+        let offered = offered_providers(&providers);
+        let ids: Vec<&str> = offered.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["openai", "minimax-cn"]);
+        // The flattened row keeps the variant's own display name.
+        assert_eq!(offered[1].name, "minimax-cn");
+    }
+
+    #[test]
+    fn unconfigured_organizations_offer_nothing() {
+        let variant = |id: &str, configured: bool| ProviderVariant {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            configured,
+        };
+        let org = Provider {
+            id: ProviderId("minimax".into()),
+            name: "MiniMax".into(),
+            abbreviation: "MM".into(),
+            configured: false,
+            variants: vec![variant("minimax", false), variant("minimax-cn", false)],
+        };
+        assert!(offered_providers(&[org]).is_empty());
+        // A standalone configured row flattens to itself.
+        let standalone = Provider {
+            id: ProviderId("openai".into()),
+            name: "OpenAI".into(),
+            abbreviation: "OA".into(),
+            configured: true,
+            variants: vec![variant("openai", true)],
+        };
+        let offered = offered_providers(&[standalone]);
+        assert_eq!(offered.len(), 1);
+        assert_eq!(offered[0].id.as_str(), "openai");
+        assert!(offered[0].variants.is_empty());
+    }
+
+    #[test]
+    fn resolved_config_requires_provider_and_model() {
+        let mut resolved = ResolvedRunConfig::default();
+        assert!(resolved.chat_config().is_none());
+        resolved.provider = Some("openai".into());
+        resolved.model = Some("openai/gpt-5.4".into());
+        assert_eq!(resolved.chat_config().unwrap().model, "openai/gpt-5.4");
+    }
+
+    #[test]
+    fn chat_config_carries_reasoning_options_and_workspace_sandbox() {
+        let mut resolved = ResolvedRunConfig {
+            provider: Some(ProviderId("openai".into())),
+            model: Some("openai/gpt-5.4".into()),
+            reasoning: Some(ReasoningLevel::High),
+            model_options: {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "speed".to_string(),
+                    serde_json::Value::String("fast".into()),
+                );
+                map
+            },
+        };
+        let config = resolved.chat_config().expect("provider + model known");
+        assert_eq!(config.model, "openai/gpt-5.4");
+        assert_eq!(config.reasoning, Some(ReasoningLevel::High));
+        assert_eq!(
+            config.model_options.get("speed"),
+            Some(&serde_json::Value::String("fast".into()))
+        );
+        assert_eq!(config.sandbox, SandboxLevel::WorkspaceWrite);
+        // Model missing: nothing safe to record.
+        resolved.model = None;
+        assert!(resolved.chat_config().is_none());
+    }
+
+    #[test]
+    fn branch_create_name_trims_and_rejects_empty() {
+        // Empty and whitespace-only inputs never enable submit.
+        assert_eq!(branch_create_name(""), None);
+        assert_eq!(branch_create_name("   "), None);
+        assert_eq!(branch_create_name("\t\n"), None);
+        // Real names submit as their trimmed value.
+        assert_eq!(branch_create_name("feat/x").as_deref(), Some("feat/x"));
+        assert_eq!(
+            branch_create_name("  fix-engine  ").as_deref(),
+            Some("fix-engine")
+        );
+    }
+
+    // ---- checkout draft semantics ----
+
+    // `Pickers::checkout_plan` itself needs a GPUI entity (Entity/Subscription
+    // fields), which plain unit tests can't construct; its decision inputs —
+    // `CheckoutKind::default`, `DraftConfig::default`, and the `CheckoutPlan`
+    // variant shapes the composer matches on — are pure and covered here.
+    #[test]
+    fn draft_defaults_start_local_with_no_ref_pick() {
+        let draft = DraftConfig::default();
+        assert_eq!(draft.provider, None);
+        assert_eq!(draft.model, None);
+        assert_eq!(draft.reasoning, None);
+        assert!(draft.model_options.is_empty());
+        assert_eq!(draft.branch, None);
+        assert_eq!(draft.checkout, CheckoutKind::default());
+        assert_eq!(draft.checkout, CheckoutKind::Local);
+    }
+
+    #[test]
+    fn checkout_plan_variants_carry_their_payloads() {
+        // NewWorktree with refs never loaded: `base: None` — send falls back
+        // to the space folder rather than failing.
+        assert_eq!(
+            CheckoutPlan::NewWorktree { base: None },
+            CheckoutPlan::NewWorktree { base: None }
+        );
+        assert_eq!(
+            CheckoutPlan::NewWorktree {
+                base: Some("main".into())
+            },
+            CheckoutPlan::NewWorktree {
+                base: Some("main".into())
+            }
+        );
+        assert_eq!(
+            CheckoutPlan::ReuseWorktree {
+                path: "/wt/holt/x".into(),
+                branch: "feat/x".into()
+            },
+            CheckoutPlan::ReuseWorktree {
+                path: "/wt/holt/x".into(),
+                branch: "feat/x".into()
+            }
+        );
+        assert_eq!(
+            CheckoutPlan::CurrentCheckout { branch: None },
+            CheckoutPlan::CurrentCheckout { branch: None }
+        );
+        // The three variants are distinct matches (composer/send.rs relies on
+        // the discriminants).
+        assert_ne!(
+            CheckoutPlan::CurrentCheckout { branch: None },
+            CheckoutPlan::NewWorktree { base: None }
+        );
+    }
+
+    // ---- model normalization ----
+
+    #[test]
+    fn default_alias_row_drops_only_when_a_real_row_exists() {
+        let models = vec![model("default", "Default"), model("gpt-5", "GPT 5")];
+        let ids: Vec<String> = normalize_model_rows(models)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["gpt-5"]);
+        // A catalog that only offers the alias keeps it.
+        let only_alias = vec![model("DEFAULT", "Default")];
+        let ids: Vec<String> = normalize_model_rows(only_alias)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["DEFAULT"]);
+    }
+
+    #[test]
+    fn orphan_1m_variant_folds_onto_its_base_with_a_pinned_trait() {
+        let mut variant = model("glm-5[1m]", "GLM 5 (1M context)");
+        variant.description = None;
+        let folded = normalize_model_rows(vec![variant]);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].id, "glm-5");
+        assert_eq!(folded[0].label, "GLM 5");
+        let option = folded[0]
+            .options
+            .iter()
+            .find(|o| o.id == "contextWindow")
+            .expect("contextWindow trait pinned");
+        assert_eq!(option.default_choice, "1m");
+        let choice_ids: Vec<&str> = option.choices.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(choice_ids, ["200k", "1m"]);
+        // The `-1m` suffix folds the same way, and an existing trait is not
+        // duplicated.
+        let mut dashed = model("kimi-k2-1m", "Kimi K2 (1M context)");
+        dashed.options = vec![holt_proto::ModelOption {
+            id: "contextWindow".into(),
+            label: "Existing".into(),
+            choices: Vec::new(),
+            default_choice: "1m".into(),
+        }];
+        let folded = normalize_model_rows(vec![dashed]);
+        assert_eq!(folded[0].id, "kimi-k2");
+        assert_eq!(
+            folded[0]
+                .options
+                .iter()
+                .filter(|o| o.id == "contextWindow")
+                .count(),
+            1
+        );
+        assert_eq!(folded[0].options[0].label, "Existing");
+    }
+
+    #[test]
+    fn variant_row_is_noise_when_the_bare_base_is_listed() {
+        let models = vec![
+            model("glm-5", "GLM 5"),
+            model("glm-5[1m]", "GLM 5 (1M context)"),
+        ];
+        let ids: Vec<String> = normalize_model_rows(models)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["glm-5"]);
+    }
+
+    #[test]
+    fn normalization_is_idempotent() {
+        let models = vec![
+            model("default", "Default"),
+            model("glm-5[1m]", "GLM 5 (1M context)"),
+            model("kimi-k2-1m", "Kimi K2 (1M context)"),
+        ];
+        let once = normalize_model_rows(models);
+        let twice = normalize_model_rows(once.clone());
+        assert_eq!(once, twice);
+    }
+
+    // ---- path helpers ----
+
+    #[test]
+    fn parent_path_stops_at_the_filesystem_root() {
+        assert_eq!(parent_path("/"), None);
+        assert_eq!(parent_path(""), None);
+        assert_eq!(parent_path("/a"), Some("/".to_string()));
+        assert_eq!(parent_path("/a/b"), Some("/a".to_string()));
+        assert_eq!(parent_path("/a/b/"), Some("/a".to_string()));
+        assert_eq!(parent_path("a/b"), Some("a".to_string()));
+        assert_eq!(parent_path("a"), None);
+    }
+
+    #[test]
+    fn child_path_joins_without_doubling_the_separator() {
+        assert_eq!(child_path("/Users/x", "src"), "/Users/x/src");
+        assert_eq!(child_path("/", "Users"), "/Users");
+        assert_eq!(child_path("/Users/x/", "src"), "/Users/x/src");
+    }
+
+    #[test]
+    fn completion_prefix_len_case_folds_and_indexes_the_name() {
+        // The length indexes `name`, keeping the folder's real casing.
+        assert_eq!(completion_prefix_len("Documents", "doc"), Some(3));
+        // The length counts NAME bytes matched — here "doc" inside
+        // "documents" — not the whole name.
+        assert_eq!(completion_prefix_len("documents", "DOC"), Some(3));
+        assert_eq!(completion_prefix_len("abc", ""), Some(0));
+        assert_eq!(completion_prefix_len("abc", "abd"), None);
+        assert_eq!(completion_prefix_len("ab", "abc"), None);
+    }
+
+    #[test]
+    fn segment_target_prefers_exact_then_unique_prefix() {
+        let names = ["GitHub", "github", "GitLab"];
+        // Case-SENSITIVE exact match wins over the ci sibling.
+        assert_eq!(segment_target(&names, "GitHub"), Some(0));
+        assert_eq!(segment_target(&names, "github"), Some(1));
+        // Full-length case-insensitive match resolves.
+        assert_eq!(segment_target(&names, "gitlab"), Some(2));
+        // Unique prefix resolves.
+        assert_eq!(segment_target(&names, "gitl"), Some(2));
+        // Ambiguous prefix keeps the slash in the query.
+        assert_eq!(segment_target(&names, "git"), None);
+    }
+
+    #[test]
+    fn typed_path_target_expands_home_and_absolute_paths() {
+        let home = "/Users/x";
+        assert_eq!(typed_path_target("~", Some(home)), Some("/Users/x".into()));
+        assert_eq!(typed_path_target("~/", Some(home)), Some("/Users/x".into()));
+        assert_eq!(
+            typed_path_target("~/github/", Some(home)),
+            Some("/Users/x/github".into())
+        );
+        // `~foo` is a folder name, not a path; `~` needs a resolved home.
+        assert_eq!(typed_path_target("~foo", Some(home)), None);
+        assert_eq!(typed_path_target("~", None), None);
+        assert_eq!(
+            typed_path_target("/disk2/projects/", None),
+            Some("/disk2/projects".into())
+        );
+        assert_eq!(typed_path_target("/", None), Some("/".into()));
+        assert_eq!(typed_path_target("relative/path", Some(home)), None);
+    }
+
+    #[test]
+    fn breadcrumbs_accumulate_root_first() {
+        let crumbs = breadcrumbs("/a/b/c");
+        let pairs: Vec<((&str, &str))> = crumbs
+            .iter()
+            .map(|(label, path)| (label.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [("/", "/"), ("a", "/a"), ("b", "/a/b"), ("c", "/a/b/c")]
+        );
+    }
+
+    #[test]
+    fn browser_rows_show_directories_only() {
+        let listing = holt_proto::FolderListing {
+            path: "/".into(),
+            entries: vec![
+                holt_proto::FolderEntry {
+                    name: "src".into(),
+                    is_dir: true,
+                    is_repo: false,
+                },
+                holt_proto::FolderEntry {
+                    name: "README.md".into(),
+                    is_dir: false,
+                    is_repo: false,
+                },
+                holt_proto::FolderEntry {
+                    name: ".git".into(),
+                    is_dir: true,
+                    is_repo: true,
+                },
+            ],
+            truncated: false,
+        };
+        let names: Vec<&str> = browser_rows(&listing)
+            .into_iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["src", ".git"]);
+    }
+
+    // ---- defaults + traits summary ----
+
+    #[test]
+    fn clamp_reasoning_falls_to_the_model_default() {
+        let ladder = [ReasoningLevel::Low, ReasoningLevel::High];
+        assert_eq!(
+            clamp_reasoning(Some(ReasoningLevel::High), &ladder),
+            Some(ReasoningLevel::High)
+        );
+        // A foreign level never lingers.
+        assert_eq!(
+            clamp_reasoning(Some(ReasoningLevel::Ultra), &ladder),
+            Some(ReasoningLevel::High)
+        );
+        assert_eq!(clamp_reasoning(None, &ladder), Some(ReasoningLevel::High));
+        assert_eq!(clamp_reasoning(Some(ReasoningLevel::High), &[]), None);
+    }
+
+    #[test]
+    fn default_reasoning_falls_to_medium_then_the_first_entry() {
+        assert_eq!(
+            default_reasoning(&[ReasoningLevel::Minimal]),
+            Some(ReasoningLevel::Minimal)
+        );
+        assert_eq!(
+            default_reasoning(&[ReasoningLevel::Low, ReasoningLevel::Medium]),
+            Some(ReasoningLevel::Medium)
+        );
+    }
+
+    #[test]
+    fn default_model_is_the_first_catalog_row() {
+        let models = vec![model("a/flagship", "Flagship"), model("a/cheap", "Cheap")];
+        assert_eq!(
+            default_model(&models).map(|m| m.id.as_str()),
+            Some("a/flagship")
+        );
+        assert_eq!(default_model(&[]), None);
+    }
+
+    #[test]
+    fn traits_summary_names_effective_choices() {
+        let option = holt_proto::ModelOption {
+            id: "speed".into(),
+            label: "Speed".into(),
+            choices: vec![
+                holt_proto::ModelOptionChoice {
+                    id: "balanced".into(),
+                    label: "Balanced".into(),
+                },
+                holt_proto::ModelOptionChoice {
+                    id: "fast".into(),
+                    label: "Fast".into(),
+                },
+            ],
+            default_choice: "balanced".into(),
+        };
+        let mut with_options = model("a/m", "M");
+        with_options.options = vec![option];
+        // Defaults are spelled out, joined with " · ".
+        assert_eq!(
+            traits_summary(
+                Some(&with_options),
+                Some(ReasoningLevel::High),
+                &serde_json::Map::new()
+            ),
+            Some("High · Balanced".to_string())
+        );
+        // An explicit pick that is still offered wins.
+        let mut picks = serde_json::Map::new();
+        picks.insert(
+            "speed".to_string(),
+            serde_json::Value::String("fast".into()),
+        );
+        assert_eq!(
+            traits_summary(Some(&with_options), Some(ReasoningLevel::High), &picks),
+            Some("High · Fast".to_string())
+        );
+        // A stale pick (choice no longer offered) falls back to the default.
+        let mut stale = serde_json::Map::new();
+        stale.insert(
+            "speed".to_string(),
+            serde_json::Value::String("turbo".into()),
+        );
+        assert_eq!(
+            traits_summary(Some(&with_options), Some(ReasoningLevel::High), &stale),
+            Some("High · Balanced".to_string())
+        );
+        // Nothing to describe.
+        assert_eq!(traits_summary(None, None, &serde_json::Map::new()), None);
+        assert_eq!(
+            traits_summary(Some(&model("a/m", "M")), None, &serde_json::Map::new()),
+            None
+        );
+        // Reasoning alone still summarizes.
+        assert_eq!(
+            traits_summary(
+                Some(&model("a/m", "M")),
+                Some(ReasoningLevel::Max),
+                &serde_json::Map::new()
+            ),
+            Some("Max".to_string())
+        );
+    }
+
+    #[test]
+    fn traits_customized_only_for_non_default_picks() {
+        let option = holt_proto::ModelOption {
+            id: "speed".into(),
+            label: "Speed".into(),
+            choices: vec![
+                holt_proto::ModelOptionChoice {
+                    id: "balanced".into(),
+                    label: "Balanced".into(),
+                },
+                holt_proto::ModelOptionChoice {
+                    id: "fast".into(),
+                    label: "Fast".into(),
+                },
+            ],
+            default_choice: "balanced".into(),
+        };
+        let mut with_options = model("a/m", "M");
+        with_options.options = vec![option];
+        let ladder = [ReasoningLevel::High];
+        // All defaults: quiet.
+        assert!(!traits_customized(
+            Some(&with_options),
+            Some(ReasoningLevel::High),
+            &ladder,
+            &serde_json::Map::new()
+        ));
+        // A non-default option pick brightens the trigger.
+        let mut picks = serde_json::Map::new();
+        picks.insert(
+            "speed".to_string(),
+            serde_json::Value::String("fast".into()),
+        );
+        assert!(traits_customized(
+            Some(&with_options),
+            Some(ReasoningLevel::High),
+            &ladder,
+            &picks
+        ));
+        // A non-default reasoning level brightens it too.
+        assert!(traits_customized(
+            Some(&with_options),
+            Some(ReasoningLevel::Max),
+            &ladder,
+            &serde_json::Map::new()
+        ));
+        // A stale pick that is no longer offered does not.
+        let mut stale = serde_json::Map::new();
+        stale.insert(
+            "speed".to_string(),
+            serde_json::Value::String("turbo".into()),
+        );
+        assert!(!traits_customized(
+            Some(&with_options),
+            Some(ReasoningLevel::High),
+            &ladder,
+            &stale
+        ));
+    }
+
+    #[test]
+    fn reasoning_label_spells_out_every_level() {
+        assert_eq!(reasoning_label(ReasoningLevel::High), "High");
+        assert_eq!(reasoning_label(ReasoningLevel::XHigh), "X-High");
+        assert_eq!(reasoning_label(ReasoningLevel::Ultrathink), "Ultrathink");
+    }
+}
