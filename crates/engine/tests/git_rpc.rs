@@ -343,6 +343,169 @@ async fn switch_ref_refuses_to_clobber_uncommitted_changes() {
 }
 
 #[tokio::test]
+async fn create_branch_creates_and_switches_from_head() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+
+    engine
+        .handle(
+            methods::CREATE_BRANCH,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "name": "fresh",
+            }),
+        )
+        .await
+        .unwrap();
+
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "fresh");
+    // Default base = HEAD: the fresh branch points at main's tip.
+    let fresh = repo
+        .find_reference("refs/heads/fresh")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    let main = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    assert_eq!(fresh.id(), main.id());
+    // ListRefs now reports the created branch, tagged current (ordering is
+    // default-branch first, not current first).
+    let listed = list_refs(&engine, &fixture.repo_path()).await;
+    let fresh = listed
+        .iter()
+        .find(|(name, _, _)| name == "fresh")
+        .expect("created branch listed");
+    assert!(fresh.1, "the created branch is checked out");
+    assert!(
+        listed.iter().filter(|(_, current, _)| *current).count() == 1,
+        "exactly one current branch"
+    );
+}
+
+#[tokio::test]
+async fn create_branch_honors_an_explicit_base_ref() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+
+    engine
+        .handle(
+            methods::CREATE_BRANCH,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "name": "from-feature",
+                "baseRef": "feature",
+            }),
+        )
+        .await
+        .unwrap();
+
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "from-feature");
+    assert!(
+        fixture.repo_dir.path().join("feature.txt").exists(),
+        "the working tree carries the base branch's file"
+    );
+    let created = repo
+        .find_reference("refs/heads/from-feature")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    let feature = repo
+        .find_reference("refs/heads/feature")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    assert_eq!(created.id(), feature.id());
+}
+
+#[tokio::test]
+async fn create_branch_rejects_invalid_and_duplicate_names() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+
+    // Invalid ref name: git's own validation message, nothing changes.
+    let error = match engine
+        .handle(
+            methods::CREATE_BRANCH,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "name": "not a valid ref..name",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("an invalid branch name must be rejected"),
+    };
+    assert!(matches!(error, RpcError::Failed(ref message) if !message.is_empty()));
+    let repo = fixture.repo();
+    assert!(
+        repo.find_reference("refs/heads/not a valid ref..name")
+            .is_err()
+    );
+
+    // Duplicate: rejected rather than silently switching to the existing one.
+    let error = match engine
+        .handle(
+            methods::CREATE_BRANCH,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "name": "feature",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("an existing branch name must be rejected"),
+    };
+    assert!(matches!(error, RpcError::Failed(_)));
+    assert!(
+        error.to_string().to_lowercase().contains("exists"),
+        "git's duplicate message expected, got: {error}"
+    );
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+}
+
+#[tokio::test]
+async fn create_branch_refusal_rolls_the_fresh_branch_back() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    // Precious uncommitted work the create's checkout would clobber.
+    std::fs::write(
+        fixture.repo_dir.path().join("feature.txt"),
+        "precious uncommitted work\n",
+    )
+    .unwrap();
+
+    let error = match engine
+        .handle(
+            methods::CREATE_BRANCH,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "name": "fresh",
+                "baseRef": "feature",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a clobbering create must fail"),
+    };
+    assert!(matches!(error, RpcError::Failed(_)));
+
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+    assert!(
+        repo.find_reference("refs/heads/fresh").is_err(),
+        "the refused create must not leave the branch behind"
+    );
+}
+
+#[tokio::test]
 async fn switch_ref_unknown_branch_fails_with_gits_message() {
     let fixture = Fixture::new();
     let engine = fixture.engine();

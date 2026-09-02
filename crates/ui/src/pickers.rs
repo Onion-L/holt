@@ -309,6 +309,15 @@ pub fn child_path(base: &str, name: &str) -> String {
 /// case-insensitively; `None` when `query` isn't a prefix of `name`. The
 /// length indexes into `name` (not `query`) so the completion suffix keeps
 /// the folder's real casing: `("Documents", "doc") → Some(3)` → `"uments"`.
+/// The create row's input validation, as a pure function: the submit
+/// affordance is enabled only for a name that is non-empty after trimming,
+/// and the submitted name is that trimmed value. Everything past this
+/// (ref-format legality, duplicates) is git's to judge.
+pub(crate) fn branch_create_name(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 pub fn completion_prefix_len(name: &str, query: &str) -> Option<usize> {
     let mut len = 0;
     let mut name_chars = name.chars();
@@ -506,7 +515,13 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
+    /// The branch picker's create row: an inline name input collapsed behind
+    /// an affordance until engaged (`CreateBranch` — create-and-switch).
+    branch_create: Entity<ComposerInput>,
+    branch_create_engaged: bool,
+    create_task: Option<Task<()>>,
     _search_events: Subscription,
+    _create_events: Subscription,
     _state_observe: Subscription,
     _catalog_observe: Subscription,
 }
@@ -514,6 +529,14 @@ pub struct Pickers {
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| ComposerInput::new("Search…", cx));
+        // The branch picker's create-row input: Enter submits, Escape is the
+        // frame's to handle (abandon the row, keep the popover open).
+        let branch_create = cx.new(|cx| ComposerInput::new("New branch name…", cx));
+        let create_events = cx.subscribe(&branch_create, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.create_branch_submit(cx);
+            }
+        });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Edited => {
                 // Typing in a filter resets the highlight to the top of the
@@ -641,7 +664,11 @@ impl Pickers {
             switch_task: None,
             switch_error: None,
             mutate_task: None,
+            branch_create,
+            branch_create_engaged: false,
+            create_task: None,
             _search_events: search_events,
+            _create_events: create_events,
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
         }
@@ -829,6 +856,7 @@ impl Pickers {
     /// Begin the exit animation (shared by every close path).
     fn animate_close(&mut self, cx: &mut Context<Self>) {
         self.model_bar = popover::MenuScrollbarState::default();
+        self.branch_create_engaged = false;
         if self.open.begin_close() {
             popover::reap_popup(cx, |pickers: &mut Self| &mut pickers.open);
         }
@@ -1246,6 +1274,59 @@ impl Pickers {
                 match result {
                     Ok(_) => {
                         pickers.config.branch = Some(ref_name);
+                        pickers.animate_close(cx);
+                        pickers.ensure_refs(true, cx);
+                    }
+                    Err(err) => pickers.switch_error = Some(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The create row's submit: `CreateBranch` in the SPACE's folder
+    /// (create-and-switch). Success selects the fresh branch for the draft,
+    /// closes the popover, and refreshes the ref list; failure keeps the
+    /// popover open with git's message in the existing error slot.
+    fn create_branch_submit(&mut self, cx: &mut Context<Self>) {
+        if !self.branch_create_engaged || self.switching.is_some() {
+            return; // not engaged, or a checkout-changing op is in flight
+        }
+        let Some(name) = branch_create_name(self.branch_create.read(cx).text()) else {
+            return; // empty after trim: nothing to create
+        };
+        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+            return;
+        };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        self.switch_error = None;
+        self.switching = Some(name.clone());
+        self.create_task = Some(cx.spawn(async move |this, cx| {
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "repoPath".into(),
+                serde_json::Value::String(space.path.clone()),
+            );
+            params.insert("name".into(), serde_json::Value::String(name.clone()));
+            let result = engine
+                .client()
+                .call(methods::CREATE_BRANCH, serde_json::Value::Object(params))
+                .await;
+            this.update(cx, |pickers, cx| {
+                pickers.switching = None;
+                match result {
+                    Ok(_) => {
+                        pickers.config.branch = Some(name);
+                        // The fresh branch lives in the space's local checkout.
+                        pickers.config.checkout = CheckoutKind::Local;
+                        pickers.branch_create_engaged = false;
+                        pickers
+                            .branch_create
+                            .update(cx, |input, cx| input.set_text("", cx));
                         pickers.animate_close(cx);
                         pickers.ensure_refs(true, cx);
                     }
@@ -1811,7 +1892,7 @@ impl Pickers {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The frame stays mounted (and possibly focused) through the exit
         // animation — keys must not drive a dying popover.
         if !self.open.is_open() {
@@ -1834,8 +1915,24 @@ impl Pickers {
             event.keystroke.modifiers.control,
         );
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
+        // An engaged create row owns Enter/Escape: Enter submits through the
+        // input's Submitted event, Escape abandons the row without closing
+        // the popover.
+        let create_focused = self.branch_create_engaged
+            && self
+                .branch_create
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
         match key {
             MenuKey::Escape => {
+                if create_focused {
+                    self.branch_create_engaged = false;
+                    window.focus(&self.focus, cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 self.animate_close(cx);
                 cx.notify();
             }
@@ -1865,7 +1962,7 @@ impl Pickers {
                 }
                 cx.notify();
             }
-            MenuKey::Enter if !search_focused => {
+            MenuKey::Enter if !search_focused && !create_focused => {
                 if self.open_kind() == Some(PickerKind::ProviderModel) {
                     self.activate_model_row(cx);
                 } else if self.open_kind() == Some(PickerKind::Checkout) {
@@ -2575,7 +2672,8 @@ impl Pickers {
             .flex()
             .flex_col()
             .child(self.search_box(&theme))
-            .child(body);
+            .child(body)
+            .child(self.branch_create_row(&theme, cx));
         // Mid-session switch failure (dirty tree, ref checked out elsewhere):
         // git's own message, under a hairline.
         if let Some(error) = &self.switch_error {
@@ -2605,6 +2703,77 @@ impl Pickers {
             );
         }
         popover.into_any_element()
+    }
+
+    /// The branch picker's create row: a collapsed affordance that expands
+    /// into an inline name input. Hidden for existing sessions — refs are
+    /// fixed at creation, and a create would re-point the space's checkout.
+    fn branch_create_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        if self.state.read(cx).selected_chat_row().is_some() {
+            return div().into_any_element();
+        }
+        if !self.branch_create_engaged {
+            return popover::menu_row_nav(theme, false, false, "branch-create-row".to_string())
+                .id("branch-create-row")
+                .when(self.switching.is_some(), |el| el.opacity(0.55))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.branch_create_engaged = true;
+                    let handle = this.branch_create.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from("Create branch…")),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .child(SharedString::from("+")),
+                )
+                .into_any_element();
+        }
+        let enabled = branch_create_name(self.branch_create.read(cx).text()).is_some()
+            && self.switching.is_none();
+        popover::menu_section()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(4.0))
+            .child(popover::search_input_frame(
+                theme,
+                self.branch_create.clone().into_any_element(),
+            ))
+            .child(
+                div()
+                    .id("branch-create-submit")
+                    .flex_none()
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(if enabled {
+                        theme.text
+                    } else {
+                        theme.text_faint
+                    })
+                    .when(enabled, |el| {
+                        el.cursor_pointer()
+                            .hover(|state| state.bg(theme.element_hover))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.create_branch_submit(cx)))
+                    .child(SharedString::from("Create")),
+            )
+            .into_any_element()
     }
 
     /// The checkout-kind dropdown (t3code BranchToolbarEnvModeSelector): two
@@ -3848,5 +4017,19 @@ mod tests {
         resolved.provider = Some("openai".into());
         resolved.model = Some("openai/gpt-5.4".into());
         assert_eq!(resolved.chat_config().unwrap().model, "openai/gpt-5.4");
+    }
+
+    #[test]
+    fn branch_create_name_trims_and_rejects_empty() {
+        // Empty and whitespace-only inputs never enable submit.
+        assert_eq!(branch_create_name(""), None);
+        assert_eq!(branch_create_name("   "), None);
+        assert_eq!(branch_create_name("\t\n"), None);
+        // Real names submit as their trimmed value.
+        assert_eq!(branch_create_name("feat/x").as_deref(), Some("feat/x"));
+        assert_eq!(
+            branch_create_name("  fix-engine  ").as_deref(),
+            Some("fix-engine")
+        );
     }
 }

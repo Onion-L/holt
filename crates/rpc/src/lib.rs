@@ -99,6 +99,12 @@ pub mod methods {
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
+    /// Create a branch and check it out (`checkout -b` semantics): params
+    /// `{repoPath, name, baseRef?}`. Base defaults to the current HEAD; the
+    /// optional base ref is contract headroom (the v1 UI input is name-only).
+    /// Invalid or already-existing names are rejected with git's message;
+    /// the checkout obeys the same safe-checkout rules as `SwitchRef`.
+    pub const CREATE_BRANCH: &str = "CreateBranch";
     pub const LIST_FOLDERS: &str = "ListFolders";
     /// The device's browse roots: home plus mounted drives/volumes.
     pub const LIST_DRIVES: &str = "ListDrives";

@@ -55,6 +55,26 @@ impl Git {
             .await
     }
 
+    /// Create a branch at `base_ref` (default HEAD) and check it out —
+    /// `checkout -b` semantics under the same safe-checkout rules as
+    /// [`Git::switch_ref`]. Validation (ref format) and duplicate names are
+    /// git's own errors; if the checkout refuses (uncommitted data would be
+    /// clobbered) the freshly created branch is rolled back so a retry with
+    /// the same name is not met with "already exists".
+    pub(crate) async fn create_branch(
+        &self,
+        repo_path: &str,
+        branch_name: &str,
+        base_ref: Option<String>,
+    ) -> Result<(), String> {
+        let branch_name = branch_name.to_string();
+        let base_ref = base_ref.filter(|value| !value.trim().is_empty());
+        self.with_repo(repo_path, move |repo| {
+            create_and_switch(&repo, &branch_name, base_ref.as_deref())
+        })
+        .await
+    }
+
     /// Run `op` against the repository resolved from `repo_path`: resolve
     /// its common git dir, take the per-checkout lock, then execute on the
     /// blocking pool.
@@ -231,6 +251,40 @@ fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), String> {
         .map_err(git_message)?;
     repo.set_head(&ref_name).map_err(git_message)?;
     Ok(())
+}
+
+/// `checkout -b`: git itself validates the name (ref-format rules) and
+/// rejects duplicates when the branch is created; only then does the safe
+/// checkout run. A refused checkout rolls the fresh branch back so a retry
+/// with the same name starts clean.
+fn create_and_switch(
+    repo: &Repository,
+    branch_name: &str,
+    base_ref: Option<&str>,
+) -> Result<(), String> {
+    let commit = match base_ref {
+        Some(base) => repo
+            .revparse_single(base)
+            .map_err(git_message)?
+            .peel_to_commit()
+            .map_err(git_message)?,
+        None => repo
+            .head()
+            .map_err(git_message)?
+            .peel_to_commit()
+            .map_err(git_message)?,
+    };
+    let mut branch = repo
+        .branch(branch_name, &commit, false)
+        .map_err(git_message)?;
+    let branch_name = branch_name.to_string();
+    match switch_branch(repo, &branch_name) {
+        Ok(()) => Ok(()),
+        Err(message) => {
+            branch.delete().ok();
+            Err(message)
+        }
+    }
 }
 
 fn git_message(error: git2::Error) -> String {

@@ -622,6 +622,19 @@ impl RpcService for StubEngine {
                     .map_err(RpcError::Failed)?;
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::CREATE_BRANCH => {
+                let repo_path = required_string(&params, "repoPath")?;
+                let name = required_string(&params, "name")?;
+                let base_ref = params
+                    .get("baseRef")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                self.git
+                    .create_branch(repo_path, name, base_ref)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
 
             // Entity watches: one snapshot, then silence. Devices are real —
             // the local machine browses its own folders — the rest stay empty.
