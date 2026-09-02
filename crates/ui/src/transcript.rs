@@ -74,17 +74,11 @@ const SELECTION_SCROLL_MAX_STEP_PX: f32 = 24.0;
 /// Transcript column max width (holt 46rem).
 pub const MAX_CONTENT_WIDTH: f32 = 736.0;
 /// Tool chip row height / gap — analytic, so fold heights need no measurement.
-/// A row is the guide rail + a 30px chip card centered in it (holt
-/// tool-chip.tsx: `TOOL_CHIP_HEIGHT = 38`, card `h-[30px]`); rows stack with no
-/// gap so the rail reads continuous.
-pub const CHIP_HEIGHT: f32 = 38.0;
+/// A row is a FLAT quiet line (no card chrome): the header row is the whole
+/// chip, so one constant is both the row and its header. Rows stack with no
+/// gap so the guide rail reads continuous.
+pub const CHIP_HEIGHT: f32 = 28.0;
 pub const CHIP_GAP: f32 = 0.0;
-pub const CHIP_CARD_HEIGHT: f32 = 30.0;
-/// Inner height of the chip header: [`CHIP_CARD_HEIGHT`] is the card's
-/// border-box (explicit `h` in gpui includes the 1px border), so a 30px
-/// header inside a 30px bordered card clips 2px off the bottom and every
-/// glyph/icon reads high (user report).
-const CHIP_HEADER_HEIGHT: f32 = CHIP_CARD_HEIGHT - 2.0;
 
 /// Signed list scroll step for a pointer near a viewport edge.
 ///
@@ -702,9 +696,6 @@ pub const OUTPUT_LINE_HEIGHT: f32 = 18.0;
 
 /// Vertical padding of an output detail body (py(6) × 2).
 const OUTPUT_BODY_PAD: f32 = 12.0;
-
-/// The hairline between an expanded chip's header row and its detail body.
-const DETAIL_SEPARATOR: f32 = 1.0;
 
 /// Build a tool part's expandable detail. A diff wins over raw output (it is
 /// the more structured record of the same action); post-strip docs carry diff
@@ -1612,12 +1603,12 @@ pub fn chips_height(count: usize) -> f32 {
     CHIPS_TOP_PAD + count as f32 * CHIP_HEIGHT + (count as f32 - 1.0) * CHIP_GAP
 }
 
-/// Analytic height an open detail adds to its chip's card (separator + body)
-/// — output blocks by line count, diff blocks via the changes pane's own
+/// Analytic height an open detail adds to its chip's row — output blocks by
+/// line count, diff blocks via the changes pane's own
 /// [`crate::changes::body_height`]. The chip's own [`CHIP_HEIGHT`] is already
 /// counted by [`chips_height`].
 pub fn detail_height(detail: &ToolDetail) -> f32 {
-    let body = match detail {
+    match detail {
         ToolDetail::Output {
             lines,
             truncated_by,
@@ -1634,8 +1625,7 @@ pub fn detail_height(detail: &ToolDetail) -> f32 {
         }
         ToolDetail::Diff { file, .. } => crate::changes::body_height(file),
         ToolDetail::Stats { stats } => stats.len() as f32 * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD,
-    };
-    DETAIL_SEPARATOR + body
+    }
 }
 
 /// Height of the "Show full output/diff" affordance row appended below an
@@ -4734,7 +4724,7 @@ impl Transcript {
         let summary = tool_group_summary(tools);
 
         let toggle_id = row_id.clone();
-        // Header (holt tool-group.tsx): a small chevron tile centered over the
+        // Header (holt tool-group.tsx): a small bare chevron centered over the
         // chips' guide rail, then the quiet 12px summary.
         let header = div()
             .id(SharedString::from(format!("{row_id}-hdr")))
@@ -4743,7 +4733,7 @@ impl Transcript {
             .items_center()
             .gap(px(8.0))
             .px(px(4.0))
-            .h(px(26.0))
+            .h(px(CHIP_HEIGHT))
             .cursor_pointer()
             .text_size(px(12.0))
             .line_height(px(18.0))
@@ -4762,8 +4752,6 @@ impl Transcript {
                 div()
                     .size(px(18.0))
                     .flex_none()
-                    .rounded(px(5.0))
-                    .bg(crate::theme::ink(0.06))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -4828,19 +4816,17 @@ impl Transcript {
                 let open = detail_opens[ix];
                 let dfold = detail_folds[ix];
                 let key = SharedString::from(format!("{row_id}#d{ix}"));
-                // Expandable chip: ONE card whose header row is the chip and
-                // whose body is the detail — not a floating card below it.
-                // The guide rail stretches with the row, so an open detail
-                // never breaks the rail.
+                // Expandable chip: header row + detail body in ONE flat
+                // column (no card chrome) — the guide rail stretches with
+                // the row, so an open detail never breaks the rail.
                 //
-                // The card's height is EXPLICIT (border-box), not intrinsic:
-                // an auto-height card adds its 2px of borders on top of the
-                // 30px header, and with N chips that overflowed the group's
-                // analytic height by 2N px — the last chips rendered clipped
-                // (user report: "tool calls cut off at the bottom"). The
-                // explicit height is also what the open/close tween animates.
-                let closed_h = CHIP_CARD_HEIGHT;
-                let open_h = CHIP_CARD_HEIGHT
+                // The column's height is EXPLICIT, not intrinsic: it is what
+                // the open/close tween animates, and it must match the
+                // group's analytic height exactly or stacked chips drift
+                // (the old bordered card overflowed by its own 2px of
+                // borders — user report: "tool calls cut off at the bottom").
+                let closed_h = CHIP_HEIGHT;
+                let open_h = CHIP_HEIGHT
                     + invocation.as_deref().map_or(0.0, detail_height)
                     + detail.as_deref().map_or(0.0, detail_height)
                     + affordance_h;
@@ -4852,21 +4838,16 @@ impl Transcript {
                 let toggle_key = key.clone();
                 let group_key = row_id.clone();
                 let mut card = div()
-                    .my(px((CHIP_HEIGHT - CHIP_CARD_HEIGHT) / 2.0))
                     .when(collapses, |el| el.ml(px(12.0)))
                     .min_w_0()
                     .flex_1()
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(px(9.0))
-                    .border_1()
-                    .border_color(crate::theme::hairline(0.07))
-                    .bg(crate::theme::ink(0.03))
                     .child(
                         div()
                             .id(key.clone())
-                            .h(px(CHIP_HEADER_HEIGHT))
+                            .h(px(CHIP_HEIGHT))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -4902,27 +4883,14 @@ impl Transcript {
                     );
                 // The body stays mounted while the close tween shrinks over it.
                 // Invocation first (what was asked), then output/diff (what
-                // came back), each under its own hairline.
+                // came back).
                 if open || animating {
                     if let Some(invocation) = invocation.as_deref() {
-                        card = card
-                            .child(
-                                div()
-                                    .h(px(DETAIL_SEPARATOR))
-                                    .flex_none()
-                                    .bg(crate::theme::hairline(0.06)),
-                            )
-                            .child(detail_body(invocation, None, theme));
+                        card = card.child(detail_body(invocation, None, theme));
                     }
                     if let Some(detail) = detail.as_deref() {
-                        card = card
-                            .child(
-                                div()
-                                    .h(px(DETAIL_SEPARATOR))
-                                    .flex_none()
-                                    .bg(crate::theme::hairline(0.06)),
-                            )
-                            .child(detail_body(detail, detail_highlights[ix].clone(), theme));
+                        card =
+                            card.child(detail_body(detail, detail_highlights[ix].clone(), theme));
                     }
                     if let Some(ChipAffordance { blob_ref, label }) = affordance {
                         let loading = matches!(
@@ -5382,8 +5350,9 @@ fn more_lines_row(truncated_by: usize, theme: &Theme) -> gpui::Div {
 }
 
 /// Shape one flattened thought line into gpui text runs — the detail-body
-/// palette: muted foreground prose, semibold for bold, violet mono for code,
-/// underlined links (NOT clickable — a thought is a record, not a surface).
+/// palette: extra-muted foreground prose (a thought is context, dimmer than
+/// the reply around it), semibold for bold, violet mono for code, underlined
+/// links (NOT clickable — a thought is a record, not a surface).
 fn thought_line_text(line: &[InlineRun], theme: &Theme) -> Option<(SharedString, Vec<TextRun>)> {
     let mut text = String::new();
     let mut runs: Vec<TextRun> = Vec::new();
@@ -5408,7 +5377,7 @@ fn thought_line_text(line: &[InlineRun], theme: &Theme) -> Option<(SharedString,
             color: if run.style.code {
                 render::inline_code_text(theme)
             } else {
-                theme.text.opacity(0.85)
+                theme.text.opacity(0.6)
             },
             background_color: None,
             underline: run.style.link.is_some().then_some(gpui::UnderlineStyle {
@@ -5429,7 +5398,7 @@ fn thought_line_text(line: &[InlineRun], theme: &Theme) -> Option<(SharedString,
     Some((text.into(), runs))
 }
 
-/// The trailing tile on a chip header, when it has one.
+/// The inline trailing affordance on a chip header, when it has one.
 enum ChipTrail {
     /// Expand/collapse chevron — flipped while the detail body is open.
     Chevron { open: bool },
@@ -5438,9 +5407,10 @@ enum ChipTrail {
     OpenArrow,
 }
 
-/// The chip's content row: icon tile + label + detail line (+ trailing tile
-/// when the chip expands or links out). Shared between the plain chip, the
-/// header of an expandable chip card, and the spawn link chip.
+/// The chip's content row: bare icon + label + detail line (+ inline trailing
+/// affordance when the chip expands or links out). Shared between the plain
+/// chip, the header of an expandable chip, and the spawn link chip. Flat by
+/// design — no card chrome; the row is the chip.
 ///
 /// Spawn chips carry their subagent's lifecycle VISUALLY, in the chip's own
 /// language: while running the mini working spinner (the sidebar's) pulses
@@ -5474,7 +5444,7 @@ fn chip_header_row(
         theme.text_muted
     };
     div()
-        .h(px(CHIP_HEADER_HEIGHT))
+        .h(px(CHIP_HEIGHT))
         .w_full()
         .min_w_0()
         .flex()
@@ -5485,13 +5455,11 @@ fn chip_header_row(
         .text_size(px(12.0))
         .line_height(px(18.0))
         .child(
-            // Icon tile (`size-[18px] rounded-[5px] bg-white/[0.08]`,
-            // icon size-3).
+            // Bare leading icon — the slot keeps the old tile's 18px
+            // footprint so the guide rail hanging under it doesn't move.
             div()
                 .size(px(18.0))
                 .flex_none()
-                .rounded(px(5.0))
-                .bg(crate::theme::ink(0.08))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -5501,8 +5469,8 @@ fn chip_header_row(
                     } else {
                         tool_icon_path(&tool.call)
                     })
-                    .size(px(12.0))
-                    .text_color(theme.text_muted),
+                    .size(px(13.0))
+                    .text_color(theme.text_muted.opacity(0.85)),
                 ),
         )
         .child(
@@ -5515,21 +5483,25 @@ fn chip_header_row(
                 .text_color(tint)
                 .child(SharedString::from(label)),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h(px(18.0))
-                .flex()
-                .items_center()
-                .truncate()
-                .text_color(if failed {
-                    theme.danger
-                } else {
-                    theme.text.opacity(0.85)
-                })
-                .child(SharedString::from(detail)),
-        )
+        // The detail hugs its text (grow 0, shrink 1) so the trailing
+        // affordance sits right after it; a long line still truncates.
+        .when(!detail.is_empty(), |row| {
+            row.child(
+                div()
+                    .min_w_0()
+                    .flex_shrink(1.0)
+                    .h(px(18.0))
+                    .flex()
+                    .items_center()
+                    .truncate()
+                    .text_color(if failed {
+                        theme.danger
+                    } else {
+                        theme.text.opacity(0.85)
+                    })
+                    .child(SharedString::from(detail)),
+            )
+        })
         .when_some(tool.call.subagent_model(), |row, model| {
             // Which model the child runs on, when the spawn named one.
             //
@@ -5538,10 +5510,10 @@ fn chip_header_row(
             // reader scanning a fan-out of spawns wants left once the
             // descriptions are cut.
             //
-            // Bare faint text, NOT a filled pill: the tiles either side of it
-            // are AFFORDANCES (the spinner means running, the arrow opens the
-            // subagent), so giving a passive label the same chrome made the
-            // trailing edge read as three buttons — the loudest thing in the
+            // Bare faint text, NOT a filled pill: the affordances either side
+            // of it (spinner = running, arrow = opens the subagent) already
+            // claim the trailing edge; giving a passive label the same chrome
+            // made the row read as three buttons — the loudest thing in the
             // row was the one thing you cannot click.
             row.child(
                 div()
@@ -5581,22 +5553,15 @@ fn chip_header_row(
             )))
         })
         .when_some(trail, |row, trail| {
-            // Trailing tile matching the group header's: a chevron for the
+            // Inline trailing affordance (no tile): a chevron for the
             // output/diff accordion, or the open-arrow for spawn chips.
-            let tile = div()
-                .size(px(18.0))
-                .flex_none()
-                .rounded(px(5.0))
-                .bg(crate::theme::ink(0.06))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.text_muted.opacity(0.8));
             row.child(match trail {
-                ChipTrail::Chevron { open } => tile
+                ChipTrail::Chevron { open } => div()
+                    .flex_none()
                     .text_size(px(10.0))
+                    .text_color(theme.text_muted.opacity(0.8))
                     .child(SharedString::from(if open { "▾" } else { "▸" })),
-                ChipTrail::OpenArrow => tile.child(
+                ChipTrail::OpenArrow => div().flex_none().child(
                     crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
                         .size(px(11.0))
                         .text_color(theme.text_muted.opacity(0.8)),
@@ -5677,7 +5642,7 @@ fn subagent_tab_title(call: &ToolCall) -> SharedString {
     "Subagent".into()
 }
 
-/// A plain (non-expandable) chip: bordered card, plus the group guide rail
+/// A plain (non-expandable) chip: a flat quiet row, plus the group guide rail
 /// when the chip lives under a collapsible header.
 fn tool_chip(
     tool: &ToolItem,
@@ -5706,24 +5671,17 @@ fn tool_chip(
         .child(
             div()
                 .when(rail, |el| el.ml(px(12.0)))
-                .h(px(CHIP_CARD_HEIGHT))
                 .min_w_0()
                 .flex_1()
-                .flex()
-                .items_center()
                 .overflow_hidden()
-                .rounded(px(9.0))
-                .border_1()
-                .border_color(crate::theme::hairline(0.07))
-                .bg(crate::theme::ink(0.03))
                 .child(chip_header_row(tool, None, theme, view, cx)),
         )
         .into_any_element()
 }
 
-/// A spawn chip: same card as [`tool_chip`], but the WHOLE card is the
-/// "open the subagent tab" click (open-arrow tile in the trailing slot).
-/// No accordion — an inline body would only repeat the subagent's own
+/// A spawn chip: same flat row as [`tool_chip`], but the WHOLE row is the
+/// "open the subagent tab" click (open-arrow affordance in the trailing
+/// slot). No accordion — an inline body would only repeat the subagent's own
 /// transcript. The group guide rail is omitted for agent-only rows (no
 /// collapse header for it to hang from).
 fn subagent_chip(
@@ -5756,18 +5714,14 @@ fn subagent_chip(
             div()
                 .id(id)
                 .when(rail, |el| el.ml(px(12.0)))
-                .h(px(CHIP_CARD_HEIGHT))
                 .min_w_0()
                 .flex_1()
-                .flex()
-                .items_center()
                 .overflow_hidden()
-                .rounded(px(9.0))
-                .border_1()
-                .border_color(crate::theme::hairline(0.07))
-                .bg(crate::theme::ink(0.03))
+                .rounded(px(6.0))
                 .cursor_pointer()
-                .hover(|s| s.bg(crate::theme::ink(0.05)))
+                // Invisible until hover — the flat row carries no chrome, the
+                // wash is pure clickability feedback.
+                .hover(|s| s.bg(crate::theme::ink(0.04)))
                 .on_click(on_open)
                 .child(chip_header_row(
                     tool,
@@ -7408,7 +7362,7 @@ mod tests {
     #[test]
     fn multiline_command_flattens_to_one_chip_line() {
         // The user's breaker: a multi-line script in a Run chip. The detail
-        // must come out as ONE sanitized line — the chip's fixed 30px card
+        // must come out as ONE sanitized line — the chip's fixed-height row
         // then truncates it with an ellipsis like the original's CSS.
         let (label, detail) = tool_chip_content(&ToolCall::Exec {
             command: "set -e\nfixture_in_original=0\n\tgrep -c  \"x\"".into(),
