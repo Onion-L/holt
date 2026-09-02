@@ -79,10 +79,20 @@ impl ProviderAdapter {
     }
 
     pub fn models_for(&self, provider_id: &str) -> Vec<HoltModel> {
+        // Custom ids that shadow a builtin catalog id are ignored everywhere:
+        // the list is rejected at add time, and legacy file entries must not
+        // mark builtin rows deletable.
+        let builtin: HashSet<String> = self
+            .models
+            .get_models(Some(provider_id))
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
         let custom_ids: HashSet<String> = self
             .settings
             .custom_models_for(provider_id)
             .into_iter()
+            .filter(|id| !builtin.contains(id))
             .collect();
         project_models(self.core_models_for(provider_id), &custom_ids)
     }
@@ -106,6 +116,14 @@ impl ProviderAdapter {
 
     pub fn can_add_custom_model(&self, provider_id: &str) -> bool {
         !self.models.get_models(Some(provider_id)).is_empty()
+    }
+
+    /// Is `model_id` already in the provider's model list — the builtin
+    /// catalog or a user-added custom id? Additions must be new ids.
+    pub fn has_model(&self, provider_id: &str, model_id: &str) -> bool {
+        self.core_models_for(provider_id)
+            .iter()
+            .any(|model| model.id == model_id)
     }
 
     pub fn is_eligible(provider_id: &str) -> bool {
@@ -207,6 +225,7 @@ fn project_models(mut models: Vec<CoreModel>, custom_ids: &HashSet<String>) -> V
             default_reasoning: model.reasoning.then_some(ReasoningLevel::High),
             reasoning_levels,
             options: Vec::new(),
+            custom: custom_ids.contains(&model.id),
         });
     }
     projected

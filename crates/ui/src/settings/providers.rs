@@ -28,6 +28,9 @@ pub struct ProvidersPage {
     inputs: HashMap<String, Entity<ComposerInput>>,
     models: HashMap<String, Loadable<Vec<Model>>>,
     model_inputs: HashMap<String, Entity<ComposerInput>>,
+    /// Per-variant hint for a rejected "Add model" attempt (duplicate ID,
+    /// engine rejection) — small inline text, not the page error strip.
+    model_errors: HashMap<String, String>,
     model_tasks: HashMap<String, Task<()>>,
     revealed: HashMap<String, String>,
     error: Option<String>,
@@ -47,6 +50,7 @@ impl ProvidersPage {
             inputs: HashMap::new(),
             models: HashMap::new(),
             model_inputs: HashMap::new(),
+            model_errors: HashMap::new(),
             model_tasks: HashMap::new(),
             revealed: HashMap::new(),
             error: None,
@@ -212,11 +216,12 @@ impl ProvidersPage {
             .map(|input| input.read(cx).text().trim().to_string())
             .unwrap_or_default();
         if model.is_empty() {
-            self.error = Some("Model ID is required".to_string());
+            self.model_errors
+                .insert(provider, "Model ID is required".to_string());
             cx.notify();
             return;
         }
-        self.error = None;
+        self.model_errors.remove(&provider);
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -228,9 +233,40 @@ impl ProvidersPage {
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
+                        page.model_errors.remove(&provider);
                         if let Some(input) = page.model_inputs.get(&provider) {
                             input.update(cx, |input, cx| input.set_text("", cx));
                         }
+                        crate::pickers::bump_provider_catalog(cx);
+                        page.load_models(&provider, true, cx);
+                    }
+                    Err(error) => {
+                        page.model_errors
+                            .insert(provider.clone(), error.to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn remove_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.error = None;
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::REMOVE_PROVIDER_MODEL,
+                    serde_json::json!({"providerId": provider, "modelId": model}),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(_) => {
                         crate::pickers::bump_provider_catalog(cx);
                         page.load_models(&provider, true, cx);
                     }
@@ -367,6 +403,7 @@ impl Render for ProvidersPage {
                     let variant_id = self.active_variant_id(&id).unwrap_or_else(|| id.clone());
                     let input = self.inputs.get(&variant_id).cloned();
                     let model_input = self.model_inputs.get(&variant_id).cloned();
+                    let model_error = self.model_errors.get(&variant_id).cloned();
                     let models = self
                         .models
                         .get(&variant_id)
@@ -389,7 +426,7 @@ impl Render for ProvidersPage {
                     let danger_muted = theme.danger_muted;
                     let mono = theme.font_mono.clone();
                     let model_list =
-                        provider_model_list(index, &variant_id, models, &theme, cx.entity_id(), cx);
+                        provider_model_list(index, &variant_id, models, &theme, cx.entity(), cx);
                     let variant_selector = variant_selector(&provider, &variant_id, &theme, cx);
                     let content = div()
                         .pl(px(56.0))
@@ -507,7 +544,13 @@ impl Render for ProvidersPage {
                                                 }))
                                                 .child("Add model"),
                                         ),
-                                ),
+                                )
+                                .children(model_error.map(|message| {
+                                    div()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.danger_muted.opacity(0.9))
+                                        .child(SharedString::from(message))
+                                })),
                         );
                     let panel = div().w_full().overflow_hidden().child(content);
                     if collapsing {
@@ -715,12 +758,12 @@ fn provider_model_list(
     provider_id: &str,
     models: Loadable<Vec<Model>>,
     theme: &Theme,
-    view: gpui::EntityId,
+    page: gpui::Entity<ProvidersPage>,
     cx: &mut gpui::App,
 ) -> AnyElement {
     match models {
         Loadable::Idle | Loadable::Loading => {
-            popover::skeleton_rows("provider-model-skeleton", theme, 4, view, cx)
+            popover::skeleton_rows("provider-model-skeleton", theme, 4, page.entity_id(), cx)
         }
         Loadable::Error(error) => widgets::error_strip(theme, error).into_any_element(),
         Loadable::Ready(models) if models.is_empty() => div()
@@ -733,45 +776,81 @@ fn provider_model_list(
             let count = models.len();
             let height = (count as f32 * 32.0).min(192.0);
             let provider_prefix = format!("{provider_id}/");
+            let provider_for_removal = provider_id.to_string();
             let models = Arc::new(models);
             let row_models = Arc::clone(&models);
             let row_theme = theme.clone();
             gpui::uniform_list(
                 ("provider-model-list", index),
                 count,
-                move |range, _window, _cx| {
-                    range
-                        .filter_map(|row| row_models.get(row))
-                        .map(|model| {
-                            let raw_id =
-                                model.id.strip_prefix(&provider_prefix).unwrap_or(&model.id);
-                            div()
-                                .h(px(32.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .w(px(200.0))
-                                        .flex_none()
-                                        .truncate()
-                                        .text_size(crate::typography::ui_rems(12.0))
-                                        .text_color(row_theme.text)
-                                        .child(SharedString::from(model.label.clone())),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .font_family(row_theme.font_mono.clone())
-                                        .text_size(crate::typography::ui_rems(11.0))
-                                        .text_color(row_theme.text_muted)
-                                        .child(SharedString::from(raw_id.to_string())),
-                                )
-                                .into_any_element()
-                        })
-                        .collect()
+                move |range, _window, cx| {
+                    page.update(cx, |_page, cx| {
+                        range
+                            .filter_map(|row| row_models.get(row))
+                            .map(|model| {
+                                let raw_id =
+                                    model.id.strip_prefix(&provider_prefix).unwrap_or(&model.id);
+                                let mut list_row = div()
+                                    .h(px(32.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(
+                                        div()
+                                            .w(px(200.0))
+                                            .flex_none()
+                                            .truncate()
+                                            .text_size(crate::typography::ui_rems(12.0))
+                                            .text_color(row_theme.text)
+                                            .child(SharedString::from(model.label.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_family(row_theme.font_mono.clone())
+                                            .text_size(crate::typography::ui_rems(11.0))
+                                            .text_color(row_theme.text_muted)
+                                            .child(SharedString::from(raw_id.to_string())),
+                                    );
+                                // Only user-added rows are deletable; builtin
+                                // catalog rows render without the close action.
+                                if model.custom {
+                                    let provider = provider_for_removal.clone();
+                                    let model_id = model.id.clone();
+                                    let idle_icon = row_theme.text_muted;
+                                    let hover_icon = row_theme.text;
+                                    list_row = list_row.child(
+                                        widgets::ghost_action(&row_theme)
+                                            .id((
+                                                gpui::ElementId::from(("remove-model", index)),
+                                                raw_id.to_string(),
+                                            ))
+                                            .on_click(cx.listener(move |page, _, _, cx| {
+                                                page.remove_model(
+                                                    provider.clone(),
+                                                    model_id.clone(),
+                                                    cx,
+                                                )
+                                            }))
+                                            // Svg reads only its own text color,
+                                            // so the tint and hover live on the
+                                            // icon — no background wash.
+                                            .child(
+                                                crate::icons::icon(crate::icons::CLOSE)
+                                                    .size(px(12.0))
+                                                    .text_color(idle_icon)
+                                                    .hover(move |style| {
+                                                        style.text_color(hover_icon)
+                                                    }),
+                                            ),
+                                    );
+                                }
+                                list_row.into_any_element()
+                            })
+                            .collect()
+                    })
                 },
             )
             .h(px(height))

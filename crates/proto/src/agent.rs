@@ -124,6 +124,10 @@ pub struct Model {
     pub default_reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub options: Vec<ModelOption>,
+    /// True when this row is a user-added custom model (settings-page
+    /// deletable); builtin catalog rows are not.
+    #[serde(default)]
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

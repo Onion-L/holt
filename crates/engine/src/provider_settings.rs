@@ -74,6 +74,40 @@ impl ProviderSettingsStore {
         Ok(())
     }
 
+    /// Drops one user-added model id. Returns `false` when the id is not a
+    /// custom model for this provider — builtin catalog rows live outside
+    /// this store, so they can never be removed here.
+    pub fn remove_custom_model(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<bool, EngineError> {
+        let mut settings = self
+            .settings
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = settings.clone();
+        let removed = settings
+            .custom_models
+            .get_mut(provider_id)
+            .is_some_and(|models| models.remove(model_id));
+        if !removed {
+            return Ok(false);
+        }
+        if settings
+            .custom_models
+            .get(provider_id)
+            .is_some_and(|models| models.is_empty())
+        {
+            settings.custom_models.remove(provider_id);
+        }
+        if let Err(error) = self.persist(&settings) {
+            *settings = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     fn persist(&self, settings: &StoredSettings) -> Result<(), EngineError> {
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|error| EngineError::Other(error.to_string()))?;
@@ -110,6 +144,37 @@ mod tests {
 
         let restored = ProviderSettingsStore::load(dir.path()).unwrap();
         assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
+    }
+
+    #[test]
+    fn remove_custom_model_drops_only_custom_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        settings.add_custom_model("openai", "gpt-custom").unwrap();
+        settings.add_custom_model("openai", "gpt-other").unwrap();
+
+        // Unknown provider / builtin id: a no-op that reports false.
+        assert!(
+            !settings
+                .remove_custom_model("anthropic", "claude-opus-5")
+                .unwrap()
+        );
+        assert!(!settings.remove_custom_model("openai", "gpt-5").unwrap());
+
+        assert!(
+            settings
+                .remove_custom_model("openai", "gpt-custom")
+                .unwrap()
+        );
+        assert_eq!(
+            settings.custom_models_for("openai"),
+            vec!["gpt-other".to_string()]
+        );
+        assert!(settings.remove_custom_model("openai", "gpt-other").unwrap());
+        assert!(settings.custom_models_for("openai").is_empty());
+
+        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        assert!(restored.custom_models_for("openai").is_empty());
     }
 
     #[test]

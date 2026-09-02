@@ -456,9 +456,32 @@ impl RpcService for StubEngine {
                         "provider has no model template for custom IDs".into(),
                     ));
                 }
+                if self.providers.has_model(provider, model) {
+                    return Err(RpcError::Failed(
+                        "This model ID already exists in this provider's model list".into(),
+                    ));
+                }
                 self.providers
                     .settings
                     .add_custom_model(provider, model)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::REMOVE_PROVIDER_MODEL => {
+                let provider = required_string(&params, "providerId")?;
+                let submitted = required_string(&params, "modelId")?.trim();
+                let qualified_prefix = format!("{provider}/");
+                let model = submitted
+                    .strip_prefix(&qualified_prefix)
+                    .unwrap_or(submitted);
+                if !ProviderAdapter::is_eligible(provider) {
+                    return Err(RpcError::BadParams(
+                        "unknown or unsupported provider".into(),
+                    ));
+                }
+                self.providers
+                    .settings
+                    .remove_custom_model(provider, model)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))
             }
