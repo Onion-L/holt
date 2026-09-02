@@ -399,6 +399,7 @@ impl StubEngine {
                     api_key,
                     timestamp,
                     cancel,
+                    skills: self.skills.clone(),
                 }));
             }
             SessionCommandPayload::Steer { .. } => {

@@ -9,9 +9,17 @@ use std::sync::Arc;
 
 use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
 use pi_core::agent::harness::skills::{LoadedSkills, SkillDiagnostic, load_skills};
+use pi_core::agent::harness::system_prompt::format_skills_for_system_prompt;
 use pi_core::agent::harness::types::{ExecutionEnv, Skill};
 
 use crate::tools::LocalExecutionEnv;
+
+/// Character budget for the system-prompt skill block (ADR-0006): past the
+/// limit descriptions truncate, then drop, then trailing skills drop —
+/// never an error, and the task stays the bulk of the context window.
+pub(crate) const SKILL_LISTING_BUDGET: usize = 8 * 1024;
+/// Description length (chars) the first truncation pass clamps to.
+const SKILL_DESCRIPTION_BUDGET: usize = 160;
 
 /// The loader's per-root scan, kept as a pair so precedence can group by
 /// origin before anything crosses the RPC seam.
@@ -53,8 +61,89 @@ impl Catalog {
     }
 }
 
+/// The model-visible skill advertisement (ADR-0006): a metadata-only
+/// `<available_skills>` block from the upstream formatter, built from the
+/// precedence winners. `disable-model-invocation` entries are filtered
+/// (by the formatter and here, so the budget counts only what renders);
+/// content never enters the block — the model self-serves `SKILL.md`
+/// through the read tool on the advertised location.
+pub(crate) fn skills_block(winners: &[(Skill, SkillRoot)]) -> String {
+    let visible: Vec<Skill> = winners
+        .iter()
+        .map(|(skill, _)| skill)
+        .filter(|skill| !skill.disable_model_invocation.unwrap_or(false))
+        .cloned()
+        .collect();
+    if visible.is_empty() {
+        return String::new();
+    }
+
+    let full = format_skills_for_system_prompt(&visible);
+    if full.chars().count() <= SKILL_LISTING_BUDGET {
+        return full;
+    }
+
+    // Pass 2: clamp each description…
+    let clamped: Vec<Skill> = visible
+        .iter()
+        .map(|skill| {
+            let mut skill = skill.clone();
+            skill.description = truncate_chars(&skill.description, SKILL_DESCRIPTION_BUDGET);
+            skill
+        })
+        .collect();
+    let clamped_block = format_skills_for_system_prompt(&clamped);
+    if clamped_block.chars().count() <= SKILL_LISTING_BUDGET {
+        return clamped_block;
+    }
+
+    // …pass 3: drop descriptions entirely.
+    let stripped: Vec<Skill> = clamped
+        .iter()
+        .map(|skill| {
+            let mut skill = skill.clone();
+            skill.description = String::new();
+            skill
+        })
+        .collect();
+    let stripped_block = format_skills_for_system_prompt(&stripped);
+    if stripped_block.chars().count() <= SKILL_LISTING_BUDGET {
+        return stripped_block;
+    }
+    // …pass 4: keep only the leading skills that fit. Prefix search over
+    // the upstream formatter so the size math never assumes its layout;
+    // `fits(0)` is the empty block, so this always lands.
+    let fits = |count: usize| {
+        format_skills_for_system_prompt(&stripped[..count])
+            .chars()
+            .count()
+            <= SKILL_LISTING_BUDGET
+    };
+    let mut low = 0;
+    let mut high = stripped.len();
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    format_skills_for_system_prompt(&stripped[..low])
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(limit.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// The engine's fixed skill roots: the project root derives from each
 /// chat's cwd, the other two are resolved once at assembly.
+#[derive(Clone)]
 pub(crate) struct Skills {
     personal: PathBuf,
     holt: PathBuf,
@@ -186,6 +275,60 @@ fn assemble_catalog(scans: Vec<RootScan>) -> Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn catalog_skill(name: &str, description: &str, disable: bool) -> (Skill, SkillRoot) {
+        (
+            Skill {
+                name: name.into(),
+                description: description.into(),
+                content: "SECRET INSTRUCTIONS".into(),
+                file_path: format!("/roots/{name}/SKILL.md"),
+                disable_model_invocation: Some(disable),
+            },
+            SkillRoot::Personal,
+        )
+    }
+
+    #[test]
+    fn skills_block_is_metadata_only() {
+        let block = skills_block(&[catalog_skill("grill", "Grill a plan.", false)]);
+        assert!(block.contains("<available_skills>"));
+        assert!(block.contains("<name>grill</name>"));
+        assert!(block.contains("<description>Grill a plan.</description>"));
+        assert!(block.contains("<location>/roots/grill/SKILL.md</location>"));
+        // Content never enters the advertisement (ADR-0006).
+        assert!(!block.contains("SECRET INSTRUCTIONS"));
+    }
+
+    #[test]
+    fn skills_block_filters_disable_model_invocation() {
+        let winners = [
+            catalog_skill("visible", "Shown.", false),
+            catalog_skill("hidden", "Never advertised.", true),
+        ];
+        let block = skills_block(&winners);
+        assert!(block.contains("<name>visible</name>"));
+        assert!(!block.contains("hidden"));
+    }
+
+    #[test]
+    fn skills_block_is_empty_without_visible_skills() {
+        assert_eq!(skills_block(&[]), "");
+        assert_eq!(skills_block(&[catalog_skill("hidden", "Nope.", true)]), "");
+    }
+
+    #[test]
+    fn oversized_catalog_truncates_under_the_budget() {
+        let long = "very long description ".repeat(120);
+        let winners: Vec<(Skill, SkillRoot)> = (0..400)
+            .map(|i| catalog_skill(&format!("bulk-skill-{i:03}"), &long, false))
+            .collect();
+        let block = skills_block(&winners);
+        assert!(block.chars().count() <= SKILL_LISTING_BUDGET);
+        assert!(!block.contains(&long));
+        // The nearest-first skills survive the cut.
+        assert!(block.contains("<name>bulk-skill-000</name>"));
+    }
 
     fn skill_in(root: &Path, name: &str, frontmatter: &str, body: &str) -> String {
         let dir = root.join(name);

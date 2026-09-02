@@ -35,6 +35,21 @@ fn system_prompt(cwd: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{cwd}}", cwd)
 }
 
+/// The run's system prompt: the coding-agent template plus the
+/// metadata-only skill block (ADR-0006), from a fresh catalog scan of the
+/// chat's three roots — so skills added, edited, or removed since the last
+/// turn are already reflected here.
+async fn run_system_prompt(skills: &crate::skills::Skills, cwd: &str) -> String {
+    let mut prompt = system_prompt(cwd);
+    let catalog = skills.catalog(Some(cwd)).await;
+    let block = crate::skills::skills_block(&catalog.winners);
+    if !block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&block);
+    }
+    prompt
+}
+
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     history: RwLock<Vec<AgentMessage>>,
@@ -429,6 +444,8 @@ pub(crate) struct AgentRun {
     pub(crate) api_key: String,
     pub(crate) timestamp: i64,
     pub(crate) cancel: CancellationToken,
+    /// Root resolution for the run's skill listing (ADR-0005/0006).
+    pub(crate) skills: crate::skills::Skills,
 }
 
 pub(crate) async fn run_agent_command(run: AgentRun) {
@@ -443,6 +460,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         api_key,
         timestamp,
         cancel,
+        skills,
     } = run;
     let entry_id = uuid::Uuid::new_v4().to_string();
     let sink_chat = chat.clone();
@@ -590,10 +608,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             Ok(compat::stream_simple(model, context, options))
         },
     );
+    let system_prompt = run_system_prompt(&skills, &cwd).await;
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {
-            system_prompt: system_prompt(&cwd),
+            system_prompt,
             messages: history.clone(),
             tools: Some(crate::tools::execution_tools(&cwd)),
         },
@@ -748,6 +767,63 @@ mod tests {
         let prompt = system_prompt("/tmp/holt");
         assert!(prompt.contains("/tmp/holt"));
         assert!(!prompt.contains("{{cwd}}"));
+    }
+
+    /// Write a skill into a temp personal root the way the loader expects.
+    fn write_skill(root: &std::path::Path, name: &str, frontmatter: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\n{frontmatter}---\nbody\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_system_prompt_appends_a_fresh_metadata_only_skills_block() {
+        let base = tempfile::tempdir().unwrap();
+        let personal = base.path().join("personal");
+        std::fs::create_dir_all(&personal).unwrap();
+        let cwd = base.path().join("cwd");
+        let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
+
+        // No skills: the template stands alone.
+        let bare = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        assert_eq!(bare, system_prompt(&cwd.to_string_lossy()));
+
+        write_skill(
+            &personal,
+            "grill",
+            "name: grill\ndescription: Grill a plan.\n",
+        );
+        write_skill(
+            &personal,
+            "hidden",
+            "name: hidden\ndescription: Manual only.\ndisable-model-invocation: true\n",
+        );
+        let prompt = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        assert!(prompt.starts_with(&system_prompt(&cwd.to_string_lossy())));
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("<name>grill</name>"));
+        // disable-model-invocation stays out of the advertisement but is
+        // still cataloged — and content never appears at all.
+        assert!(!prompt.contains("hidden"));
+        assert!(!prompt.contains("body"));
+
+        // A pathological catalog cannot crowd the task out of the window:
+        // the appended block stays under its budget however much is on disk.
+        let long = "very long description ".repeat(120);
+        for i in 0..400 {
+            write_skill(
+                &personal,
+                &format!("bulk-{i:03}"),
+                &format!("name: bulk-{i:03}\ndescription: {long}\n"),
+            );
+        }
+        let capped = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let template_len = system_prompt(&cwd.to_string_lossy()).chars().count();
+        assert!(capped.chars().count() <= template_len + 2 + crate::skills::SKILL_LISTING_BUDGET);
     }
 
     #[test]
