@@ -10,8 +10,8 @@
 //! - module map: `agent` (run loop + runtime state), `rpc` (dispatch +
 //!   handlers), `store` (JSON persistence), `local_fs` (folder browsing),
 //!   `git` (the git2-backed branch/diff capability — the only git2 user),
-//!   plus provider discovery and Holt-owned credential storage behind the
-//!   RPC seam.
+//!   `skills` (the ADR-0005/0006 skill-root catalog), plus provider
+//!   discovery and Holt-owned credential storage behind the RPC seam.
 
 use std::{
     path::{Path, PathBuf},
@@ -31,6 +31,7 @@ mod local_fs;
 pub mod provider_settings;
 pub mod providers;
 mod rpc;
+mod skills;
 mod store;
 mod tools;
 
@@ -55,6 +56,11 @@ pub enum EngineError {
 pub struct EngineConfig {
     /// Data directory (default `~/.holt`).
     pub data_dir: PathBuf,
+    /// Overrides the personal skill root (`~/.agents/skills` by default) —
+    /// the engine's own (`<data_dir>/skills`) and the project root (from
+    /// each chat's cwd) are unaffected. Tests pin temp dirs here so the
+    /// three-root catalog is fixture-driven.
+    pub personal_skills_dir: Option<PathBuf>,
 }
 
 /// The no-op backend. Serves the RPC method surface with empty data so the
@@ -73,6 +79,9 @@ pub struct StubEngine {
     /// Latest Turn baseline per chat (ADR-0003): in-memory, dropped on
     /// restart.
     turns: git::TurnBaselines,
+    /// The skills capability (ADR-0005/0006): root resolution and catalog
+    /// assembly over the upstream loader.
+    skills: skills::Skills,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -108,6 +117,7 @@ impl StubEngine {
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
         let providers = Arc::new(ProviderAdapter::new(credentials, provider_settings));
         let git = git::Git::new();
+        let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -127,6 +137,7 @@ impl StubEngine {
             git,
             watch,
             turns: git::TurnBaselines::new(),
+            skills,
             _instance_lock: lock,
         })
     }
@@ -160,6 +171,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let first = StubEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
@@ -174,6 +186,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let _first = StubEngine::assemble(&config).unwrap();
         assert!(StubEngine::assemble(&config).is_err());
@@ -186,6 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -247,6 +261,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().into(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         engine
@@ -299,6 +314,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = StubEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
+            personal_skills_dir: None,
         })
         .unwrap();
         engine
@@ -387,6 +403,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = StubEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
+            personal_skills_dir: None,
         })
         .unwrap();
         engine
@@ -442,6 +459,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().into(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         engine
@@ -513,6 +531,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().into(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         engine
@@ -571,6 +590,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = StubEngine::assemble(&EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         })
         .unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -618,6 +638,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -702,6 +723,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -781,6 +803,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
         };
         let engine = StubEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine

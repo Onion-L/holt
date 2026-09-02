@@ -83,6 +83,7 @@ impl Fixture {
     fn engine(&self) -> StubEngine {
         StubEngine::assemble(&EngineConfig {
             data_dir: self.data_dir.path().to_path_buf(),
+            personal_skills_dir: None,
         })
         .unwrap()
     }

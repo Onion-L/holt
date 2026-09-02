@@ -38,6 +38,11 @@ pub mod methods {
     pub const REMOVE_PROVIDER_MODEL: &str = "RemoveProviderModel";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_COMMANDS: &str = "ListCommands";
+    /// The skills catalog (ADR-0005): one fresh scan of the chat's three
+    /// skill roots. Params `{cwd?}` — the project root derives from it;
+    /// reply `SkillListing` (invocable entries with source root, shadowed
+    /// entries, load diagnostics).
+    pub const LIST_SKILLS: &str = "ListSkills";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort

@@ -101,6 +101,7 @@ impl EngineHandle {
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
         let engine = Arc::new(StubEngine::assemble(&EngineConfig {
             data_dir: config.data_dir,
+            personal_skills_dir: None,
         })?);
         let engine_info = engine.engine_info().clone();
         let client = memory_client(engine.clone());

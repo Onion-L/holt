@@ -328,6 +328,74 @@ pub struct FileSearchMatch {
     pub is_dir: bool,
 }
 
+/// Which standard skill root an entry was discovered in (ADR-0005): the
+/// project root at the chat's cwd wins over the personal home root, which
+/// wins over holt's own data-dir root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillRoot {
+    /// `.agents/skills` at the chat's working directory.
+    Project,
+    /// `~/.agents/skills`.
+    Personal,
+    /// `~/.holt/skills` (the engine data dir).
+    Holt,
+}
+
+/// An invocable catalog entry: valid, unshadowed, name-addressable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    /// Absolute path of the `SKILL.md` — where the read tool finds it and
+    /// what invocation chips point at.
+    pub file: String,
+    pub root: SkillRoot,
+    /// The skill opted out of model-visible listings; it stays invocable
+    /// through `/skill` only (ADR-0006).
+    #[serde(default)]
+    pub disable_model_invocation: bool,
+}
+
+/// A valid skill that lost a name collision to a nearer root: reported so
+/// precedence surprises are explainable, never offered for invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShadowedSkillEntry {
+    pub name: String,
+    pub file: String,
+    pub root: SkillRoot,
+    /// The root whose same-named skill won.
+    pub shadowed_by: SkillRoot,
+}
+
+/// A load problem the loader reported: an invalid skill (name ≠ directory,
+/// missing/oversized description, …) or a root traversal fault, with the
+/// loader's own diagnostic message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvalidSkillEntry {
+    /// The path the diagnostic names — the `SKILL.md`, or the directory for
+    /// traversal faults.
+    pub file: String,
+    pub root: SkillRoot,
+    /// Skill name when the entry parsed far enough to have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub message: String,
+}
+
+/// The `ListSkills` reply: everything the `/` menu, the Settings page, and
+/// the run loop consume, from one fresh catalog scan (ADR-0005 — no cache).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillListing {
+    pub skills: Vec<SkillEntry>,
+    pub shadowed: Vec<ShadowedSkillEntry>,
+    pub invalid: Vec<InvalidSkillEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffFileSummary {
@@ -557,6 +625,43 @@ pub struct ChatConnectivity {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn skill_listing_round_trips_as_camel_case() {
+        let listing = SkillListing {
+            skills: vec![SkillEntry {
+                name: "grill".into(),
+                description: "Relentlessly interview a plan.".into(),
+                file: "/home/u/.agents/skills/grill/SKILL.md".into(),
+                root: SkillRoot::Personal,
+                disable_model_invocation: true,
+            }],
+            shadowed: vec![ShadowedSkillEntry {
+                name: "grill".into(),
+                file: "/repo/.agents/skills/grill/SKILL.md".into(),
+                root: SkillRoot::Holt,
+                shadowed_by: SkillRoot::Project,
+            }],
+            invalid: vec![InvalidSkillEntry {
+                file: "/repo/.agents/skills/draft/SKILL.md".into(),
+                root: SkillRoot::Project,
+                name: None,
+                message: "description is required".into(),
+            }],
+        };
+        let value = serde_json::to_value(&listing).unwrap();
+        assert_eq!(value["skills"][0]["root"], "personal");
+        assert_eq!(value["skills"][0]["disableModelInvocation"], true);
+        assert_eq!(value["shadowed"][0]["shadowedBy"], "project");
+        assert_eq!(
+            value["invalid"][0]["file"],
+            "/repo/.agents/skills/draft/SKILL.md"
+        );
+        assert_eq!(
+            serde_json::from_value::<SkillListing>(value).unwrap(),
+            listing
+        );
+    }
 
     #[test]
     fn checkout_change_request_status_round_trips_all_states_as_camel_case() {

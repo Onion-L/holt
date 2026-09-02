@@ -610,6 +610,17 @@ impl RpcService for StubEngine {
                 RpcReply::value(&self.providers.models_for(provider))
             }
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([])),
+            // The skills catalog (ADR-0005): fresh per call — the
+            // filesystem is the registry, so there is nothing to cache.
+            // Absent roots are skipped silently inside the scan.
+            methods::LIST_SKILLS => {
+                let cwd = params
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let listing = self.skills.catalog(cwd.as_deref()).await.listing();
+                RpcReply::value(&listing)
+            }
             // Local folder browsing for the add-space palette. The UI only
             // targets remote devices over the relay; here every browse is local.
             methods::LIST_FOLDERS => match list_folders(&params) {
