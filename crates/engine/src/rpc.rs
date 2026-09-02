@@ -241,6 +241,33 @@ impl StubEngine {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    fn mark_chat_seen(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        let mut chats = self
+            .runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) else {
+            // Unknown chat: idempotent no-op, matching the archive path.
+            return RpcReply::value(&serde_json::json!({}));
+        };
+        // Only an unseen row needs a write: re-marks (racing devices, a
+        // re-selected row) must not republish the chat list.
+        if !row.unseen() {
+            return RpcReply::value(&serde_json::json!({}));
+        }
+        row.last_seen_at = Some(Utc::now());
+        drop(chats);
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
+        RpcReply::value(&serde_json::json!({}))
+    }
+
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: QueueCommandParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
@@ -629,6 +656,11 @@ impl RpcService for StubEngine {
                 if params.get("op").and_then(|op| op.as_str()) == Some("deleteChat") =>
             {
                 self.delete_chat(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("markChatSeen") =>
+            {
+                self.mark_chat_seen(params)
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
 

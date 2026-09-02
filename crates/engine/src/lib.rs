@@ -651,6 +651,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mark_chat_seen_stamps_persists_and_skips_already_seen() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let engine = StubEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        assert_eq!(chats.next().await.unwrap(), serde_json::json!([]));
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "createChat", "chatId": "chat-1" }),
+            )
+            .await
+            .unwrap();
+        chats.next().await.unwrap();
+
+        // The Done-badge precondition: a message newer than the (absent)
+        // seen marker.
+        engine.runtime.chats.write().unwrap()[0].last_message_at = Some(chrono::Utc::now());
+        engine.runtime.publish_chats();
+        let frame = chats.next().await.unwrap();
+        assert_eq!(frame[0]["lastSeenAt"], serde_json::Value::Null);
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "markChatSeen", "chatId": "chat-1" }),
+            )
+            .await
+            .unwrap();
+        let frame = chats.next().await.unwrap();
+        let parse_stamp = |field: &str| -> chrono::DateTime<chrono::Utc> {
+            serde_json::from_value(frame[0][field].clone())
+                .unwrap_or_else(|error| panic!("{field} not an RFC3339 stamp: {error}"))
+        };
+        assert!(
+            parse_stamp("lastSeenAt") >= parse_stamp("lastMessageAt"),
+            "seen marker must clear unseen"
+        );
+
+        // Re-marking a seen chat neither moves the marker nor republishes.
+        let probe = engine.runtime.chats_tx.subscribe();
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "markChatSeen", "chatId": "chat-1" }),
+            )
+            .await
+            .unwrap();
+        assert!(!probe.has_changed().unwrap());
+
+        // Unknown chat is an idempotent no-op, not an error.
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "markChatSeen", "chatId": "missing" }),
+            )
+            .await
+            .unwrap();
+        drop(chats);
+        drop(engine);
+
+        // The marker persists: a fresh engine serves the chat as seen.
+        let engine = StubEngine::assemble(&config).unwrap();
+        let chats = engine.runtime.chats.read().unwrap();
+        assert!(chats[0].last_seen_at.is_some());
+    }
+
+    #[tokio::test]
     async fn delete_chat_removes_persists_and_drops_transcript() {
         use futures::StreamExt;
 
