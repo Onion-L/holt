@@ -305,10 +305,6 @@ pub fn child_path(base: &str, name: &str) -> String {
     }
 }
 
-/// Byte length of `name`'s prefix matching `query`, compared char-for-char
-/// case-insensitively; `None` when `query` isn't a prefix of `name`. The
-/// length indexes into `name` (not `query`) so the completion suffix keeps
-/// the folder's real casing: `("Documents", "doc") → Some(3)` → `"uments"`.
 /// The create row's input validation, as a pure function: the submit
 /// affordance is enabled only for a name that is non-empty after trimming,
 /// and the submitted name is that trimmed value. Everything past this
@@ -318,6 +314,10 @@ pub(crate) fn branch_create_name(text: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// Byte length of `name`'s prefix matching `query`, compared char-for-char
+/// case-insensitively; `None` when `query` isn't a prefix of `name`. The
+/// length indexes into `name` (not `query`) so the completion suffix keeps
+/// the folder's real casing: `("Documents", "doc") → Some(3)` → `"uments"`.
 pub fn completion_prefix_len(name: &str, query: &str) -> Option<usize> {
     let mut len = 0;
     let mut name_chars = name.chars();

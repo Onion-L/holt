@@ -357,11 +357,11 @@ pub struct CheckoutDiff {
     pub truncated: bool,
     /// Content key of this capture: the SHA-256 hex of
     /// `head_sha ‖ NUL ‖ mode ‖ baseRef ‖ patch_bytes`, where `mode` is the
-    /// capture's scope wire value ("workingTree", "branch", "turn",
-    /// "history", "commit"), `baseRef` is the scope's base ref or the empty
-    /// string, and `patch_bytes` is the (possibly truncated) patch text.
-    /// HEAD and the scope fold in, so a commit that leaves the patch text
-    /// identical still re-keys the capture.
+    /// capture's scope wire value ("workingTree", "branch", "turn", or
+    /// "commit"), `baseRef` is the scope's base ref or the empty string,
+    /// and `patch_bytes` is the (possibly truncated) patch text. HEAD and
+    /// the scope fold in, so a commit that leaves the patch text identical
+    /// still re-keys the capture.
     pub checksum: String,
     pub updated_at: DateTime<Utc>,
 }

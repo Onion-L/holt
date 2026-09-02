@@ -21,7 +21,7 @@ the typed RPC contract in `crates/rpc` over an in-process duplex
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `StubEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, and runs `pi-core-rs::agent_loop`. Unsupported surfaces still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `StubEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module. Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -40,8 +40,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Catalog: provider-scoped `ListModels`, plus `ListCommands`.
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
+- Git capability (ADR-0001/0002, all served on the git2 backend inside
+  `engine::git`): `ListRefs` / `ListBranches` (default-first local
+  branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout
+  diff family — `WatchCheckoutDiffs` (live, debounced fs-notify frames
+  keyed by the space's canonical checkout identity
+  `sha256(deviceId ‖ NUL ‖ git_dir)`), `GetCheckoutDiff` /
+  `GetCheckoutFileDiffText` in working-tree / branch (merge-base) / commit
+  / turn (net-change baseline, ADR-0003) modes — plus `ListGitHistory`
+  (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
+  30 s timeout).
 - Capability surfaces the UI keeps rendered but the stub leaves empty:
-  terminals, repos/worktrees/diffs, and uploads.
+  terminals, worktrees, change requests, and uploads.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips
 methods that error with `UnknownMethod`.

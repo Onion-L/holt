@@ -161,8 +161,16 @@ impl WatchHub {
                     let value = serde_json::to_value(&snapshot).ok()?;
                     return Some((value, (hub, frames, guard, false)));
                 }
-                let value = frames.recv().await.ok()?;
-                Some((value, (hub, frames, guard, false)))
+                loop {
+                    match frames.recv().await {
+                        Ok(value) => return Some((value, (hub, frames, guard, false))),
+                        // A slow consumer missed frames: keep the stream
+                        // alive — the UI's upsert fold heals on the next
+                        // live frame. Only a closed channel ends the stream.
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
             },
         );
         holt_rpc::RpcReply::Stream(stream.boxed())
