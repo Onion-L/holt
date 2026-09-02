@@ -119,12 +119,18 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     crate::app_menus::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
-            &valid_or_default(&keymap.toggle_sidebar, "mod-s"),
+            &valid_or_default(
+                &keymap.toggle_sidebar,
+                crate::settings::ShortcutId::ToggleSidebar.default_combo(),
+            ),
             ToggleSidebar,
             None,
         ),
         KeyBinding::new(
-            &valid_or_default(&keymap.toggle_changes, "mod-b"),
+            &valid_or_default(
+                &keymap.toggle_changes,
+                crate::settings::ShortcutId::ToggleChanges.default_combo(),
+            ),
             ToggleChanges,
             None,
         ),

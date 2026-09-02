@@ -370,8 +370,12 @@ impl ShortcutId {
     /// this guards against only exists off macOS).
     pub fn default_combo_on(self, mac: bool) -> &'static str {
         match self {
-            ShortcutId::ToggleSidebar => "mod-s",
-            ShortcutId::ToggleChanges => "mod-b",
+            // The left sidebar owns ⌘B (browser/IDE convention); the right
+            // pane moved to ⌘⌥B. Stored layout-neutral ("b") — macOS Opt+B
+            // composes "∫", which surfaces only as the recorder's display
+            // (`typed_key_char`), never in the stored combo.
+            ShortcutId::ToggleSidebar => "mod-b",
+            ShortcutId::ToggleChanges => "mod-alt-b",
             ShortcutId::ToggleTerminal => "mod-j",
             ShortcutId::NewSession => "mod-n",
             // Ctrl+Tab on every platform — but spelled the way THAT platform's
@@ -491,6 +495,20 @@ impl KeymapConfig {
                 .push(JUMP_DEFAULTS[self.jump_session.len()].to_string());
         }
     }
+
+    /// Files written before the panel defaults moved (⌘S sidebar / ⌘B right
+    /// pane → ⌘B / ⌘⌥B) carry those old defaults explicitly, indistinguishable
+    /// from "never customized" — so a field still at its old default adopts the
+    /// new one, and any other value is a deliberate rebind that stands. Runs on
+    /// load only; see `UiSettings::migrated`.
+    fn migrate_renamed_panel_defaults(&mut self) {
+        if self.toggle_sidebar == "mod-s" {
+            self.toggle_sidebar = ShortcutId::ToggleSidebar.default_combo().into();
+        }
+        if self.toggle_changes == "mod-b" {
+            self.toggle_changes = ShortcutId::ToggleChanges.default_combo().into();
+        }
+    }
 }
 
 /// Build a combo string from a recorded keystroke. The primary modifier
@@ -544,6 +562,23 @@ pub fn combo_from_keystroke_on(
     }
     parts.push(&key);
     Some(parts.join("-"))
+}
+
+/// What a recorded keystroke's key should DISPLAY, as distinct from the combo
+/// the recorder stores: macOS alt composes characters (Opt+B types "∫"), so
+/// the binding keeps the layout key ("mod-alt-b", reproducible on any layout)
+/// while the UI shows the character as typed. `None` keeps the canonical key
+/// label — when the typed character IS the key ("s" for `s`, "S" for shift-s)
+/// or isn't displayable (control bytes from named keys like Tab, empty input).
+pub fn typed_key_char(key: &str, key_char: Option<&str>) -> Option<String> {
+    let typed = key_char?;
+    if typed.is_empty() || typed.chars().any(char::is_control) {
+        return None;
+    }
+    if typed.eq_ignore_ascii_case(key) {
+        return None;
+    }
+    Some(typed.to_string())
 }
 
 /// Shortcut ids whose combos collide with another shortcut (conflict detection).
@@ -612,22 +647,42 @@ pub fn display_combo(combo: &str) -> String {
 
 /// [`display_combo`] for an explicit platform (see [`combo_from_keystroke_on`]).
 pub fn display_combo_on(mac: bool, combo: &str) -> String {
-    combo
-        .split('-')
+    display_combo_with_typed_key_on(mac, combo, None)
+}
+
+/// [`display_combo`] with the key segment overridden by the character the user
+/// actually typed ([`typed_key_char`]) — the stored "mod-alt-b" renders as
+/// "Cmd+Opt+B" by default, but as "Cmd+Opt+∫" right after recording it.
+pub fn display_combo_with_typed_key(combo: &str, typed_key: Option<&str>) -> String {
+    display_combo_with_typed_key_on(cfg!(target_os = "macos"), combo, typed_key)
+}
+
+/// [`display_combo_with_typed_key`] for an explicit platform (see
+/// [`combo_from_keystroke_on`]).
+pub fn display_combo_with_typed_key_on(mac: bool, combo: &str, typed_key: Option<&str>) -> String {
+    let mut parts: Vec<&str> = combo.split('-').collect();
+    let key = parts.pop().unwrap_or("");
+    let capitalize = |part: &str| {
+        let mut chars = part.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    let mut segments: Vec<String> = parts
+        .into_iter()
         .map(|part| match part {
             "mod" => if mac { "Cmd" } else { "Ctrl" }.to_string(),
             "alt" => if mac { "Opt" } else { "Alt" }.to_string(),
             "shift" => "Shift".to_string(),
-            other => {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            }
+            other => capitalize(other),
         })
-        .collect::<Vec<_>>()
-        .join("+")
+        .collect();
+    segments.push(match typed_key {
+        Some(typed) => typed.to_string(),
+        None => capitalize(key),
+    });
+    segments.join("+")
 }
 
 /// Compact combo for badge surfaces (the sidebar jump hints): macOS spells
@@ -722,6 +777,7 @@ impl UiSettings {
             self.accent = holt_theme::AccentSelection::Preset(accent.into());
         }
         self.legacy_accent_color = None;
+        self.keymap.migrate_renamed_panel_defaults();
         self
     }
 
@@ -988,8 +1044,8 @@ mod tests {
     #[test]
     fn keymap_defaults_and_reset() {
         let mut keymap = KeymapConfig::default();
-        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
-        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-alt-b");
         assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-j");
         let ctrl = if cfg!(target_os = "macos") {
             "ctrl"
@@ -1006,7 +1062,7 @@ mod tests {
         keymap.set(ShortcutId::ToggleSidebar, "mod-shift-x".into());
         assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-shift-x");
         keymap.reset(ShortcutId::ToggleSidebar);
-        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
         keymap.set(ShortcutId::ArchiveSession, "mod-shift-y".into());
         assert_eq!(keymap.get(ShortcutId::ArchiveSession), "mod-shift-y");
         keymap.reset(ShortcutId::ArchiveSession);
@@ -1116,7 +1172,7 @@ mod tests {
     fn conflict_detection() {
         let mut keymap = KeymapConfig::default();
         assert!(conflicted_shortcuts(&keymap).is_empty());
-        keymap.set(ShortcutId::ToggleChanges, "mod-s".into());
+        keymap.set(ShortcutId::ToggleChanges, "mod-b".into());
         let conflicts = conflicted_shortcuts(&keymap);
         assert!(conflicts.contains(&ShortcutId::ToggleSidebar));
         assert!(conflicts.contains(&ShortcutId::ToggleChanges));
@@ -1150,6 +1206,62 @@ mod tests {
         // session cycling.
         assert_eq!(platform_combo("ctrl-shift-tab"), "ctrl-shift-tab");
         assert_eq!(display_combo("ctrl-shift-tab"), "Ctrl+Shift+Tab");
+    }
+
+    #[test]
+    fn typed_key_chars_only_override_composed_keys() {
+        // macOS Opt+B composes "∫" — the recorder stores "mod-alt-b", but the
+        // chip shows the character as typed.
+        assert_eq!(typed_key_char("b", Some("∫")).as_deref(), Some("∫"));
+        // The plain and shifted characters ARE the stored key; no override.
+        assert_eq!(typed_key_char("s", Some("s")), None);
+        assert_eq!(typed_key_char("s", Some("S")), None);
+        // Named keys type control bytes; empty input carries nothing.
+        assert_eq!(typed_key_char("tab", Some("\t")), None);
+        assert_eq!(typed_key_char("f5", None), None);
+        assert_eq!(typed_key_char("b", Some("")), None);
+    }
+
+    #[test]
+    fn display_combo_honors_the_typed_key() {
+        assert_eq!(
+            display_combo_with_typed_key_on(true, "mod-alt-b", None),
+            "Cmd+Opt+B"
+        );
+        assert_eq!(
+            display_combo_with_typed_key_on(true, "mod-alt-b", Some("∫")),
+            "Cmd+Opt+∫"
+        );
+        assert_eq!(
+            display_combo_with_typed_key_on(false, "mod-alt-b", Some("∫")),
+            "Ctrl+Alt+∫"
+        );
+        assert_eq!(display_combo_with_typed_key("mod-s", None), "Cmd+S");
+    }
+
+    #[test]
+    fn untouched_old_panel_defaults_migrate_to_the_renamed_ones() {
+        // Upgrade path: files from before ⌘B/⌘⌥B persist the old defaults
+        // explicitly; both untouched fields adopt the new defaults on load.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"toggleSidebar": "mod-s", "toggleChanges": "mod-b"}}"#,
+        )
+        .unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-alt-b");
+
+        // A deliberate rebind stands; only its untouched sibling migrates.
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"toggleSidebar": "mod-shift-s", "toggleChanges": "mod-b"}}"#,
+        )
+        .unwrap();
+        let keymap = UiSettings::load(dir.path()).keymap;
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-shift-s");
+        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-alt-b");
     }
 
     #[test]

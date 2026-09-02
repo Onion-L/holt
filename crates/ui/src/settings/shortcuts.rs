@@ -3,12 +3,17 @@
 //! per-row Reset and Restore defaults. Changes emit [`ShortcutsEvent::Changed`];
 //! the shell persists them and re-applies the app keymap.
 
+use std::collections::HashMap;
+
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString, Window, div,
     prelude::*, px,
 };
 
-use crate::settings::{KeymapConfig, ShortcutId, combo_from_keystroke, display_combo};
+use crate::settings::{
+    KeymapConfig, ShortcutId, combo_from_keystroke, display_combo, display_combo_with_typed_key,
+    typed_key_char,
+};
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -43,6 +48,11 @@ pub struct ShortcutsPage {
     /// Working copy (kept in sync with the shell via `Changed` events).
     keymap: KeymapConfig,
     recording: Option<ShortcutId>,
+    /// Per-row key-cap override from the most recent recording: the character
+    /// the user actually typed for the key (`typed_key_char` — macOS Opt+B
+    /// types "∫"). Display-only and session-local; the stored combo stays
+    /// layout-neutral so it binds everywhere.
+    typed_keys: HashMap<ShortcutId, String>,
     /// A rejected record attempt ("{Combo} is already assigned to {label}.") —
     /// conflicts never persist; they're refused at record time, as in holt.
     conflict_notice: Option<SharedString>,
@@ -59,6 +69,7 @@ impl ShortcutsPage {
         Self {
             keymap,
             recording: None,
+            typed_keys: HashMap::new(),
             conflict_notice: None,
             focus: cx.focus_handle(),
             _state: state,
@@ -75,6 +86,7 @@ impl ShortcutsPage {
             return;
         };
         let mods = &event.keystroke.modifiers;
+        let typed = typed_key_char(&event.keystroke.key, event.keystroke.key_char.as_deref());
         match record_key(
             &event.keystroke.key,
             mods.control,
@@ -94,7 +106,7 @@ impl ShortcutsPage {
                     self.conflict_notice = Some(
                         format!(
                             "{} is already assigned to {}.",
-                            display_combo(&combo),
+                            display_combo_with_typed_key(&combo, typed.as_deref()),
                             owner.label()
                         )
                         .into(),
@@ -103,6 +115,14 @@ impl ShortcutsPage {
                     cx.notify();
                 } else {
                     self.keymap.set(recording, combo);
+                    match typed {
+                        Some(typed) => {
+                            self.typed_keys.insert(recording, typed);
+                        }
+                        None => {
+                            self.typed_keys.remove(&recording);
+                        }
+                    }
                     self.recording = None;
                     self.conflict_notice = None;
                     self.commit(cx);
@@ -127,6 +147,7 @@ impl ShortcutsPage {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let combo = self.keymap.get(id).to_string();
+        let typed_key = self.typed_keys.get(&id).map(String::as_str);
         let is_recording = recording == Some(id);
         let non_default = combo != id.default_combo();
         // holt settings.shortcuts.tsx row: min-h-[72px] px-5 gap-5.
@@ -169,6 +190,7 @@ impl ShortcutsPage {
                         .hover(|s| s.text_color(theme.accent))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.keymap.reset(id);
+                            this.typed_keys.remove(&id);
                             this.recording = None;
                             this.commit(cx);
                         }))
@@ -210,25 +232,40 @@ impl ShortcutsPage {
                                 .child(SharedString::from("Press keys…")),
                         )
                     })
-                    .when(!is_recording, |el| el.child(render_keycaps(&combo, theme))),
+                    .when(!is_recording, |el| {
+                        el.child(render_keycaps(&combo, typed_key, theme))
+                    }),
             )
     }
 }
 
-fn render_keycaps(combo: &str, theme: &Theme) -> gpui::Div {
+/// Keycaps for a stored combo. The final segment is the key; `typed_key` —
+/// what the user actually typed when the combo was recorded (`∫` for a
+/// recorded Opt+B, per [`typed_key_char`]) — replaces the canonical label
+/// there. Defaults and file-loaded combos pass `None` and render canonically.
+fn render_keycaps(combo: &str, typed_key: Option<&str>, theme: &Theme) -> gpui::Div {
+    let parts: Vec<&str> = combo.split('-').collect();
+    let last = parts.len().saturating_sub(1);
     div()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(4.0))
-        .children(combo.split('-').map(|part| {
-            let label = match part {
-                "mod" if cfg!(target_os = "macos") => "⌘".to_owned(),
-                "mod" => "Ctrl".to_owned(),
-                "alt" if cfg!(target_os = "macos") => "⌥".to_owned(),
-                "alt" => "Alt".to_owned(),
-                "shift" => "⇧".to_owned(),
-                other => display_combo(other),
+        .children(parts.into_iter().enumerate().map(|(ix, part)| {
+            let label = if ix == last {
+                match typed_key {
+                    Some(typed) => typed.to_owned(),
+                    None => display_combo(part),
+                }
+            } else {
+                match part {
+                    "mod" if cfg!(target_os = "macos") => "⌘".to_owned(),
+                    "mod" => "Ctrl".to_owned(),
+                    "alt" if cfg!(target_os = "macos") => "⌥".to_owned(),
+                    "alt" => "Alt".to_owned(),
+                    "shift" => "⇧".to_owned(),
+                    other => display_combo(other),
+                }
             };
             div()
                 .min_w(px(28.0))
@@ -379,6 +416,7 @@ impl Render for ShortcutsPage {
                                         .on_click(
                                             cx.listener(|this, _, _, cx| {
                                                 this.keymap = KeymapConfig::default();
+                                                this.typed_keys.clear();
                                                 this.recording = None;
                                                 this.conflict_notice = None;
                                                 this.commit(cx);
@@ -490,19 +528,37 @@ mod tests {
         let RecordOutcome::Set(combo) = record_key("b", false, false, false, true) else {
             panic!("expected Set");
         };
+        // "mod-b" is now the LEFT sidebar's default, so re-recording it on the
+        // left sidebar is free, while the right sidebar (⌘⌥B) hits it.
         assert_eq!(
             conflict_owner(&keymap, ShortcutId::ToggleSidebar, &combo),
-            Some(ShortcutId::ToggleChanges)
+            None
         );
-        // Re-recording a shortcut's own combo is not a conflict.
         assert_eq!(
             conflict_owner(&keymap, ShortcutId::ToggleChanges, &combo),
-            None
+            Some(ShortcutId::ToggleSidebar)
         );
         // A free combo conflicts with nothing.
         assert_eq!(
             conflict_owner(&keymap, ShortcutId::ToggleSidebar, "mod-shift-x"),
             None
+        );
+    }
+
+    #[test]
+    fn recorded_composed_keys_display_as_typed() {
+        // Opt+B on macOS composes "∫": the stored combo keeps the layout key,
+        // and the display overrides only its key segment.
+        assert_eq!(typed_key_char("b", Some("∫")).as_deref(), Some("∫"));
+        assert_eq!(
+            display_combo_with_typed_key("mod-alt-b", Some("∫")),
+            "Cmd+Opt+∫"
+        );
+        // A keystroke whose character is the key itself records canonically.
+        assert_eq!(typed_key_char("b", Some("b")), None);
+        assert_eq!(
+            display_combo_with_typed_key("mod-alt-b", None),
+            display_combo("mod-alt-b")
         );
     }
 }
