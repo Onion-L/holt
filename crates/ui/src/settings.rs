@@ -19,6 +19,7 @@ pub mod archived;
 pub mod composer;
 pub mod providers;
 pub mod shortcuts;
+pub mod skills;
 pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).

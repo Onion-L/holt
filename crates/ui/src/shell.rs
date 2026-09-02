@@ -192,14 +192,16 @@ pub enum SettingsSection {
     Providers,
     Appearance,
     Shortcuts,
+    Skills,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 4] = [
+    pub const ALL: [SettingsSection; 5] = [
         SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Shortcuts,
+        SettingsSection::Skills,
         SettingsSection::Archived,
     ];
 
@@ -210,6 +212,7 @@ impl SettingsSection {
             SettingsSection::Providers => "Providers",
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
+            SettingsSection::Skills => "Skills",
             SettingsSection::Archived => "Archived sessions",
         }
     }
@@ -425,6 +428,7 @@ pub struct Shell {
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     providers_page: Option<Entity<ProvidersPage>>,
     providers_sub: Option<Subscription>,
+    skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -618,6 +622,7 @@ impl Shell {
             }
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
+            Some("settings/skills") => Route::Settings(SettingsSection::Skills),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -672,6 +677,7 @@ impl Shell {
             shortcuts_page: None,
             providers_page: None,
             providers_sub: None,
+            skills_page: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1210,6 +1216,11 @@ impl Shell {
         if section == SettingsSection::Providers {
             self.providers_page = None;
         }
+        // Same freshness for Skills: the page's ListSkills rescan reflects
+        // filesystem changes since the last visit without a restart.
+        if section == SettingsSection::Skills {
+            self.skills_page = None;
+        }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
@@ -1330,6 +1341,17 @@ impl Shell {
                     self.archived_page = Some(cx.new(|cx| ArchivedPage::new(state, cx)));
                 }
                 match &self.archived_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Skills => {
+                if self.skills_page.is_none() {
+                    let state = self.state.clone();
+                    self.skills_page =
+                        Some(cx.new(|cx| crate::settings::skills::SkillsPage::new(state, cx)));
+                }
+                match &self.skills_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
