@@ -2715,6 +2715,7 @@ impl Pickers {
         if !self.branch_create_engaged {
             return popover::menu_row_nav(theme, false, false, "branch-create-row".to_string())
                 .id("branch-create-row")
+                .mt(px(2.0))
                 .when(self.switching.is_some(), |el| el.opacity(0.55))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.branch_create_engaged = true;
