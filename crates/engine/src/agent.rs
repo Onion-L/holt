@@ -29,6 +29,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::store::{delete_transcript, load_transcript, persist_transcript};
 
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
+
+fn system_prompt(cwd: &str) -> String {
+    SYSTEM_PROMPT_TEMPLATE.replace("{{cwd}}", cwd)
+}
+
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     history: RwLock<Vec<AgentMessage>>,
@@ -587,12 +593,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {
-            system_prompt: format!(
-                "You are a coding assistant working in {cwd}. \
-                 Use read, write, edit, bash and grep to inspect \
-                 and change files whenever the task needs it; grep finds \
-                 regex matches in file contents."
-            ),
+            system_prompt: system_prompt(&cwd),
             messages: history.clone(),
             tools: Some(crate::tools::execution_tools(&cwd)),
         },
@@ -740,6 +741,13 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn system_prompt_includes_working_directory() {
+        let prompt = system_prompt("/tmp/holt");
+        assert!(prompt.contains("/tmp/holt"));
+        assert!(!prompt.contains("{{cwd}}"));
     }
 
     #[test]
