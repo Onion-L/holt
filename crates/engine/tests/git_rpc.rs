@@ -1050,3 +1050,245 @@ async fn file_diff_text_serves_old_new_sides_binary_and_staleness() {
     assert!(text.truncated, "2 MiB side truncates at 1 MiB");
     assert!(text.new_text.as_deref().unwrap().len() <= 1024 * 1024);
 }
+
+// ---- branch scope: merge-base diffs (git-capability issue 04) ----
+
+async fn branch_diff(engine: &StubEngine, cwd: &str, base: &str) -> Result<CheckoutDiff, RpcError> {
+    match engine
+        .handle(
+            methods::GET_CHECKOUT_DIFF,
+            serde_json::json!({
+                "cwd": cwd,
+                "mode": "branch",
+                "baseRef": base,
+                "chatId": "chat-1",
+            }),
+        )
+        .await
+    {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Ok(_) => panic!("GetCheckoutDiff did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+/// Commit the current index onto `refs/heads/main` (HEAD) with a message.
+fn commit_workdir(fixture: &Fixture, message: &str) {
+    let repo = fixture.repo();
+    let mut index = repo.index().unwrap();
+    index
+        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    let sig = signature();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])
+        .unwrap();
+}
+
+#[tokio::test]
+async fn branch_scope_shows_committed_and_uncommitted_work_over_the_base() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // `feature` is one commit ahead of the shared base; move main AHEAD of
+    // feature's base too so merge-base(feature, main) = the shared base.
+    // The fixture: main is at `initial`; branch `feature` adds feature.txt.
+    // Commit on main: a new file plus a README change, then leave one more
+    // file uncommitted.
+    std::fs::write(
+        fixture.repo_dir.path().join("committed.txt"),
+        "committed on main\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "committed and dirty\n",
+    )
+    .unwrap();
+    commit_workdir(&fixture, "ahead of base");
+    std::fs::write(
+        fixture.repo_dir.path().join("uncommitted.txt"),
+        "dirty on top\n",
+    )
+    .unwrap();
+
+    // "What would this branch ship": the CURRENT branch's committed work
+    // (committed.txt, README) over the merge-base with `feature`, plus the
+    // uncommitted file on top.
+    let diff = branch_diff(&engine, &fixture.repo_path(), "feature")
+        .await
+        .unwrap();
+    let paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    assert!(paths.contains(&"committed.txt"), "paths: {paths:?}");
+    assert!(paths.contains(&"uncommitted.txt"), "paths: {paths:?}");
+    assert!(paths.contains(&"README.md"), "paths: {paths:?}");
+    assert!(diff.patch.contains("+committed on main"));
+    assert!(diff.patch.contains("+dirty on top"));
+}
+
+#[tokio::test]
+async fn branch_scope_with_the_current_branch_as_base_matches_working_tree_content() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "just dirty\n").unwrap();
+
+    // base == the current branch: merge-base(main, HEAD) = HEAD, so the
+    // branch diff degenerates to the working-tree diff (same content; the
+    // checksum still differs — mode and baseRef fold in).
+    let branch = branch_diff(&engine, &fixture.repo_path(), "main")
+        .await
+        .unwrap();
+    let working = working_tree_diff(&engine, &fixture.repo_path()).await;
+    assert_eq!(branch.patch, working.patch);
+    assert_eq!(branch.files, working.files);
+    assert_eq!(branch.additions, working.additions);
+    assert_ne!(branch.checksum, working.checksum);
+}
+
+#[tokio::test]
+async fn branch_scope_re_keys_when_the_base_ref_changes() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // One commit ahead of the shared base, plus a dirty file: a base at the
+    // merge-base (feature) sees committed + dirty; the current branch as
+    // base degenerates to the dirty file alone. Either way the checksum
+    // re-keys with the base ref.
+    std::fs::write(
+        fixture.repo_dir.path().join("ahead.txt"),
+        "committed ahead\n",
+    )
+    .unwrap();
+    commit_workdir(&fixture, "ahead");
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "dirty\n").unwrap();
+
+    let against_feature = branch_diff(&engine, &fixture.repo_path(), "feature")
+        .await
+        .unwrap();
+    let against_main = branch_diff(&engine, &fixture.repo_path(), "main")
+        .await
+        .unwrap();
+    assert_ne!(against_feature.checksum, against_main.checksum);
+    assert!(against_feature.patch.contains("+committed ahead"));
+    assert!(against_main.patch.contains("+dirty"));
+    assert!(!against_main.patch.contains("+committed ahead"));
+}
+
+#[tokio::test]
+async fn branch_scope_rejects_missing_and_unknown_base_refs() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // No baseRef at all: bad params.
+    let error = match engine
+        .handle(
+            methods::GET_CHECKOUT_DIFF,
+            serde_json::json!({
+                "cwd": fixture.repo_path(),
+                "mode": "branch",
+                "chatId": "chat-1",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("branch mode without baseRef must fail"),
+    };
+    assert!(matches!(error, RpcError::BadParams(_)));
+
+    // Unknown base ref: bad params naming it.
+    let error = match branch_diff(&engine, &fixture.repo_path(), "no-such-base").await {
+        Err(error) => error,
+        Ok(_) => panic!("unknown baseRef must fail"),
+    };
+    assert!(matches!(error, RpcError::BadParams(ref message) if message.contains("no-such-base")));
+}
+
+#[tokio::test]
+async fn branch_scope_surfaces_unrelated_history_as_an_error() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // An orphan branch with no common ancestry with main.
+    let repo = fixture.repo();
+    let sig = signature();
+    {
+        let tree = {
+            let mut builder = repo.treebuilder(None).unwrap();
+            let blob = repo.blob(b"orphan\n").unwrap();
+            builder.insert("orphan.txt", blob, 0o100644).unwrap();
+            repo.find_tree(builder.write().unwrap()).unwrap()
+        };
+        repo.commit(
+            Some("refs/heads/orphan"),
+            &sig,
+            &sig,
+            "orphan root",
+            &tree,
+            &[],
+        )
+        .unwrap();
+    }
+    drop(repo);
+
+    let error = match branch_diff(&engine, &fixture.repo_path(), "orphan").await {
+        Err(error) => error,
+        Ok(_) => panic!("unrelated history must fail, not return an empty diff"),
+    };
+    assert!(matches!(error, RpcError::Failed(ref message) if message.contains("ancestry")));
+}
+
+#[tokio::test]
+async fn branch_scope_file_text_reads_the_merge_base_blob() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // `feature` changed nothing on main; committing a README change on main
+    // makes the merge-base blob (base = feature's parent = the shared base)
+    // hold "hello\n" while the workdir holds the edit.
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "edited on the branch\n",
+    )
+    .unwrap();
+    let diff = branch_diff(&engine, &fixture.repo_path(), "feature")
+        .await
+        .unwrap();
+
+    let request = GetCheckoutFileDiffTextRequest {
+        checkout_id: diff.checkout_id.clone(),
+        cwd: fixture.repo_path(),
+        path: "README.md".into(),
+        mode: "branch".into(),
+        base_ref: Some("feature".into()),
+        chat_id: Some("chat-1".into()),
+        commit_sha: None,
+        diff_checksum: diff.checksum.clone(),
+    };
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(&request).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert_eq!(text.old_text.as_deref(), Some("hello\n"), "merge-base blob");
+    assert_eq!(
+        text.new_text.as_deref(),
+        Some("edited on the branch\n"),
+        "working-tree file"
+    );
+    assert!(!text.stale);
+}

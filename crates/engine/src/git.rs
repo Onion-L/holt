@@ -91,25 +91,48 @@ impl Git {
     ) -> Result<CheckoutDiff, String> {
         let device_id = device_id.to_string();
         self.with_repo(repo_path, move |repo| {
-            working_tree_capture(&repo, &device_id)
+            capture_diff(&repo, &device_id, "workingTree", None).map_err(GitFault::into_string)
         })
         .await
     }
 
-    /// Full old/new text for one file in the working-tree capture: old side
-    /// from the HEAD blob, new side from the working-tree file. `stale` is
-    /// set when the checkout's checksum has moved past the pinned
+    /// The scoped capture behind `GetCheckoutDiff`: `workingTree` diffs
+    /// HEAD → (index → workdir); `branch` diffs `merge-base(baseRef, HEAD)`
+    /// → workdir with index, so committed and uncommitted changes on the
+    /// branch both appear ("what would this branch ship"). Bad params
+    /// (missing/unknown base ref) and hard git failures are told apart by
+    /// [`GitFault`].
+    pub(crate) async fn capture(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        mode: &str,
+        base_ref: Option<&str>,
+    ) -> Result<CheckoutDiff, GitFault> {
+        let device_id = device_id.to_string();
+        let mode = mode.to_string();
+        let base_ref = base_ref.map(str::to_string);
+        self.with_repo(repo_path, move |repo| {
+            capture_diff(&repo, &device_id, &mode, base_ref.as_deref())
+        })
+        .await
+    }
+
+    /// Full old/new text for one file in a capture: old side from the
+    /// mode's base tree (HEAD blob in working-tree mode, merge-base blob in
+    /// branch mode), new side from the working-tree file. `stale` is set
+    /// when the checkout's checksum has moved past the pinned
     /// `diff_checksum` the caller rendered.
-    pub(crate) async fn working_tree_file_text(
+    pub(crate) async fn capture_file_text(
         &self,
         repo_path: &str,
         device_id: &str,
         request: &holt_proto::GetCheckoutFileDiffTextRequest,
-    ) -> Result<holt_proto::CheckoutFileDiffText, String> {
+    ) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
         let device_id = device_id.to_string();
         let request = request.clone();
         self.with_repo(repo_path, move |repo| {
-            working_tree_file_text(&repo, &device_id, &request)
+            capture_file_text(&repo, &device_id, &request)
         })
         .await
     }
@@ -117,10 +140,11 @@ impl Git {
     /// Run `op` against the repository resolved from `repo_path`: resolve
     /// its common git dir, take the per-checkout lock, then execute on the
     /// blocking pool.
-    async fn with_repo<T, F>(&self, repo_path: &str, op: F) -> Result<T, String>
+    async fn with_repo<T, E, F>(&self, repo_path: &str, op: F) -> Result<T, E>
     where
         T: Send + 'static,
-        F: FnOnce(Repository) -> Result<T, String> + Send + 'static,
+        E: From<String> + Send + 'static,
+        F: FnOnce(Repository) -> Result<T, E> + Send + 'static,
     {
         let repo_path = repo_path.to_string();
         let discover_path = repo_path.clone();
@@ -129,7 +153,7 @@ impl Git {
             Ok::<_, String>(normalize(repo.commondir()))
         })
         .await
-        .map_err(|error| error.to_string())??;
+        .map_err(|error| E::from(error.to_string()))??;
         let guard = self.lock_for(lock_key).lock_owned().await;
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
@@ -137,7 +161,7 @@ impl Git {
             op(repo)
         })
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| E::from(error.to_string()))?
     }
 
     fn lock_for(&self, key: PathBuf) -> Arc<tokio::sync::Mutex<()>> {
@@ -447,9 +471,85 @@ pub(crate) fn truncate_patch(patch: &str, cap: usize) -> (String, bool) {
 /// commits.
 const EMPTY_HEAD: &str = "0000000000000000000000000000000000000000";
 
-/// Capture the working tree (HEAD → index → workdir, untracked included,
-/// rename-detected) as a wire `CheckoutDiff`.
-fn working_tree_capture(repo: &Repository, device_id: &str) -> Result<CheckoutDiff, String> {
+/// A git capture failure, split by how the RPC layer should report it:
+/// caller-input problems (`BadParams`) versus repository failures.
+#[derive(Debug)]
+pub(crate) enum GitFault {
+    BadParams(String),
+    Error(String),
+}
+
+impl GitFault {
+    fn into_string(self) -> String {
+        match self {
+            Self::BadParams(message) | Self::Error(message) => message,
+        }
+    }
+}
+
+impl From<String> for GitFault {
+    fn from(message: String) -> Self {
+        Self::Error(message)
+    }
+}
+
+/// Resolve the diff base tree for a capture mode. `workingTree` keys on
+/// HEAD; `branch` keys on `merge-base(baseRef, HEAD)` so committed and
+/// uncommitted work on the branch both appear.
+fn base_tree_for<'repo>(
+    repo: &'repo Repository,
+    mode: &str,
+    base_ref: Option<&str>,
+    head_tree: Option<&git2::Tree<'repo>>,
+) -> Result<Option<git2::Tree<'repo>>, GitFault> {
+    match mode {
+        "workingTree" => Ok(head_tree.cloned()),
+        "branch" => {
+            let base_ref = base_ref
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    GitFault::BadParams("baseRef is required for branch diffs".into())
+                })?;
+            let base_commit = repo
+                .revparse_single(base_ref)
+                .map_err(|_| GitFault::BadParams(format!("unknown base ref: {base_ref}")))?
+                .peel_to_commit()
+                .map_err(|_| {
+                    GitFault::BadParams(format!("base ref is not a commit: {base_ref}"))
+                })?;
+            let head_commit = repo
+                .head()
+                .map_err(|_| GitFault::Error("this repository has no commits".into()))?
+                .peel_to_commit()
+                .map_err(git_message)
+                .map_err(GitFault::Error)?;
+            let merge_base = repo
+                .merge_base(base_commit.id(), head_commit.id())
+                .map_err(|_| {
+                    GitFault::Error(format!("no common ancestry between {base_ref} and HEAD"))
+                })?;
+            let tree = repo
+                .find_commit(merge_base)
+                .and_then(|commit| commit.tree())
+                .map_err(git_message)
+                .map_err(GitFault::Error)?;
+            Ok(Some(tree))
+        }
+        other => Err(GitFault::BadParams(format!(
+            "unsupported diff mode: {other}"
+        ))),
+    }
+}
+
+/// Capture a checkout's diff (base tree → index → workdir, untracked
+/// included, rename-detected) as a wire `CheckoutDiff`. The mode and base
+/// ref fold into the checksum per the documented formula.
+fn capture_diff(
+    repo: &Repository,
+    device_id: &str,
+    mode: &str,
+    base_ref: Option<&str>,
+) -> Result<CheckoutDiff, GitFault> {
     let head = repo.head().ok().and_then(|head| {
         head.peel_to_commit()
             .ok()
@@ -459,6 +559,7 @@ fn working_tree_capture(repo: &Repository, device_id: &str) -> Result<CheckoutDi
         Some((sha, tree)) => (sha, tree),
         None => (EMPTY_HEAD.to_string(), None),
     };
+    let base_tree = base_tree_for(repo, mode, base_ref, head_tree.as_ref())?;
 
     let mut options = git2::DiffOptions::new();
     options
@@ -469,8 +570,9 @@ fn working_tree_capture(repo: &Repository, device_id: &str) -> Result<CheckoutDi
         .show_untracked_content(true)
         .show_binary(true);
     let mut diff = repo
-        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))
-        .map_err(git_message)?;
+        .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut options))
+        .map_err(git_message)
+        .map_err(GitFault::Error)?;
     let mut find = git2::DiffFindOptions::new();
     find.renames(true).for_untracked(true);
     // Rename detection is best-effort: a failure leaves the raw diff intact.
@@ -548,7 +650,8 @@ fn working_tree_capture(repo: &Repository, device_id: &str) -> Result<CheckoutDi
             true
         }),
     )
-    .map_err(git_message)?;
+    .map_err(git_message)
+    .map_err(GitFault::Error)?;
     let files = files.into_inner();
 
     let mut patch = String::new();
@@ -575,7 +678,7 @@ fn working_tree_capture(repo: &Repository, device_id: &str) -> Result<CheckoutDi
         .map(|path| path.display().to_string().trim_end_matches('/').to_string())
         .unwrap_or_default();
     Ok(CheckoutDiff {
-        checksum: diff_checksum(&head_sha, "workingTree", "", &patch),
+        checksum: diff_checksum(&head_sha, mode, base_ref.unwrap_or(""), &patch),
         checkout_id: checkout_identity(device_id, repo.path()),
         device_id: device_id.to_string(),
         cwd: workdir,
@@ -638,21 +741,27 @@ fn file_side(bytes: Option<Vec<u8>>) -> FileSide {
     }
 }
 
-fn working_tree_file_text(
+fn capture_file_text(
     repo: &Repository,
     device_id: &str,
     request: &holt_proto::GetCheckoutFileDiffTextRequest,
-) -> Result<holt_proto::CheckoutFileDiffText, String> {
+) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
     let path = Path::new(&request.path);
-    // Old side: the HEAD blob at this path (None for files HEAD doesn't
-    // know — adds and renames).
-    let old_bytes = repo
-        .head()
-        .ok()
-        .and_then(|head| head.peel_to_tree().ok())
-        .and_then(|tree| tree.get_path(path).ok())
-        .and_then(|entry| entry.to_object(repo).ok())
-        .and_then(|object| object.as_blob().map(|blob| blob.content().to_vec()));
+    let mode = if request.mode.is_empty() {
+        "workingTree"
+    } else {
+        request.mode.as_str()
+    };
+    // Old side: the mode's base tree blob at this path (None for files the
+    // base doesn't know — adds and renames).
+    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    let base_tree = base_tree_for(repo, mode, request.base_ref.as_deref(), head_tree.as_ref())?;
+    let old_bytes = base_tree.and_then(|tree| {
+        tree.get_path(path)
+            .ok()
+            .and_then(|entry| entry.to_object(repo).ok())
+            .and_then(|object| object.as_blob().map(|blob| blob.content().to_vec()))
+    });
     // New side: the working-tree file (None when deleted).
     let new_bytes = repo
         .workdir()
@@ -665,7 +774,7 @@ fn working_tree_file_text(
     // `diff_checksum`; recompute the current key and compare. The HEAD
     // component means a commit alone re-keys even when the patch is
     // byte-identical.
-    let current = working_tree_capture(repo, device_id)?;
+    let current = capture_diff(repo, device_id, mode, request.base_ref.as_deref())?;
     let stale = request.diff_checksum != current.checksum;
 
     Ok(holt_proto::CheckoutFileDiffText {

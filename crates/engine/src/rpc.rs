@@ -487,6 +487,15 @@ fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a
         .ok_or_else(|| RpcError::BadParams(format!("{field} is required")))
 }
 
+/// Report git capture faults at the right RPC severity: caller-input
+/// problems are bad params, repository failures are opaque errors.
+fn git_fault(fault: crate::git::GitFault) -> RpcError {
+    match fault {
+        crate::git::GitFault::BadParams(message) => RpcError::BadParams(message),
+        crate::git::GitFault::Error(message) => RpcError::Failed(message),
+    }
+}
+
 /// A watch stream that emits `value` once, then stays open (never changes).
 fn static_watch(value: serde_json::Value) -> RpcReply {
     use futures::StreamExt;
@@ -688,18 +697,23 @@ impl RpcService for StubEngine {
             // it, last stops it.
             methods::WATCH_CHECKOUT_DIFFS => Ok(self.watch.subscribe()),
 
-            // The diff family. Working-tree mode is the live capture; the
-            // scoped modes (branch, commit, turn) arrive with their slices.
+            // The diff family. Working-tree mode is the live capture;
+            // branch mode diffs the merge-base with a chosen base ref.
+            // The scoped modes (commit, turn) arrive with their slices.
             methods::GET_CHECKOUT_DIFF => {
                 let cwd = required_string(&params, "cwd")?;
                 let mode = required_string(&params, "mode")?;
+                let base_ref = params
+                    .get("baseRef")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
                 match mode {
-                    "workingTree" => {
+                    "workingTree" | "branch" => {
                         let diff = self
                             .git
-                            .working_tree(cwd, &self.engine_info.device_id)
+                            .capture(cwd, &self.engine_info.device_id, mode, base_ref.as_deref())
                             .await
-                            .map_err(RpcError::Failed)?;
+                            .map_err(git_fault)?;
                         RpcReply::value(&diff)
                     }
                     other => Err(RpcError::Failed(format!(
@@ -711,16 +725,12 @@ impl RpcService for StubEngine {
                 let request: holt_proto::GetCheckoutFileDiffTextRequest =
                     holt_rpc::parse_params(params)?;
                 match request.mode.as_str() {
-                    "" | "workingTree" => {
+                    "" | "workingTree" | "branch" => {
                         let text = self
                             .git
-                            .working_tree_file_text(
-                                &request.cwd,
-                                &self.engine_info.device_id,
-                                &request,
-                            )
+                            .capture_file_text(&request.cwd, &self.engine_info.device_id, &request)
                             .await
-                            .map_err(RpcError::Failed)?;
+                            .map_err(git_fault)?;
                         RpcReply::value(&text)
                     }
                     other => Err(RpcError::Failed(format!(
