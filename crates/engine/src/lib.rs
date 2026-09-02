@@ -80,6 +80,7 @@ impl StubEngine {
         let (spaces_tx, _) = watch::channel(spaces_value);
         let runtime = Arc::new(AgentRuntime::new(
             device_id.clone(),
+            config.data_dir.clone(),
             load_chats(&config.data_dir)?,
         ));
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);

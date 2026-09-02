@@ -3,6 +3,7 @@
 
 use std::{
     collections::HashMap,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -26,11 +27,17 @@ use pi_core::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::store::{load_transcript, persist_transcript};
+
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
+    /// Where this chat's transcript persists; empty for the ephemeral
+    /// runtimes tests build directly.
+    data_dir: PathBuf,
+    chat_id: String,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -40,6 +47,7 @@ pub(crate) struct ChatRuntime {
 const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(120);
 
 impl ChatRuntime {
+    #[cfg(test)]
     fn new() -> Self {
         let (transcript_tx, _) = watch::channel(Arc::new(Vec::new()));
         Self {
@@ -47,6 +55,28 @@ impl ChatRuntime {
             history: RwLock::new(Vec::new()),
             transcript_tx,
             cancel: Mutex::new(None),
+            data_dir: PathBuf::new(),
+            chat_id: String::new(),
+        }
+    }
+
+    /// A chat whose transcript persists under `data_dir`, seeded from its
+    /// last on-disk snapshot so reopening after a restart restores the
+    /// conversation. A corrupt file starts empty rather than failing the
+    /// open; the next publish overwrites it.
+    fn load(data_dir: &Path, chat_id: &str) -> Self {
+        let transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
+        // The channel's initial value is the first frame subscribers see, so
+        // seed it with the restored transcript: opening the watch replays it
+        // as a whole-transcript `reset` without needing a publish.
+        let (transcript_tx, _) = watch::channel(Arc::new(transcript.clone()));
+        Self {
+            transcript: RwLock::new(transcript),
+            history: RwLock::new(Vec::new()),
+            transcript_tx,
+            cancel: Mutex::new(None),
+            data_dir: data_dir.to_path_buf(),
+            chat_id: chat_id.to_string(),
         }
     }
 
@@ -54,11 +84,18 @@ impl ChatRuntime {
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
         self.transcript_tx
             .send_replace(Arc::new(transcript.clone()));
+        // Best-effort snapshot: the in-memory watch stays authoritative, and
+        // a failed write surfaces again on the next publish instead of
+        // failing the run that triggered it.
+        if !self.chat_id.is_empty() {
+            let _ = persist_transcript(&self.data_dir, &self.chat_id, &transcript);
+        }
     }
 }
 
 pub(crate) struct AgentRuntime {
     device_id: String,
+    data_dir: PathBuf,
     pub(crate) chats: RwLock<Vec<Chat>>,
     pub(crate) chats_tx: watch::Sender<serde_json::Value>,
     sessions: RwLock<Vec<Session>>,
@@ -67,12 +104,13 @@ pub(crate) struct AgentRuntime {
 }
 
 impl AgentRuntime {
-    pub(crate) fn new(device_id: String, chats: Vec<Chat>) -> Self {
+    pub(crate) fn new(device_id: String, data_dir: PathBuf, chats: Vec<Chat>) -> Self {
         let chats_value = serde_json::to_value(&chats).unwrap_or_else(|_| serde_json::json!([]));
         let (chats_tx, _) = watch::channel(chats_value);
         let (sessions_tx, _) = watch::channel(serde_json::json!([]));
         Self {
             device_id,
+            data_dir,
             chats: RwLock::new(chats),
             chats_tx,
             sessions: RwLock::new(Vec::new()),
@@ -85,7 +123,7 @@ impl AgentRuntime {
         let mut chats = self.chat_runtime.lock().unwrap_or_else(|e| e.into_inner());
         chats
             .entry(chat_id.to_string())
-            .or_insert_with(|| Arc::new(ChatRuntime::new()))
+            .or_insert_with(|| Arc::new(ChatRuntime::load(&self.data_dir, chat_id)))
             .clone()
     }
 
@@ -755,6 +793,35 @@ mod tests {
             decoded,
             TranscriptToolCall::Unknown { ref name, input: None } if name == "web_search"
         ));
+    }
+
+    #[test]
+    fn transcript_survives_runtime_restart() {
+        let dir = std::env::temp_dir().join(format!("holt-restart-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = AgentRuntime::new("device".into(), dir.clone(), Vec::new());
+        let chat = runtime.chat("chat-1");
+        chat.transcript.write().unwrap().push(SessionMessageEntry {
+            id: "m1".into(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "hello".into(),
+            }],
+            created_at: 1,
+            device_id: "device".into(),
+            status: None,
+            continuation_of: None,
+        });
+        chat.publish();
+
+        // A fresh runtime over the same data dir replays the persisted
+        // transcript both in memory and as the watch's opening `reset` frame.
+        let restarted = AgentRuntime::new("device".into(), dir.clone(), Vec::new());
+        let restored = restarted.chat("chat-1");
+        assert_eq!(restored.transcript.read().unwrap().len(), 1);
+        assert_eq!(restored.transcript_tx.borrow().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
