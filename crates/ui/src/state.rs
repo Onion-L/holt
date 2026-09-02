@@ -344,10 +344,16 @@ impl AppState {
         sort_chats(&mut chats);
         self.chats = chats;
         self.chats_synced = true;
-        if let Some(selected) = &self.selected_chat
-            && !self.chats.iter().any(|c| &c.id == selected)
-        {
-            // Selected chat vanished (deleted elsewhere): drop selection + transcript.
+        // The selected chat must stay a visible one: archived threads have no
+        // surface to view them (Settings only lists them for unarchiving), so
+        // a chat that vanished (deleted elsewhere) or became archived drops
+        // selection + transcript alike.
+        let selected_visible = self
+            .selected_chat
+            .as_deref()
+            .and_then(|id| self.chats.iter().find(|c| c.id == id))
+            .is_some_and(|chat| !chat.archived);
+        if !selected_visible {
             self.selected_chat = None;
             self.transcript.clear();
             self.transcript_replayed = false;
@@ -1887,6 +1893,12 @@ mod tests {
         state.selected_chat = Some("b".into());
         state.apply_chats(vec![chat("b", 1, None), chat("c", 2, None)]);
         assert_eq!(state.selected_chat.as_deref(), Some("b"));
+        // Archiving the selected chat drops it too — archived threads are
+        // not viewable anywhere, same as a deleted one.
+        let mut archived_b = chat("b", 1, None);
+        archived_b.archived = true;
+        state.apply_chats(vec![archived_b, chat("c", 2, None)]);
+        assert_eq!(state.selected_chat, None);
     }
 
     #[test]
