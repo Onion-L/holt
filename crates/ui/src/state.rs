@@ -809,6 +809,16 @@ impl AppState {
         self.chats.iter().find(|c| c.id == id)
     }
 
+    /// The working directory skills resolve against: the selected chat's
+    /// own cwd, else the picked space's folder (the project skill root
+    /// derives from it). Shared by the composer's `/` popup and the
+    /// Settings Skills page.
+    pub fn skills_cwd(&self) -> Option<String> {
+        self.selected_chat_row()
+            .and_then(|chat| chat.cwd.clone())
+            .or_else(|| self.selected_space_row().map(|space| space.path.clone()))
+    }
+
     /// The chat the Archive session shortcut acts on: the selected one, unless
     /// it is already archived. The shortcut archives and never unarchives, so
     /// an archived chat is left alone. Pure.

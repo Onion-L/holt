@@ -349,3 +349,36 @@ async fn invoking_a_skill_chips_in_the_transcript_and_unknown_names_fail() {
     assert!(!serialized.contains("# grill"), "{serialized}");
     assert!(!serialized.contains("/skill"), "{serialized}");
 }
+
+#[tokio::test]
+async fn an_invocation_while_a_run_is_active_is_rejected_like_a_second_run() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    let engine = &engine;
+    skill(fixture.personal_dir.path(), "grill", "Grill a plan.");
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "not-a-real-key" }),
+        )
+        .await
+        .unwrap();
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({ "op": "createChat", "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+
+    // Accepted: the chat is now running.
+    invoke(engine, &fixture.cwd(), "grill", None).await.unwrap();
+    // While it runs, a second invocation rides the same acceptance rules
+    // as a second ordinary Run (spec story 23: consistent with everything
+    // else the user sends) — no queue, a clear error.
+    let error = match invoke(engine, &fixture.cwd(), "grill", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("invocation during an active run was accepted"),
+    };
+    assert!(error.to_string().contains("already running"), "{error}");
+}

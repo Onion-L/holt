@@ -1037,6 +1037,46 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn collapse_keys_agree_with_the_real_loader_paths() {
+        // The map the run builds and the read-argument resolver must agree
+        // on the loader's own file paths — hand-built maps can't catch a
+        // normalization divergence, a real scan can.
+        let base = tempfile::tempdir().unwrap();
+        let personal = base.path().join("personal");
+        std::fs::create_dir_all(&personal).unwrap();
+        write_skill(
+            &personal,
+            "grill",
+            "name: grill\ndescription: Grill a plan.\n",
+        );
+        let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
+        let catalog = skills.catalog(None).await;
+        let skill_files: HashMap<String, String> = catalog
+            .winners
+            .iter()
+            .map(|(skill, _)| (skill.file_path.clone(), skill.name.clone()))
+            .collect();
+        let skill_file = personal.join("grill").join("SKILL.md");
+        let skill_file = skill_file.to_string_lossy().into_owned();
+        assert_eq!(
+            skill_read_part(
+                &tool_call("read", serde_json::json!({ "path": skill_file })),
+                "/",
+                &skill_files,
+            ),
+            Some(MessagePart::Skill {
+                id: "call-1".into(),
+                name: "grill".into(),
+                file: skill_files
+                    .keys()
+                    .find(|path| path.ends_with("grill/SKILL.md"))
+                    .cloned()
+                    .unwrap(),
+            })
+        );
+    }
+
     #[test]
     fn transcript_survives_runtime_restart() {
         let dir = std::env::temp_dir().join(format!("holt-restart-{}", uuid::Uuid::new_v4()));

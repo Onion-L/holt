@@ -99,13 +99,7 @@ impl SkillsPage {
             self.listing = Loadable::Error("Engine not connected".into());
             return;
         };
-        let cwd = {
-            let state = self.state.read(cx);
-            state
-                .selected_chat_row()
-                .and_then(|chat| chat.cwd.clone())
-                .or_else(|| state.selected_space_row().map(|space| space.path.clone()))
-        };
+        let cwd = self.state.read(cx).skills_cwd();
         self.listing = Loadable::Loading;
         self.task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
@@ -121,6 +115,11 @@ impl SkillsPage {
                     Ok(value) => serde_json::from_value(value)
                         .map(Loadable::Ready)
                         .unwrap_or_else(|error| Loadable::Error(error.to_string())),
+                    // UnknownMethod is version skew, same as the composer's
+                    // popup: name it rather than echoing the raw error.
+                    Err(holt_rpc::RpcError::UnknownMethod(_)) => Loadable::Error(
+                        "Skills aren't available — the engine doesn't support them yet".into(),
+                    ),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
                 cx.notify();
@@ -162,6 +161,9 @@ impl Render for SkillsPage {
                         |card, (index, row)| {
                             let name = row.name();
                             let status: gpui::SharedString = match row {
+                                SkillRow::Ok(skill) if skill.disable_model_invocation => {
+                                    "ok · manual only".into()
+                                }
                                 SkillRow::Ok(_) => "ok".into(),
                                 SkillRow::Shadowed(entry) => {
                                     format!("shadowed by {}", root_label(entry.shadowed_by)).into()
@@ -170,13 +172,7 @@ impl Render for SkillsPage {
                             };
                             let secondary: gpui::SharedString = match row {
                                 SkillRow::Ok(skill) => {
-                                    if skill.disable_model_invocation {
-                                        SharedString::from(
-                                            "Manual only (/skill) · not advertised to the model",
-                                        )
-                                    } else {
-                                        SharedString::from(skill.description.clone())
-                                    }
+                                    SharedString::from(skill.description.clone())
                                 }
                                 SkillRow::Shadowed(entry) => SharedString::from(entry.file.clone()),
                                 SkillRow::Invalid(entry) => {

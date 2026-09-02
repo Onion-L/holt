@@ -513,14 +513,10 @@ impl Composer {
     }
     // ---- slash commands ---------------------------------------------------
 
-    /// The cwd the popup's skill entries resolve against: the chat's own,
-    /// else the picked space's folder (the project root derives from it).
+    /// The cwd the popup's skill entries resolve against (the project root
+    /// derives from it).
     fn skills_cwd(&self, cx: &App) -> Option<String> {
-        let state = self.state.read(cx);
-        state
-            .selected_chat_row()
-            .and_then(|chat| chat.cwd.clone())
-            .or_else(|| state.selected_space_row().map(|space| space.path.clone()))
+        self.state.read(cx).skills_cwd()
     }
 
     /// Rebuild the merged candidate list from the cached sources: the
