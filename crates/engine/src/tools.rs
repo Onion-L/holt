@@ -1,7 +1,10 @@
-//! The pi-core built-in execution tools (read/write/edit/bash) mounted onto
-//! the local machine: a [`LocalExecutionEnv`] satisfying pi-core's
-//! `FileSystem + Shell` contract, and the assembly that hands each harness
-//! tool the shared [`ExecutionToolContext`] its `execute` downcasts for.
+//! The agent's execution tools: the pi-core built-ins (read/write/edit/
+//! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
+//! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
+//! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
+//! for — plus holt's own content search (ADR-0004) in [`grep`].
+
+mod grep;
 
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
@@ -38,6 +41,8 @@ const EXEC_OUTPUT_CAP: u64 = 2 * 1024 * 1024;
 /// The host filesystem and shell, rooted at the chat's working directory.
 /// Blocking std filesystem calls run inline — the pi-core tools only issue
 /// small reads/writes, and `exec` (the long-running case) is fully async.
+/// Content search, the one long-running local operation that is not an env
+/// method, runs its walk on `spawn_blocking` instead (see [`grep`]).
 pub(crate) struct LocalExecutionEnv {
     cwd: String,
 }
@@ -525,7 +530,8 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 }
 
 /// The toolset handed to the agent loop: pi-core's built-in read/write/
-/// edit/bash, all running against one environment rooted at `cwd`.
+/// edit/bash, all running against one environment rooted at `cwd`, plus
+/// holt's own content-search tool, exposed to the agent as `grep`.
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
     let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(cwd));
     let context = ExecutionToolContext { env }.into_tool_context();
@@ -534,6 +540,7 @@ pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
         with_execution_context(create_write_tool(), &context),
         with_execution_context(create_edit_tool(), &context),
         with_execution_context(create_bash_tool(BashToolOptions::default()), &context),
+        grep::create_grep_tool(cwd),
     ]
 }
 

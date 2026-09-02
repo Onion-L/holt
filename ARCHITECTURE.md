@@ -81,8 +81,9 @@ The implemented agent slice is intentionally narrow: provider configuration,
 provider/model discovery, `createChat`, chat/session watches, `QueueCommand`
 run/interrupt, and streamed transcript frames. The run loop mounts pi-core's
 built-in read/write/edit/bash tools (via `engine::tools`, a local
-`ExecutionEnv` rooted at the chat's cwd); the transcript folds their calls
-and results into `MessagePart::Tool` chips. Durable sessions, steering,
+`ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
+named `grep` (ripgrep's crates in process, ADR-0004); the transcript folds their
+calls and results into `MessagePart::Tool` chips. Durable sessions, steering,
 worktrees, and uploads remain outside this slice.
 
 ## Provenance notes

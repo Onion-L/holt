@@ -224,6 +224,14 @@ fn decode_tool_call(
             old_string: None,
             new_string: None,
         },
+        // The agent-facing `grep` API decodes into the pre-existing Search
+        // chip; its other knobs
+        // (glob, output_mode, …) are not carried — they show through the
+        // tool output instead.
+        "grep" => TranscriptToolCall::Search {
+            pattern: arg("pattern").unwrap_or_default(),
+            path: arg("path"),
+        },
         other => TranscriptToolCall::Unknown {
             name: other.to_owned(),
             input: Some(serde_json::Value::Object(arguments.clone())),
@@ -581,8 +589,9 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         AgentContext {
             system_prompt: format!(
                 "You are a coding assistant working in {cwd}. \
-                 Use the read, write, edit and bash tools to inspect and \
-                 change files whenever the task needs it."
+                 Use read, write, edit, bash and grep to inspect \
+                 and change files whenever the task needs it; grep finds \
+                 regex matches in file contents."
             ),
             messages: history.clone(),
             tools: Some(crate::tools::execution_tools(&cwd)),

@@ -83,6 +83,10 @@ fontdb = "0.23"
 ttf-parser = "0.25.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 ignore = "0.4"
+# The content-search stack for the agent-facing `grep` API (ADR-0004), using
+# ripgrep's own crates in process — no dependency on a system `rg` binary.
+grep-regex = "0.1"
+grep-searcher = "0.1"
 nucleo-matcher = "0.3"
 
 [profile.release]
