@@ -7,11 +7,12 @@ use super::Composer;
 use std::ops::Range;
 use std::time::Duration;
 
-use gpui::{Context, SharedString, Window, div, prelude::*, px};
+use gpui::{App, Context, SharedString, Window, div, prelude::*, px};
 
-use holt_proto::{FileSearchMatch, ProviderId, SlashCommand};
+use holt_proto::{FileSearchMatch, ProviderId, SkillListing, SlashCommand};
 use holt_rpc::{RpcError, methods};
 
+use super::slash::{SlashCandidate, popup_candidates};
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,18 +84,27 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     })
 }
 /// Slash-command completion state: like [`FileMentionState`] but the
-/// candidate list is fetched once per provider (`ListCommands`) and filtered
-/// locally per keystroke — no RPC, debounce, or skeleton churn while typing.
+/// candidate list is a mixed-source model — catalog skills (`ListSkills`,
+/// fetched once per cwd, provider-agnostic) merged ahead of the provider's
+/// commands (`ListCommands`, cached per provider) — filtered locally per
+/// keystroke, no RPC/debounce/skeleton churn while typing.
 #[derive(Debug, Clone, Default)]
 pub(super) struct SlashState {
     pub(super) token: Option<MentionToken>,
-    /// Indices into the cached command list, filter-ranked for the query.
+    /// The merged rows for the current open: skills first, commands after.
+    candidates: Vec<SlashCandidate>,
+    /// Indices into `candidates`, filter-ranked for the query.
     filtered: Vec<usize>,
     active: Option<usize>,
-    /// Provider the popup is showing commands for (cache key).
+    /// Provider the command entries are for (the `slash_cache` key).
     provider: Option<ProviderId>,
+    /// The last skills catalog, with the cwd it was fetched for.
+    skills: SkillListing,
+    skills_cwd: Option<String>,
     request: u64,
+    skills_request: u64,
     loading: bool,
+    skills_loading: bool,
     error: Option<SharedString>,
     dismissed: Option<(Range<usize>, String)>,
 }
@@ -143,6 +153,17 @@ fn slash_error_message(err: &RpcError) -> SharedString {
         RpcError::BadParams(_) | RpcError::Failed(_) => {
             "Couldn't load this agent's commands".into()
         }
+    }
+}
+
+/// A failed skill listing, translated for the popup.
+fn skills_error_message(err: &RpcError) -> SharedString {
+    match err {
+        RpcError::UnknownMethod(_) => {
+            "Skills aren't available — the engine doesn't support them yet".into()
+        }
+        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
+        RpcError::BadParams(_) | RpcError::Failed(_) => "Couldn't load skills".into(),
     }
 }
 
@@ -492,8 +513,32 @@ impl Composer {
     }
     // ---- slash commands ---------------------------------------------------
 
+    /// The cwd the popup's skill entries resolve against: the chat's own,
+    /// else the picked space's folder (the project root derives from it).
+    fn skills_cwd(&self, cx: &App) -> Option<String> {
+        let state = self.state.read(cx);
+        state
+            .selected_chat_row()
+            .and_then(|chat| chat.cwd.clone())
+            .or_else(|| state.selected_space_row().map(|space| space.path.clone()))
+    }
+
+    /// Rebuild the merged candidate list from the cached sources: the
+    /// loaded skills catalog plus the resolved provider's commands.
+    fn rebuild_slash_candidates(&mut self) {
+        let commands = self
+            .slash
+            .provider
+            .as_ref()
+            .and_then(|provider| self.slash_cache.get(provider))
+            .cloned()
+            .unwrap_or_default();
+        self.slash.candidates = popup_candidates(&self.slash.skills, &commands);
+    }
+
     /// Track the `/` token on every edit: open/refresh the popup, fetch the
-    /// provider's command list on first open, filter locally per keystroke.
+    /// skills catalog once per cwd and the provider's command list once per
+    /// provider, filter locally per keystroke.
     fn update_slash(&mut self, text: &str, cursor: usize, cx: &mut Context<Self>) {
         let token = slash_token(text, cursor);
         let still_dismissed = token.as_ref().is_some_and(|token| {
@@ -508,68 +553,117 @@ impl Composer {
         }
         self.slash.dismissed = None;
         let provider = self.pickers.read(cx).resolved(cx).provider;
+        let cwd = self.skills_cwd(cx);
         let provider_changed = self.slash.provider != provider;
-        if token == self.slash.token && !provider_changed {
+        // Skills are provider-agnostic: only a cwd change (or a fresh open)
+        // refetches them — never a provider switch.
+        let skills_stale = self.slash.skills_cwd != cwd;
+        if token == self.slash.token && !provider_changed && !skills_stale {
             self.refilter_slash(cx);
             return;
         }
         self.slash.token = token.clone();
         self.slash.provider = provider.clone();
-        self.slash.error = None;
         if token.is_none() {
             self.slash.active = None;
             self.sync_mention_controls(cx);
             return;
         }
-        // No resolved provider (catalog still loading): empty popup, no fetch.
-        let Some(provider) = provider else {
-            self.slash.loading = false;
-            self.refilter_slash(cx);
-            return;
-        };
-        if self.slash_cache.contains_key(&provider) {
-            self.slash.loading = false;
-            self.refilter_slash(cx);
-            return;
-        }
-        // First open for this provider: one ListCommands against the engine
-        // (it owns the agent binary).
-        self.slash.request = self.slash.request.wrapping_add(1);
-        self.slash.loading = true;
+        // Show what is cached while anything stale is in flight.
+        self.slash.error = None;
+        self.rebuild_slash_candidates();
         self.refilter_slash(cx);
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.slash.loading = false;
-            return;
-        };
-        let request = self.slash.request;
-        self.slash_task = Some(cx.spawn(async move |this, cx| {
-            let params = serde_json::json!({ "providerId": provider });
-            let result = engine.client().call(methods::LIST_COMMANDS, params).await;
-            this.update(cx, |composer, cx| {
-                if composer.slash.request != request {
-                    return;
-                }
-                composer.slash.loading = false;
-                match result {
-                    Ok(value) => match serde_json::from_value::<Vec<SlashCommand>>(value) {
-                        Ok(commands) => {
-                            composer.slash_cache.insert(provider, commands);
-                        }
-                        Err(err) => tracing::warn!(%err, "slash command decode failed"),
-                    },
-                    Err(err) => {
-                        tracing::debug!(%err, "slash command discovery failed");
-                        composer.slash.error = Some(slash_error_message(&err));
+
+        // Skills: one ListSkills against the engine for this cwd. Unknown
+        // on an older engine: the popup just shows commands.
+        if skills_stale {
+            self.slash.skills_request = self.slash.skills_request.wrapping_add(1);
+            if let Some(engine) = self.state.read(cx).engine().cloned() {
+                self.slash.skills_loading = true;
+                let cwd = cwd.clone();
+                let request = self.slash.skills_request;
+                self.slash_skills_task = Some(cx.spawn(async move |this, cx| {
+                    let mut params = serde_json::Map::new();
+                    if let Some(cwd) = &cwd {
+                        params.insert("cwd".into(), cwd.clone().into());
                     }
-                }
-                composer.refilter_slash(cx);
-            })
-            .ok();
-        }));
+                    let result = engine
+                        .client()
+                        .call(methods::LIST_SKILLS, serde_json::Value::Object(params))
+                        .await;
+                    this.update(cx, |composer, cx| {
+                        if composer.slash.skills_request != request {
+                            return;
+                        }
+                        composer.slash.skills_loading = false;
+                        match result {
+                            Ok(value) => match serde_json::from_value::<SkillListing>(value) {
+                                Ok(listing) => {
+                                    composer.slash.skills = listing;
+                                    composer.slash.skills_cwd = cwd;
+                                    composer.rebuild_slash_candidates();
+                                }
+                                Err(err) => {
+                                    tracing::warn!(%err, "skill listing decode failed")
+                                }
+                            },
+                            Err(err) => {
+                                tracing::debug!(%err, "skill listing failed");
+                                composer.slash.error = Some(skills_error_message(&err));
+                            }
+                        }
+                        composer.refilter_slash(cx);
+                    })
+                    .ok();
+                }));
+            } else {
+                self.slash.skills_loading = false;
+            }
+        }
+
+        // Commands: the provider's cached list, or one ListCommands fetch.
+        if let Some(provider) = provider.filter(|provider| !self.slash_cache.contains_key(provider))
+        {
+            self.slash.request = self.slash.request.wrapping_add(1);
+            self.slash.loading = true;
+            let Some(engine) = self.state.read(cx).engine().cloned() else {
+                self.slash.loading = false;
+                return;
+            };
+            let request = self.slash.request;
+            self.slash_task = Some(cx.spawn(async move |this, cx| {
+                let params = serde_json::json!({ "providerId": provider });
+                let result = engine.client().call(methods::LIST_COMMANDS, params).await;
+                this.update(cx, |composer, cx| {
+                    if composer.slash.request != request {
+                        return;
+                    }
+                    composer.slash.loading = false;
+                    match result {
+                        Ok(value) => match serde_json::from_value::<Vec<SlashCommand>>(value) {
+                            Ok(commands) => {
+                                composer.slash_cache.insert(provider, commands);
+                                composer.rebuild_slash_candidates();
+                            }
+                            Err(err) => tracing::warn!(%err, "slash command decode failed"),
+                        },
+                        Err(err) => {
+                            tracing::debug!(%err, "slash command discovery failed");
+                            composer.slash.error = Some(slash_error_message(&err));
+                        }
+                    }
+                    composer.refilter_slash(cx);
+                })
+                .ok();
+            }));
+        } else {
+            self.slash.loading = false;
+        }
         cx.notify();
     }
 
-    /// Re-rank the cached list for the current query (pure local filter).
+    /// Re-rank the merged candidate list for the current query (pure local
+    /// filter over the row titles).
     fn refilter_slash(&mut self, cx: &mut Context<Self>) {
         let query = self
             .slash
@@ -577,15 +671,13 @@ impl Composer {
             .as_ref()
             .map(|t| t.query.clone())
             .unwrap_or_default();
-        let commands = self
+        let titles: Vec<String> = self
             .slash
-            .provider
-            .as_ref()
-            .and_then(|provider| self.slash_cache.get(provider))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
-        self.slash.filtered = crate::popover::filter_indices(&query, &names);
+            .candidates
+            .iter()
+            .map(|candidate| candidate.title())
+            .collect();
+        self.slash.filtered = crate::popover::filter_indices(&query, &titles);
         self.slash.active = (!self.slash.filtered.is_empty()).then_some(0);
         // A fresh query/reopen restarts the row stack at the top.
         reset_scroll_offset(&self.slash_scroll);
@@ -620,23 +712,19 @@ impl Composer {
         let Some(token) = self.slash.token.clone() else {
             return;
         };
-        let Some(command) = self
+        let Some(candidate) = self
             .slash
             .active
             .and_then(|active| self.slash.filtered.get(active))
-            .and_then(|&ix| {
-                self.slash
-                    .provider
-                    .as_ref()
-                    .and_then(|provider| self.slash_cache.get(provider))
-                    .and_then(|c| c.get(ix))
-            })
+            .and_then(|&ix| self.slash.candidates.get(ix))
             .cloned()
         else {
             return;
         };
+        // The title is the fill: `/compact` for a command, `/skill <name>`
+        // for a skill — ready for extra instructions and submit.
         self.input.update(cx, |input, cx| {
-            input.replace_plain_token(token.range, &format!("/{}", command.name), cx)
+            input.replace_plain_token(token.range, &candidate.title(), cx)
         });
         self.reset_slash(None, cx);
         cx.notify();
@@ -649,9 +737,12 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         let request = self.slash.request.wrapping_add(1);
+        let skills_request = self.slash.skills_request.wrapping_add(1);
         self.slash_task = None;
+        self.slash_skills_task = None;
         self.slash = SlashState {
             request,
+            skills_request,
             dismissed,
             provider: self.slash.provider.clone(),
             ..SlashState::default()
@@ -666,13 +757,7 @@ impl Composer {
     ) -> Option<gpui::AnyElement> {
         // Only while a slash token is active.
         self.slash.token.as_ref()?;
-        let commands = self
-            .slash
-            .provider
-            .as_ref()
-            .and_then(|provider| self.slash_cache.get(provider))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+        let candidates = self.slash.candidates.as_slice();
         // Full pill width at the mention card's height budget — both composer
         // completions share the same surface shape.
         let mut card = crate::popover::popover_card(theme)
@@ -683,7 +768,8 @@ impl Composer {
             // dragged, including when the pointer has left the popup.
             .on_drag_move(cx.listener(Self::on_popup_bar_drag_move))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss_slash(cx)));
-        if self.slash.loading && commands.is_empty() {
+        let fetching = self.slash.loading || self.slash.skills_loading;
+        if fetching && candidates.is_empty() {
             card = card.child(crate::popover::skeleton_rows(
                 "slash-loading",
                 theme,
@@ -707,29 +793,22 @@ impl Composer {
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
-                    .child(if commands.is_empty() {
-                        "This agent has no slash commands"
+                    .child(if candidates.is_empty() {
+                        "No slash commands or skills available"
                     } else {
-                        "No matching commands"
+                        "No matching commands or skills"
                     }),
             );
         } else {
             let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(self.slash.filtered.len());
-            for (row_ix, &cmd_ix) in self.slash.filtered.iter().enumerate() {
-                let Some(command) = commands.get(cmd_ix) else {
+            for (row_ix, &candidate_ix) in self.slash.filtered.iter().enumerate() {
+                let Some(candidate) = candidates.get(candidate_ix) else {
                     continue;
                 };
                 let selected = self.slash.active == Some(row_ix);
-                let name: SharedString = format!("/{}", command.name).into();
-                let mut description = command.description.clone();
-                if let Some(hint) = &command.input_hint {
-                    if description.is_empty() {
-                        description = format!("<{hint}>");
-                    } else {
-                        description = format!("{description} · <{hint}>");
-                    }
-                }
-                let description: SharedString = description.into();
+                let name: SharedString = candidate.title().into();
+                let description: SharedString = candidate.description().into();
+                let is_skill = matches!(candidate, SlashCandidate::Skill { .. });
                 rows.push(
                     crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
                         .id(("slash-result", row_ix))
@@ -744,9 +823,13 @@ impl Composer {
                                 .items_center()
                                 .gap(px(8.0))
                                 .child(
-                                    crate::icons::icon(crate::icons::COMMAND)
-                                        .size(px(14.0))
-                                        .text_color(theme.text_muted),
+                                    crate::icons::icon(if is_skill {
+                                        crate::icons::WIDGET
+                                    } else {
+                                        crate::icons::COMMAND
+                                    })
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
                                 )
                                 .child(
                                     div()

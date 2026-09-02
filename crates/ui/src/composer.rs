@@ -84,6 +84,9 @@ pub struct Composer {
     mention_task: Option<Task<()>>,
     mention: FileMentionState,
     slash_task: Option<Task<()>>,
+    /// In-flight `ListSkills` fetch for the slash popup (cwd-scoped —
+    /// skills are provider-agnostic and never refetch per provider).
+    slash_skills_task: Option<Task<()>>,
     slash: SlashState,
     /// Advertised commands per provider (one `ListCommands` per provider per
     /// composer lifetime; the engine caches discovery on its side too).
@@ -240,6 +243,7 @@ impl Composer {
             mention_task: None,
             mention: FileMentionState::default(),
             slash_task: None,
+            slash_skills_task: None,
             slash: SlashState::default(),
             slash_cache: HashMap::new(),
             slash_scroll: gpui::ScrollHandle::new(),
