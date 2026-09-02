@@ -297,6 +297,13 @@ impl StubEngine {
                 request,
                 message_id,
             } => {
+                // Turn baseline FIRST (ADR-0003): captured synchronously at
+                // acceptance, before validation and before the run starts —
+                // even a run rejected for a bogus provider records the
+                // turn's starting point.
+                if let Ok(baseline) = self.git.turn_baseline(&request.cwd).await {
+                    self.turns.insert(&params.chat_id, baseline);
+                }
                 let Some(api_key) = self
                     .providers
                     .credentials
@@ -726,6 +733,22 @@ impl RpcService for StubEngine {
                             .map_err(git_fault)?;
                         RpcReply::value(&diff)
                     }
+                    "turn" => {
+                        let chat_id = required_string(&params, "chatId")?;
+                        // No snapshot (never ran, engine restarted) is an
+                        // explicit error — never a silent empty diff.
+                        let Some(baseline) = self.turns.get(chat_id) else {
+                            return Err(RpcError::Failed(
+                                "no turn recorded for this chat yet".into(),
+                            ));
+                        };
+                        let diff = self
+                            .git
+                            .turn_diff(cwd, &self.engine_info.device_id, &baseline)
+                            .await
+                            .map_err(git_fault)?;
+                        RpcReply::value(&diff)
+                    }
                     "workingTree" | "branch" => {
                         let diff = self
                             .git
@@ -743,6 +766,30 @@ impl RpcService for StubEngine {
                 let request: holt_proto::GetCheckoutFileDiffTextRequest =
                     holt_rpc::parse_params(params)?;
                 match request.mode.as_str() {
+                    "turn" => {
+                        let Some(chat_id) = request.chat_id.as_deref().filter(|id| !id.is_empty())
+                        else {
+                            return Err(RpcError::BadParams(
+                                "chatId is required for turn diffs".into(),
+                            ));
+                        };
+                        let Some(baseline) = self.turns.get(chat_id) else {
+                            return Err(RpcError::Failed(
+                                "no turn recorded for this chat yet".into(),
+                            ));
+                        };
+                        let text = self
+                            .git
+                            .turn_file_text(
+                                &request.cwd,
+                                &self.engine_info.device_id,
+                                &request,
+                                &baseline,
+                            )
+                            .await
+                            .map_err(git_fault)?;
+                        RpcReply::value(&text)
+                    }
                     "" | "workingTree" | "branch" | "commit" => {
                         let text = self
                             .git

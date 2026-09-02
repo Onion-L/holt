@@ -1674,3 +1674,286 @@ async fn fetch_all_surfaces_errors_verbatim() {
         "the remote name rides along: {error}"
     );
 }
+
+// ---- latest turn: net-change diffs (git-capability issue 06) ----
+
+/// Queue a run against a bogus provider: the command is rejected, but the
+/// turn baseline is still captured deterministically (ADR-0003).
+async fn queue_bogus_run(engine: &StubEngine, chat_id: &str, cwd: &str) {
+    let result = engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({
+                "chatId": chat_id,
+                "command": {
+                    "kind": "run",
+                    "messageId": "m-1",
+                    "request": {
+                        "prompt": "do the thing",
+                        "provider": "bogus-provider",
+                        "model": "bogus-provider/none",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": cwd,
+                        "sandbox": "workspace-write",
+                    }
+                }
+            }),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(RpcError::Failed(ref message)) if message.contains("not configured")),
+        "bogus provider must reject the run"
+    );
+}
+
+async fn turn_diff(
+    engine: &StubEngine,
+    cwd: &str,
+    chat_id: &str,
+) -> Result<CheckoutDiff, RpcError> {
+    match engine
+        .handle(
+            methods::GET_CHECKOUT_DIFF,
+            serde_json::json!({
+                "cwd": cwd,
+                "mode": "turn",
+                "chatId": chat_id,
+            }),
+        )
+        .await
+    {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Ok(_) => panic!("GetCheckoutDiff did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+#[tokio::test]
+async fn turn_without_a_baseline_is_an_explicit_error_not_an_empty_diff() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    let error = match turn_diff(&engine, &fixture.repo_path(), "chat-1").await {
+        Err(error) => error,
+        Ok(_) => panic!("no turn recorded must be an error"),
+    };
+    assert!(
+        error.to_string().contains("no turn recorded"),
+        "the UI soft-matches this phrase: {error}"
+    );
+}
+
+#[tokio::test]
+async fn queued_command_records_a_turn_baseline_even_when_rejected() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // Rejected for the bogus provider — but the baseline landed.
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .expect("baseline recorded despite the rejection");
+    assert!(diff.patch.trim().is_empty(), "clean tree at turn start");
+}
+
+#[tokio::test]
+async fn turn_diff_on_a_clean_start_shows_changes_since_the_turn_began() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "agent edits live\n",
+    )
+    .unwrap();
+    let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .unwrap();
+    assert!(diff.patch.contains("-hello"), "{}", diff.patch);
+    assert!(diff.patch.contains("+agent edits live"), "{}", diff.patch);
+    assert_eq!(diff.files.len(), 1);
+
+    // Live updates: a later edit changes the same query's answer.
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "more edits\n").unwrap();
+    let again = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .unwrap();
+    assert!(again.patch.contains("+more edits"));
+    assert_ne!(again.checksum, diff.checksum);
+}
+
+#[tokio::test]
+async fn turn_diff_filters_net_changes_on_a_dirty_start() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // Pre-turn dirt: one file the turn never touches, one it edits, one it
+    // edits and reverts to the exact turn-start bytes.
+    std::fs::write(
+        fixture.repo_dir.path().join("untouched.txt"),
+        "user was here\n",
+    )
+    .unwrap();
+    std::fs::write(fixture.repo_dir.path().join("edited.txt"), "user base\n").unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("reverted.txt"),
+        "revert base\n",
+    )
+    .unwrap();
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+
+    // Agent-like edits: touch `edited`, wiggle `reverted` back to its
+    // turn-start bytes, create a new file, rename a tracked one.
+    std::fs::write(
+        fixture.repo_dir.path().join("edited.txt"),
+        "user base\nagent touched\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("reverted.txt"),
+        "revert base\nagent\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("reverted.txt"),
+        "revert base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("created.txt"),
+        "agent made this\n",
+    )
+    .unwrap();
+    std::fs::rename(
+        fixture.repo_dir.path().join("movable.txt"),
+        fixture.repo_dir.path().join("moved-away.txt"),
+    )
+    .unwrap();
+
+    let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .unwrap();
+    let paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    assert!(
+        !paths.contains(&"untouched.txt"),
+        "pre-existing dirt the turn never touched stays out: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&"reverted.txt"),
+        "net-zero revert drops: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"edited.txt"),
+        "touched dirty file stays: {paths:?}"
+    );
+    assert!(paths.contains(&"created.txt"), "new file stays: {paths:?}");
+    assert!(paths.contains(&"moved-away.txt"), "rename stays: {paths:?}");
+    assert!(diff.patch.contains("+agent made this"));
+    assert!(diff.patch.contains("rename from movable.txt"));
+}
+
+#[tokio::test]
+async fn turn_baseline_dies_with_the_engine() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    drop(engine);
+
+    // A fresh engine on the same data dir: in-memory baselines are gone.
+    let engine = fixture.engine();
+    let error = match turn_diff(&engine, &fixture.repo_path(), "chat-1").await {
+        Err(error) => error,
+        Ok(_) => panic!("restart must drop baselines"),
+    };
+    assert!(error.to_string().contains("no turn recorded"));
+}
+
+#[tokio::test]
+async fn turn_file_text_reads_turn_start_content_and_the_workdir() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // The file is dirty at turn start; the agent edits it further.
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "dirty at start\n",
+    )
+    .unwrap();
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "dirty at start\nagent added\n",
+    )
+    .unwrap();
+
+    let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .unwrap();
+    let request = GetCheckoutFileDiffTextRequest {
+        checkout_id: diff.checkout_id.clone(),
+        cwd: fixture.repo_path(),
+        path: "README.md".into(),
+        mode: "turn".into(),
+        base_ref: None,
+        chat_id: Some("chat-1".into()),
+        commit_sha: None,
+        diff_checksum: diff.checksum.clone(),
+    };
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(&request).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        text.old_text.as_deref(),
+        Some("dirty at start\n"),
+        "old side is the turn-start content, not the HEAD blob"
+    );
+    assert_eq!(
+        text.new_text.as_deref(),
+        Some("dirty at start\nagent added\n"),
+        "new side is the working-tree file"
+    );
+}
+
+#[tokio::test]
+async fn turn_baseline_patch_rides_the_three_mib_cap() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // Dirt far past the cap at queue time: the baseline records truncated,
+    // and the turn scope still answers.
+    let huge = "x".repeat(6 * 1024 * 1024);
+    std::fs::write(fixture.repo_dir.path().join("huge.txt"), &huge).unwrap();
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "post-queue edit\n",
+    )
+    .unwrap();
+    let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
+        .await
+        .expect("the capped baseline still serves the turn scope");
+    // The still-changed huge file dominates the capped patch, but the
+    // summaries stay complete and the truncation is flagged.
+    assert!(diff.truncated);
+    assert!(diff.files.iter().any(|file| file.path == "huge.txt"));
+    assert!(diff.files.iter().any(|file| file.path == "README.md"));
+    assert!(diff.patch.len() <= 4 * 1024 * 1024);
+}

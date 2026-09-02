@@ -70,6 +70,9 @@ pub struct StubEngine {
     /// The `WatchCheckoutDiffs` hub — live checkout-diff awareness over the
     /// git-detected spaces.
     watch: Arc<git_watch::WatchHub>,
+    /// Latest Turn baseline per chat (ADR-0003): in-memory, dropped on
+    /// restart.
+    turns: git::TurnBaselines,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -123,6 +126,7 @@ impl StubEngine {
             providers,
             git,
             watch,
+            turns: git::TurnBaselines::new(),
             _instance_lock: lock,
         })
     }

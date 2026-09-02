@@ -206,6 +206,78 @@ impl Git {
         .await
     }
 
+    /// Capture a turn baseline (ADR-0003): `(HEAD sha, uncommitted patch)`
+    /// for a checkout, the patch under the shared 3 MiB cap.
+    pub(crate) async fn turn_baseline(&self, repo_path: &str) -> Result<TurnBaseline, String> {
+        self.with_repo(repo_path, |repo| {
+            let head_sha = repo
+                .head()
+                .ok()
+                .and_then(|head| head.peel_to_commit().ok())
+                .map(|commit| commit.id().to_string())
+                .unwrap_or_else(|| EMPTY_HEAD.to_string());
+            let head_tree = repo
+                .head()
+                .ok()
+                .and_then(|head| head.peel_to_commit().ok())
+                .and_then(|commit| commit.tree().ok());
+            let mut options = git2::DiffOptions::new();
+            options
+                .include_untracked(true)
+                .recurse_untracked_dirs(true)
+                .show_untracked_content(true)
+                .show_binary(true);
+            let mut diff = repo
+                .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))
+                .map_err(git_message)?;
+            let mut find = git2::DiffFindOptions::new();
+            find.renames(true).for_untracked(true);
+            let _ = diff.find_similar(Some(&mut find));
+            let (patch, _truncated) = truncate_patch(&diff_patch_text(&mut diff), MAX_PATCH_BYTES);
+            Ok(TurnBaseline { head_sha, patch })
+        })
+        .await
+    }
+
+    /// The "Latest turn" capture: `HEAD@start → workdir`, net-change
+    /// filtered against the turn baseline. Available live while a run is
+    /// in flight; re-keys on the CURRENT head so commits during the turn
+    /// refetch.
+    pub(crate) async fn turn_diff(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        baseline: &TurnBaseline,
+    ) -> Result<CheckoutDiff, GitFault> {
+        let device_id = device_id.to_string();
+        let baseline = baseline.clone();
+        self.with_repo(repo_path, move |repo| {
+            turn_capture(&repo, &device_id, &baseline)
+        })
+        .await
+    }
+
+    /// Per-file text for the turn scope; see [`turn_file_text_blocking`].
+    /// `stale` is computed against a fresh turn recompute.
+    pub(crate) async fn turn_file_text(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        request: &holt_proto::GetCheckoutFileDiffTextRequest,
+        baseline: &TurnBaseline,
+    ) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
+        let device_id = device_id.to_string();
+        let request = request.clone();
+        let baseline = baseline.clone();
+        self.with_repo(repo_path, move |repo| {
+            let mut text = turn_file_text_blocking(&repo, &request, &baseline)?;
+            let current = turn_capture(&repo, &device_id, &baseline)?;
+            text.stale = request.diff_checksum != current.checksum;
+            Ok(text)
+        })
+        .await
+    }
+
     /// Run `op` against the repository resolved from `repo_path`: resolve
     /// its common git dir, take the per-checkout lock, then execute on the
     /// blocking pool.
@@ -715,8 +787,33 @@ fn diff_to_payload(
     base_ref: &str,
     head_sha: &str,
 ) -> CheckoutDiff {
-    // Per-file summaries: paths/status from the deltas; addition/deletion
-    // counts and binary flags from a foreach walk of the diff lines.
+    let files = diff_summaries(diff);
+    let patch = diff_patch_text(diff);
+    let (patch, truncated) = truncate_patch(&patch, MAX_PATCH_BYTES);
+
+    let additions: u32 = files.iter().map(|file| file.additions).sum();
+    let deletions: u32 = files.iter().map(|file| file.deletions).sum();
+    let workdir = repo
+        .workdir()
+        .map(|path| path.display().to_string().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    CheckoutDiff {
+        checksum: diff_checksum(head_sha, mode, base_ref, &patch),
+        checkout_id: checkout_identity(device_id, repo.path()),
+        device_id: device_id.to_string(),
+        cwd: workdir,
+        additions,
+        deletions,
+        patch,
+        files,
+        truncated,
+        updated_at: chrono::Utc::now(),
+    }
+}
+
+/// Per-file summaries from a prepared diff: paths/status from the deltas;
+/// addition/deletion counts and binary flags from a foreach line walk.
+fn diff_summaries(diff: &mut git2::Diff) -> Vec<DiffFileSummary> {
     let mut files: Vec<DiffFileSummary> = Vec::new();
     for index in 0..diff.deltas().len() {
         let Some(delta) = diff.get_delta(index) else {
@@ -755,7 +852,9 @@ fn diff_to_payload(
             .unwrap_or_default()
     };
     // The foreach callbacks run one at a time on this thread; RefCell lets
-    // both the binary and line walks annotate the shared summaries.
+    // both the binary and line walks annotate the shared summaries. The
+    // walk is best-effort: on failure the summaries keep zero counts and
+    // the patch text still carries the content.
     let files = std::cell::RefCell::new(files);
     let _ = diff.foreach(
         &mut |_delta, _progress| true,
@@ -787,10 +886,11 @@ fn diff_to_payload(
             true
         }),
     );
-    // The count walk is best-effort: on failure the summaries keep zero
-    // counts and the patch below still carries the content.
-    let files = files.into_inner();
+    files.into_inner()
+}
 
+/// The full (uncapped) unified patch text of a prepared diff.
+fn diff_patch_text(diff: &mut git2::Diff) -> String {
     let mut patch = String::new();
     let _ = diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
         // libgit2 hands content lines without their +/-/space marker: the
@@ -806,26 +906,189 @@ fn diff_to_payload(
         }
         true
     });
-    let (patch, truncated) = truncate_patch(&patch, MAX_PATCH_BYTES);
+    patch
+}
 
-    let additions: u32 = files.iter().map(|file| file.additions).sum();
-    let deletions: u32 = files.iter().map(|file| file.deletions).sum();
-    let workdir = repo
-        .workdir()
-        .map(|path| path.display().to_string().trim_end_matches('/').to_string())
-        .unwrap_or_default();
-    CheckoutDiff {
-        checksum: diff_checksum(head_sha, mode, base_ref, &patch),
-        checkout_id: checkout_identity(device_id, repo.path()),
-        device_id: device_id.to_string(),
-        cwd: workdir,
-        additions,
-        deletions,
-        patch,
-        files,
-        truncated,
-        updated_at: chrono::Utc::now(),
+// ---- turn baseline (ADR-0003) ----
+
+/// The net-change starting point of a chat's latest Turn, captured
+/// synchronously when a queued command is accepted: the HEAD sha and the
+/// uncommitted patch at turn start. In-memory and latest-per-chat; an
+/// engine restart drops them.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnBaseline {
+    pub head_sha: String,
+    pub patch: String,
+}
+
+/// Latest turn baseline per chat.
+#[derive(Default)]
+pub(crate) struct TurnBaselines {
+    inner: Mutex<HashMap<String, TurnBaseline>>,
+}
+
+impl TurnBaselines {
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
+
+    pub(crate) fn insert(&self, chat_id: &str, baseline: TurnBaseline) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(chat_id.to_string(), baseline);
+    }
+
+    pub(crate) fn get(&self, chat_id: &str) -> Option<TurnBaseline> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(chat_id)
+            .cloned()
+    }
+}
+
+/// One file's section of a unified patch: from its "diff --git" line to
+/// the next (or EOF), keyed by the section's new-side path.
+struct PatchSection {
+    path: String,
+    text: String,
+}
+
+/// Split a unified patch into per-file sections. The path comes from the
+/// "+++ b/<path>" line (or "--- a/<path>" for deletions); exotic
+/// space-bearing paths are not handled — the engine produces these patches
+/// itself from ordinary agent file writes.
+fn split_sections(patch: &str) -> Vec<PatchSection> {
+    let lines: Vec<&str> = patch.lines().collect();
+    let mut sections = Vec::new();
+    let mut start = None;
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") && start.is_none() {
+            start = Some(index);
+        } else if line.starts_with("diff --git ") {
+            sections.push(section_of(&lines[start.unwrap()..index]));
+            start = Some(index);
+        }
+    }
+    if let Some(start) = start {
+        sections.push(section_of(&lines[start..]));
+    }
+    sections
+}
+
+fn section_of(lines: &[&str]) -> PatchSection {
+    let path = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("+++ b/"))
+        .or_else(|| lines.iter().find_map(|line| line.strip_prefix("--- a/")))
+        // Pure renames carry no ---/+++ pair; "rename to" names the file.
+        .or_else(|| {
+            lines
+                .iter()
+                .find_map(|line| line.strip_prefix("rename to "))
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut text = lines.join("\n");
+    text.push('\n');
+    PatchSection { path, text }
+}
+
+/// The net-change filter (ADR-0003): keep only files whose CURRENT
+/// uncommitted section differs from the turn-start baseline section —
+/// pre-existing dirty files the Turn never touched drop out, and edits
+/// that return a file to its turn-start state (net zero) drop out too.
+/// Returns the filtered patch and the kept paths.
+pub(crate) fn filter_turn_patch(baseline: &str, current: &str) -> (String, Vec<String>) {
+    let baseline_sections: HashMap<String, String> = split_sections(baseline)
+        .into_iter()
+        .map(|section| (section.path, section.text))
+        .collect();
+    let mut kept_paths = Vec::new();
+    let mut kept = String::new();
+    for section in split_sections(current) {
+        let untouched = baseline_sections
+            .get(&section.path)
+            .is_some_and(|baseline| *baseline == section.text);
+        if untouched {
+            continue;
+        }
+        kept_paths.push(section.path.clone());
+        kept.push_str(&section.text);
+    }
+    (kept, kept_paths)
+}
+
+/// Reconstruct a file's turn-start content: the baseline section's hunks
+/// applied over the HEAD blob ("HEAD blob where the file was clean").
+/// Sections that mean absent-at-turn-start (adds, deletions) yield `None`.
+/// Pure — the applicer only walks standard unified hunks.
+pub(crate) fn turn_start_content(base: Option<&str>, section: &str) -> Option<String> {
+    let lines: Vec<&str> = section.lines().collect();
+    let added = lines.iter().any(|line| line.trim() == "--- /dev/null");
+    let deleted = lines.iter().any(|line| line.trim() == "+++ /dev/null");
+    if added || deleted {
+        return None;
+    }
+    let base = base?;
+    let base_lines: Vec<&str> = base.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut base_idx = 0usize;
+    let mut in_hunk = false;
+    for line in lines {
+        if let Some(header) = line.strip_prefix("@@") {
+            let old_start = header
+                .split_whitespace()
+                .find_map(|token| token.strip_prefix('-'))
+                .and_then(|token| token.split(',').next())
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1);
+            // Emit the untouched base lines before the hunk begins.
+            while base_idx + 1 < old_start && base_idx < base_lines.len() {
+                out.push(base_lines[base_idx].to_string());
+                base_idx += 1;
+            }
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk || line.starts_with("diff --git ") {
+            if line.starts_with("diff --git ") {
+                in_hunk = false;
+            }
+            continue;
+        }
+        let mut chars = line.chars();
+        let origin = chars.next();
+        let body: String = chars.collect();
+        match origin {
+            Some(' ') => {
+                if base_idx < base_lines.len() {
+                    out.push(base_lines[base_idx].to_string());
+                    base_idx += 1;
+                } else {
+                    out.push(body);
+                }
+            }
+            Some('-') => {
+                if base_idx < base_lines.len() {
+                    base_idx += 1;
+                }
+            }
+            Some('+') => out.push(body),
+            _ => {} // '\' no-newline markers and anything else: skip
+        }
+    }
+    while base_idx < base_lines.len() {
+        out.push(base_lines[base_idx].to_string());
+        base_idx += 1;
+    }
+    let mut content = out.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    Some(content)
 }
 
 /// One side of a per-file text pair: bytes, binary detection, and the 1 MiB
@@ -876,6 +1139,142 @@ fn file_side(bytes: Option<Vec<u8>>) -> FileSide {
         truncated,
         binary,
     }
+}
+
+/// The "Latest turn" capture (ADR-0003): diff `HEAD@start → workdir with
+/// index`, then keep only the files whose current section differs from the
+/// baseline section — the net change since the Turn began.
+fn turn_capture(
+    repo: &Repository,
+    device_id: &str,
+    baseline: &TurnBaseline,
+) -> Result<CheckoutDiff, GitFault> {
+    let current_head = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string())
+        .unwrap_or_else(|| EMPTY_HEAD.to_string());
+    let base_tree = if baseline.head_sha == EMPTY_HEAD {
+        None
+    } else {
+        let oid = git2::Oid::from_str(&baseline.head_sha)
+            .map_err(|_| GitFault::Error("turn baseline commit not found".into()))?;
+        Some(
+            repo.find_commit(oid)
+                .map_err(|_| GitFault::Error("turn baseline commit not found".into()))?
+                .tree()
+                .map_err(git_message)
+                .map_err(GitFault::Error)?,
+        )
+    };
+
+    let mut options = git2::DiffOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .show_binary(true);
+    let mut diff = repo
+        .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut options))
+        .map_err(git_message)
+        .map_err(GitFault::Error)?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true).for_untracked(true);
+    let _ = diff.find_similar(Some(&mut find));
+
+    let mut files = diff_summaries(&mut diff);
+    let current_patch = diff_patch_text(&mut diff);
+    let (patch, kept) = filter_turn_patch(&baseline.patch, &current_patch);
+    files.retain(|file| kept.contains(&file.path));
+    let (patch, truncated) = truncate_patch(&patch, MAX_PATCH_BYTES);
+
+    let additions: u32 = files.iter().map(|file| file.additions).sum();
+    let deletions: u32 = files.iter().map(|file| file.deletions).sum();
+    let workdir = repo
+        .workdir()
+        .map(|path| path.display().to_string().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    Ok(CheckoutDiff {
+        // The CURRENT head folds in: a commit made during the turn re-keys
+        // even when the net patch is unchanged.
+        checksum: diff_checksum(&current_head, "turn", "", &patch),
+        checkout_id: checkout_identity(device_id, repo.path()),
+        device_id: device_id.to_string(),
+        cwd: workdir,
+        additions,
+        deletions,
+        patch,
+        files,
+        truncated,
+        updated_at: chrono::Utc::now(),
+    })
+}
+
+/// Per-file text for the turn scope: old side is the file's TURN-START
+/// content (baseline section applied over the HEAD blob; the HEAD blob
+/// where the file was clean at turn start), new side the working-tree
+/// file.
+fn turn_file_text_blocking(
+    repo: &Repository,
+    request: &holt_proto::GetCheckoutFileDiffTextRequest,
+    baseline: &TurnBaseline,
+) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
+    let path = Path::new(&request.path);
+    let base_tree = if baseline.head_sha == EMPTY_HEAD {
+        None
+    } else {
+        let oid = git2::Oid::from_str(&baseline.head_sha)
+            .map_err(|_| GitFault::Error("turn baseline commit not found".into()))?;
+        Some(
+            repo.find_commit(oid)
+                .map_err(|_| GitFault::Error("turn baseline commit not found".into()))?
+                .tree()
+                .map_err(git_message)
+                .map_err(GitFault::Error)?,
+        )
+    };
+    let head_blob = base_tree.and_then(|tree| {
+        tree.get_path(path)
+            .ok()
+            .and_then(|entry| entry.to_object(repo).ok())
+            .and_then(|object| object.as_blob().map(|blob| blob.content().to_vec()))
+    });
+    let baseline_section = split_sections(&baseline.patch)
+        .into_iter()
+        .find(|section| section.path == request.path)
+        .map(|section| section.text);
+    let old_bytes: Option<Vec<u8>> = match &baseline_section {
+        None => head_blob,
+        Some(section) => turn_start_content(
+            head_blob
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .as_deref(),
+            section,
+        )
+        .map(String::into_bytes),
+    };
+    let new_bytes = repo
+        .workdir()
+        .map(|workdir| workdir.join(path))
+        .and_then(|full| std::fs::read(full).ok());
+    let old = file_side(old_bytes);
+    let new = file_side(new_bytes);
+
+    Ok(holt_proto::CheckoutFileDiffText {
+        diff_checksum: request.diff_checksum.clone(),
+        old_text: old.text,
+        new_text: new.text,
+        old_content_hash: old.content_hash,
+        new_content_hash: new.content_hash,
+        binary: old.binary || new.binary,
+        truncated: old.truncated || new.truncated,
+        // A turn capture is live state: freshness is judged by the pinned
+        // checksum against a fresh recompute, exactly like the other
+        // workdir-based scopes.
+        stale: false,
+    })
 }
 
 /// Per-file text for the commit scope: parent blob vs commit blob, never
@@ -1098,7 +1497,8 @@ fn history_page(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PATCH_BYTES, checkout_identity, default_branch, diff_checksum, truncate_patch,
+        MAX_PATCH_BYTES, checkout_identity, default_branch, diff_checksum, filter_turn_patch,
+        truncate_patch, turn_start_content,
     };
 
     fn names(values: &[&str]) -> Vec<String> {
@@ -1244,5 +1644,113 @@ mod tests {
             "beta"
         );
         assert_eq!(default_branch(&[], None), None);
+    }
+
+    // ---- turn net-change filter ----
+
+    fn modified_section(path: &str, old: &str, new: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\nindex 111..222 100644\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{old}\n+{new}\n"
+        )
+    }
+
+    fn added_section(path: &str, content: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{content}\n"
+        )
+    }
+
+    fn deleted_section(path: &str, content: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\ndeleted file mode 100644\n--- a/{path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-{content}\n"
+        )
+    }
+
+    fn renamed_section(old: &str, new: &str, content: &str) -> String {
+        format!(
+            "diff --git a/{old} b/{new}\nsimilarity index 90%\nrename from {old}\nrename to {new}\n--- a/{old}\n+++ b/{new}\n@@ -1 +1 @@\n-{content}\n+{content} edited\n"
+        )
+    }
+
+    #[test]
+    fn turn_filter_keeps_touched_and_new_drops_untouched_and_net_zero() {
+        let baseline = format!(
+            "{}{}",
+            modified_section("dirty.txt", "user edit", "user edited"),
+            modified_section("stable.txt", "s", "stable"),
+        );
+        // The turn never touched dirty.txt (section byte-identical) and
+        // reverted its own edit to net.txt; it did touch agent.txt.
+        let current = format!(
+            "{}{}{}",
+            modified_section("dirty.txt", "user edit", "user edited"),
+            modified_section("net.txt", "a", "agent then reverted"),
+            modified_section("agent.txt", "clean", "agent work"),
+        );
+        let baseline_net = modified_section("net.txt", "a", "agent then reverted");
+        let baseline = format!("{baseline}{baseline_net}");
+
+        let (patch, kept) = filter_turn_patch(&baseline, &current);
+        assert_eq!(kept, ["agent.txt"]);
+        assert!(patch.contains("agent.txt"));
+        assert!(patch.contains("+agent work"));
+        assert!(!patch.contains("dirty.txt"));
+        assert!(!patch.contains("net.txt"));
+    }
+
+    #[test]
+    fn turn_filter_keeps_new_deleted_and_renamed_files() {
+        let current = format!(
+            "{}{}{}",
+            added_section("new.txt", "fresh"),
+            deleted_section("gone.txt", "old"),
+            renamed_section("from.rs", "to.rs", "code"),
+        );
+        let (patch, kept) = filter_turn_patch("", &current);
+        assert_eq!(kept, ["new.txt", "gone.txt", "to.rs"]);
+        assert!(patch.contains("+fresh"));
+        assert!(patch.contains("-old"));
+        assert!(patch.contains("rename from from.rs"));
+    }
+
+    #[test]
+    fn turn_filter_renamed_away_drops_when_the_rename_predates_the_turn() {
+        // The rename already existed at turn start: identical sections drop.
+        let baseline = renamed_section("from.rs", "to.rs", "code");
+        let (patch, kept) = filter_turn_patch(&baseline, &baseline);
+        assert!(kept.is_empty());
+        assert!(patch.is_empty());
+    }
+
+    // ---- turn-start content reconstruction ----
+
+    #[test]
+    fn turn_start_content_applies_baseline_hunks_over_the_head_blob() {
+        // The file was dirty at turn start: HEAD says "line", the baseline
+        // section shows the turn-start state as the agent found it.
+        let section = "diff --git a/x.txt b/x.txt\n--- a/x.txt\n+++ b/x.txt\n@@ -1,2 +1,3 @@\n keep\n-was\n+became\n+extra\n";
+        let head = "keep\nwas\ntail\n";
+        assert_eq!(
+            turn_start_content(Some(head), section).as_deref(),
+            Some("keep\nbecame\nextra\ntail\n")
+        );
+    }
+
+    #[test]
+    fn turn_start_content_cleans_yield_the_head_blob() {
+        // Clean at turn start (no baseline section): the HEAD blob is the
+        // turn-start content. Passing None as the section models that.
+        assert_eq!(
+            turn_start_content(Some("head state\n"), "").as_deref(),
+            Some("head state\n")
+        );
+    }
+
+    #[test]
+    fn turn_start_content_absent_files_yield_none() {
+        let added = added_section("new.txt", "fresh");
+        assert_eq!(turn_start_content(None, &added), None);
+        let deleted = deleted_section("gone.txt", "old");
+        assert_eq!(turn_start_content(Some("old\n"), &deleted), None);
     }
 }
