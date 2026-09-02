@@ -233,3 +233,119 @@ async fn ignore_files_keep_entries_out_of_the_catalog() {
     );
     assert_eq!(listing.invalid, vec![]);
 }
+
+/// Queue an `invokeSkill` command exactly as the composer serializes it.
+async fn invoke(
+    engine: &StubEngine,
+    cwd: &str,
+    name: &str,
+    extra: Option<&str>,
+) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+    let command = serde_json::json!({
+        "kind": "invokeSkill",
+        "name": name,
+        "extraInstructions": extra,
+        "messageId": format!("message-{name}"),
+        "request": {
+            "prompt": "",
+            "provider": "openai",
+            "model": "openai/gpt-5.4",
+            "reasoning": null,
+            "modelOptions": {},
+            "cwd": cwd,
+            "sandbox": "workspace-write"
+        }
+    });
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({ "chatId": "chat-1", "command": command }),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn invoking_a_skill_chips_in_the_transcript_and_unknown_names_fail() {
+    use futures::StreamExt as _;
+    use holt_doc::{MessagePart, MessageRole, TranscriptFrame};
+
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    let engine = &engine;
+    let skill_file = skill(fixture.personal_dir.path(), "grill", "Grill a plan.");
+
+    // The run acceptance path needs a configured provider; the run itself
+    // dies on its own against the fake key — only pre-run behavior is
+    // asserted.
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "not-a-real-key" }),
+        )
+        .await
+        .unwrap();
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({ "op": "createChat", "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+    let RpcReply::Stream(mut transcript) = engine
+        .handle(
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchDocMessages did not return a stream");
+    };
+    assert_eq!(
+        transcript.next().await.unwrap(),
+        serde_json::json!({ "reset": [] })
+    );
+
+    // Unknown skill: immediate error reply, no transcript entry, no run.
+    let error = match invoke(engine, &fixture.cwd(), "nope", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("unknown skill was accepted"),
+    };
+    assert!(error.to_string().contains("unknown skill"), "{error}");
+
+    // Accepted invocation: a user entry whose first part is the skill chip
+    // (name + source pointer) followed by the extra instructions verbatim.
+    invoke(
+        engine,
+        &fixture.cwd(),
+        "grill",
+        Some("focus on the data layer"),
+    )
+    .await
+    .unwrap();
+    let frame: TranscriptFrame = serde_json::from_value(transcript.next().await.unwrap()).unwrap();
+    let holt_doc::TranscriptFrame::Delta { upsert, .. } = frame else {
+        panic!("expected a delta frame");
+    };
+    assert_eq!(upsert.len(), 1);
+    let entry = &upsert[0].entry;
+    assert_eq!(entry.role, MessageRole::User);
+    assert_eq!(entry.parts.len(), 2);
+    match &entry.parts[0] {
+        MessagePart::Skill { name, file, .. } => {
+            assert_eq!(name, "grill");
+            assert_eq!(file, skill_file.as_str());
+        }
+        other => panic!("expected a skill chip, got {other:?}"),
+    }
+    match &entry.parts[1] {
+        MessagePart::Text { text, .. } => assert_eq!(text, "focus on the data layer"),
+        other => panic!("expected the extra text, got {other:?}"),
+    }
+    // The transcript carries the chip and the user's own words — never the
+    // skill content, description, or the raw `/skill` directive.
+    let serialized = serde_json::to_string(entry).unwrap();
+    assert!(!serialized.contains("Grill a plan."), "{serialized}");
+    assert!(!serialized.contains("# grill"), "{serialized}");
+    assert!(!serialized.contains("/skill"), "{serialized}");
+}

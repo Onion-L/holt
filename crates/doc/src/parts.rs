@@ -193,6 +193,17 @@ pub enum MessagePart {
         #[serde(default)]
         resolved: bool,
     },
+    /// A skill invocation (or a read of a catalog skill's `SKILL.md`)
+    /// collapsed to a compact chip (ADR-0006): the skill name plus a
+    /// pointer to the source file. The full content went to the model
+    /// context only — never the transcript.
+    #[serde(rename_all = "camelCase")]
+    Skill {
+        id: String,
+        name: String,
+        /// Absolute path of the `SKILL.md` the chip points at.
+        file: String,
+    },
     Error {
         id: String,
         message: String,
@@ -206,6 +217,7 @@ impl MessagePart {
             | MessagePart::Reasoning { id, .. }
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
+            | MessagePart::Skill { id, .. }
             | MessagePart::Error { id, .. } => id,
         }
     }
@@ -232,6 +244,7 @@ impl MessagePart {
             MessagePart::Input { questions, .. } => {
                 serde_json::to_vec(questions).map_or(0, |v| v.len())
             }
+            MessagePart::Skill { name, file, .. } => name.len() + file.len(),
             MessagePart::Error { message, .. } => message.len(),
         }
     }

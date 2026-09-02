@@ -59,6 +59,15 @@ impl Composer {
             return;
         }
         let text = self.input.read(cx).text().trim().to_string();
+        // Slash commands are handled by the composer itself (ADR-0006): a
+        // recognized-but-nameless `/skill` never reaches the prompt path —
+        // surface the usage instead.
+        if matches!(super::slash::parse(&text), super::slash::Parsed::Malformed) {
+            self.failure = Some("Usage: /skill <name> [extra instructions]".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        }
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
         match self.button_mode(cx) {
@@ -114,26 +123,40 @@ impl Composer {
         };
         let space_id = space.as_ref().map(|s| s.id.clone());
         let space_path = space.as_ref().map(|s| s.path.clone());
-        // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
-        // strip empties the instant you hit send; a failure hands the files
-        // back into the chat's stash.
-        let staged = self
-            .attachments
-            .remove(&self.current_key)
-            .unwrap_or_default();
+        // Slash interception (ADR-0006): a parsed `/skill` rides this send
+        // as a typed invocation — the raw directive never becomes prompt
+        // text. A skill invocation travels alone: staged attachments and
+        // diff-comment folding stay put for the next ordinary message.
+        let slash = super::slash::parse(&text);
+        let is_skill = matches!(slash, super::slash::Parsed::Skill { .. });
+        let staged = if is_skill {
+            Vec::new()
+        } else {
+            self.attachments
+                .remove(&self.current_key)
+                .unwrap_or_default()
+        };
         // `typed` keeps the user's own words for the failure hand-back below:
         // restoring the folded prompt would paste the comment block into the
         // input as literal text.
         let key = self.current_key.clone();
-        let comments = self.state.update(cx, |state, cx| {
-            let taken = state.take_diff_comments(&key);
-            if !taken.is_empty() {
-                cx.notify();
-            }
-            taken
-        });
+        let comments = if is_skill {
+            Vec::new()
+        } else {
+            self.state.update(cx, |state, cx| {
+                let taken = state.take_diff_comments(&key);
+                if !taken.is_empty() {
+                    cx.notify();
+                }
+                taken
+            })
+        };
         let typed = text.clone();
-        let text = crate::comments::with_comments(&text, &comments);
+        let text = if comments.is_empty() {
+            text
+        } else {
+            crate::comments::with_comments(&text, &comments)
+        };
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
@@ -192,14 +215,33 @@ impl Composer {
         }
 
         // Optimistic echo (client-minted id doubles as the persisted message id,
-        // so the doc frame dedups it away).
-        let echo = SessionMessageEntry {
-            id: message_id.clone(),
-            role: holt_doc::MessageRole::User,
-            parts: vec![MessagePart::Text {
+        // so the doc frame dedups it away). A skill invocation echoes as its
+        // chip — name only; the engine's entry carries the real source file
+        // and supersedes the echo once its frame lands.
+        let echo_parts: Vec<MessagePart> = match &slash {
+            super::slash::Parsed::Skill { name, extra } => {
+                let mut parts = vec![MessagePart::Skill {
+                    id: "t0".into(),
+                    name: name.clone(),
+                    file: String::new(),
+                }];
+                if let Some(extra) = extra {
+                    parts.push(MessagePart::Text {
+                        id: "t1".into(),
+                        text: extra.clone(),
+                    });
+                }
+                parts
+            }
+            _ => vec![MessagePart::Text {
                 id: "t0".into(),
                 text: echo_text.clone(),
             }],
+        };
+        let echo = SessionMessageEntry {
+            id: message_id.clone(),
+            role: holt_doc::MessageRole::User,
+            parts: echo_parts,
             created_at,
             device_id: "local".into(),
             status: None,
@@ -468,17 +510,47 @@ impl Composer {
                     }
                 }
 
-                let command = if steer_cmd {
-                    SessionCommandPayload::Steer {
-                        prompt: content.clone(),
-                        message_id: Some(message_id.clone()),
+                let command = match &slash {
+                    // The engine builds the model-visible prompt from the
+                    // skill's content; `request.prompt` rides empty.
+                    super::slash::Parsed::Skill { name, extra } => {
+                        SessionCommandPayload::InvokeSkill {
+                            request: RunRequest {
+                                prompt: String::new(),
+                                provider: resolved.provider.clone().ok_or_else(|| {
+                                    "Configure a provider before sending".to_string()
+                                })?,
+                                model: resolved.model.clone().ok_or_else(|| {
+                                    "Choose a model before sending".to_string()
+                                })?,
+                                reasoning: resolved.reasoning,
+                                model_options: resolved.model_options.clone(),
+                                cwd,
+                                sandbox: SandboxLevel::WorkspaceWrite,
+                                auto_approve: false,
+                                attachments: Vec::new(),
+                                worktree: run_worktree,
+                            },
+                            name: name.clone(),
+                            extra_instructions: extra.clone(),
+                            message_id: message_id.clone(),
+                        }
                     }
-                } else {
-                    SessionCommandPayload::Run {
+                    _
+                        if steer_cmd => SessionCommandPayload::Steer {
+                            prompt: content.clone(),
+                            message_id: Some(message_id.clone()),
+                        },
+                    _ => SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: content.clone(),
-                            provider: resolved.provider.clone().ok_or_else(|| "Configure a provider before sending".to_string())?,
-                            model: resolved.model.clone().ok_or_else(|| "Choose a model before sending".to_string())?,
+                            provider: resolved.provider.clone().ok_or_else(|| {
+                                "Configure a provider before sending".to_string()
+                            })?,
+                            model: resolved
+                                .model
+                                .clone()
+                                .ok_or_else(|| "Choose a model before sending".to_string())?,
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
@@ -488,7 +560,7 @@ impl Composer {
                             worktree: run_worktree,
                         },
                         message_id: message_id.clone(),
-                    }
+                    },
                 };
                 let command = serde_json::to_value(&command)
                     .map_err(|e| format!("Send failed: {e}"))?;

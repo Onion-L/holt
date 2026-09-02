@@ -7,8 +7,9 @@
 //! - `commands`: LoroList of LoroMap {
 //!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
 //!
-//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error", text?: LoroText,
-//! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
+//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"skill"|"error", text?: LoroText,
+//! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message?, name?,
+//! file? }.
 //! Text bodies are **LoroText** so streaming appends RLE-merge (1.03x oplog overhead vs
 //! 125x for whole-value rewrites).
 
@@ -106,6 +107,12 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// Skill name for `kind: "skill"` chips (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Source-file pointer for `kind: "skill"` chips (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -174,6 +181,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             resolved: Some(*resolved),
             ..Default::default()
         },
+        MessagePart::Skill { id, name, file } => DocPartJson {
+            id: id.clone(),
+            kind: "skill".into(),
+            name: Some(name.clone()),
+            file: Some(file.clone()),
+            ..Default::default()
+        },
         MessagePart::Error { id, message } => DocPartJson {
             id: id.clone(),
             kind: "error".into(),
@@ -220,6 +234,11 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 .and_then(|q| serde_json::from_value(q).ok())
                 .unwrap_or_default(),
             resolved: p.resolved.unwrap_or(false),
+        },
+        "skill" => MessagePart::Skill {
+            id: p.id,
+            name: p.name.unwrap_or_default(),
+            file: p.file.unwrap_or_default(),
         },
         "error" => MessagePart::Error {
             id: p.id,

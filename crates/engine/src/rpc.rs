@@ -7,7 +7,7 @@ use holt_doc::{
     MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry, TranscriptFrame,
     diff_transcript,
 };
-use holt_proto::{AuthState, Chat, ChatConfig, SessionStatus, Space};
+use holt_proto::{AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
 use serde::Deserialize;
@@ -297,110 +297,64 @@ impl StubEngine {
                 request,
                 message_id,
             } => {
-                // Turn baseline FIRST (ADR-0003): captured synchronously at
-                // acceptance, before validation and before the run starts —
-                // even a run rejected for a bogus provider records the
-                // turn's starting point.
-                if let Ok(baseline) = self.git.turn_baseline(&request.cwd).await {
-                    self.turns.insert(&params.chat_id, baseline);
-                }
-                let Some(api_key) = self
-                    .providers
-                    .credentials
-                    .reveal_key(request.provider.as_str())
-                    .await
-                else {
-                    return Err(RpcError::Failed(format!(
-                        "provider {} is not configured",
-                        request.provider
-                    )));
-                };
-                let model = self
-                    .providers
-                    .resolve_model(request.provider.as_str(), &request.model)
-                    .map_err(RpcError::BadParams)?;
-                let mut active = chat.cancel.lock().unwrap_or_else(|e| e.into_inner());
-                if active.as_ref().is_some_and(|token| !token.is_cancelled()) {
-                    return Err(RpcError::Failed("this chat is already running".into()));
-                }
-                let cancel = CancellationToken::new();
-                *active = Some(cancel.clone());
-                drop(active);
-
-                let now = Utc::now();
-                let timestamp = now.timestamp_millis();
-                chat.transcript
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(SessionMessageEntry {
-                        id: message_id,
-                        role: MessageRole::User,
-                        parts: vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: request.prompt.clone(),
-                        }],
-                        created_at: timestamp,
-                        device_id: self.engine_info.device_id.clone(),
-                        status: None,
-                        continuation_of: None,
-                    });
-                chat.publish();
-
-                {
-                    let mut chats = self
-                        .runtime
-                        .chats
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if let Some(row) = chats.iter_mut().find(|row| row.id == params.chat_id) {
-                        row.cwd = Some(request.cwd.clone());
-                        row.config = Some(ChatConfig {
-                            provider: request.provider.clone(),
-                            model: request.model.clone(),
-                            reasoning: request.reasoning,
-                            model_options: request.model_options.clone(),
-                            sandbox: request.sandbox,
-                        });
-                        row.last_message_preview = Some(request.prompt.chars().take(120).collect());
-                        row.last_message_at = Some(now);
-                        if row.title.is_none() {
-                            row.title = Some(
-                                request
-                                    .prompt
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("New chat")
-                                    .chars()
-                                    .take(60)
-                                    .collect(),
-                            );
-                        }
-                    }
-                }
-                persist_chats(
-                    &self.data_dir,
-                    &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-                )
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
-                self.runtime.publish_chats();
-                self.runtime
-                    .set_session(&params.chat_id, SessionStatus::Working);
-
-                let runtime = self.runtime.clone();
-                let chat_id = params.chat_id;
-                tokio::spawn(run_agent_command(AgentRun {
-                    runtime,
-                    chat_id,
+                let prompt = request.prompt.clone();
+                let parts = vec![MessagePart::Text {
+                    id: "t0".into(),
+                    text: prompt.clone(),
+                }];
+                self.start_turn(
+                    &params.chat_id,
                     chat,
-                    prompt: request.prompt,
-                    cwd: request.cwd,
-                    reasoning: request.reasoning,
-                    model,
-                    api_key,
-                    timestamp,
-                    cancel,
-                    skills: self.skills.clone(),
-                }));
+                    request,
+                    message_id,
+                    parts,
+                    prompt.clone(),
+                    prompt,
+                )
+                .await?;
+            }
+            SessionCommandPayload::InvokeSkill {
+                request,
+                name,
+                extra_instructions,
+                message_id,
+            } => {
+                // Resolve against a fresh catalog FIRST: an unknown (or
+                // shadowed/invalid) name fails at submit time with no run
+                // and no transcript entry (ADR-0006).
+                let Some(skill) = self.skills.resolve(Some(&request.cwd), &name).await else {
+                    return Err(RpcError::Failed(format!("unknown skill: {name}")));
+                };
+                let prompt =
+                    crate::skills::invocation_prompt(&skill, extra_instructions.as_deref());
+                // The transcript sees a compact chip (plus the user's own
+                // extra words), never the skill content or the raw
+                // `/skill` directive.
+                let mut parts = vec![MessagePart::Skill {
+                    id: "t0".into(),
+                    name: skill.name.clone(),
+                    file: skill.file_path.clone(),
+                }];
+                if let Some(extra) = extra_instructions
+                    .clone()
+                    .filter(|extra| !extra.trim().is_empty())
+                {
+                    parts.push(MessagePart::Text {
+                        id: "t1".into(),
+                        text: extra,
+                    });
+                }
+                let preview = format!("/skill {name}");
+                self.start_turn(
+                    &params.chat_id,
+                    chat,
+                    request,
+                    message_id,
+                    parts,
+                    preview,
+                    prompt,
+                )
+                .await?;
             }
             SessionCommandPayload::Steer { .. } => {
                 return Err(RpcError::Failed("steering is not available yet".into()));
@@ -412,6 +366,123 @@ impl StubEngine {
             }
         }
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Accept and launch one ordinary Turn — the shared tail of `Run` and
+    /// `InvokeSkill`. `parts` is the transcript user entry (prompt text or
+    /// skill chip), `preview` the sidebar/title text, `prompt` the
+    /// model-visible text.
+    #[allow(clippy::too_many_arguments)]
+    async fn start_turn(
+        &self,
+        chat_id: &str,
+        chat: Arc<ChatRuntime>,
+        request: RunRequest,
+        message_id: String,
+        parts: Vec<MessagePart>,
+        preview: String,
+        prompt: String,
+    ) -> Result<(), RpcError> {
+        // Turn baseline FIRST (ADR-0003): captured synchronously at
+        // acceptance, before validation and before the run starts —
+        // even a run rejected for a bogus provider records the
+        // turn's starting point.
+        if let Ok(baseline) = self.git.turn_baseline(&request.cwd).await {
+            self.turns.insert(chat_id, baseline);
+        }
+        let Some(api_key) = self
+            .providers
+            .credentials
+            .reveal_key(request.provider.as_str())
+            .await
+        else {
+            return Err(RpcError::Failed(format!(
+                "provider {} is not configured",
+                request.provider
+            )));
+        };
+        let model = self
+            .providers
+            .resolve_model(request.provider.as_str(), &request.model)
+            .map_err(RpcError::BadParams)?;
+        let mut active = chat.cancel.lock().unwrap_or_else(|e| e.into_inner());
+        if active.as_ref().is_some_and(|token| !token.is_cancelled()) {
+            return Err(RpcError::Failed("this chat is already running".into()));
+        }
+        let cancel = CancellationToken::new();
+        *active = Some(cancel.clone());
+        drop(active);
+
+        let now = Utc::now();
+        let timestamp = now.timestamp_millis();
+        chat.transcript
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(SessionMessageEntry {
+                id: message_id,
+                role: MessageRole::User,
+                parts,
+                created_at: timestamp,
+                device_id: self.engine_info.device_id.clone(),
+                status: None,
+                continuation_of: None,
+            });
+        chat.publish();
+
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
+                row.cwd = Some(request.cwd.clone());
+                row.config = Some(ChatConfig {
+                    provider: request.provider.clone(),
+                    model: request.model.clone(),
+                    reasoning: request.reasoning,
+                    model_options: request.model_options.clone(),
+                    sandbox: request.sandbox,
+                });
+                row.last_message_preview = Some(preview.chars().take(120).collect());
+                row.last_message_at = Some(now);
+                if row.title.is_none() {
+                    row.title = Some(
+                        preview
+                            .lines()
+                            .next()
+                            .unwrap_or("New chat")
+                            .chars()
+                            .take(60)
+                            .collect(),
+                    );
+                }
+            }
+        }
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
+        self.runtime.set_session(chat_id, SessionStatus::Working);
+
+        let runtime = self.runtime.clone();
+        let chat_id = chat_id.to_string();
+        tokio::spawn(run_agent_command(AgentRun {
+            runtime,
+            chat_id,
+            chat,
+            prompt,
+            cwd: request.cwd,
+            reasoning: request.reasoning,
+            model,
+            api_key,
+            timestamp,
+            cancel,
+            skills: self.skills.clone(),
+        }));
+        Ok(())
     }
 
     fn set_chat_config(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {

@@ -947,6 +947,16 @@ pub enum RowKind {
         header: SharedString,
         resolved: bool,
     },
+    /// A skill invocation / skill-file read, collapsed (ADR-0006): the
+    /// skill's name with a pointer to its source file — the full content
+    /// went to the model context, never the transcript.
+    SkillChip {
+        name: SharedString,
+        /// Absolute `SKILL.md` path; clicking opens it.
+        file: SharedString,
+        /// Optimistic echo not yet confirmed by a doc frame.
+        pending: bool,
+    },
     ErrorChip {
         message: SharedString,
     },
@@ -1138,6 +1148,29 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // A skill invocation renders as its compact chip; the user's extra
+        // instructions (if any) follow as an ordinary bubble.
+        let mut rows: Vec<Row> = entry
+            .parts
+            .iter()
+            .enumerate()
+            .filter_map(|(part_ix, part)| match part {
+                MessagePart::Skill { id, name, file } => Some(Row {
+                    id: format!("{}#{}", entry.id, id).into(),
+                    version: fnv1a(format!("{name}\u{0}{file}").as_bytes()) << 1 | pending as u64,
+                    turn_start: part_ix == 0,
+                    kind: RowKind::SkillChip {
+                        name: name.clone().into(),
+                        file: file.clone().into(),
+                        pending,
+                    },
+                    entry_id: entry_id.clone(),
+                    timestamp: None,
+                    copy_text: None,
+                }),
+                _ => None,
+            })
+            .collect();
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let parsed = crate::attachments::parse_user_message_images(&raw);
@@ -1152,23 +1185,28 @@ pub fn rows_for_entry(
             None => (body, Vec::new()),
         };
         let copy_text = (!text.trim().is_empty()).then(|| SharedString::from(text.clone()));
-        return vec![Row {
-            id: entry.id.clone().into(),
-            version: (raw.len() as u64) << 1 | pending as u64,
-            turn_start: true,
-            kind: RowKind::User {
-                text: text.into(),
-                mentions: Arc::new(mentions),
-                attachments: Arc::new(parsed.attachments),
-                badges: Arc::new(badges),
-                pending,
-            },
-            entry_id,
-            // User rows always carry the strip (chat-view.tsx: whenever
-            // `createdAt` exists — the optimistic echo included).
-            timestamp: Some(entry.created_at),
-            copy_text,
-        }];
+        // A skill-only invocation (no extra instructions) leaves nothing for
+        // the bubble; otherwise the user row rides below the chip.
+        if !raw.trim().is_empty() || rows.is_empty() {
+            rows.push(Row {
+                id: entry.id.clone().into(),
+                version: (raw.len() as u64) << 1 | pending as u64,
+                turn_start: rows.is_empty(),
+                kind: RowKind::User {
+                    text: text.into(),
+                    mentions: Arc::new(mentions),
+                    attachments: Arc::new(parsed.attachments),
+                    badges: Arc::new(badges),
+                    pending,
+                },
+                entry_id,
+                // User rows always carry the strip (chat-view.tsx: whenever
+                // `createdAt` exists — the optimistic echo included).
+                timestamp: Some(entry.created_at),
+                copy_text,
+            });
+        }
+        return rows;
     }
 
     // Assistant/system: split parts into block rows, folding consecutive
@@ -1365,6 +1403,25 @@ pub fn rows_for_entry(
                             kind: RowKind::ErrorChip {
                                 // Provider-generated; the chip is one line.
                                 message: single_line(message).into(),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
+                    MessagePart::Skill {
+                        id: part_id,
+                        name,
+                        file,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(format!("{name}\u{0}{file}").as_bytes()),
+                            turn_start: false,
+                            kind: RowKind::SkillChip {
+                                name: name.clone().into(),
+                                file: file.clone().into(),
+                                pending: false,
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -4322,6 +4379,11 @@ impl Transcript {
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
+            RowKind::SkillChip {
+                name,
+                file,
+                pending,
+            } => skill_chip(name.clone(), file.clone(), *pending, &theme),
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
@@ -5211,6 +5273,59 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                 ),
         )
         .into_any_element()
+}
+
+/// A collapsed skill invocation / skill-file read (ADR-0006): the skill's
+/// name plus a pointer to the source `SKILL.md` — clicking opens the file
+/// so the user can inspect exactly what the agent was told to follow.
+/// Right-aligned like the user bubble it replaces.
+fn skill_chip(name: SharedString, file: SharedString, pending: bool, theme: &Theme) -> AnyElement {
+    let open_url =
+        (!file.is_empty()).then(|| format!("file://{}", file.trim_start_matches("file://")));
+    let clickable_id = (!file.is_empty()).then(|| name.clone());
+    let chip = div().py(px(4.0)).w_full().flex().justify_end().child(
+        div()
+            .min_h(px(34.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(crate::theme::hairline(0.08))
+            .bg(crate::theme::ink(0.045))
+            .px(px(10.0))
+            .text_size(px(12.0))
+            .when(pending, |el| el.opacity(0.65))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(name),
+            )
+            .when(!file.is_empty(), |el| {
+                el.child(
+                    div()
+                        .min_w_0()
+                        .max_w(px(420.0))
+                        .truncate()
+                        .text_color(theme.text_muted.opacity(0.8))
+                        .child(file),
+                )
+            }),
+    );
+    match (clickable_id, open_url) {
+        (Some(id), Some(url)) => chip
+            .id(id)
+            .cursor_pointer()
+            .hover(|el| el.opacity(0.8))
+            .on_click(move |_, _, cx| {
+                cx.open_url(&url);
+            })
+            .into_any_element(),
+        _ => chip.into_any_element(),
+    }
 }
 
 /// A small glyph standing in for the tool's icon (holt uses an icon set; a

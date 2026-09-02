@@ -21,6 +21,7 @@ pub enum SessionCommandKind {
     Steer,
     Interrupt,
     RespondInput,
+    InvokeSkill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +55,23 @@ pub enum SessionCommandPayload {
         request_id: String,
         answers: Vec<UserInputAnswer>,
     },
+    /// A `/skill` invocation (ADR-0006): an ordinary Turn whose
+    /// model-visible prompt the ENGINE builds from the skill's full
+    /// content — the raw `/skill …` directive is never sent anywhere.
+    #[serde(rename_all = "camelCase")]
+    InvokeSkill {
+        /// The run request as the composer resolved it (provider/model/
+        /// cwd/…). Its `prompt` field is unused — the engine formats the
+        /// skill block plus `extra_instructions`.
+        request: RunRequest,
+        /// Invocable skill name, resolved against a fresh catalog scan.
+        name: String,
+        /// Extra instructions appended verbatim after the skill block.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_instructions: Option<String>,
+        /// Client-minted message id for the transcript's chip entry.
+        message_id: String,
+    },
 }
 
 impl SessionCommandPayload {
@@ -63,6 +81,7 @@ impl SessionCommandPayload {
             SessionCommandPayload::Steer { .. } => SessionCommandKind::Steer,
             SessionCommandPayload::Interrupt {} => SessionCommandKind::Interrupt,
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
+            SessionCommandPayload::InvokeSkill { .. } => SessionCommandKind::InvokeSkill,
         }
     }
 }

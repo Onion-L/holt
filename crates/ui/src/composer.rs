@@ -17,6 +17,7 @@ mod morph;
 mod popups;
 mod send;
 mod send_mode;
+mod slash;
 mod staging;
 mod wizard;
 

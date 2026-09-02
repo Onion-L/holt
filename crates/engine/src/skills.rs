@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
-use pi_core::agent::harness::skills::{LoadedSkills, SkillDiagnostic, load_skills};
+use pi_core::agent::harness::skills::{
+    LoadedSkills, SkillDiagnostic, format_skill_invocation, load_skills,
+};
 use pi_core::agent::harness::system_prompt::format_skills_for_system_prompt;
 use pi_core::agent::harness::types::{ExecutionEnv, Skill};
 
@@ -201,6 +203,26 @@ impl Skills {
         }
         assemble_catalog(scans)
     }
+
+    /// Resolve one invocable skill by name against a fresh scan: valid,
+    /// unshadowed winners only — shadowed and invalid entries are as good
+    /// as absent to an invocation.
+    pub(crate) async fn resolve(&self, cwd: Option<&str>, name: &str) -> Option<Skill> {
+        self.catalog(cwd)
+            .await
+            .winners
+            .into_iter()
+            .find(|(skill, _)| skill.name == name)
+            .map(|(skill, _)| skill)
+    }
+}
+
+/// The model-visible prompt of a `/skill` invocation: the upstream
+/// `<skill>` block — full content with its relative-path-resolve
+/// declaration — plus any extra instructions verbatim. No host-side
+/// argument substitution (ADR-0006).
+pub(crate) fn invocation_prompt(skill: &Skill, extra_instructions: Option<&str>) -> String {
+    format_skill_invocation(skill, extra_instructions)
 }
 
 /// Group the per-root scans into the catalog: a skill the loader flagged
@@ -315,6 +337,59 @@ mod tests {
     fn skills_block_is_empty_without_visible_skills() {
         assert_eq!(skills_block(&[]), "");
         assert_eq!(skills_block(&[catalog_skill("hidden", "Nope.", true)]), "");
+    }
+
+    #[tokio::test]
+    async fn resolve_answers_only_invocable_winners() {
+        let base = tempfile::tempdir().unwrap();
+        let personal = base.path().join("personal");
+        skill_in(
+            &personal,
+            "near",
+            "name: near\ndescription: Winner.\n",
+            "content",
+        );
+        // Shadowed by the project root…
+        let project = base.path().join("project");
+        let project_skills = project.join(".agents").join("skills");
+        std::fs::create_dir_all(&project_skills).unwrap();
+        skill_in(
+            &project_skills,
+            "near",
+            "name: near\ndescription: Nearer.\n",
+            "content",
+        );
+        // …and invalid (name ≠ directory).
+        skill_in(
+            &personal,
+            "busted",
+            "name: wrong\ndescription: Broken.\n",
+            "content",
+        );
+
+        let skills = Skills::new(&base.path().join("data"), Some(&personal));
+        let cwd = project.to_string_lossy().into_owned();
+        let resolved = skills.resolve(Some(&cwd), "near").await.unwrap();
+        assert!(resolved.file_path.contains("project"));
+        assert!(skills.resolve(Some(&cwd), "busted").await.is_none());
+        assert!(skills.resolve(Some(&cwd), "absent").await.is_none());
+    }
+
+    #[test]
+    fn invocation_prompt_is_the_block_plus_extra_verbatim() {
+        let (skill, _) = catalog_skill("grill", "Grill a plan.", false);
+        let prompt = invocation_prompt(&skill, Some("Focus on the data layer."));
+        assert!(prompt.starts_with("<skill name=\"grill\""));
+        assert!(prompt.contains("References are relative to /roots/grill."));
+        assert!(prompt.contains("SECRET INSTRUCTIONS"));
+        assert!(prompt.ends_with("</skill>\n\nFocus on the data layer."));
+        // No argument substitution — extra rides verbatim, raw $ tokens intact.
+        let verbatim = invocation_prompt(&skill, Some("Use $ARGUMENTS literally."));
+        assert!(verbatim.contains("Use $ARGUMENTS literally."));
+        assert_eq!(
+            invocation_prompt(&skill, None),
+            format_skill_invocation(&skill, None)
+        );
     }
 
     #[test]
