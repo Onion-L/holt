@@ -187,6 +187,32 @@ impl StubEngine {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    fn set_chat_archived(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: SetChatArchivedParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.chat_id.trim().is_empty() {
+            return Err(RpcError::BadParams("chatId must not be empty".into()));
+        }
+        let mut chats = self
+            .runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(row) = chats.iter_mut().find(|row| row.id == params.chat_id) else {
+            // Unknown chat: idempotent no-op, matching create's duplicate path.
+            return RpcReply::value(&serde_json::json!({}));
+        };
+        row.archived = params.archived;
+        drop(chats);
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
+        RpcReply::value(&serde_json::json!({}))
+    }
+
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: QueueCommandParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
@@ -366,6 +392,13 @@ struct CreateChatParams {
     branch: Option<String>,
     #[serde(default)]
     config: Option<ChatConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetChatArchivedParams {
+    chat_id: String,
+    archived: bool,
 }
 
 #[derive(Deserialize)]
@@ -552,6 +585,11 @@ impl RpcService for StubEngine {
                 if params.get("op").and_then(|op| op.as_str()) == Some("setChatConfig") =>
             {
                 self.set_chat_config(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("setChatArchived") =>
+            {
+                self.set_chat_archived(params)
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
 
