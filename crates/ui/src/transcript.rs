@@ -682,7 +682,9 @@ pub enum ToolDetail {
     },
 }
 
-/// Max verbatim output lines per chip before the counted tail row.
+/// Max verbatim lines per THOUGHT detail or invocation block before the
+/// counted tail row. Tool OUTPUT details ride higher — [`FULL_OUTPUT_MAX_LINES`]
+/// — since the doc carries the full content now.
 pub const OUTPUT_DETAIL_MAX_LINES: usize = 24;
 
 /// Max diff lines an inline tool-diff detail renders — the detail is one
@@ -738,8 +740,11 @@ pub fn tool_detail(
     if lines.is_empty() {
         return None;
     }
-    let truncated_by = lines.len().saturating_sub(OUTPUT_DETAIL_MAX_LINES);
-    lines.truncate(OUTPUT_DETAIL_MAX_LINES);
+    // The doc carries the FULL tool output (the engine no longer summarizes),
+    // so the inline cap matches the fetched-blob ceiling — a Read shows its
+    // whole file up to pi-core's own truncation point.
+    let truncated_by = lines.len().saturating_sub(FULL_OUTPUT_MAX_LINES);
+    lines.truncate(FULL_OUTPUT_MAX_LINES);
     Some(ToolDetail::Output {
         lines,
         truncated_by,
@@ -7145,6 +7150,8 @@ mod tests {
         assert_eq!(new_text.as_deref(), Some("only\n"));
 
         // Output: verbatim lines (indentation intact), counted-tail cap.
+        // 40 lines rides whole — the doc carries full output now, the inline
+        // cap is the fetched-blob ceiling (400), not the old 24.
         let output = (0..40)
             .map(|i| format!("    indented {i}"))
             .collect::<Vec<_>>()
@@ -7156,9 +7163,24 @@ mod tests {
         else {
             panic!("expected output detail");
         };
-        assert_eq!(lines.len(), OUTPUT_DETAIL_MAX_LINES);
-        assert_eq!(truncated_by, 40 - OUTPUT_DETAIL_MAX_LINES);
+        assert_eq!(lines.len(), 40);
+        assert_eq!(truncated_by, 0);
         assert_eq!(lines[0].as_ref(), "    indented 0");
+
+        // Past the ceiling the counted tail returns.
+        let big = (0..FULL_OUTPUT_MAX_LINES + 9)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let Some(ToolDetail::Output {
+            lines,
+            truncated_by,
+        }) = tool_detail(Some(&big), None, None)
+        else {
+            panic!("expected output detail");
+        };
+        assert_eq!(lines.len(), FULL_OUTPUT_MAX_LINES);
+        assert_eq!(truncated_by, 9);
 
         // Nothing → no affordance.
         assert!(tool_detail(None, None, None).is_none());

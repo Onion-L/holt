@@ -8,10 +8,7 @@ use std::{
 };
 
 use chrono::Utc;
-use holt_doc::{
-    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call,
-    summarize_tool_output,
-};
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
 use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall};
 use pi_core::{
     agent::{
@@ -189,8 +186,12 @@ fn transcript_tool_call(tool_call: &pi_core::ai::types::ToolCall) -> TranscriptT
     sanitize_tool_call(&decode_tool_call(&tool_call.name, &tool_call.arguments))
 }
 
-/// The one-line output summary persisted on the resolved tool part.
-fn tool_output_summary(result: &AgentToolResult) -> Option<String> {
+/// The full tool output persisted on the resolved tool part — a Read's file
+/// content, the whole command transcript. pi-core bounds its builtins (read
+/// truncates by lines/bytes), so results ride verbatim; the defensive ceiling
+/// only keeps an unbounded MCP payload from flooding the doc.
+fn tool_output_full(result: &AgentToolResult) -> Option<String> {
+    const MAX_CHARS: usize = 1024 * 1024;
     let text = result
         .content
         .iter()
@@ -200,7 +201,12 @@ fn tool_output_summary(result: &AgentToolResult) -> Option<String> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    summarize_tool_output(&text)
+    if text.chars().count() <= MAX_CHARS {
+        return (!text.trim().is_empty()).then_some(text);
+    }
+    let mut out: String = text.chars().take(MAX_CHARS).collect();
+    out.push_str("\n…");
+    Some(out)
 }
 
 /// Stamp a tool result onto the matching Tool part, wherever its entry sits.
@@ -482,7 +488,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                     is_error,
                     ..
                 } => {
-                    resolve_tool_part(&chat, &tool_call_id, is_error, tool_output_summary(&result));
+                    resolve_tool_part(&chat, &tool_call_id, is_error, tool_output_full(&result));
                 }
                 _ => {}
             }
