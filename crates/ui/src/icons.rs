@@ -205,6 +205,11 @@ icon_assets![
     (STOP, "stop"),
     (CHECK, "check"),
     (COPY, "copy"),
+    // Hand-drawn eye glyphs in the Solar Linear style (like the terminal/
+    // plus/close ports) — the embedded set has neither. The slashed variant
+    // marks the currently-visible state of a secret input's toggle.
+    (EYE, "eye"),
+    (EYE_SLASH, "eye-slash"),
 ];
 
 /// An icon element for an embedded asset path. Size and colour are set by the

@@ -147,12 +147,48 @@ fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
     links
 }
 
+/// The glyph a masked character projects to (U+2022 bullet, three UTF-8
+/// bytes).
+const MASK_CHAR: char = '•';
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct TextProjection {
     pub(super) display: String,
     pub(super) mentions: Vec<(FileMentionLink, Range<usize>)>,
+    /// Secret projection: one bullet per raw char. Holds the raw byte offset
+    /// of every char plus the end offset, for raw↔display translation.
+    /// Mutually exclusive with `mentions` — secret inputs never enable them.
+    mask_starts: Option<Vec<usize>>,
 }
 impl TextProjection {
+    /// The identity projection for plain (non-mention, non-secret) inputs.
+    pub(super) fn plain(raw: &str) -> Self {
+        Self {
+            display: raw.to_string(),
+            mentions: Vec::new(),
+            mask_starts: None,
+        }
+    }
+
+    /// The secret projection: every character renders as a bullet. Unlike
+    /// [`Self::new`], the display differs in byte length from the raw text,
+    /// so the char-start table carries all offset translation.
+    pub(super) fn masked(raw: &str) -> Self {
+        let chars = raw.chars().count();
+        let mut mask_starts = Vec::with_capacity(chars + 1);
+        let mut display = String::with_capacity(chars * MASK_CHAR.len_utf8());
+        for (offset, _) in raw.char_indices() {
+            mask_starts.push(offset);
+            display.push(MASK_CHAR);
+        }
+        mask_starts.push(raw.len());
+        Self {
+            display,
+            mentions: Vec::new(),
+            mask_starts: Some(mask_starts),
+        }
+    }
+
     pub(super) fn new(raw: &str) -> Self {
         let links = file_mention_links(raw);
         let labels = mention_display_labels(&links);
@@ -185,6 +221,12 @@ impl TextProjection {
     }
 
     pub(super) fn raw_to_display(&self, raw: usize) -> usize {
+        if let Some(starts) = &self.mask_starts {
+            // Count whole chars before `raw` (a mid-char raw offset floors to
+            // its char start, matching the caret's char-boundary indices).
+            let chars_before = starts.partition_point(|&start| start < raw);
+            return chars_before * MASK_CHAR.len_utf8();
+        }
         let mut raw_at = 0;
         let mut display_at = 0;
         for (link, display) in &self.mentions {
@@ -201,6 +243,12 @@ impl TextProjection {
     }
 
     pub(super) fn display_to_raw(&self, display_offset: usize) -> usize {
+        if let Some(starts) = &self.mask_starts {
+            // Shaped-line indices sit on bullet boundaries; anything else
+            // (a stray mid-bullet offset) floors to the bullet's char start.
+            let chars = (display_offset / MASK_CHAR.len_utf8()).min(starts.len() - 1);
+            return starts[chars];
+        }
         let mut raw_at = 0;
         let mut display_at = 0;
         for (link, display) in &self.mentions {
@@ -335,6 +383,51 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masked_projection_translates_offsets_across_bullet_boundaries() {
+        let projection = TextProjection::masked("sk-abc");
+        assert_eq!(projection.display, "••••••");
+        assert!(projection.mentions.is_empty());
+
+        // Every raw char boundary maps to its bullet; the end maps to the end.
+        for raw in 0..=6 {
+            assert_eq!(
+                projection.raw_to_display(raw),
+                raw * MASK_CHAR.len_utf8(),
+                "raw offset {raw}"
+            );
+            assert_eq!(
+                projection.display_to_raw(raw * MASK_CHAR.len_utf8()),
+                raw,
+                "display offset {}",
+                raw * MASK_CHAR.len_utf8()
+            );
+        }
+        // Mid-bullet and out-of-range display offsets floor/clamp, never panic.
+        assert_eq!(projection.display_to_raw(4), 1);
+        assert_eq!(projection.display_to_raw(999), 6);
+    }
+
+    #[test]
+    fn masked_projection_handles_multibyte_content() {
+        // The table counts chars, not bytes, so multibyte keys still mask 1:1.
+        let projection = TextProjection::masked("aé•z");
+        assert_eq!(projection.display.chars().count(), 4);
+        assert_eq!(projection.raw_to_display(0), 0);
+        assert_eq!(projection.raw_to_display(1), 3); // after 'a'
+        assert_eq!(projection.raw_to_display(3), 6); // after 'é' (2 bytes)
+        assert_eq!(projection.raw_to_display(7), 12); // end: 4 bullets
+        assert_eq!(projection.display_to_raw(12), 7);
+    }
+
+    #[test]
+    fn plain_projection_is_the_identity() {
+        let projection = TextProjection::plain("hello");
+        assert_eq!(projection.display, "hello");
+        assert_eq!(projection.raw_to_display(3), 3);
+        assert_eq!(projection.display_to_raw(3), 3);
+    }
 
     #[test]
     fn file_mentions_serialize_to_strict_local_markdown() {

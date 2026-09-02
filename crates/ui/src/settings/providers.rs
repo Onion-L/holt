@@ -1,8 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*,
-    px,
+    AnyElement, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Task, Window,
+    div, prelude::*, px,
 };
 use holt_proto::{Model, Provider};
 use holt_rpc::methods;
@@ -15,6 +18,15 @@ use crate::{
     state::AppState,
     theme::Theme,
 };
+
+/// Surfaced to the shell, which renders it as a window-top modal — action
+/// failures (save/remove key, RPC errors) never paint inside the page.
+#[derive(Debug, Clone)]
+pub enum ProvidersPageEvent {
+    Error(SharedString),
+}
+
+impl EventEmitter<ProvidersPageEvent> for ProvidersPage {}
 
 pub struct ProvidersPage {
     state: Entity<AppState>,
@@ -32,8 +44,10 @@ pub struct ProvidersPage {
     /// engine rejection) — small inline text, not the page error strip.
     model_errors: HashMap<String, String>,
     model_tasks: HashMap<String, Task<()>>,
-    revealed: HashMap<String, String>,
-    error: Option<String>,
+    /// Variants whose API-key input is currently unmasked; everything starts
+    /// masked on every expansion and re-masks when the panel collapses or the
+    /// page is left.
+    revealed: HashSet<String>,
     task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
 }
@@ -52,8 +66,7 @@ impl ProvidersPage {
             model_inputs: HashMap::new(),
             model_errors: HashMap::new(),
             model_tasks: HashMap::new(),
-            revealed: HashMap::new(),
-            error: None,
+            revealed: HashSet::new(),
             task: None,
             collapse_task: None,
         };
@@ -61,8 +74,24 @@ impl ProvidersPage {
         page
     }
 
-    pub fn clear_revealed(&mut self, cx: &mut Context<Self>) {
+    /// Re-mask every key input and forget which were unmasked — called when
+    /// the panel collapses, the variant switches, or the page is left.
+    fn conceal_keys(&mut self, cx: &mut Context<Self>) {
         self.revealed.clear();
+        for input in self.inputs.values() {
+            input.update(cx, |input, cx| input.set_masked(true, cx));
+        }
+    }
+
+    /// The shell's leave-the-page hook: the page entity outlives the visit.
+    pub fn clear_revealed(&mut self, cx: &mut Context<Self>) {
+        self.conceal_keys(cx);
+        cx.notify();
+    }
+
+    /// Surface a failure to the shell's window-top error modal.
+    fn fail(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        cx.emit(ProvidersPageEvent::Error(message.into()));
         cx.notify();
     }
 
@@ -108,16 +137,71 @@ impl ProvidersPage {
     fn ensure_variant_inputs(&mut self, variant_id: &str, cx: &mut Context<Self>) {
         self.inputs
             .entry(variant_id.to_string())
-            .or_insert_with(|| cx.new(|cx| ComposerInput::new("API key", cx)));
+            .or_insert_with(|| cx.new(|cx| ComposerInput::new_secret("API key", cx)));
         self.model_inputs
             .entry(variant_id.to_string())
             .or_insert_with(|| cx.new(|cx| ComposerInput::new("Model ID", cx)));
     }
 
+    /// Fetch the stored key and populate the variant's input. A return visit
+    /// recreates the page with empty inputs, so without this the saved key is
+    /// invisible. Only fills an untouched input — a fetch that lands after the
+    /// user started typing (or already holds a draft) must not clobber it.
+    fn load_key(&mut self, variant_id: &str, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let variant = variant_id.to_string();
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::REVEAL_PROVIDER_KEY,
+                    serde_json::json!({"providerId": variant.clone()}),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(value) => {
+                        let key = value
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|key| !key.is_empty());
+                        if let Some(key) = key
+                            && let Some(input) = page.inputs.get(&variant)
+                            && input.read(cx).text().is_empty()
+                        {
+                            input.update(cx, |input, cx| input.set_text(key, cx));
+                        }
+                    }
+                    Err(error) => page.fail(error.to_string(), cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// The eye button: flip one variant's input between bullets and plain
+    /// text. Purely a projection change — the content (and what Save writes)
+    /// is identical either way.
+    fn toggle_mask(&mut self, variant_id: String, cx: &mut Context<Self>) {
+        let unmask = !self.revealed.contains(&variant_id);
+        if unmask {
+            self.revealed.insert(variant_id.clone());
+        } else {
+            self.revealed.remove(&variant_id);
+        }
+        if let Some(input) = self.inputs.get(&variant_id) {
+            input.update(cx, |input, cx| input.set_masked(!unmask, cx));
+        }
+        cx.notify();
+    }
+
     fn toggle(&mut self, org_id: &str, cx: &mut Context<Self>) {
         if self.expanded.as_deref() == Some(org_id) {
             self.expanded = None;
-            self.revealed.clear();
+            self.conceal_keys(cx);
             self.begin_collapse(org_id.to_string(), cx);
         } else {
             if let Some(previous) = self.expanded.take() {
@@ -127,10 +211,11 @@ impl ProvidersPage {
                 self.collapsing = None;
             }
             self.expanded = Some(org_id.to_string());
-            self.revealed.clear();
+            self.conceal_keys(cx);
             *self.panel_epochs.entry(org_id.to_string()).or_default() += 1;
             if let Some(variant_id) = self.active_variant_id(org_id) {
                 self.ensure_variant_inputs(&variant_id, cx);
+                self.load_key(&variant_id, cx);
                 self.load_models(&variant_id, false, cx);
             }
         }
@@ -142,8 +227,9 @@ impl ProvidersPage {
             return;
         }
         self.selected_variant.insert(org_id, variant_id.clone());
-        self.revealed.clear();
+        self.conceal_keys(cx);
         self.ensure_variant_inputs(&variant_id, cx);
+        self.load_key(&variant_id, cx);
         self.load_models(&variant_id, false, cx);
         cx.notify();
     }
@@ -255,7 +341,6 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.error = None;
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -270,7 +355,7 @@ impl ProvidersPage {
                         crate::pickers::bump_provider_catalog(cx);
                         page.load_models(&provider, true, cx);
                     }
-                    Err(error) => page.error = Some(error.to_string()),
+                    Err(error) => page.fail(error.to_string(), cx),
                 }
                 cx.notify();
             })
@@ -287,7 +372,10 @@ impl ProvidersPage {
             .get(&provider)
             .map(|input| input.read(cx).text().to_string())
             .unwrap_or_default();
-        self.error = None;
+        if key.trim().is_empty() {
+            self.fail("API key is required", cx);
+            return;
+        }
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -302,38 +390,7 @@ impl ProvidersPage {
                         crate::pickers::bump_provider_catalog(cx);
                         page.load(cx);
                     }
-                    Err(error) => page.error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    fn reveal(&mut self, provider: String, cx: &mut Context<Self>) {
-        if self.revealed.remove(&provider).is_some() {
-            cx.notify();
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::REVEAL_PROVIDER_KEY,
-                    serde_json::json!({"providerId": provider}),
-                )
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(value) => {
-                        if let Some(key) = value.get("key").and_then(|value| value.as_str()) {
-                            page.revealed.insert(provider, key.to_string());
-                        }
-                    }
-                    Err(error) => page.error = Some(error.to_string()),
+                    Err(error) => page.fail(error.to_string(), cx),
                 }
                 cx.notify();
             })
@@ -356,11 +413,14 @@ impl ProvidersPage {
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
-                        page.revealed.clear();
+                        page.conceal_keys(cx);
+                        if let Some(input) = page.inputs.get(&provider) {
+                            input.update(cx, |input, cx| input.set_text("", cx));
+                        }
                         crate::pickers::bump_provider_catalog(cx);
                         page.load(cx);
                     }
-                    Err(error) => page.error = Some(error.to_string()),
+                    Err(error) => page.fail(error.to_string(), cx),
                 }
                 cx.notify();
             })
@@ -409,23 +469,19 @@ impl Render for ProvidersPage {
                         .get(&variant_id)
                         .cloned()
                         .unwrap_or(Loadable::Idle);
-                    let revealed = self.revealed.get(&variant_id).cloned();
+                    let revealed = self.revealed.contains(&variant_id);
                     let panel_height = provider_controls_height(
                         &models,
-                        revealed.is_some(),
                         provider.variants.len() > 1,
                         model_error.is_some(),
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
                     let save_id = variant_id.clone();
-                    let reveal_id = variant_id.clone();
                     let remove_id = variant_id.clone();
                     let add_model_id = variant_id.clone();
                     let model_count = models.ready().map(|models| models.len());
-                    let hover_theme = theme.clone();
                     let danger = theme.danger;
                     let danger_muted = theme.danger_muted;
-                    let mono = theme.font_mono.clone();
                     let model_list =
                         provider_model_list(index, &variant_id, models, &theme, cx.entity(), cx);
                     let variant_selector = variant_selector(&provider, &variant_id, &theme, cx);
@@ -444,17 +500,16 @@ impl Render for ProvidersPage {
                                 .flex_col()
                                 .gap(px(8.0))
                                 .child(widgets::field_label(&theme, "API key"))
+                                .children(input.map(|input| {
+                                    secret_field(&theme, input, revealed, index, &variant_id, cx)
+                                        .w_full()
+                                        .into_any_element()
+                                }))
                                 .child(
                                     div()
                                         .flex()
                                         .items_center()
                                         .gap(px(8.0))
-                                        .children(input.map(|input| {
-                                            bordered_input(&theme, input)
-                                                .flex_1()
-                                                .min_w_0()
-                                                .into_any_element()
-                                        }))
                                         .child(
                                             action_button(&theme)
                                                 .id(("save-provider", index))
@@ -463,23 +518,6 @@ impl Render for ProvidersPage {
                                                     page.save(save_id.clone(), cx)
                                                 }))
                                                 .child("Save"),
-                                        )
-                                        .child(
-                                            widgets::ghost_action(&theme)
-                                                .id(("reveal-provider", index))
-                                                .hover(move |style| {
-                                                    widgets::ghost_hover(&hover_theme, style)
-                                                })
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.reveal(reveal_id.clone(), cx)
-                                                }))
-                                                .child(
-                                                    if self.revealed.contains_key(&variant_id) {
-                                                        "Hide"
-                                                    } else {
-                                                        "Reveal"
-                                                    },
-                                                ),
                                         )
                                         .child(
                                             widgets::ghost_action(&theme)
@@ -494,16 +532,7 @@ impl Render for ProvidersPage {
                                                 }))
                                                 .child("Remove"),
                                         ),
-                                )
-                                .children(revealed.map(|key| {
-                                    div()
-                                        .truncate()
-                                        .font_family(mono)
-                                        .text_size(crate::typography::ui_rems(11.0))
-                                        .text_color(theme.text_muted)
-                                        .child(SharedString::from(key))
-                                        .into_any_element()
-                                })),
+                                ),
                         )
                         .child(
                             div()
@@ -649,14 +678,53 @@ impl Render for ProvidersPage {
                         "Configure API keys for the providers Holt can use. Organizations with \
                          several endpoints are configured per endpoint.",
                     ))
-                    .children(
-                        self.error
-                            .clone()
-                            .map(|error| widgets::error_strip(&theme, error)),
-                    )
                     .child(body),
             )
     }
+}
+
+/// The API-key field: the bordered input carrying the stored key, masked to
+/// bullets, with the in-field eye toggle that flips the projection.
+fn secret_field(
+    theme: &Theme,
+    input: Entity<ComposerInput>,
+    revealed: bool,
+    index: usize,
+    variant_id: &str,
+    cx: &mut Context<ProvidersPage>,
+) -> gpui::Div {
+    let hover_theme = theme.clone();
+    let toggle_id = variant_id.to_string();
+    div()
+        .h(px(36.0))
+        .pl(px(12.0))
+        .pr(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(Theme::CONTROL_RADIUS))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.input_glass_bg())
+        .child(input)
+        .child(
+            widgets::ghost_action(theme)
+                .flex_none()
+                .id(("toggle-key-mask", index))
+                .hover(move |style| widgets::ghost_hover(&hover_theme, style))
+                .on_click(
+                    cx.listener(move |page, _, _, cx| page.toggle_mask(toggle_id.clone(), cx)),
+                )
+                .child(
+                    crate::icons::icon(if revealed {
+                        crate::icons::EYE_SLASH
+                    } else {
+                        crate::icons::EYE
+                    })
+                    .size(px(15.0))
+                    .text_color(theme.text_muted),
+                ),
+        )
 }
 
 fn bordered_input(theme: &Theme, input: Entity<ComposerInput>) -> gpui::Div {
@@ -688,24 +756,16 @@ fn action_button(theme: &Theme) -> gpui::Div {
         .cursor_pointer()
 }
 
-fn provider_controls_height(
-    models: &Loadable<Vec<Model>>,
-    revealed: bool,
-    variants: bool,
-    hint: bool,
-) -> f32 {
+fn provider_controls_height(models: &Loadable<Vec<Model>>, variants: bool, hint: bool) -> f32 {
     let list_height = match models {
         Loadable::Idle | Loadable::Loading => 138.0,
         Loadable::Error(_) => 40.0,
         Loadable::Ready(models) if models.is_empty() => 32.0,
         Loadable::Ready(models) => (models.len() as f32 * 32.0).min(192.0),
     };
-    // The hint adds one 11px text line plus the section's 8px flex gap.
-    180.0
-        + list_height
-        + if revealed { 28.0 } else { 0.0 }
-        + if variants { 34.0 } else { 0.0 }
-        + if hint { 24.0 } else { 0.0 }
+    // The hint adds one 11px text line plus the section's 8px flex gap; the
+    // key section is label + full-width input + its own Save/Remove row.
+    224.0 + list_height + if variants { 34.0 } else { 0.0 } + if hint { 24.0 } else { 0.0 }
 }
 
 /// The variant pills at the top of an expanded organization card — the region

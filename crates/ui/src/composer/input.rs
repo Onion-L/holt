@@ -392,6 +392,9 @@ pub struct ComposerInput {
     /// File mentions are a composer feature, not a behavior of generic inputs
     /// (picker searches and rename fields also use this type).
     mentions_enabled: bool,
+    /// Secret input (API keys): every character projects to a bullet. The
+    /// content itself is untouched — only the shaped display masks.
+    masked: bool,
     /// Bumped once per `layout_text` pass — the flip logic uses it to apply at
     /// most one compact↔expanded flip per layout (a flip is only re-evaluated
     /// after the input has been measured in the new mode).
@@ -428,6 +431,14 @@ impl ComposerInput {
         Self::with_context(placeholder, "Composer", cx)
     }
 
+    /// A secret input (API keys): the content renders as bullets until the
+    /// parent flips the projection with [`Self::set_masked`].
+    pub fn new_secret(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::with_context(placeholder, "Composer", cx);
+        input.masked = true;
+        input
+    }
+
     /// An input in a custom KEY context — palettes use `"PaletteSearch"`,
     /// whose keymap binds only text-editing keys so navigation keys bubble to
     /// the surrounding frame (see `init`).
@@ -460,6 +471,7 @@ impl ComposerInput {
             projection: TextProjection::default(),
             ghost: None,
             mentions_enabled: false,
+            masked: false,
             layout_epoch: 0,
             display_is_placeholder: true,
             blink_anchor: Instant::now(),
@@ -532,14 +544,24 @@ impl ComposerInput {
     }
 
     fn refresh_projection(&mut self) {
-        self.projection = if self.mentions_enabled {
+        self.projection = if self.masked {
+            TextProjection::masked(&self.content)
+        } else if self.mentions_enabled {
             TextProjection::new(&self.content)
         } else {
-            TextProjection {
-                display: self.content.clone(),
-                mentions: Vec::new(),
-            }
+            TextProjection::plain(&self.content)
         };
+    }
+
+    /// Flip the secret projection (bullets ↔ plain text). A no-op on plain
+    /// inputs and on unchanged secret state.
+    pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        if self.masked == masked {
+            return;
+        }
+        self.masked = masked;
+        self.refresh_projection();
+        cx.notify();
     }
 
     /// Replace a completed `@query` token as one non-coalescing undo step.

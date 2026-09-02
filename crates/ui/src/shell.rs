@@ -32,7 +32,7 @@ use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
-use crate::settings::providers::ProvidersPage;
+use crate::settings::providers::{ProvidersPage, ProvidersPageEvent};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
     self, CHAT_PANEL_MIN, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN,
@@ -433,6 +433,13 @@ pub struct Shell {
     appearance_page: Option<Entity<AppearancePage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     providers_page: Option<Entity<ProvidersPage>>,
+    providers_sub: Option<Subscription>,
+    /// Last action failure from the providers page, shown as the window-top
+    /// error alert until its 2s timer fires or the close button is pressed.
+    provider_error: Option<SharedString>,
+    /// The auto-dismiss timer. Replaced on every new error and dropped on
+    /// manual dismissal — dropping a `Task` cancels it, so no epoch guard.
+    provider_error_timer: Option<Task<()>>,
     shortcuts_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
     chat_menu: popover::Popup<ChatMenuState>,
@@ -674,6 +681,9 @@ impl Shell {
             appearance_page: None,
             shortcuts_page: None,
             providers_page: None,
+            providers_sub: None,
+            provider_error: None,
+            provider_error_timer: None,
             shortcuts_sub: None,
             chat_menu: popover::Popup::default(),
             rename_dialog: None,
@@ -1179,6 +1189,25 @@ impl Shell {
         cx.notify();
     }
 
+    /// Raise the top-center error alert and arm its 2s auto-dismiss. Each
+    /// new error replaces the timer, so a rapid error never inherits a
+    /// previous (shorter) deadline.
+    fn show_provider_error(&mut self, message: SharedString, cx: &mut Context<Self>) {
+        self.provider_error = Some(message);
+        self.provider_error_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(2000))
+                .await;
+            this.update(cx, |this, cx| {
+                this.provider_error = None;
+                this.provider_error_timer = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         if section != SettingsSection::Providers
             && let Some(page) = self.providers_page.as_ref()
@@ -1255,7 +1284,17 @@ impl Shell {
             SettingsSection::Providers => {
                 if self.providers_page.is_none() {
                     let state = self.state.clone();
-                    self.providers_page = Some(cx.new(|cx| ProvidersPage::new(state, cx)));
+                    let page = cx.new(|cx| ProvidersPage::new(state, cx));
+                    // Action failures surface as the shell's window-top error
+                    // alert, not inside the page.
+                    self.providers_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &ProvidersPageEvent, cx| {
+                            let ProvidersPageEvent::Error(message) = event;
+                            this.show_provider_error(message.clone(), cx);
+                        },
+                    ));
+                    self.providers_page = Some(page);
                 }
                 match &self.providers_page {
                     Some(page) => page.clone().into_any_element(),
@@ -1765,6 +1804,58 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("delete-chat-dialog", viewport, card));
+        }
+
+        if let Some(error) = self.provider_error.clone() {
+            // Top-center alert: danger tint, 2s auto-dismiss (the timer is
+            // armed in `show_provider_error`), dedicated close button, and no
+            // scrim — the page stays live underneath.
+            let card = div()
+                .id("provider-error-alert")
+                .occlude()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .max_w(px(640.0))
+                .pl(px(14.0))
+                .pr(px(8.0))
+                .py(px(8.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.danger.opacity(0.35))
+                .bg(theme.surface_dialog)
+                .shadow_lg()
+                .text_size(crate::typography::ui_rems(12.5))
+                .text_color(theme.danger_muted)
+                .child(
+                    icon(icons::DANGER_TRIANGLE)
+                        .size(px(15.0))
+                        .flex_none()
+                        .text_color(theme.danger),
+                )
+                .child(SharedString::from(error))
+                .child(
+                    div()
+                        .id("provider-error-dismiss")
+                        .flex_none()
+                        .cursor_pointer()
+                        .p(px(4.0))
+                        .rounded(px(6.0))
+                        .hover(|style| style.bg(crate::theme::ink(0.08)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.provider_error = None;
+                            this.provider_error_timer = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            icon(icons::CLOSE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::top_alert("provider-error-alert", viewport, card));
         }
 
         overlays

@@ -680,6 +680,32 @@ fn modal_with(
     .into_any_element()
 }
 
+/// A non-blocking top-center alert: floats above all content (priority above
+/// the modals) with NO scrim — the window stays fully interactive underneath.
+/// `card` carries its own styling and dismiss wiring; `occlude()` it so
+/// clicks on the alert don't fall through to the page.
+pub fn top_alert(
+    id: impl Into<ElementId>,
+    viewport: gpui::Size<Pixels>,
+    card: AnyElement,
+) -> AnyElement {
+    gpui::deferred(
+        gpui::anchored()
+            .position(gpui::point(px(0.0), px(0.0)))
+            .child(
+                div()
+                    .w(viewport.width)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .pt(px(14.0))
+                    .child(motion::dialog_in(id, div().child(card))),
+            ),
+    )
+    .priority(3)
+    .into_any_element()
+}
+
 /// One menu row (holt `menuItem`): `gap-2.5 rounded-lg px-2 py-1.5
 /// text-[13px]`, active = `bg-white/10 text-foreground`, hover wash
 /// `white/[0.08]` fading over `transition-colors` (floating-styles.ts) via the
