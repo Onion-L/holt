@@ -437,6 +437,8 @@ pub struct Shell {
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    /// Chat id awaiting archive confirmation.
+    archive_confirm: Option<String>,
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
@@ -676,6 +678,7 @@ impl Shell {
             chat_menu: popover::Popup::default(),
             rename_dialog: None,
             delete_confirm: None,
+            archive_confirm: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
             delete_space_confirm: None,
@@ -1394,7 +1397,16 @@ impl Shell {
         cx.notify();
     }
 
-    fn archive_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+    /// Ask before archiving: the confirm dialog holds the chat id until the
+    /// user commits (Cancel or navigating away drops it).
+    pub(super) fn request_archive_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.close_chat_menu(cx);
+        self.archive_confirm = Some(chat_id);
+        cx.notify();
+    }
+
+    fn confirm_archive_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.archive_confirm = None;
         self.set_chat_archived(chat_id, true, cx);
     }
 
@@ -1410,7 +1422,7 @@ impl Shell {
         else {
             return;
         };
-        self.archive_chat(chat_id, cx);
+        self.request_archive_chat(chat_id, cx);
     }
 
     pub(super) fn set_chat_archived(
@@ -1615,7 +1627,7 @@ impl Shell {
                         popover::menu_row(&theme, false, format!("chat-menu-archive-{chat_id}"))
                             .id("chat-menu-archive")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.archive_chat(archive_id.clone(), cx)
+                                this.request_archive_chat(archive_id.clone(), cx)
                             }))
                             .child(
                                 icon(icons::ARCHIVE_MINIMALISTIC)
@@ -1792,6 +1804,50 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("delete-chat-dialog", viewport, card));
+        }
+
+        if let Some(chat_id) = self.archive_confirm.clone() {
+            let title = transcript::single_line(
+                &self
+                    .state
+                    .read(cx)
+                    .chats
+                    .iter()
+                    .find(|c| c.id == chat_id)
+                    .and_then(|c| c.title.clone())
+                    .unwrap_or_else(|| "New session".into()),
+            );
+            let card = popover::dialog_card(&theme)
+                .child(popover::dialog_title(&theme, "Archive session?"))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!("\u{201C}{title}\u{201D} will move to Settings \u{2192} Archived. You can unarchive it there anytime."),
+                )))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "archive-chat-cancel")
+                                .id("archive-chat-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.archive_confirm = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(&theme, "Archive")
+                                .id("archive-chat-confirm")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.confirm_archive_chat(chat_id.clone(), cx)
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("archive-chat-dialog", viewport, card));
         }
 
         if let Some(error) = self.provider_error.clone() {

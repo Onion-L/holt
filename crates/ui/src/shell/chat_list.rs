@@ -432,7 +432,13 @@ impl Shell {
                 .when(corner_hovered, |el| {
                     el.on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.set_chat_archived(archive_id.clone(), !archived, cx);
+                        // Archiving confirms first (destructive-ish: the
+                        // thread leaves the sidebar); unarchive is direct.
+                        if archived {
+                            this.set_chat_archived(archive_id.clone(), false, cx);
+                        } else {
+                            this.request_archive_chat(archive_id.clone(), cx);
+                        }
                     }))
                 })
                 .child(corner_body)
