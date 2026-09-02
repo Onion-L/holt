@@ -3,16 +3,20 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use holt_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
+use holt_doc::{
+    MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry, TranscriptFrame,
+    diff_transcript,
+};
 use holt_proto::{AuthState, Chat, ChatConfig, SessionStatus, Space};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
 use serde::Deserialize;
+use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::StubEngine;
-use crate::agent::{AgentRun, run_agent_command};
+use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
@@ -40,6 +44,49 @@ impl StubEngine {
                 let value = receiver.borrow().clone();
                 Some((value, (receiver, false)))
             });
+        RpcReply::Stream(Box::pin(stream))
+    }
+
+    /// Per-subscriber delta stream for `WatchDocMessages`: the chat watch
+    /// carries the current transcript snapshot, and each subscriber diffs it
+    /// against its own baseline, so a fresh subscription opens with a full
+    /// reset and streaming ticks carry only the changed entry. Forwarding the
+    /// engine's raw snapshot as a whole-transcript `reset` per publish
+    /// re-serialized (and re-parsed) megabytes per delta token on long chats —
+    /// enough to stall the stream pump and deliver a finished reply in one
+    /// lump instead of streaming it.
+    fn watch_transcript(chat: Arc<ChatRuntime>) -> RpcReply {
+        let stream = futures::stream::unfold(
+            (
+                chat.transcript_tx.subscribe(),
+                None::<Arc<Vec<SessionMessageEntry>>>,
+                true,
+            ),
+            |(mut receiver, mut baseline, mut first)| async move {
+                loop {
+                    if !first && receiver.changed().await.is_err() {
+                        return None;
+                    }
+                    first = false;
+                    let current = receiver.borrow_and_update().clone();
+                    let opening = baseline.is_none();
+                    let frame = match &baseline {
+                        None => TranscriptFrame::reset(current.as_slice()),
+                        Some(prev) => diff_transcript(prev, &current),
+                    };
+                    baseline = Some(current);
+                    if !opening && frame.is_empty_delta() {
+                        continue;
+                    }
+                    match serde_json::to_value(&frame) {
+                        Ok(value) => {
+                            return Some((value, (receiver, baseline, false)));
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            },
+        );
         RpcReply::Stream(Box::pin(stream))
     }
 
@@ -459,7 +506,7 @@ impl RpcService for StubEngine {
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| RpcError::BadParams("chatId is required".into()))?;
                 let chat = self.runtime.chat(chat_id);
-                Ok(Self::watch_value(chat.transcript_tx.subscribe()))
+                Ok(Self::watch_transcript(chat))
             }
             methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS

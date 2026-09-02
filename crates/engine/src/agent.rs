@@ -4,12 +4,13 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
 use holt_doc::{
-    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, TranscriptFrame,
-    sanitize_tool_call, summarize_tool_output,
+    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call,
+    summarize_tool_output,
 };
 use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall};
 use pi_core::{
@@ -31,14 +32,19 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     history: RwLock<Vec<AgentMessage>>,
-    pub(crate) transcript_tx: watch::Sender<serde_json::Value>,
+    pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
 }
 
+/// Streaming publishes sample to this cadence (the doc-watch commit tick the
+/// UI was tuned around): the watch itself coalesces via `send_replace`, so a
+/// publish per delta token would only burn a full transcript snapshot per
+/// token on the engine thread and starve the SSE pump.
+const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(120);
+
 impl ChatRuntime {
     fn new() -> Self {
-        let initial = serde_json::to_value(TranscriptFrame::reset(&[])).unwrap();
-        let (transcript_tx, _) = watch::channel(initial);
+        let (transcript_tx, _) = watch::channel(Arc::new(Vec::new()));
         Self {
             transcript: RwLock::new(Vec::new()),
             history: RwLock::new(Vec::new()),
@@ -49,9 +55,8 @@ impl ChatRuntime {
 
     pub(crate) fn publish(&self) {
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
-        if let Ok(value) = serde_json::to_value(TranscriptFrame::reset(&transcript)) {
-            self.transcript_tx.send_replace(value);
-        }
+        self.transcript_tx
+            .send_replace(Arc::new(transcript.clone()));
     }
 }
 
@@ -255,7 +260,20 @@ fn settle_unresolved_tools(chat: &ChatRuntime) {
     }
 }
 
-fn assistant_parts(message: &AgentMessage) -> Vec<MessagePart> {
+/// char length of a part for the run-cadence debug trace.
+fn part_char_len(part: &MessagePart) -> usize {
+    match part {
+        MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => text.len(),
+        MessagePart::Error { message, .. } => message.len(),
+        _ => 0,
+    }
+}
+
+/// The doc parts of one assistant message. `id_base` offsets the generated
+/// text/thinking/error part ids: a run folds every message into ONE entry, so
+/// per-message ids (`t0`, `r1`, …) must not collide across its messages — the
+/// UI keys rows by `entry_id#part_id`.
+fn assistant_parts(message: &AgentMessage, id_base: usize) -> Vec<MessagePart> {
     let AgentMessage::Assistant(message) = message else {
         return Vec::new();
     };
@@ -263,12 +281,12 @@ fn assistant_parts(message: &AgentMessage) -> Vec<MessagePart> {
     for content in &message.content {
         match content {
             AssistantContent::Text(text) => parts.push(MessagePart::Text {
-                id: format!("t{}", parts.len()),
+                id: format!("t{}", id_base + parts.len()),
                 text: text.text.clone(),
             }),
             AssistantContent::Thinking(thinking) if !thinking.thinking.is_empty() => {
                 parts.push(MessagePart::Reasoning {
-                    id: format!("r{}", parts.len()),
+                    id: format!("r{}", id_base + parts.len()),
                     text: thinking.thinking.clone(),
                 });
             }
@@ -292,38 +310,43 @@ fn assistant_parts(message: &AgentMessage) -> Vec<MessagePart> {
     }
     if let Some(error) = message.error_message.as_ref() {
         parts.push(MessagePart::Error {
-            id: format!("e{}", parts.len()),
+            id: format!("e{}", id_base + parts.len()),
             message: error.clone(),
         });
     }
     parts
 }
 
+/// Insert or refresh the run's live entry. `created_at` is stamped once at
+/// first appearance — the delta protocol keys appends off an unchanged entry,
+/// and the hover timestamp should say when the reply started anyway.
 fn update_assistant_entry(
     chat: &ChatRuntime,
     entry_id: &str,
-    message: &AgentMessage,
+    parts: Vec<MessagePart>,
     status: MessageStatus,
     device_id: &str,
+    publish: bool,
 ) {
-    let parts = assistant_parts(message);
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let entry = SessionMessageEntry {
-        id: entry_id.to_string(),
-        role: MessageRole::Assistant,
-        parts,
-        created_at: Utc::now().timestamp_millis(),
-        device_id: device_id.to_string(),
-        status: Some(status),
-        continuation_of: None,
-    };
     if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == entry_id) {
-        *existing = entry;
+        existing.parts = parts;
+        existing.status = Some(status);
     } else {
-        transcript.push(entry);
+        transcript.push(SessionMessageEntry {
+            id: entry_id.to_string(),
+            role: MessageRole::Assistant,
+            parts,
+            created_at: Utc::now().timestamp_millis(),
+            device_id: device_id.to_string(),
+            status: Some(status),
+            continuation_of: None,
+        });
     }
     drop(transcript);
-    chat.publish();
+    if publish {
+        chat.publish();
+    }
 }
 
 pub(crate) struct AgentRun {
@@ -356,61 +379,101 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let sink_chat = chat.clone();
     let sink_device_id = runtime.device_id.clone();
     let sink_run_entry = entry_id.clone();
-    // One transcript entry per assistant message — every tool round-trip
-    // adds another, so the live entry id rotates on each MessageStart.
-    // (Tool results update existing parts by tool-call id, not by entry.)
-    let live_entry: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let sink_live = live_entry.clone();
+    // ONE transcript entry per run: every assistant message of the loop
+    // appends its parts to the same entry (base holds the parts of the
+    // messages that already ended), so a reply with N tool round-trips
+    // renders as one message — one turn gap, one hover timestamp/copy strip
+    // at its end. Per-message entries stamped a strip mid-reply after every
+    // round-trip, which read as several half-finished replies (user report),
+    // and tool results update parts by tool-call id wherever they sit.
+    let base_parts: Arc<Mutex<Vec<MessagePart>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_base = base_parts.clone();
+    let sink_last_publish = Arc::new(Mutex::new(None::<Instant>));
+    let sink_run_start = Instant::now();
     let emit: AgentEventSink = Arc::new(move |event| {
         let chat = sink_chat.clone();
-        let live_entry = sink_live.clone();
+        let base_parts = sink_base.clone();
         let device_id = sink_device_id.clone();
         let run_entry = sink_run_entry.clone();
+        let last_publish = sink_last_publish.clone();
         Box::pin(async move {
+            // Debug trace of the event cadence: answers "did the reply
+            // stream?" without a debugger — deltas arriving bunched here are
+            // an upstream (provider/pi-core) shape, not a UI problem.
+            let trace = |kind: &str, chars: usize, published: bool| {
+                tracing::debug!(
+                    target: "holt::agent",
+                    at = ?sink_run_start.elapsed(),
+                    kind,
+                    chars,
+                    published,
+                    "run event"
+                );
+            };
             match event {
                 AgentEvent::MessageStart { message }
                     if matches!(&*message, AgentMessage::Assistant(_)) =>
                 {
-                    let entry_id = uuid::Uuid::new_v4().to_string();
-                    *live_entry.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry_id.clone());
+                    let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut parts = base.clone();
+                    parts.extend(assistant_parts(&message, base.len()));
+                    drop(base);
+                    trace("start", parts.iter().map(part_char_len).sum(), true);
                     update_assistant_entry(
                         &chat,
-                        &entry_id,
-                        &message,
+                        &run_entry,
+                        parts,
                         MessageStatus::Streaming,
                         &device_id,
+                        true,
                     );
                 }
                 AgentEvent::MessageUpdate { message, .. }
                     if matches!(&*message, AgentMessage::Assistant(_)) =>
                 {
-                    let entry_id = live_entry
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone()
-                        .unwrap_or(run_entry);
+                    let due = {
+                        let mut last = last_publish.lock().unwrap_or_else(|e| e.into_inner());
+                        if last.is_none_or(|at| at.elapsed() >= STREAM_PUBLISH_INTERVAL) {
+                            *last = Some(Instant::now());
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut parts = base.clone();
+                    parts.extend(assistant_parts(&message, base.len()));
+                    drop(base);
+                    trace("delta", parts.iter().map(part_char_len).sum(), due);
                     update_assistant_entry(
                         &chat,
-                        &entry_id,
-                        &message,
+                        &run_entry,
+                        parts,
                         MessageStatus::Streaming,
                         &device_id,
+                        due,
                     );
                 }
                 AgentEvent::MessageEnd { message }
                     if matches!(&*message, AgentMessage::Assistant(_)) =>
                 {
-                    let entry_id = live_entry
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone()
-                        .unwrap_or(run_entry);
+                    let mut base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut parts = base.clone();
+                    parts.extend(assistant_parts(&message, base.len()));
+                    *base = parts.clone();
+                    drop(base);
+                    // The next message's first delta must publish immediately.
+                    *last_publish.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    // Status stays Streaming: the loop's settle pass stamps
+                    // the terminal state once the WHOLE run returns, so the
+                    // entry never poses as complete between tool rounds.
                     update_assistant_entry(
                         &chat,
-                        &entry_id,
-                        &message,
-                        MessageStatus::Complete,
+                        &run_entry,
+                        parts,
+                        MessageStatus::Streaming,
                         &device_id,
+                        true,
                     );
                 }
                 AgentEvent::ToolExecutionEnd {
@@ -513,18 +576,29 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         }
         Err(error) => {
             let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-            transcript.push(SessionMessageEntry {
-                id: entry_id,
-                role: MessageRole::Assistant,
-                parts: vec![MessagePart::Error {
-                    id: "e0".into(),
+            if let Some(existing) = transcript.iter_mut().find(|e| e.id == entry_id) {
+                // The loop died mid-reply: surface the error on the live entry
+                // and settle it, rather than pushing a second entry that
+                // reuses its id.
+                existing.parts.push(MessagePart::Error {
+                    id: format!("e{}", existing.parts.len()),
                     message: error,
-                }],
-                created_at: Utc::now().timestamp_millis(),
-                device_id: runtime.device_id.clone(),
-                status: Some(MessageStatus::Complete),
-                continuation_of: None,
-            });
+                });
+                existing.status = Some(MessageStatus::Aborted);
+            } else {
+                transcript.push(SessionMessageEntry {
+                    id: entry_id,
+                    role: MessageRole::Assistant,
+                    parts: vec![MessagePart::Error {
+                        id: "e0".into(),
+                        message: error,
+                    }],
+                    created_at: Utc::now().timestamp_millis(),
+                    device_id: runtime.device_id.clone(),
+                    status: Some(MessageStatus::Complete),
+                    continuation_of: None,
+                });
+            }
             drop(transcript);
             chat.publish();
             true
@@ -574,7 +648,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message),
+            assistant_parts(&message, 0),
             vec![
                 MessagePart::Reasoning {
                     id: "r0".into(),
@@ -582,6 +656,22 @@ mod tests {
                 },
                 MessagePart::Text {
                     id: "t1".into(),
+                    text: "answer".into(),
+                },
+            ]
+        );
+        // A second message of the same run folds into the same entry: its
+        // generated part ids continue after the base so row keys never
+        // collide.
+        assert_eq!(
+            assistant_parts(&message, 2),
+            vec![
+                MessagePart::Reasoning {
+                    id: "r2".into(),
+                    text: "plan".into(),
+                },
+                MessagePart::Text {
+                    id: "t3".into(),
                     text: "answer".into(),
                 },
             ]
@@ -598,7 +688,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message),
+            assistant_parts(&message, 0),
             vec![MessagePart::Tool {
                 id: "call-1".into(),
                 call: TranscriptToolCall::Exec {
@@ -703,5 +793,58 @@ mod tests {
         assert!(*resolved);
         assert!(*is_error);
         assert_eq!(output.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn run_messages_fold_into_one_entry_with_stable_created_at() {
+        let chat = ChatRuntime::new();
+        let text = |text: &str| {
+            AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![AssistantContent::Text(TextContent {
+                    text: text.into(),
+                    ..Default::default()
+                })],
+                ..Default::default()
+            }))
+        };
+        // First message creates the entry, later ones replace its parts in
+        // place — same id, same created_at (the delta protocol keys appends
+        // off an unchanged entry and the strip stamps once).
+        let mut first_parts = assistant_parts(&text("hello"), 0);
+        update_assistant_entry(
+            &chat,
+            "run-1",
+            first_parts.clone(),
+            MessageStatus::Streaming,
+            "device",
+            true,
+        );
+        let created_at = chat.transcript.read().unwrap()[0].created_at;
+        let second = assistant_parts(&text(" world"), first_parts.len());
+        first_parts.extend(second);
+        update_assistant_entry(
+            &chat,
+            "run-1",
+            first_parts,
+            MessageStatus::Streaming,
+            "device",
+            false,
+        );
+        let transcript = chat.transcript.read().unwrap();
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0].created_at, created_at);
+        assert_eq!(
+            transcript[0].parts,
+            vec![
+                MessagePart::Text {
+                    id: "t0".into(),
+                    text: "hello".into(),
+                },
+                MessagePart::Text {
+                    id: "t1".into(),
+                    text: " world".into(),
+                },
+            ]
+        );
     }
 }
