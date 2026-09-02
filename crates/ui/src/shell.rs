@@ -379,18 +379,9 @@ pub struct Shell {
     /// the transcript's bottom clearance, and the jump pill's anchor (the
     /// same one-frame lag every fade here rides).
     bottom_stack: std::rc::Rc<std::cell::Cell<f32>>,
-    /// The sidebar's archived accordion (t3code Sidebar): OPEN by default
-    /// (user request), session-transient. `archived_shown` pages the
-    /// expanded list ("Show more" reveals another page).
-    pub(super) archived_open: bool,
-    pub(super) archived_shown: usize,
-    /// Archived slim row under the pointer — swaps its time label for the
-    /// Unarchive affordance and restores the dimmed provider mark (t3code's
-    /// settled-row hover).
-    pub(super) archived_hover: Option<String>,
     /// Ephemeral collapsed project sections, keyed by organization + id.
     pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
-    /// In-flight disclosure tweens, shared by project groups and Archived.
+    /// In-flight disclosure tweens, shared by the project groups.
     pub(super) sidebar_disclosure_motion:
         std::collections::HashMap<String, SidebarDisclosureMotion>,
     /// The jump-hint overlay: true while the held modifiers exactly match a
@@ -658,9 +649,6 @@ impl Shell {
             // Seed with the compact composer stack's rough height so the
             // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
-            archived_open: true,
-            archived_shown: 0,
-            archived_hover: None,
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,

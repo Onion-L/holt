@@ -84,13 +84,10 @@ pub(super) fn chat_row_height(shows_branch: bool, shows_pull_request: bool) -> f
 }
 /// Flex gap between sidebar list items.
 pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
-/// Provider/title geometry follows the row hierarchy: active multi-line cards
-/// keep identity close on the standard 8px rhythm, while the one-line archived
-/// shelf gives its larger mark a little more separation.
+/// Provider/title geometry for the active multi-line cards: identity close
+/// on the standard 8px rhythm.
 pub(super) const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
 pub(super) const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
-pub(super) const SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE: f32 = 14.0;
-pub(super) const SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP: f32 = 10.0;
 
 /// Ramp height of the sidebar's scroll-edge fade (the gpui
 /// [`gpui::EdgeFade`] scope — per-primitive, so text fades per glyph).
@@ -732,9 +729,6 @@ impl Shell {
             })
             .collect();
 
-        // t3code's archived accordion, below the active list.
-        let archived_section = self.render_archived_section(theme, cx);
-
         // Bottom-of-sidebar settings entry: same row recipe as the settings
         // sidebar's Back row (px-8/py-6, rounded-8, 13px) so the two feel
         // identical.
@@ -793,8 +787,7 @@ impl Shell {
                                     .text_color(theme.text_faint)
                                     .child(SharedString::from("No sessions yet"))
                                     .into_any_element()
-                            })
-                            .children(archived_section),
+                            }),
                     ),
                 )
                 .fade_overflow_y(&self.sidebar_scroll),
@@ -892,8 +885,6 @@ mod tests {
     #[test]
     fn sidebar_provider_geometry_reflects_row_hierarchy() {
         assert_eq!(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP, Theme::SPACE_SM);
-        assert!(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP < SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP);
-        assert!(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE < SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE);
     }
 
     #[test]
