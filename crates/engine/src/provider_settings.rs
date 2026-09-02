@@ -28,6 +28,10 @@ impl ProviderSettingsStore {
     pub fn load(data_dir: &Path) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
         let settings = match std::fs::read(&path) {
+            // A 0-byte file reads as "nothing ever written" (no in-repo path
+            // produces one, but external tooling can truncate) — not as
+            // corruption worth bricking the boot gate over.
+            Ok(bytes) if bytes.is_empty() => StoredSettings::default(),
             Ok(bytes) => serde_json::from_slice::<StoredSettings>(&bytes).map_err(|error| {
                 EngineError::Other(format!(
                     "provider settings file {} is malformed; fix or remove it manually: {error}",
@@ -184,5 +188,18 @@ mod tests {
         std::fs::write(&path, "{broken").unwrap();
         assert!(ProviderSettingsStore::load(dir.path()).is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn empty_settings_file_loads_as_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE_NAME), b"").unwrap();
+        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        assert!(settings.custom_models_for("openai").is_empty());
+
+        // The store keeps working: a later add persists over the empty file.
+        settings.add_custom_model("openai", "gpt-custom").unwrap();
+        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
     }
 }
