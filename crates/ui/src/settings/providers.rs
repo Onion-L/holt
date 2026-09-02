@@ -414,6 +414,7 @@ impl Render for ProvidersPage {
                         &models,
                         revealed.is_some(),
                         provider.variants.len() > 1,
+                        model_error.is_some(),
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
                     let save_id = variant_id.clone();
@@ -687,14 +688,24 @@ fn action_button(theme: &Theme) -> gpui::Div {
         .cursor_pointer()
 }
 
-fn provider_controls_height(models: &Loadable<Vec<Model>>, revealed: bool, variants: bool) -> f32 {
+fn provider_controls_height(
+    models: &Loadable<Vec<Model>>,
+    revealed: bool,
+    variants: bool,
+    hint: bool,
+) -> f32 {
     let list_height = match models {
         Loadable::Idle | Loadable::Loading => 138.0,
         Loadable::Error(_) => 40.0,
         Loadable::Ready(models) if models.is_empty() => 32.0,
         Loadable::Ready(models) => (models.len() as f32 * 32.0).min(192.0),
     };
-    180.0 + list_height + if revealed { 28.0 } else { 0.0 } + if variants { 34.0 } else { 0.0 }
+    // The hint adds one 11px text line plus the section's 8px flex gap.
+    180.0
+        + list_height
+        + if revealed { 28.0 } else { 0.0 }
+        + if variants { 34.0 } else { 0.0 }
+        + if hint { 24.0 } else { 0.0 }
 }
 
 /// The variant pills at the top of an expanded organization card — the region
