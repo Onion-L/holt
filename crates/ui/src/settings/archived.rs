@@ -21,10 +21,17 @@ pub struct ArchivedPage {
     error: Option<SharedString>,
     /// Chat with an in-flight unarchive (button shows working state).
     busy: Option<String>,
+    /// A Clear-all pass is running (`clear_task` owns the loop; kept apart
+    /// from `task` — assigning over a Task cancels it, and an Unarchive
+    /// click must not kill a clear mid-batch).
+    clearing: bool,
+    /// The Clear-all confirm dialog is up.
+    confirm_clear: bool,
     /// Row index under the pointer — drives the original's `group-hover`
     /// Unarchive reveal (`opacity-0 group-hover:opacity-100`).
     hovered: Option<usize>,
     task: Option<Task<()>>,
+    clear_task: Option<Task<()>>,
     _observe: Subscription,
 }
 
@@ -35,8 +42,11 @@ impl ArchivedPage {
             state,
             error: None,
             busy: None,
+            clearing: false,
+            confirm_clear: false,
             hovered: None,
             task: None,
+            clear_task: None,
             _observe: observe,
         }
     }
@@ -65,10 +75,40 @@ impl ArchivedPage {
         }));
         cx.notify();
     }
+
+    /// Delete every archived chat, one Mutate each, stopping at the first
+    /// failure. The watch frames shrink the list as the engine confirms.
+    fn clear_all(&mut self, chat_ids: Vec<String>, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.confirm_clear = false;
+        self.clearing = true;
+        self.error = None;
+        self.clear_task = Some(cx.spawn(async move |this, cx| {
+            let mut failure = None;
+            for chat_id in chat_ids {
+                let params = serde_json::json!({ "op": "deleteChat", "chatId": chat_id });
+                if let Err(err) = engine.client().call(methods::MUTATE, params).await {
+                    failure = Some(err.to_string());
+                    break;
+                }
+            }
+            this.update(cx, |page, cx| {
+                page.clearing = false;
+                if let Some(err) = failure {
+                    page.error = Some(format!("Clear failed: {err}").into());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
 }
 
 impl Render for ArchivedPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let now = chrono::Utc::now();
@@ -262,20 +302,124 @@ impl Render for ArchivedPage {
                 .into_any_element()
         };
 
+        // Clear-all lives on the headline row, right-anchored, and only when
+        // there is something to clear (holt settings.archived.tsx has no
+        // counterpart — this page is the only surface archived sessions have).
+        let clear_button = div()
+            .id("clear-archived")
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.danger.opacity(0.25))
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.danger_muted)
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.danger.opacity(0.08)).text_color(theme.danger))
+            .when(self.clearing, |el| el.opacity(0.4))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.clearing {
+                    return;
+                }
+                this.confirm_clear = true;
+                cx.notify();
+            }))
+            .child(
+                crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                    .size(px(14.0))
+                    .text_color(theme.danger_muted),
+            )
+            .child(SharedString::from(if self.clearing {
+                "Clearing…"
+            } else {
+                "Clear all"
+            }));
+
+        // The confirm mirrors the sidebar's delete-session dialog: destructive,
+        // permanent, counted.
+        let confirm_dialog = self.confirm_clear.then(|| {
+            let copy = if count == 1 {
+                "1 archived session will be permanently deleted. This can\u{2019}t be undone."
+                    .to_string()
+            } else {
+                format!(
+                    "{count} archived sessions will be permanently deleted. This can\u{2019}t be undone."
+                )
+            };
+            let card = crate::popover::dialog_card(&theme)
+                .child(crate::popover::dialog_title(
+                    &theme,
+                    "Clear archived sessions?",
+                ))
+                .child(
+                    div().mt(px(6.0)).child(crate::popover::dialog_body(
+                        &theme,
+                        copy,
+                    )),
+                )
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            crate::popover::btn_ghost(&theme, "Cancel", "clear-archived-cancel")
+                                .id("clear-archived-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.confirm_clear = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            crate::popover::btn_danger(&theme, "Clear all")
+                                .id("clear-archived-confirm")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let ids: Vec<String> = this
+                                        .state
+                                        .read(cx)
+                                        .chats
+                                        .iter()
+                                        .filter(|chat| chat.archived)
+                                        .map(|chat| chat.id.clone())
+                                        .collect();
+                                    this.clear_all(ids, cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            crate::popover::modal("clear-archived-dialog", window.viewport_size(), card)
+        });
+
         div()
             .id("archived-page")
             .size_full()
             .overflow_y_scroll()
             .child(
                 widgets::page_column()
-                    .child(widgets::page_header(
-                        &theme,
-                        "Archived sessions",
-                        (count > 0).then_some(count),
-                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.0))
+                            .child(widgets::page_header(
+                                &theme,
+                                "Archived sessions",
+                                (count > 0).then_some(count),
+                            ))
+                            .when(count > 0, |el| el.child(clear_button)),
+                    )
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Hidden from the sidebar, never deleted. Unarchiving puts a session back in the sidebar.",
+                        "Hidden from the sidebar until you unarchive them. Clearing permanently deletes every session here.",
                     ))
                     .when_some(self.error.clone(), |el, message| {
                         el.child(
@@ -288,7 +432,8 @@ impl Render for ArchivedPage {
                                 })),
                         )
                     })
-                    .child(body),
+                    .child(body)
+                    .children(confirm_dialog),
             )
     }
 }
