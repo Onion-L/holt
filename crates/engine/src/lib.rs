@@ -649,4 +649,85 @@ mod tests {
         let frame = chats.next().await.unwrap();
         assert_eq!(frame[0]["archived"], serde_json::json!(false));
     }
+
+    #[tokio::test]
+    async fn delete_chat_removes_persists_and_drops_transcript() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let engine = StubEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        assert_eq!(chats.next().await.unwrap(), serde_json::json!([]));
+
+        for chat_id in ["chat-1", "chat-2"] {
+            engine
+                .handle(
+                    methods::MUTATE,
+                    serde_json::json!({ "op": "createChat", "chatId": chat_id }),
+                )
+                .await
+                .unwrap();
+            chats.next().await.unwrap();
+        }
+
+        // A persisted transcript for chat-1 dies with the chat.
+        crate::store::persist_transcript(
+            dir.path(),
+            "chat-1",
+            &[holt_doc::SessionMessageEntry {
+                id: "m1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![],
+                created_at: 42,
+                device_id: "device".into(),
+                status: None,
+                continuation_of: None,
+            }],
+        )
+        .unwrap();
+        assert!(dir.path().join("transcripts/chat-1.json").exists());
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "deleteChat", "chatId": "chat-1" }),
+            )
+            .await
+            .unwrap();
+        let frame = chats.next().await.unwrap();
+        let ids: Vec<&str> = frame
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|chat| chat["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["chat-2"]);
+        assert!(!dir.path().join("transcripts/chat-1.json").exists());
+
+        // Unknown chat is an idempotent no-op, not an error, with no frame.
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "deleteChat", "chatId": "missing" }),
+            )
+            .await
+            .unwrap();
+        drop(chats);
+        drop(engine);
+
+        // The deletion persists: a fresh engine only knows chat-2.
+        let engine = StubEngine::assemble(&config).unwrap();
+        let chats = engine.runtime.chats.read().unwrap();
+        let ids: Vec<&str> = chats.iter().map(|chat| chat.id.as_str()).collect();
+        assert_eq!(ids, ["chat-2"]);
+    }
 }

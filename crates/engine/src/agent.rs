@@ -27,7 +27,7 @@ use pi_core::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::{load_transcript, persist_transcript};
+use crate::store::{delete_transcript, load_transcript, persist_transcript};
 
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
@@ -125,6 +125,17 @@ impl AgentRuntime {
             .entry(chat_id.to_string())
             .or_insert_with(|| Arc::new(ChatRuntime::load(&self.data_dir, chat_id)))
             .clone()
+    }
+
+    /// Drop a chat's runtime slot and its persisted transcript. An in-flight
+    /// run keeps its `Arc` and runs to completion, but nothing ever reads the
+    /// transcript again: the chat row is gone from the watches.
+    pub(crate) fn remove_chat(&self, chat_id: &str) {
+        self.chat_runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(chat_id);
+        delete_transcript(&self.data_dir, chat_id);
     }
 
     pub(crate) fn publish_chats(&self) {

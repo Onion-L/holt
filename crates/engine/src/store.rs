@@ -109,6 +109,14 @@ pub(crate) fn persist_transcript(
     Ok(())
 }
 
+/// Drop a chat's persisted transcript. Missing files are fine — chats that
+/// never ran have nothing on disk.
+pub(crate) fn delete_transcript(data_dir: &Path, chat_id: &str) {
+    if let Some(path) = transcript_path(data_dir, chat_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Stable per-installation device id, persisted at `{data_dir}/device-id`.
 pub(crate) fn load_or_create_device_id(data_dir: &Path) -> Result<String, EngineError> {
     let path = data_dir.join("device-id");
