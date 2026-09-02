@@ -12,6 +12,7 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — holt pulse loader, gradient spinner, boot splash.
 
+mod app_icon;
 pub mod app_menus;
 pub mod appearance;
 pub mod attachments;
@@ -104,6 +105,8 @@ pub fn run_app(config: UiConfig) {
         }
     });
     app.run(move |cx: &mut App| {
+        // Dock/⌘-Tab icon before the first frame paints.
+        app_icon::install();
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
         let data_dir = config.boot().data_dir.clone();
