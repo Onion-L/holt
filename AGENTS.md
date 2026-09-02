@@ -1,8 +1,8 @@
 # Holt
 
-Rust desktop UI shell for a coding agent. Frontend only: `crates/engine` is a
-stub backend slot awaiting the from-scratch Rust agent core (pi-core-rs).
-`ARCHITECTURE.md` is the source of truth for crate topology and the RPC
+Rust desktop UI shell for a coding agent. The engine is real but narrow:
+`crates/engine` runs the `pi-core-rs` agent loop behind the `RpcService`
+trait. `ARCHITECTURE.md` is the source of truth for crate topology and the RPC
 contract — read it before touching `crates/rpc`, `crates/engine`, or the boot
 path.
 
@@ -13,15 +13,17 @@ path.
 - Check / lint: `cargo check --workspace`, `cargo clippy --workspace`,
   `cargo fmt --all`.
 - Test: `cargo test --workspace`; focus with `-p`, e.g. `cargo test -p holt-doc`.
-- The running app is an empty shell by design: backend mutations fail until a
-  real engine is wired in. That is the stub, not a regression.
+- The engine slice is intentionally narrow (see "The RPC contract" in
+  `ARCHITECTURE.md`): terminals, repos/worktrees/diffs, and uploads are
+  rendered by the UI but unserved — those RPCs reply `UnknownMethod` by
+  design, not regression.
 
 ## Architecture rules
 
 - The UI never links backend logic. It talks the typed RPC contract in
   `crates/rpc` over the in-process memory transport; `rpc::methods` is the
-  full UI↔backend surface. A real backend implements `RpcService` and replaces
-  `StubEngine` behind the same trait.
+  full UI↔backend surface. `StubEngine` in `crates/engine` serves it today; a
+  different backend slots in behind the same `RpcService` trait.
 - `crates/ui` is agent-agnostic: it renders `MessagePart`s from `holt-doc`,
   never raw agent events.
 
@@ -32,8 +34,11 @@ path.
   place when needed; never resolve gpui from git, and don't guess its pre-1.0
   API from online docs — `docs/research/gpui.md` and the vendored sources are
   the API truth.
-- This workspace is not a git repository: no history, no branches, nothing to
-  diff against.
+- The agent loop itself lives in the external `pi-core-rs` crate (git
+  dependency in the root `Cargo.toml`); `crates/engine` only adapts it — run
+  wiring, tools via `engine::tools`, credentials, provider settings.
+- Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in use:
+  engine, ui, settings.
 
 ## Agent skills
 
