@@ -13,15 +13,19 @@ pub(crate) fn install() {
 
     unsafe {
         // `+[NSData dataWithBytes:length:]` copies the bytes, so the PNG can
-        // stay in the binary's static data; `NSImage initWithData:` parses
-        // the PNG without us owning a decoder.
+        // stay in the binary's static data. NSImage has no class factory for
+        // data (that's UIKit's `UIImage imageWithData:`) — AppKit wants the
+        // `alloc` + `initWithData:` instance-initializer pair; a wrong
+        // selector here raises an NSException that unwinds through the
+        // extern-C frame and aborts the whole app.
         let bytes = APP_ICON_PNG.as_ptr() as *const std::ffi::c_void;
         let length = APP_ICON_PNG.len();
         let data: *mut Object = msg_send![class!(NSData), dataWithBytes: bytes length: length];
         if data.is_null() {
             return;
         }
-        let image: *mut Object = msg_send![class!(NSImage), initWithData: data];
+        let alloc: *mut Object = msg_send![class!(NSImage), alloc];
+        let image: *mut Object = msg_send![alloc, initWithData: data];
         if image.is_null() {
             return;
         }
