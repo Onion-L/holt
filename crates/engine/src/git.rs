@@ -137,6 +137,75 @@ impl Git {
         .await
     }
 
+    /// The per-commit capture behind `GetCheckoutDiff` in commit mode:
+    /// parent → commit (root commits against the empty tree); the live
+    /// working tree is never read.
+    pub(crate) async fn commit_diff(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        commit_sha: &str,
+    ) -> Result<CheckoutDiff, GitFault> {
+        let device_id = device_id.to_string();
+        let commit_sha = commit_sha.to_string();
+        self.with_repo(repo_path, move |repo| {
+            commit_capture(&repo, &device_id, &commit_sha)
+        })
+        .await
+    }
+
+    /// One page of the topologically ordered commit graph with refs
+    /// (branches, remote-tracking, tags) — the History scope's feed.
+    pub(crate) async fn history(
+        &self,
+        repo_path: &str,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<holt_proto::GitHistoryPage, String> {
+        self.with_repo(repo_path, move |repo| history_page(&repo, cursor, limit))
+            .await
+    }
+
+    /// Fetch every remote with prune, using system-default credentials
+    /// (credential helpers / ssh-agent — never interactive). Wrapped by the
+    /// caller in a 30 s timeout.
+    pub(crate) async fn fetch_all(&self, repo_path: &str) -> Result<(), String> {
+        self.with_repo::<(), String, _>(repo_path, |repo| {
+            let remotes = repo.remotes().map_err(git_message)?;
+            for index in 0..remotes.len() {
+                let Ok(Some(name)) = remotes.get(index) else {
+                    continue;
+                };
+                let mut remote = repo.find_remote(name).map_err(git_message)?;
+                let refspec = format!("refs/heads/*:refs/remotes/{name}/*");
+                let mut attempted = false;
+                let mut callbacks = git2::RemoteCallbacks::new();
+                callbacks.credentials(move |_url, username, allowed| {
+                    // One system-default attempt: a credential retry loop
+                    // must never become an interactive prompt.
+                    if attempted {
+                        return Err(git2::Error::from_str("no system credentials available"));
+                    }
+                    attempted = true;
+                    if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                        git2::Cred::default()
+                    } else {
+                        git2::Cred::ssh_key_from_agent(username.unwrap_or("git"))
+                    }
+                });
+                let mut options = git2::FetchOptions::new();
+                options
+                    .prune(git2::FetchPrune::On)
+                    .remote_callbacks(callbacks);
+                remote
+                    .fetch(&[refspec.as_str()], Some(&mut options), Some("holt fetch"))
+                    .map_err(|error| format!("{name}: {error}"))?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Run `op` against the repository resolved from `repo_path`: resolve
     /// its common git dir, take the per-checkout lock, then execute on the
     /// blocking pool.
@@ -578,6 +647,74 @@ fn capture_diff(
     // Rename detection is best-effort: a failure leaves the raw diff intact.
     let _ = diff.find_similar(Some(&mut find));
 
+    Ok(diff_to_payload(
+        repo,
+        &mut diff,
+        device_id,
+        mode,
+        base_ref.unwrap_or(""),
+        &head_sha,
+    ))
+}
+
+/// The per-commit capture behind `GetCheckoutDiff` in commit mode:
+/// parent tree → commit tree, never touching the working tree. A root
+/// commit diffs against the empty tree.
+pub(crate) fn commit_capture(
+    repo: &Repository,
+    device_id: &str,
+    commit_sha: &str,
+) -> Result<CheckoutDiff, GitFault> {
+    let commit = repo
+        .revparse_single(commit_sha)
+        .map_err(|_| GitFault::BadParams(format!("unknown commit: {commit_sha}")))?
+        .peel_to_commit()
+        .map_err(|_| GitFault::BadParams(format!("not a commit: {commit_sha}")))?;
+    let commit_tree = commit
+        .tree()
+        .map_err(git_message)
+        .map_err(GitFault::Error)?;
+    let parent_tree = match commit.parent_count() {
+        0 => None,
+        _ => Some(
+            commit
+                .parent(0)
+                .map_err(git_message)
+                .map_err(GitFault::Error)?
+                .tree()
+                .map_err(git_message)
+                .map_err(GitFault::Error)?,
+        ),
+    };
+    let mut options = git2::DiffOptions::new();
+    options.show_binary(true);
+    let mut diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&commit_tree), Some(&mut options))
+        .map_err(git_message)
+        .map_err(GitFault::Error)?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true);
+    let _ = diff.find_similar(Some(&mut find));
+    Ok(diff_to_payload(
+        repo,
+        &mut diff,
+        device_id,
+        "commit",
+        "",
+        &commit.id().to_string(),
+    ))
+}
+
+/// Turn a prepared diff into the wire `CheckoutDiff`: summaries, counts,
+/// capped patch, checksum. Shared by every capture mode.
+fn diff_to_payload(
+    repo: &Repository,
+    diff: &mut git2::Diff,
+    device_id: &str,
+    mode: &str,
+    base_ref: &str,
+    head_sha: &str,
+) -> CheckoutDiff {
     // Per-file summaries: paths/status from the deltas; addition/deletion
     // counts and binary flags from a foreach walk of the diff lines.
     let mut files: Vec<DiffFileSummary> = Vec::new();
@@ -620,7 +757,7 @@ fn capture_diff(
     // The foreach callbacks run one at a time on this thread; RefCell lets
     // both the binary and line walks annotate the shared summaries.
     let files = std::cell::RefCell::new(files);
-    diff.foreach(
+    let _ = diff.foreach(
         &mut |_delta, _progress| true,
         Some(&mut |delta, _binary| {
             if let Some(summary) = files
@@ -649,9 +786,9 @@ fn capture_diff(
             }
             true
         }),
-    )
-    .map_err(git_message)
-    .map_err(GitFault::Error)?;
+    );
+    // The count walk is best-effort: on failure the summaries keep zero
+    // counts and the patch below still carries the content.
     let files = files.into_inner();
 
     let mut patch = String::new();
@@ -677,8 +814,8 @@ fn capture_diff(
         .workdir()
         .map(|path| path.display().to_string().trim_end_matches('/').to_string())
         .unwrap_or_default();
-    Ok(CheckoutDiff {
-        checksum: diff_checksum(&head_sha, mode, base_ref.unwrap_or(""), &patch),
+    CheckoutDiff {
+        checksum: diff_checksum(head_sha, mode, base_ref, &patch),
         checkout_id: checkout_identity(device_id, repo.path()),
         device_id: device_id.to_string(),
         cwd: workdir,
@@ -688,7 +825,7 @@ fn capture_diff(
         files,
         truncated,
         updated_at: chrono::Utc::now(),
-    })
+    }
 }
 
 /// One side of a per-file text pair: bytes, binary detection, and the 1 MiB
@@ -741,11 +878,61 @@ fn file_side(bytes: Option<Vec<u8>>) -> FileSide {
     }
 }
 
+/// Per-file text for the commit scope: parent blob vs commit blob, never
+/// the working tree.
+fn commit_file_text(
+    repo: &Repository,
+    request: &holt_proto::GetCheckoutFileDiffTextRequest,
+) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
+    let commit_sha = request
+        .commit_sha
+        .as_deref()
+        .filter(|sha| !sha.is_empty())
+        .ok_or_else(|| GitFault::BadParams("commitSha is required for commit diffs".into()))?;
+    let commit = repo
+        .revparse_single(commit_sha)
+        .map_err(|_| GitFault::BadParams(format!("unknown commit: {commit_sha}")))?
+        .peel_to_commit()
+        .map_err(|_| GitFault::BadParams(format!("not a commit: {commit_sha}")))?;
+    let path = Path::new(&request.path);
+    let blob_from = |tree: Option<git2::Tree>| -> Option<Vec<u8>> {
+        tree.and_then(|tree| {
+            tree.get_path(path)
+                .ok()
+                .and_then(|entry| entry.to_object(repo).ok())
+                .and_then(|object| object.as_blob().map(|blob| blob.content().to_vec()))
+        })
+    };
+    let old_bytes = match commit.parent_count() {
+        0 => None,
+        _ => blob_from(commit.parent(0).ok().and_then(|parent| parent.tree().ok())),
+    };
+    let new_bytes = blob_from(commit.tree().ok());
+    let old = file_side(old_bytes);
+    let new = file_side(new_bytes);
+    // A pinned commit pair cannot go stale by definition; the checksum is
+    // echoed so the UI's keying stays stable.
+    Ok(holt_proto::CheckoutFileDiffText {
+        diff_checksum: request.diff_checksum.clone(),
+        old_text: old.text,
+        new_text: new.text,
+        old_content_hash: old.content_hash,
+        new_content_hash: new.content_hash,
+        binary: old.binary || new.binary,
+        truncated: old.truncated || new.truncated,
+        stale: false,
+    })
+}
+
 fn capture_file_text(
     repo: &Repository,
     device_id: &str,
     request: &holt_proto::GetCheckoutFileDiffTextRequest,
 ) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
+    // Commit mode never reads the live working tree.
+    if request.mode == "commit" {
+        return commit_file_text(repo, request);
+    }
     let path = Path::new(&request.path);
     let mode = if request.mode.is_empty() {
         "workingTree"
@@ -786,6 +973,125 @@ fn capture_file_text(
         binary: old.binary || new.binary,
         truncated: old.truncated || new.truncated,
         stale,
+    })
+}
+
+// ---- history ----
+
+/// One page of the commit graph: topologically ordered from HEAD, with
+/// branch/remote/tag refs attached to the commits they name.
+fn history_page(
+    repo: &Repository,
+    cursor: usize,
+    limit: usize,
+) -> Result<holt_proto::GitHistoryPage, String> {
+    let head_sha = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string());
+    let Some(head_sha) = head_sha else {
+        return Ok(holt_proto::GitHistoryPage {
+            commits: Vec::new(),
+            head_sha: None,
+            next_cursor: None,
+            total_count: Some(0),
+            head_commit_count: Some(0),
+        });
+    };
+
+    // Ref labels by target commit, resolved once for the whole page walk.
+    let mut refs_by_commit: std::collections::HashMap<git2::Oid, Vec<holt_proto::GitHistoryRef>> =
+        std::collections::HashMap::new();
+    let references = repo.references().map_err(git_message)?;
+    for reference in references.flatten() {
+        let (kind, label) = if let Some(name) = reference
+            .name()
+            .ok()
+            .and_then(|name| name.strip_prefix("refs/heads/"))
+        {
+            (holt_proto::GitHistoryRefKind::Branch, name.to_string())
+        } else if let Some(name) = reference
+            .name()
+            .ok()
+            .and_then(|name| name.strip_prefix("refs/remotes/"))
+        {
+            (holt_proto::GitHistoryRefKind::Remote, name.to_string())
+        } else if let Some(name) = reference
+            .name()
+            .ok()
+            .and_then(|name| name.strip_prefix("refs/tags/"))
+        {
+            (holt_proto::GitHistoryRefKind::Tag, name.to_string())
+        } else {
+            continue;
+        };
+        // Symbolic refs (origin/HEAD) peel to their target's commit, which
+        // would duplicate labels; only direct refs name commits.
+        if let Ok(target) = reference.peel_to_commit() {
+            refs_by_commit
+                .entry(target.id())
+                .or_default()
+                .push(holt_proto::GitHistoryRef { kind, label });
+        }
+    }
+
+    let mut walker = repo.revwalk().map_err(git_message)?;
+    walker
+        .set_sorting(git2::Sort::TOPOLOGICAL)
+        .map_err(git_message)?;
+    walker.push_head().map_err(git_message)?;
+    // The page collects at most `limit` commits after the cursor, but the
+    // walk runs to the end: the totals need the full count (oid walking is
+    // cheap; only the page's commits get loaded).
+    let mut commits = Vec::new();
+    let mut visited = 0usize;
+    let mut next_cursor = None;
+    for oid in walker {
+        let oid = oid.map_err(git_message)?;
+        visited += 1;
+        if visited <= cursor {
+            continue;
+        }
+        if commits.len() >= limit {
+            if next_cursor.is_none() {
+                next_cursor = Some(visited - 1);
+            }
+            continue;
+        }
+        let commit = repo.find_commit(oid).map_err(git_message)?;
+        let parent_shas: Vec<String> = (0..commit.parent_count())
+            .filter_map(|index| commit.parent_id(index).ok().map(|oid| oid.to_string()))
+            .collect();
+        let author = commit.author();
+        let authored_at = chrono::DateTime::from_timestamp(author.when().seconds(), 0)
+            .map(|time| time.to_rfc3339())
+            .unwrap_or_default();
+        commits.push(holt_proto::GitHistoryCommit {
+            sha: commit.id().to_string(),
+            subject: commit
+                .summary()
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .to_string(),
+            author_name: author.name().unwrap_or_default().to_string(),
+            author_email: author.email().unwrap_or_default().to_string(),
+            authored_at,
+            refs: refs_by_commit
+                .get(&commit.id())
+                .cloned()
+                .unwrap_or_default(),
+            parent_shas,
+        });
+    }
+    let total_count = visited;
+    Ok(holt_proto::GitHistoryPage {
+        commits,
+        head_sha: Some(head_sha),
+        next_cursor,
+        total_count: Some(total_count),
+        head_commit_count: Some(total_count),
     })
 }
 

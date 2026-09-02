@@ -1292,3 +1292,385 @@ async fn branch_scope_file_text_reads_the_merge_base_blob() {
     );
     assert!(!text.stale);
 }
+
+// ---- history, fetch, per-commit diffs (git-capability issue 05) ----
+
+fn ref_kind(reference: &holt_proto::GitHistoryRef) -> String {
+    serde_json::to_value(reference.kind)
+        .unwrap()
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+async fn history_page(
+    engine: &StubEngine,
+    cwd: &str,
+    cursor: u64,
+    limit: u64,
+) -> holt_proto::GitHistoryPage {
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::LIST_GIT_HISTORY,
+            serde_json::json!({ "cwd": cwd, "cursor": cursor, "limit": limit }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListGitHistory did not return a value");
+    };
+    serde_json::from_value(value).unwrap()
+}
+
+async fn commit_diff(engine: &StubEngine, cwd: &str, sha: &str) -> Result<CheckoutDiff, RpcError> {
+    match engine
+        .handle(
+            methods::GET_CHECKOUT_DIFF,
+            serde_json::json!({
+                "cwd": cwd,
+                "mode": "commit",
+                "commitSha": sha,
+                "chatId": "chat-1",
+            }),
+        )
+        .await
+    {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Ok(_) => panic!("GetCheckoutDiff did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+#[tokio::test]
+async fn history_pages_topologically_with_refs_and_counts() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // A merge topology: a feature branch commit merged back into main.
+    let (main_tip, merged_oid) = {
+        let repo = fixture.repo();
+        let sig = signature();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let feature_tip = repo
+            .find_reference("refs/heads/feature")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let feature_oid = feature_tip.id();
+        let merged_oid = {
+            let mut index = repo.index().unwrap();
+            index.read_tree(&feature_tip.tree().unwrap()).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            repo.commit(
+                Some("refs/heads/merge-src"),
+                &sig,
+                &sig,
+                "work on the branch",
+                &tree,
+                &[&head_commit],
+            )
+            .unwrap()
+        };
+        // main tip becomes the merge commit
+        let main_tip = {
+            let merged_commit = repo.find_commit(merged_oid).unwrap();
+            let tree = merged_commit.tree().unwrap();
+            repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "merge the branch",
+                &tree,
+                &[&head_commit, &merged_commit],
+            )
+            .unwrap()
+        };
+        // Refs: a tag on the merge and a remote-tracking ref on the side
+        // branch's own commit.
+        repo.reference("refs/tags/v1", main_tip, true, "test")
+            .unwrap();
+        repo.reference("refs/remotes/origin/merge-src", merged_oid, true, "test")
+            .unwrap();
+        let _ = feature_oid;
+        (main_tip, merged_oid)
+    };
+
+    let page = history_page(&engine, &fixture.repo_path(), 0, 2).await;
+    assert_eq!(page.commits.len(), 2);
+    assert_eq!(page.next_cursor, Some(2));
+    assert!(page.total_count.is_some());
+    assert_eq!(page.head_commit_count, page.total_count);
+    let head = &page.commits[0];
+    assert_eq!(head.sha, main_tip.to_string());
+    assert_eq!(head.subject, "merge the branch");
+    assert_eq!(head.author_name, "Holt Test");
+    assert!(head.authored_at.contains('T'), "RFC3339 authoredAt");
+    assert_eq!(head.parent_shas.len(), 2, "the merge carries both parents");
+    // Both a branch ref (main) and the tag name the merge commit.
+    let labels: Vec<(String, String)> = head
+        .refs
+        .iter()
+        .map(|r| (ref_kind(r), r.label.clone()))
+        .collect();
+    assert!(
+        labels.contains(&("branch".to_string(), "main".to_string())),
+        "labels: {labels:?}"
+    );
+    assert!(
+        labels.contains(&("tag".to_string(), "v1".to_string())),
+        "labels: {labels:?}"
+    );
+    // The side branch's commit carries branch + remote labels (it sits on
+    // page one or two depending on the topo order's parent preference).
+    let page2 = history_page(&engine, &fixture.repo_path(), 2, 50).await;
+    let merged_row = page
+        .commits
+        .iter()
+        .chain(page2.commits.iter())
+        .find(|commit| commit.sha == merged_oid.to_string())
+        .expect("side-branch commit present");
+    let labels: Vec<(String, String)> = merged_row
+        .refs
+        .iter()
+        .map(|r| (ref_kind(r), r.label.clone()))
+        .collect();
+    assert!(
+        labels.contains(&("branch".to_string(), "merge-src".to_string())),
+        "labels: {labels:?}"
+    );
+    assert!(
+        labels.contains(&("remote".to_string(), "origin/merge-src".to_string())),
+        "labels: {labels:?}"
+    );
+}
+
+#[tokio::test]
+async fn history_paging_by_cursor_returns_disjoint_pages() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    // Two commits on main so a page split has something to split.
+    std::fs::write(fixture.repo_dir.path().join("second.txt"), "second\n").unwrap();
+    commit_workdir(&fixture, "second commit");
+
+    let first = history_page(&engine, &fixture.repo_path(), 0, 1).await;
+    assert_eq!(first.commits.len(), 1);
+    assert_eq!(first.next_cursor, Some(1));
+
+    let second = history_page(
+        &engine,
+        &fixture.repo_path(),
+        first.next_cursor.unwrap() as u64,
+        50,
+    )
+    .await;
+    assert_eq!(second.next_cursor, None);
+    let first_shas: Vec<&str> = first.commits.iter().map(|c| c.sha.as_str()).collect();
+    assert!(
+        second
+            .commits
+            .iter()
+            .all(|c| !first_shas.contains(&c.sha.as_str())),
+        "pages are disjoint"
+    );
+    // The graph parent links resolve inside the union of the pages.
+    let all: Vec<&holt_proto::GitHistoryCommit> =
+        first.commits.iter().chain(second.commits.iter()).collect();
+    for commit in &all {
+        for parent in &commit.parent_shas {
+            assert!(
+                all.iter().any(|c| &c.sha == parent),
+                "parent {parent} of {} missing",
+                commit.sha
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn commit_mode_diffs_parent_to_commit_without_the_worktree() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    let repo = fixture.repo();
+    let (feature_oid, root_oid) = {
+        let feature_tip = repo
+            .find_reference("refs/heads/feature")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let root = repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        (feature_tip.id(), root.id())
+    };
+    drop(repo);
+
+    // Dirt that must NOT leak into the pinned commit pair.
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "live edits\n").unwrap();
+
+    let diff = commit_diff(&engine, &fixture.repo_path(), &feature_oid.to_string())
+        .await
+        .unwrap();
+    assert!(diff.patch.contains("+feature work"));
+    assert!(
+        !diff.patch.contains("+live edits"),
+        "the workdir is never read"
+    );
+    // The root commit diffs against the empty tree: everything is an add.
+    let root_diff = commit_diff(&engine, &fixture.repo_path(), &root_oid.to_string())
+        .await
+        .unwrap();
+    assert!(root_diff.files.iter().all(|file| file.status == "added"));
+
+    // Unknown commit: bad params naming it.
+    let error = match commit_diff(
+        &engine,
+        &fixture.repo_path(),
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("unknown commit must fail"),
+    };
+    assert!(matches!(error, RpcError::BadParams(_)));
+}
+
+#[tokio::test]
+async fn commit_mode_file_text_reads_parent_and_commit_blobs() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    let repo = fixture.repo();
+    let feature_oid = repo
+        .find_reference("refs/heads/feature")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    drop(repo);
+    let diff = commit_diff(&engine, &fixture.repo_path(), &feature_oid.to_string())
+        .await
+        .unwrap();
+
+    let request = GetCheckoutFileDiffTextRequest {
+        checkout_id: diff.checkout_id.clone(),
+        cwd: fixture.repo_path(),
+        path: "feature.txt".into(),
+        mode: "commit".into(),
+        base_ref: None,
+        chat_id: Some("chat-1".into()),
+        commit_sha: Some(feature_oid.to_string()),
+        diff_checksum: diff.checksum.clone(),
+    };
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::to_value(&request).unwrap(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!();
+    };
+    let text: holt_proto::CheckoutFileDiffText = serde_json::from_value(value).unwrap();
+    assert_eq!(text.old_text, None, "the parent does not know the file");
+    assert_eq!(text.new_text.as_deref(), Some("feature work\n"));
+    assert!(!text.stale);
+}
+
+#[tokio::test]
+async fn fetch_all_updates_remote_refs_and_prunes_without_touching_the_checkout() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // A local bare remote (file transport, no network) with a branch of
+    // its own, plus a stale remote-tracking ref to prune.
+    let remote_dir = TempDir::new().unwrap();
+    let bare = Repository::init_bare(remote_dir.path()).unwrap();
+    drop(bare);
+    {
+        let repo = fixture.repo();
+        let stale_ref = repo
+            .find_reference("refs/heads/feature")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        repo.reference("refs/remotes/origin/feature", stale_ref, true, "stale")
+            .unwrap();
+        repo.remote("origin", &format!("file://{}", remote_dir.path().display()))
+            .unwrap();
+        drop(repo);
+    }
+    // Push main into the bare remote so the fetch has something to bring.
+    {
+        let repo = fixture.repo();
+        let mut origin = repo.find_remote("origin").unwrap();
+        origin
+            .push(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+    }
+
+    // The working-tree checksum before the fetch must survive it.
+    let before = working_tree_diff(&engine, &fixture.repo_path()).await;
+    engine
+        .handle(
+            methods::FETCH_ALL,
+            serde_json::json!({ "repoPath": fixture.repo_path() }),
+        )
+        .await
+        .unwrap();
+    let after = working_tree_diff(&engine, &fixture.repo_path()).await;
+    assert_eq!(
+        before.checksum, after.checksum,
+        "fetch mutates no checkout state"
+    );
+    let repo = fixture.repo();
+    assert!(
+        repo.find_reference("refs/remotes/origin/main").is_ok(),
+        "the remote branch landed as a remote-tracking ref"
+    );
+    assert!(
+        repo.find_reference("refs/remotes/origin/feature").is_err(),
+        "the stale tracking ref was pruned"
+    );
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+}
+
+#[tokio::test]
+async fn fetch_all_surfaces_errors_verbatim() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+
+    // A remote pointing nowhere: the fetch fails and the message carries
+    // the remote's name.
+    let repo = fixture.repo();
+    repo.remote("broken", "file:///nonexistent/remote/path")
+        .unwrap();
+    drop(repo);
+    let error = match engine
+        .handle(
+            methods::FETCH_ALL,
+            serde_json::json!({ "repoPath": fixture.repo_path() }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a broken remote must fail"),
+    };
+    assert!(matches!(error, RpcError::Failed(_)));
+    assert!(
+        error.to_string().contains("broken"),
+        "the remote name rides along: {error}"
+    );
+}

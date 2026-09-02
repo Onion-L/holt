@@ -698,8 +698,9 @@ impl RpcService for StubEngine {
             methods::WATCH_CHECKOUT_DIFFS => Ok(self.watch.subscribe()),
 
             // The diff family. Working-tree mode is the live capture;
-            // branch mode diffs the merge-base with a chosen base ref.
-            // The scoped modes (commit, turn) arrive with their slices.
+            // branch mode diffs the merge-base with a chosen base ref;
+            // commit mode pins parent → commit without the working tree.
+            // The turn mode arrives with its slice.
             methods::GET_CHECKOUT_DIFF => {
                 let cwd = required_string(&params, "cwd")?;
                 let mode = required_string(&params, "mode")?;
@@ -707,7 +708,24 @@ impl RpcService for StubEngine {
                     .get("baseRef")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
+                let commit_sha = params
+                    .get("commitSha")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
                 match mode {
+                    "commit" => {
+                        let commit_sha = commit_sha
+                            .filter(|sha| !sha.trim().is_empty())
+                            .ok_or_else(|| {
+                                RpcError::BadParams("commitSha is required for commit diffs".into())
+                            })?;
+                        let diff = self
+                            .git
+                            .commit_diff(cwd, &self.engine_info.device_id, &commit_sha)
+                            .await
+                            .map_err(git_fault)?;
+                        RpcReply::value(&diff)
+                    }
                     "workingTree" | "branch" => {
                         let diff = self
                             .git
@@ -725,7 +743,7 @@ impl RpcService for StubEngine {
                 let request: holt_proto::GetCheckoutFileDiffTextRequest =
                     holt_rpc::parse_params(params)?;
                 match request.mode.as_str() {
-                    "" | "workingTree" | "branch" => {
+                    "" | "workingTree" | "branch" | "commit" => {
                         let text = self
                             .git
                             .capture_file_text(&request.cwd, &self.engine_info.device_id, &request)
@@ -737,6 +755,39 @@ impl RpcService for StubEngine {
                         "{other} diffs are not available yet"
                     ))),
                 }
+            }
+
+            // History: the topologically ordered commit graph with refs,
+            // paged by cursor, plus the fetch action that updates
+            // remote-tracking refs without touching any checkout state.
+            methods::LIST_GIT_HISTORY => {
+                let cwd = required_string(&params, "cwd")?;
+                let cursor = params
+                    .get("cursor")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let limit = params
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(50)
+                    .clamp(1, 500) as usize;
+                let page = self
+                    .git
+                    .history(cwd, cursor, limit)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&page)
+            }
+            methods::FETCH_ALL => {
+                let repo_path = required_string(&params, "repoPath")?;
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    self.git.fetch_all(repo_path),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("fetch timed out after 30s".into()))?
+                .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({}))
             }
 
             // No-op liveness pokes the UI fires defensively.
