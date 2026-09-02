@@ -9,6 +9,7 @@
 //! - [`InstanceLock`] — single-instance guard on the data dir.
 //! - module map: `agent` (run loop + runtime state), `rpc` (dispatch +
 //!   handlers), `store` (JSON persistence), `local_fs` (folder browsing),
+//!   `git` (the git2-backed branch/diff capability — the only git2 user),
 //!   plus provider discovery and Holt-owned credential storage behind the
 //!   RPC seam.
 
@@ -23,6 +24,7 @@ use tokio::sync::watch;
 
 mod agent;
 pub mod credentials;
+mod git;
 pub mod instance_lock;
 mod local_fs;
 pub mod provider_settings;
@@ -63,6 +65,7 @@ pub struct StubEngine {
     spaces_tx: watch::Sender<serde_json::Value>,
     runtime: Arc<AgentRuntime>,
     providers: Arc<ProviderAdapter>,
+    git: git::Git,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -96,6 +99,7 @@ impl StubEngine {
             spaces_tx,
             runtime,
             providers,
+            git: git::Git::new(),
             _instance_lock: lock,
         })
     }

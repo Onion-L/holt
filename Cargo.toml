@@ -72,6 +72,9 @@ clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 notify = "7"
+# The engine's git backend (ADR-0001). Engine-only dependency: all git2
+# access lives in holt-engine's `git` module.
+git2 = "0.21"
 portable-pty = "0.8"
 alacritty_terminal = "0.26"
 pulldown-cmark = "0.12"

@@ -18,9 +18,11 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 libc.workspace = true
+git2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+git2.workspace = true

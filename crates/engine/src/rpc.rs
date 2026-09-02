@@ -592,6 +592,37 @@ impl RpcService for StubEngine {
             },
             methods::LIST_DRIVES => RpcReply::value(&list_drives()),
 
+            // Git capability (ADR-0001): branch listing and safe switching
+            // for space folders. Errors carry git's own message — the picker
+            // renders it in place.
+            methods::LIST_REFS => {
+                let repo_path = required_string(&params, "repoPath")?;
+                let refs = self
+                    .git
+                    .list_refs(repo_path)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&refs)
+            }
+            methods::LIST_BRANCHES => {
+                let repo_path = required_string(&params, "repoPath")?;
+                let branches = self
+                    .git
+                    .list_branches(repo_path)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&branches)
+            }
+            methods::SWITCH_REF => {
+                let repo_path = required_string(&params, "repoPath")?;
+                let ref_name = required_string(&params, "refName")?;
+                self.git
+                    .switch_ref(repo_path, ref_name)
+                    .await
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+
             // Entity watches: one snapshot, then silence. Devices are real —
             // the local machine browses its own folders — the rest stay empty.
             methods::WATCH_DEVICES => {
