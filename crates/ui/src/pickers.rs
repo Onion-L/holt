@@ -1266,6 +1266,10 @@ impl Render for Pickers {
             .on_drag_move(cx.listener(Self::on_model_scrollbar_drag_move))
             .child(left)
             .child(right)
-            .child(switch_dialog)
+            // Out-of-flow wrapper: the modal positions itself at window
+            // coordinates (anchored Window mode), but an in-flow child here
+            // is justify_between's third item — which centers the model chip
+            // in the pill instead of pinning it to the right edge.
+            .child(div().absolute().child(switch_dialog))
     }
 }
