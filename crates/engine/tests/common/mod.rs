@@ -1,24 +1,37 @@
-//! Shared fixture for the scripted-provider test seam: a fake model
+//! Shared fixtures for the scripted-provider test seam: a fake model
 //! transport injected through `EngineConfig::stream_fn` so RPC-handle tests
 //! drive a full Turn without a real provider. The provider records the
 //! message list of every request it receives and replies from a script —
-//! text, tool calls, an aborted stream, a provider error — with fixed usage
-//! numbers so token-dependent behavior stays deterministic.
+//! text, tool calls, an aborted stream, a provider error, a hanging
+//! stream — with fixed usage numbers so token-dependent behavior stays
+//! deterministic.
 //!
-//! Every later History/Compaction test rides this seam; no production code
-//! path depends on it.
+//! The `Fixture` and watch helpers around it assemble a real engine on
+//! temp dirs and drive it through `RpcService::handle` exactly as the UI
+//! does. Every later History/Compaction test rides this seam; no
+//! production code path depends on it.
 
 #![allow(dead_code)] // each test binary links the module whole
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::StreamExt;
+use holt_engine::{EngineConfig, LocalEngine};
+use holt_rpc::{RpcReply, RpcService, methods};
 use pi_core::agent::types::StreamFn;
 use pi_core::ai::types::{
-    AssistantContent, AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason,
-    Message, Model, StopReason, TextContent, ToolCall, Usage,
+    AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent, Context, DoneReason,
+    ErrorReason, Message, Model, StopReason, TextContent, ToolCall, Usage,
 };
+use tempfile::TempDir;
+
+const WAIT: Duration = Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------
+// The scripted provider
+// ---------------------------------------------------------------------------
 
 /// One scripted model reply — what the "provider" answers the next request
 /// it receives.
@@ -35,6 +48,10 @@ pub enum ScriptedReply {
     /// A provider failure: the error string rides the assistant message,
     /// stop reason `error`.
     Failed(String),
+    /// A stream that never terminates — the "engine killed mid-Turn"
+    /// stand-in: nothing arrives and the Turn hangs, so the test can drop
+    /// the engine with the run in flight.
+    Silent,
 }
 
 impl ScriptedReply {
@@ -192,5 +209,216 @@ fn push_reply(
                 error: message,
             });
         }
+        // Nothing is pushed: `next` never resolves, the Turn never ends.
+        ScriptedReply::Silent => {}
     }
+}
+
+// ---------------------------------------------------------------------------
+// The engine fixture and RPC-driving helpers
+// ---------------------------------------------------------------------------
+
+pub struct Fixture {
+    /// The chat's working directory.
+    pub project_dir: TempDir,
+    /// The personal skill root override — pinned empty so the system prompt
+    /// stays fixture-driven, not machine-driven.
+    pub personal_dir: TempDir,
+    pub data_dir: TempDir,
+}
+
+impl Fixture {
+    pub fn new() -> Self {
+        Self {
+            project_dir: TempDir::new().unwrap(),
+            personal_dir: TempDir::new().unwrap(),
+            data_dir: TempDir::new().unwrap(),
+        }
+    }
+
+    pub fn engine(&self, provider: &ScriptedProvider) -> LocalEngine {
+        LocalEngine::assemble(&EngineConfig {
+            data_dir: self.data_dir.path().to_path_buf(),
+            personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
+            stream_fn: Some(provider.stream_fn()),
+        })
+        .unwrap()
+    }
+
+    pub fn cwd(&self) -> String {
+        self.project_dir.path().display().to_string()
+    }
+}
+
+/// One frame off a watch, with a timeout so a silent engine fails the test
+/// instead of hanging it.
+pub async fn next_frame<S>(stream: &mut S) -> serde_json::Value
+where
+    S: StreamExt<Item = serde_json::Value> + Unpin,
+{
+    tokio::time::timeout(WAIT, stream.next())
+        .await
+        .expect("timed out waiting for a watch frame")
+        .expect("watch stream ended")
+}
+
+/// Configure the provider key and create the chat the runs target.
+pub async fn setup_chat(engine: &LocalEngine, chat_id: &str) {
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "not-a-real-key" }),
+        )
+        .await
+        .unwrap();
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({ "op": "createChat", "chatId": chat_id }),
+        )
+        .await
+        .unwrap();
+}
+
+/// Queue a run command exactly as the composer serializes it.
+pub async fn run_prompt(engine: &LocalEngine, chat_id: &str, cwd: &str, prompt: &str) {
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({
+                "chatId": chat_id,
+                "command": {
+                    "kind": "run",
+                    "messageId": format!("message-{}", uuid_tag(prompt)),
+                    "request": {
+                        "prompt": prompt,
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": cwd,
+                        "sandbox": "workspace-write"
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+/// A filesystem-safe stand-in for a message id (prompt text is not).
+fn uuid_tag(text: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("m{hash:x}")
+}
+
+/// Pump session frames until `chat_id` carries `status`.
+pub async fn wait_for_session_status<S>(sessions: &mut S, chat_id: &str, status: &str)
+where
+    S: StreamExt<Item = serde_json::Value> + Unpin,
+{
+    loop {
+        let frame = next_frame(sessions).await;
+        let hit = frame.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row["chatId"] == chat_id && row["status"] == status)
+        });
+        if hit {
+            return;
+        }
+    }
+}
+
+/// Poll the scripted provider until it has received `count` requests.
+pub async fn wait_for_requests(provider: &ScriptedProvider, count: usize) {
+    let deadline = std::time::Instant::now() + WAIT;
+    while provider.requests().len() < count {
+        if std::time::Instant::now() > deadline {
+            panic!(
+                "provider never received {count} requests (saw {})",
+                provider.requests().len()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Subscribe both watches and drain their opening frames (the transcript's
+/// whole-history `reset` — empty for a fresh chat, the persisted history
+/// after a restart — and the sessions snapshot) so the first frame after a
+/// queued command is signal, not noise.
+pub async fn subscribe(
+    engine: &LocalEngine,
+    chat_id: &str,
+) -> (
+    impl StreamExt<Item = serde_json::Value> + Unpin + use<>,
+    impl StreamExt<Item = serde_json::Value> + Unpin + use<>,
+) {
+    let RpcReply::Stream(mut transcript) = engine
+        .handle(
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchDocMessages did not return a stream");
+    };
+    let _ = transcript.next().await.expect("transcript watch ended");
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    let _ = sessions.next().await.expect("sessions watch ended");
+    (transcript, sessions)
+}
+
+// ---------------------------------------------------------------------------
+// Request-message summaries — the assertion vocabulary for "what the model
+// would receive"
+// ---------------------------------------------------------------------------
+
+/// Render one request's message list as comparable strings:
+/// `user:<text>`, `assistant:<text>`, `assistant:toolcall:<id>`,
+/// `toolresult:<id>:<text>`.
+pub fn summarize(messages: &[Message]) -> Vec<String> {
+    messages
+        .iter()
+        .map(|message| match message {
+            Message::User(user) => format!("user:{}", user.content.text()),
+            Message::Assistant(assistant) => {
+                let mut parts: Vec<String> = assistant
+                    .content
+                    .iter()
+                    .map(|block| match block {
+                        AssistantContent::Text(text) => format!("text:{}", text.text),
+                        AssistantContent::ToolCall(call) => format!("toolcall:{}", call.id),
+                        AssistantContent::Thinking(_) => "thinking".to_string(),
+                    })
+                    .collect();
+                if let Some(error) = &assistant.error_message {
+                    parts.push(format!("error:{error}"));
+                }
+                format!("assistant:{}", parts.join("+"))
+            }
+            Message::ToolResult(result) => {
+                let text: Vec<String> = result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        BlockContent::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                format!("toolresult:{}:{}", result.tool_call_id, text.join("|"))
+            }
+        })
+        .collect()
 }

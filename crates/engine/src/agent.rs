@@ -89,16 +89,23 @@ impl ChatRuntime {
     /// A chat whose transcript persists under `data_dir`, seeded from its
     /// last on-disk snapshot so reopening after a restart restores the
     /// conversation. A corrupt file starts empty rather than failing the
-    /// open; the next publish overwrites it.
+    /// open; the next publish overwrites it. The History (ADR-0010)
+    /// replays the same way: the model-facing record is the replayed
+    /// JSONL, so a reopened chat's next Turn carries what the Transcript
+    /// shows.
     fn load(data_dir: &Path, chat_id: &str) -> Self {
         let transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
+        let history = crate::history::load(data_dir, chat_id).unwrap_or_else(|error| {
+            tracing::warn!(target: "holt::history", %error, "history replay failed; starting empty");
+            Vec::new()
+        });
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
         let (transcript_tx, _) = watch::channel(Arc::new(transcript.clone()));
         Self {
             transcript: RwLock::new(transcript),
-            history: RwLock::new(Vec::new()),
+            history: RwLock::new(history),
             transcript_tx,
             cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
@@ -115,6 +122,21 @@ impl ChatRuntime {
         // failing the run that triggered it.
         if !self.chat_id.is_empty() {
             let _ = persist_transcript(&self.data_dir, &self.chat_id, &transcript);
+        }
+    }
+
+    /// Append one completed message to the persisted History (ADR-0010):
+    /// per-message as the Turn runs, never a whole-file rewrite at Turn
+    /// end, so a crash mid-Turn loses nothing that had completed.
+    /// Best-effort like the transcript snapshot — an unreadable tail is
+    /// absorbed on load.
+    pub(crate) fn append_history(&self, message: AgentMessage) {
+        if self.chat_id.is_empty() {
+            return;
+        }
+        if let Err(error) = crate::history::append_message(&self.data_dir, &self.chat_id, &message)
+        {
+            tracing::warn!(target: "holt::history", %error, "history append failed");
         }
     }
 }
@@ -163,7 +185,7 @@ impl AgentRuntime {
             .clone()
     }
 
-    /// Drop a chat's runtime slot and its persisted transcript. An in-flight
+    /// Drop a chat's runtime slot and its persisted records. An in-flight
     /// run keeps its `Arc` and runs to completion, but nothing ever reads the
     /// transcript again: the chat row is gone from the watches.
     pub(crate) fn remove_chat(&self, chat_id: &str) {
@@ -172,6 +194,7 @@ impl AgentRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
         delete_transcript(&self.data_dir, chat_id);
+        crate::history::delete_history(&self.data_dir, chat_id);
     }
 
     pub(crate) fn publish_chats(&self) {
@@ -642,6 +665,18 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                         &device_id,
                         true,
                     );
+                    // The completed assistant message joins the persisted
+                    // History as it ends (ADR-0010).
+                    chat.append_history((*message).clone());
+                }
+                AgentEvent::MessageEnd { message }
+                    if matches!(&*message, AgentMessage::ToolResult(_)) =>
+                {
+                    // Tool results land in the History as they complete —
+                    // the loop emits one MessageEnd per tool result right
+                    // after the tool finishes, so a crash mid-Turn keeps
+                    // every completed call.
+                    chat.append_history((*message).clone());
                 }
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
@@ -662,6 +697,10 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let prompt_message = user_agent_message(prompt, timestamp);
+    // The user prompt joins the History when the Turn starts (ADR-0010) —
+    // before any request, so even a Turn that dies immediately keeps what
+    // the user asked.
+    chat.append_history(prompt_message.clone());
     let mut stream_options = SimpleStreamOptions {
         reasoning: provider_reasoning(reasoning),
         ..Default::default()
