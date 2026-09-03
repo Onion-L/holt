@@ -14,6 +14,10 @@
 //!   messages rebuild (the anti-"streaming stutter" trick);
 //! - row-set changes diff by (id, version) into one minimal `splice`.
 //!
+//! The list anchors at the TOP (ADR-0008): rows lay out document-style and a
+//! short transcript leaves empty space below rather than rising from the
+//! pane's bottom. Tail-following is still ours, not the list's.
+//!
 //! Stick-to-bottom is a velocity spring (mugen §1e, the same shape as
 //! stackblitz's use-stick-to-bottom): while pinned, a per-frame stepper glides
 //! the viewport toward the list end with a feed-forward term tracking the
@@ -351,22 +355,18 @@ impl Transcript {
         // FollowMode stays Normal: the tail pin is ours (a per-frame spring),
         // not the list's per-layout hard snap.
         //
-        // Override instances align TOP: a subagent transcript reads like a
-        // fresh notes page — entries anchored at the top, streaming growing
-        // into the empty space below, never rising from the pane's bottom.
-        // Top alignment gets that structurally (a short list rests at the
-        // top with no reservation pad), and the PIN machinery still runs on
-        // top of it for end-follow: the spring is purely distance-based, and
-        // the glue trap it was built around is Bottom-only — layout
-        // materializes a Top list's past-end offset to a CONCRETE position
-        // every frame (gpui list.rs: only `Bottom` re-glues to the `None`
-        // sentinel), so a parked spring can't re-glue and hard-track growth.
-        let alignment = if doc_override.is_some() {
-            ListAlignment::Top
-        } else {
-            ListAlignment::Bottom
-        };
-        let list = ListState::new(0, alignment, px(OVERDRAW_PX));
+        // Every transcript aligns TOP (ADR-0008): entries lay out
+        // document-style from the pane's top, streaming grows into the empty
+        // space below, and a short list rests at the top instead of rising
+        // from the bottom. The PIN machinery still runs on top of it for
+        // end-follow: the spring is purely distance-based, and the glue trap
+        // it was built around is Bottom-only — layout materializes a Top
+        // list's past-end offset to a CONCRETE position every frame (gpui
+        // list.rs: only `Bottom` re-glues to the `None` sentinel), so a
+        // parked spring can't re-glue and hard-track growth. The glue
+        // management below (`is_glued`, the −0.75px de-glue,
+        // `materialize_scroll_anchor`) is kept but inert under Top.
+        let list = ListState::new(0, ListAlignment::Top, px(OVERDRAW_PX));
         let weak = cx.weak_entity();
         list.set_scroll_handler(move |event: &ListScrollEvent, _window, cx| {
             weak.update(cx, |this: &mut Transcript, cx| {
@@ -843,11 +843,12 @@ impl Transcript {
         self.spring_settled_at = None;
         self.spring_kick = false;
         self.scroll_anim = None;
-        // A glued offset re-snaps to the end on EVERY layout — the pad would
-        // land and the viewport hard-track its bottom in the same frame,
-        // skipping the glide entirely (rig-traced). Pin the offset to a
-        // CONCRETE visible item first; the pad then reads as scrollable
-        // distance for the glide to cover.
+        // A glued offset re-snaps to the end on EVERY layout (a gpui
+        // Bottom-alignment behavior — inert under Top, kept per ADR-0008) —
+        // the pad would land and the viewport hard-track its bottom in the
+        // same frame, skipping the glide entirely (rig-traced). Pin the
+        // offset to a CONCRETE visible item first; the pad then reads as
+        // scrollable distance for the glide to cover.
         self.materialize_scroll_anchor();
         let seen_prompt = self
             .rows
@@ -867,9 +868,11 @@ impl Transcript {
         cx.notify();
     }
 
-    /// Convert a glued scroll offset (`None`/past-the-end — layout re-snaps
-    /// it to the end each frame) into a concrete `{item, offset}` anchored at
-    /// the first visible row, which layout holds still.
+    /// Convert a glued scroll offset (`None`/past-the-end — under gpui's
+    /// Bottom alignment layout re-snaps it to the end each frame; under Top
+    /// it materializes to a concrete offset, so this is a no-op) into a
+    /// concrete `{item, offset}` anchored at the first visible row, which
+    /// layout holds still.
     fn materialize_scroll_anchor(&mut self) {
         if !self.is_glued() {
             return;
@@ -976,7 +979,10 @@ impl Transcript {
         // absurd overscroll that layout's under-fill normalizer re-glues on
         // the very next frame — an invisible wedge loop (rig-traced).
         // Stepping back a FULL viewport from the sentinel is exactly "end
-        // at the screen bottom": the same visual position, concrete.
+        // at the screen bottom": the same visual position, concrete. All of
+        // this is gpui Bottom-alignment behavior: under Top the anchor is
+        // concrete by the time this post-layout step runs, so the branch is
+        // inert (kept per ADR-0008).
         if self.is_glued() {
             self.list.scroll_by(px(-viewport_height));
         }
@@ -992,13 +998,16 @@ impl Transcript {
         // clamped scroll kept them unmeasured forever). Sized at FULL
         // `usable` — a deliberate overshoot by the turn's own height, safe
         // under the absolute hold (scroll_to pins the prompt regardless) and
-        // REQUIRED for short chats: gpui's bottom-aligned list reports no
-        // item bounds while its content is shorter than the viewport
-        // (rig-traced: a new session's first send sat ~150px below the
-        // inset forever — the old undershot pad left the content short, the
-        // bounds-free scroll_to clamped, and the bounds-gated refinement
-        // could never rescue it). Overshooting guarantees the scroll room;
-        // the surplus sits below the fold until the refinement trues it.
+        // REQUIRED for short chats under the old Bottom alignment: gpui's
+        // bottom-aligned list reports no item bounds while its content is
+        // shorter than the viewport (rig-traced: a new session's first send
+        // sat ~150px below the inset forever — the old undershot pad left
+        // the content short, the bounds-free scroll_to clamped, and the
+        // bounds-gated refinement could never rescue it). Top-aligned lists
+        // measure short content from the top, so bounds exist there; the
+        // overshoot stays as kept machinery. Overshooting guarantees the
+        // scroll room; the surplus sits below the fold until the refinement
+        // trues it.
         if current <= 0.0 {
             if let Some(anchor) = self.own_turn.as_mut() {
                 anchor.runway = usable.max(0.0);
@@ -1275,8 +1284,12 @@ impl Transcript {
     }
 
     /// Whether the scroll offset is in a bottom-glued representation (`None`
-    /// or anchored past the end) — states where the next layout hard-snaps to
-    /// the new end instead of holding a pixel position.
+    /// or anchored past the end) — states where, under gpui's Bottom
+    /// alignment, the next layout hard-snaps to the new end instead of
+    /// holding a pixel position. Under the now-universal Top alignment layout
+    /// materializes such an anchor to a concrete offset, so this is only
+    /// transiently true between a `scroll_to_end` and the next layout (kept
+    /// machinery, ADR-0008).
     pub(crate) fn is_glued(&self) -> bool {
         self.list.logical_scroll_top().item_ix >= self.rows.len()
     }
@@ -1567,10 +1580,15 @@ impl Transcript {
                     self.list.scroll_to_end();
                 } else if self.is_glued() {
                     // A glued offset (`None` / anchored past the end) makes
-                    // the upcoming layout hard-snap to the new end — the
-                    // per-commit stutter. Materialize a pixel anchor a hair
-                    // above the bottom so layout holds position and the
-                    // spring glides the growth.
+                    // the upcoming layout hard-snap to the new end under
+                    // gpui's Bottom alignment — the per-commit stutter.
+                    // Materialize a pixel anchor a hair above the bottom so
+                    // layout holds position and the spring glides the
+                    // growth. Under Top the anchor is already concrete
+                    // post-layout, so this only fires in the same effect
+                    // cycle as a just-planted `scroll_to_end`, where it
+                    // converts the past-end anchor to the equivalent
+                    // concrete offset (kept machinery, ADR-0008).
                     self.list.scroll_by(px(-0.75));
                 }
                 self.spring_kick = true;

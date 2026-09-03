@@ -102,7 +102,9 @@ pub(crate) const OWN_SEND_TOP_INSET_PX: f32 = Theme::TITLEBAR_HEIGHT + 10.0;
 /// layout out of gpui's shorter-than-viewport regime, where a bottom-aligned
 /// list reports no item bounds (sizing goes blind) and position becomes a
 /// function of content height instead of the hold. Two pixels of travel is
-/// below perception.
+/// below perception. That regime was gpui Bottom-alignment behavior; under
+/// the now-universal Top alignment short content still measures, so the
+/// slack is retained but no longer load-bearing (ADR-0008).
 pub(super) const OWN_SEND_SCROLL_SLACK_PX: f32 = 2.0;
 /// Per-60fps-frame fraction of the remaining entry glide retained (~90%
 /// covered in ~230ms, ease-out).
@@ -264,8 +266,10 @@ pub fn format_elapsed(secs: i64) -> String {
 /// shrinking 1:1 as the reply streams so the held layout never moves. The
 /// entry is an eased glide onto the prompt; landed, the hold re-asserts the
 /// prompt's position absolutely after every layout (the bottom spring can't
-/// hold here: parking at exact distance 0 re-glues gpui's list, which then
-/// hard-tracks the pad's stale bottom on every commit — rig-traced). Wheel
+/// hold here: parking at exact distance 0 re-glues a bottom-aligned gpui
+/// list, which then hard-tracks the pad's stale bottom on every commit —
+/// rig-traced; re-glue is Bottom-only, so under the now-universal Top
+/// alignment the absolute hold is belt-and-braces, ADR-0008). Wheel
 /// input releases the hold, leaving the reservation as plain scrollable
 /// space. The anchor retires once the reply overflows the reservation (pad
 /// ~0, height-neutral). Chat switches snapshot its runway with the viewport
@@ -805,7 +809,7 @@ mod tests {
         assert!(!restored_turn.positioned);
         assert!(restored_turn.seen_prompt);
 
-        let list_state = ListState::new(rows.len(), ListAlignment::Bottom, px(0.0));
+        let list_state = ListState::new(rows.len(), ListAlignment::Top, px(0.0));
         list_state.reset(0);
         list_state.splice(0..0, rows.len());
         list_state.scroll_to(restored.offset);
