@@ -174,11 +174,13 @@ async fn the_retained_tail_keeps_tool_results_with_their_calls() {
             common::tool_call("call-1", "bash", wall.clone()),
             common::tool_call("call-2", "bash", wall),
         ]),
-        ScriptedReply::text("done with the walls of text"),
+        // Only the closing reply reports the overflowing usage: the walls
+        // alone stay under the threshold, so the compaction waits for the
+        // next Turn instead of firing mid-Turn (that is ticket 06's case).
+        ScriptedReply::text_with_usage("done with the walls of text", overflowing_usage()),
         ScriptedReply::text("summary of the early work"),
         ScriptedReply::text("reply after compaction"),
-    ])
-    .with_usage(overflowing_usage());
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -356,7 +358,10 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
     drop(repo);
 
     let provider = ScriptedProvider::new(vec![
-        ScriptedReply::text(big_text(30_000)),
+        // Only the first Turn's reply reports the overflowing usage: the
+        // mid-Turn hook stays quiet for the compacting Turn's own write
+        // round (mid-Turn compaction is ticket 06's case).
+        ScriptedReply::text_with_usage(big_text(30_000), overflowing_usage()),
         ScriptedReply::text("checkpoint summary text"),
         ScriptedReply::tool_call(
             "call-1",
@@ -364,8 +369,7 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
             serde_json::json!({ "path": "tracked.txt", "content": "edited during the compacting turn\n" }),
         ),
         ScriptedReply::text("edited"),
-    ])
-    .with_usage(overflowing_usage());
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -395,4 +399,173 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
         diff.contains("tracked.txt"),
         "turn diff lost the edit: {diff}"
     );
+}
+
+#[tokio::test]
+async fn a_summary_request_happens_between_tool_rounds() {
+    let fixture = common::Fixture::new();
+    // The tool-call reply itself reports the overflowing usage, so the
+    // estimate crosses MID-Turn, after the first round.
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo round-one done" }),
+        ),
+        ScriptedReply::text("mid-turn checkpoint text"),
+        ScriptedReply::text("final reply text"),
+    ])
+    .with_usage(overflowing_usage());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do two rounds").await;
+    // Every session frame until idle shows the chat WORKING — in-Turn
+    // compaction is quiet housekeeping, never its own status.
+    let mut statuses = Vec::new();
+    loop {
+        let frame = common::next_frame(&mut sessions).await;
+        if let Some(rows) = frame.as_array() {
+            for row in rows {
+                if row["chatId"] == "chat-1" {
+                    statuses.push(row["status"].as_str().unwrap_or_default().to_string());
+                }
+            }
+        }
+        if statuses.last().is_some_and(|status| status == "idle") {
+            break;
+        }
+    }
+    assert!(
+        statuses
+            .iter()
+            .all(|status| status == "working" || status == "idle"),
+        "in-Turn compaction changed the session status: {statuses:?}"
+    );
+    let _ = &mut transcript;
+
+    // Request order: round one, the summary round BETWEEN the rounds, then
+    // round two — whose context carries the summary message, the retained
+    // tail, and the tool result that closed round one.
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].tools, 0);
+    assert!(
+        requests[1]
+            .system_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("context summarization assistant"))
+    );
+    let round_two = &requests[2];
+    let templated = user_text(&round_two.messages[0]);
+    assert!(
+        templated.contains("mid-turn checkpoint text"),
+        "{templated}"
+    );
+    let round_text = serde_json::to_string(&round_two.messages).unwrap();
+    assert!(round_text.contains("round-one done"), "{round_text}");
+
+    // The divider sits INSIDE the run's entry, after the round-one tool
+    // chip and before the final text.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let entries = snapshot["reset"].as_array().unwrap();
+    let run_entry = entries
+        .iter()
+        .find(|entry| {
+            entry["parts"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(|part| part["kind"] == "compactionDivider"))
+        })
+        .expect("no divider inside the run entry");
+    let parts = run_entry["parts"].as_array().unwrap();
+    let ix = |kind: &str| {
+        parts
+            .iter()
+            .position(|part| part["kind"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} part in the run entry: {run_entry}"))
+    };
+    assert!(ix("tool") < ix("compactionDivider"));
+    assert!(ix("compactionDivider") < ix("text"));
+}
+
+#[tokio::test]
+async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo round-one done" }),
+        ),
+        ScriptedReply::text("mid-turn checkpoint text"),
+        ScriptedReply::Silent,
+        ScriptedReply::text("restart summary"),
+        ScriptedReply::text("post-crash reply"),
+    ])
+    .with_usage(overflowing_usage());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let _ = common::subscribe(&engine, "chat-1").await;
+
+    // Round one, the mid-Turn compaction, then the round-two request that
+    // never completes — kill the engine there.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "two rounds please").await;
+    common::wait_for_requests(&provider, 3).await;
+    drop(engine);
+
+    // A fresh engine replays the compacted record: the restart's own
+    // compaction CHAINS the mid-Turn summary — it survived the kill.
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let requests = provider.requests();
+    let chained_prompt = summary_requests(&requests)
+        .into_iter()
+        .map(|request| user_text(&request.messages[0]))
+        .find(|prompt| prompt.contains("<previous-summary>"))
+        .expect("no chained summary after the restart");
+    assert!(
+        chained_prompt.contains("mid-turn checkpoint text"),
+        "{chained_prompt}"
+    );
+}
+
+#[tokio::test]
+async fn a_mid_turn_summary_failure_continues_the_turn_with_a_notice() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo round-one done" }),
+        ),
+        ScriptedReply::Failed("mid-turn summarizer broke".into()),
+        ScriptedReply::text("kept going anyway"),
+    ])
+    .with_usage(overflowing_usage());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do two rounds").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_transcript_text(&mut transcript, "Automatic compaction failed").await;
+
+    // The Turn continued uncompacted: round two's context is the FULL
+    // live context, with no summary message in front.
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let round_two = &requests[2];
+    let summary = common::summarize(&round_two.messages);
+    assert_eq!(summary[0], "user:do two rounds");
+    assert!(
+        !serde_json::to_string(&round_two.messages)
+            .unwrap()
+            .contains("history before this point was compacted")
+    );
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(!snapshot.to_string().contains("compactionDivider"));
 }

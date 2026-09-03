@@ -441,6 +441,88 @@ fn push_system_part(chat: &ChatRuntime, device_id: &str, entry_id: String, part:
     chat.publish();
 }
 
+/// The Transcript's row for one recorded compaction.
+fn divider_part(record: &CompactionRecord) -> MessagePart {
+    let CompactionRecord {
+        summary,
+        tokens_before,
+        tokens_after,
+        trigger,
+        timestamp,
+        ..
+    } = record;
+    MessagePart::CompactionDivider {
+        id: "d0".into(),
+        summary: summary.clone(),
+        tokens_before: *tokens_before,
+        tokens_after: *tokens_after,
+        trigger: *trigger,
+        timestamp: *timestamp,
+    }
+}
+
+/// Record a Turn-boundary compaction: the `compaction` entry into the
+/// History file and the divider as its own Transcript entry at the tail.
+fn record_turn_start_compaction(chat: &ChatRuntime, device_id: &str, record: &CompactionRecord) {
+    if let Err(error) = crate::history::append_compaction(&chat.data_dir, &chat.chat_id, record) {
+        tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
+    }
+    push_system_part(
+        chat,
+        device_id,
+        format!("compaction-{}", uuid::Uuid::new_v4()),
+        divider_part(record),
+    );
+}
+
+/// Record a mid-Turn compaction (ADR-0011): the entry into the History
+/// file — its position in the append-only record IS the ordering, it
+/// summarizes exactly the messages before it — and the divider INTO the
+/// run's live entry base, so it renders between the tool rows that
+/// completed before it and whatever the Turn does next. The session
+/// status does not change.
+fn record_mid_turn_compaction(
+    chat: &ChatRuntime,
+    record: &CompactionRecord,
+    run_base_parts: &Arc<Mutex<Vec<MessagePart>>>,
+) {
+    if let Err(error) = crate::history::append_compaction(&chat.data_dir, &chat.chat_id, record) {
+        tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
+    }
+    let MessagePart::CompactionDivider {
+        summary,
+        tokens_before,
+        tokens_after,
+        trigger,
+        timestamp,
+        ..
+    } = divider_part(record)
+    else {
+        unreachable!("divider_part builds a divider");
+    };
+    let mut base = run_base_parts.lock().unwrap_or_else(|e| e.into_inner());
+    let id = format!("d{timestamp}-{}", base.len());
+    base.push(MessagePart::CompactionDivider {
+        id,
+        summary,
+        tokens_before,
+        tokens_after,
+        trigger,
+        timestamp,
+    });
+}
+
+/// The base a run's loop continues from, shared with the mid-Turn
+/// compaction hook and the end-of-run consolidation. `consumed` counts the
+/// run's own messages a mid-Turn compaction folded into `history`, so the
+/// consolidation never re-appends them; `compacted` enforces the
+/// once-per-Turn rule.
+struct RunBase {
+    history: Vec<AgentMessage>,
+    consumed: usize,
+    compacted: bool,
+}
+
 /// A run that ends early (abort, loop error) leaves tool parts without their
 /// results; settle them so no chip stays "in call" forever.
 fn settle_unresolved_tools(chat: &ChatRuntime) {
@@ -806,37 +888,9 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     .await
     {
         Ok(Some(outcome)) => {
-            let CompactionRecord {
-                summary,
-                tokens_before,
-                tokens_after,
-                trigger,
-                timestamp: divider_at,
-                ..
-            } = &outcome.record;
-            let divider = MessagePart::CompactionDivider {
-                id: "d0".into(),
-                summary: summary.clone(),
-                tokens_before: *tokens_before,
-                tokens_after: *tokens_after,
-                trigger: *trigger,
-                timestamp: *divider_at,
-            };
-            if let Err(error) =
-                crate::history::append_compaction(&chat.data_dir, &chat.chat_id, &outcome.record)
-            {
-                tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
-            }
+            record_turn_start_compaction(&chat, &runtime.device_id, &outcome.record);
             *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages.clone();
             history = outcome.messages;
-            // The Transcript never shrinks: the divider marks where the
-            // model's verbatim memory now begins.
-            push_system_part(
-                &chat,
-                &runtime.device_id,
-                format!("compaction-{}", uuid::Uuid::new_v4()),
-                divider,
-            );
         }
         Ok(None) => {}
         Err(reason) => {
@@ -858,6 +912,16 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             );
         }
     }
+    // The base the loop continues from, shared with the mid-Turn
+    // compaction hook: `history` is what the run started with, and
+    // `consumed` counts the run's own messages a mid-Turn compaction
+    // already folded into it (the end-of-run consolidation must not
+    // re-append them).
+    let run_base = Arc::new(Mutex::new(RunBase {
+        history: history.clone(),
+        consumed: 0,
+        compacted: false,
+    }));
     let prompt_message = user_agent_message(prompt, timestamp);
     // The user prompt joins the History when the Turn starts (ADR-0010) —
     // before any request, so even a Turn that dies immediately keeps what
@@ -867,7 +931,86 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         reasoning: provider_reasoning(reasoning),
         ..Default::default()
     };
-    stream_options.base.base.api_key = Some(api_key);
+    stream_options.base.base.api_key = Some(api_key.clone());
+    // Between tool rounds (ADR-0011): the same estimate-and-compact check
+    // as the Turn-start one, through the loop's `prepare_next_turn` hook.
+    // At most once per Turn — the retained tail still carries the last
+    // real usage as the estimator's anchor, so a pure estimate rule would
+    // re-fire every round; a Turn that overflows anyway is the overflow
+    // fallback's business. The session status never changes.
+    let hook_chat = chat.clone();
+    let hook_device_id = runtime.device_id.clone();
+    let hook_model = model.clone();
+    let hook_stream_fn = stream_fn.clone();
+    let hook_base = Arc::clone(&run_base);
+    let hook_base_parts = Arc::clone(&base_parts);
+    let prepare_next_turn: pi_core::agent::types::PrepareNextTurnFn = Arc::new(
+        move |last_turn: pi_core::agent::types::PrepareNextTurnContext| {
+            let chat = hook_chat.clone();
+            let model = hook_model.clone();
+            let stream_fn = hook_stream_fn.clone();
+            let api_key = api_key.clone();
+            let base = Arc::clone(&hook_base);
+            let base_parts = Arc::clone(&hook_base_parts);
+            let device_id = hook_device_id.clone();
+            Box::pin(async move {
+                let pre_run_len = {
+                    let initial = base.lock().unwrap_or_else(|e| e.into_inner());
+                    if initial.compacted {
+                        return None;
+                    }
+                    initial.history.len()
+                };
+                if !crate::compaction::needed(&last_turn.context.messages, &model) {
+                    return None;
+                }
+                let outcome = match crate::compaction::compact(
+                    &last_turn.context.messages,
+                    &model,
+                    &stream_fn,
+                    &api_key,
+                    holt_doc::parts::CompactionTrigger::Automatic,
+                )
+                .await
+                {
+                    Ok(Some(outcome)) => outcome,
+                    Ok(None) => return None,
+                    Err(reason) => {
+                        // Same rule as the Turn-start failure: the Turn
+                        // continues uncompacted, visibly.
+                        tracing::warn!(target: "holt::compaction", %reason, "mid-turn compaction failed");
+                        push_system_part(
+                            &chat,
+                            &device_id,
+                            format!("compaction-failed-{}", uuid::Uuid::new_v4()),
+                            MessagePart::Notice {
+                                id: "n0".into(),
+                                message: format!(
+                                    "Automatic compaction failed ({reason}); the Turn \
+                                     continues with the full conversation."
+                                ),
+                            },
+                        );
+                        return None;
+                    }
+                };
+                record_mid_turn_compaction(&chat, &outcome.record, &base_parts);
+                let consumed = last_turn.context.messages.len().saturating_sub(pre_run_len);
+                let mut context = last_turn.context.clone();
+                context.messages = outcome.messages.clone();
+                let mut guard = base.lock().unwrap_or_else(|e| e.into_inner());
+                guard.history = outcome.messages;
+                guard.consumed = consumed;
+                guard.compacted = true;
+                drop(guard);
+                Some(pi_core::agent::types::AgentLoopTurnUpdate {
+                    context: Some(context),
+                    model: None,
+                    thinking_level: None,
+                })
+            })
+        },
+    );
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -881,7 +1024,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         transform_context: None,
         get_api_key: None,
         should_stop_after_turn: None,
-        prepare_next_turn: None,
+        prepare_next_turn: Some(prepare_next_turn),
         get_steering_messages: None,
         get_follow_up_messages: None,
         tool_execution: None,
@@ -892,7 +1035,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         vec![prompt_message],
         AgentContext {
             system_prompt,
-            messages: history.clone(),
+            messages: history,
             tools: Some(crate::tools::execution_tools(&cwd)),
         },
         config,
@@ -913,13 +1056,16 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                 })
                 .unwrap_or(false);
             let mut stored = chat.history.write().unwrap_or_else(|e| e.into_inner());
-            *stored = history;
-            // The run's outcome joins the in-memory History in its repaired
-            // form, matching what the per-message appends put on disk:
-            // terminal messages rewritten (or dropped when contentless
-            // errors), dangling tool calls given their synthetic
-            // interrupted results.
-            let repaired = crate::history::repair_history(&messages);
+            // The base the loop ended on — the run's start history, or its
+            // mid-Turn compacted replacement — plus the run's messages a
+            // mid-Turn compaction had NOT already folded into it, in their
+            // repaired form. This is exactly what the file replays: the
+            // compaction entry summarizes everything before it and keeps
+            // the tail, and only the post-compaction messages follow.
+            let base = run_base.lock().unwrap_or_else(|e| e.into_inner());
+            *stored = base.history.clone();
+            let remaining = &messages[base.consumed.min(messages.len())..];
+            let repaired = crate::history::repair_history(remaining);
             for message in &repaired {
                 stored.push(message.clone());
             }

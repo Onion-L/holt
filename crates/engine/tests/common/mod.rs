@@ -38,6 +38,9 @@ const WAIT: Duration = Duration::from_secs(10);
 pub enum ScriptedReply {
     /// A finished text reply.
     Text(String),
+    /// A finished text reply reporting different usage than the provider
+    /// pin (compaction tests anchor the estimator on exactly one reply).
+    TextWithUsage { text: String, usage: Usage },
     /// Tool calls: the loop executes them against the chat's working
     /// directory and asks the model again, so the script needs a following
     /// entry for the second round.
@@ -61,6 +64,13 @@ pub enum ScriptedReply {
 impl ScriptedReply {
     pub fn text(text: impl Into<String>) -> Self {
         ScriptedReply::Text(text.into())
+    }
+
+    pub fn text_with_usage(text: impl Into<String>, usage: Usage) -> Self {
+        ScriptedReply::TextWithUsage {
+            text: text.into(),
+            usage,
+        }
     }
 
     /// A single tool call with the given id, name, and JSON arguments.
@@ -198,6 +208,18 @@ fn push_reply(
     };
     match reply {
         ScriptedReply::Text(text) => {
+            message.content = vec![AssistantContent::Text(TextContent {
+                text,
+                ..Default::default()
+            })];
+            message.stop_reason = StopReason::Stop;
+            stream.push(AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                message,
+            });
+        }
+        ScriptedReply::TextWithUsage { text, usage } => {
+            message.usage = usage;
             message.content = vec![AssistantContent::Text(TextContent {
                 text,
                 ..Default::default()
