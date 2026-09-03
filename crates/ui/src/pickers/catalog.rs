@@ -195,7 +195,14 @@ impl Pickers {
         if !space.git_detected {
             return;
         }
-        let fresh = self.refs_space.as_deref() == Some(space.id.as_str());
+        // The branch rows list against the TARGET working directory — the
+        // chat's own folder in a session (a legacy worktree chat lists and
+        // tags `current` inside its own worktree), the space's folder in
+        // the draft (ADR-0007).
+        let Some(repo_path) = self.switch_target_path(cx) else {
+            return;
+        };
+        let fresh = self.refs_target.as_deref() == Some(repo_path.as_str());
         if fresh && matches!(self.refs, Loadable::Loading) {
             return; // a load is already in flight
         }
@@ -210,19 +217,19 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
-        // Stale-while-revalidate: a forced refresh of an already-loaded space
-        // keeps the current rows on screen while the reload runs — a send that
-        // just minted a worktree (or a terminal-side branch) appears on the
-        // popover's next open without the list ever flashing to a skeleton.
+        // Stale-while-revalidate: a forced refresh of an already-loaded
+        // target keeps the current rows on screen while the reload runs —
+        // a switch (this surface or another) appears on the popover's next
+        // open without the list ever flashing to a skeleton.
         if !(force && fresh && matches!(self.refs, Loadable::Ready(_))) {
             self.refs = Loadable::Loading;
         }
-        self.refs_space = Some(space.id.clone());
+        self.refs_target = Some(repo_path.clone());
         self.refs_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             params.insert(
                 "repoPath".into(),
-                serde_json::Value::String(space.path.clone()),
+                serde_json::Value::String(repo_path.clone()),
             );
             let result = engine
                 .client()

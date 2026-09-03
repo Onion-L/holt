@@ -280,6 +280,101 @@ Commit or stash these files, then switch again:"
     }
 }
 
+/// The worktree-hosted pick dialog: the ref is checked out in another
+/// worktree, so it can never be switched to — that worktree joins holt as
+/// its own Space (ADR-0007). Guidance, not a dead end.
+pub(crate) fn worktree_hosted_dialog(branch: &str, path: &str) -> SwitchDialogContent {
+    SwitchDialogContent {
+        title: "Can't switch to that branch".into(),
+        message: format!(
+            "{branch} is checked out in another worktree ({path}). To work on it there, \
+add that folder as its own project.",
+        ),
+        files: Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure: pick routing + session footer labels (ADR-0007)
+// ---------------------------------------------------------------------------
+
+/// Which surface a ref-pick happened on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickSurface {
+    /// An existing chat: picks safe-switch the chat's working directory.
+    Session,
+    /// The new-chat draft: picks configure the chat-to-be.
+    Draft,
+}
+
+/// What picking a ref row does (ADR-0007): the branch is live
+/// working-directory state, so a session pick switches immediately — a
+/// Turn is never interrupted, the next Turn runs on whatever the folder
+/// holds when it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PickRouting {
+    /// The ref is already the working directory's branch: close, no git.
+    AlreadyCurrent,
+    /// Record the pick as draft state (a new-worktree base, or — until the
+    /// reuse arm retires — a worktree-hosted ref in the draft).
+    RecordPick,
+    /// Safe-switch the target working directory right away.
+    Switch,
+    /// The ref is checked out in another worktree: raise the import-as-a-
+    /// Space dialog instead.
+    WorktreeHosted,
+}
+
+/// Route one ref-pick. `new_worktree_mode` is the draft's checkout kind
+/// (`NewWorktree` makes every pick a base pick); sessions ignore it —
+/// their checkout kind is fixed and display-only.
+pub(crate) fn pick_routing(
+    surface: PickSurface,
+    new_worktree_mode: bool,
+    row: &holt_proto::RepoRef,
+) -> PickRouting {
+    match surface {
+        PickSurface::Session => {
+            // `current` first: a legacy worktree chat's own branch also
+            // carries a worktree path, and it must read as current, not as
+            // worktree-hosted.
+            if row.current {
+                PickRouting::AlreadyCurrent
+            } else if row.worktree_path.is_some() {
+                PickRouting::WorktreeHosted
+            } else {
+                PickRouting::Switch
+            }
+        }
+        PickSurface::Draft => {
+            if row.worktree_path.is_some() || new_worktree_mode || row.current {
+                PickRouting::RecordPick
+            } else {
+                PickRouting::Switch
+            }
+        }
+    }
+}
+
+/// The session footer's checkout-kind label (display-only in sessions —
+/// the "New worktree" option is a draft-only affordance): a legacy
+/// worktree chat (cwd away from the space folder) reads "Worktree"; every
+/// other chat runs in its space's folder.
+pub(crate) fn session_checkout_label(space_path: &str, chat_cwd: Option<&str>) -> &'static str {
+    if chat_cwd.is_some_and(|cwd| cwd != space_path) {
+        "Worktree"
+    } else {
+        "Local checkout"
+    }
+}
+
+/// The session branch chip's label: the working directory's live current
+/// branch when the refs cache knows it, else the chat's stamped branch
+/// (its latest Turn's, per ADR-0007), else the placeholder.
+pub(crate) fn session_branch_label(live: Option<&str>, stamped: Option<&str>) -> String {
+    live.or(stamped).unwrap_or("No ref").to_string()
+}
+
 /// Byte length of `name`'s prefix matching `query`, compared char-for-char
 /// case-insensitively; `None` when `query` isn't a prefix of `name`. The
 /// length indexes into `name` (not `query`) so the completion suffix keeps
@@ -765,6 +860,122 @@ mod tests {
         );
         assert_eq!(content.files, Vec::<String>::new());
         assert!(content.message.contains("uncommitted changes"));
+    }
+
+    // ---- pick routing + session footer labels ----
+
+    fn ref_row(name: &str, current: bool, worktree_path: Option<&str>) -> holt_proto::RepoRef {
+        holt_proto::RepoRef {
+            name: name.into(),
+            current,
+            worktree_path: worktree_path.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn session_picks_switch_except_current_and_worktree_hosted() {
+        // A plain, non-current ref: immediate safe-switch of the chat's
+        // working directory.
+        assert_eq!(
+            pick_routing(
+                PickSurface::Session,
+                false,
+                &ref_row("feature", false, None)
+            ),
+            PickRouting::Switch
+        );
+        // The already-current ref just closes — no git at all.
+        assert_eq!(
+            pick_routing(PickSurface::Session, false, &ref_row("main", true, None)),
+            PickRouting::AlreadyCurrent
+        );
+        // A ref hosted in another worktree: the import-as-a-Space dialog.
+        assert_eq!(
+            pick_routing(
+                PickSurface::Session,
+                false,
+                &ref_row("feature", false, Some("/wt/feature"))
+            ),
+            PickRouting::WorktreeHosted
+        );
+        // A legacy worktree chat's OWN branch carries both current and a
+        // worktree path — current wins (switching to it is a no-op close,
+        // never the dialog).
+        assert_eq!(
+            pick_routing(
+                PickSurface::Session,
+                false,
+                &ref_row("feature", true, Some("/wt/self"))
+            ),
+            PickRouting::AlreadyCurrent
+        );
+        // The draft-only new-worktree mode does not leak into sessions.
+        assert_eq!(
+            pick_routing(PickSurface::Session, true, &ref_row("feature", false, None)),
+            PickRouting::Switch
+        );
+    }
+
+    #[test]
+    fn draft_picks_record_except_plain_refs_which_switch() {
+        // Local mode + a plain non-current ref: the draft switches the
+        // space's folder, exactly like a session.
+        assert_eq!(
+            pick_routing(PickSurface::Draft, false, &ref_row("feature", false, None)),
+            PickRouting::Switch
+        );
+        // New-worktree mode: every pick is a base pick.
+        assert_eq!(
+            pick_routing(PickSurface::Draft, true, &ref_row("feature", false, None)),
+            PickRouting::RecordPick
+        );
+        // The current ref records (or closes — same no-git outcome).
+        assert_eq!(
+            pick_routing(PickSurface::Draft, false, &ref_row("main", true, None)),
+            PickRouting::RecordPick
+        );
+    }
+
+    #[test]
+    fn session_footer_labels_split_local_worktree_and_live_branch() {
+        // A chat in its space's folder.
+        assert_eq!(
+            session_checkout_label("/space/repo", Some("/space/repo")),
+            "Local checkout"
+        );
+        // A chat whose cwd never arrived yet: the space folder is the
+        // default the engine stamps.
+        assert_eq!(
+            session_checkout_label("/space/repo", None),
+            "Local checkout"
+        );
+        // A legacy worktree chat (cwd ≠ space folder).
+        assert_eq!(
+            session_checkout_label("/space/repo", Some("/wt/feature")),
+            "Worktree"
+        );
+        // The branch chip prefers the live current branch, falls to the
+        // chat's stamped branch, then the placeholder.
+        assert_eq!(
+            session_branch_label(Some("feature"), Some("main")),
+            "feature"
+        );
+        assert_eq!(session_branch_label(None, Some("main")), "main");
+        assert_eq!(session_branch_label(None, None), "No ref");
+    }
+
+    #[test]
+    fn worktree_hosted_dialog_points_at_importing_the_space() {
+        let content = worktree_hosted_dialog("feature", "/wt/feature");
+        assert_eq!(content.title, "Can't switch to that branch");
+        assert!(content.message.contains("feature"), "{}", content.message);
+        assert!(content.message.contains("/wt/feature"));
+        assert!(
+            content.message.to_lowercase().contains("project"),
+            "the guidance names the import path: {}",
+            content.message
+        );
+        assert!(content.files.is_empty());
     }
 
     // ---- checkout draft semantics ----

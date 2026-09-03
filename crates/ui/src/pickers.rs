@@ -1,15 +1,19 @@
 //! Composer pickers (feature-inventory §1.7): RepoPicker (recents + search +
-//! in-app folder browser + clone/create), BranchPicker (search + isolated-
-//! worktree toggle), ProviderModelPicker (provider rail + model list, provider
-//! locked once the chat exists), TraitsPicker (reasoning ladder + advertised
-//! model options; trigger shows the non-default summary "High · 1M · Fast").
+//! in-app folder browser + clone/create), BranchPicker (search + create row +
+//! immediate safe switches of the target working directory — live in
+//! sessions too, ADR-0007), ProviderModelPicker (provider rail + model list,
+//! provider locked once the chat exists), TraitsPicker (reasoning ladder +
+//! advertised model options; trigger shows the non-default summary
+//! "High · 1M · Fast").
 //!
-//! All selections accumulate into a [`DraftConfig`] the composer threads into
-//! the Run command and the `Mutate createChat` call on first send.
+//! Draft selections accumulate into a [`DraftConfig`] the composer threads
+//! into the Run command and the `Mutate createChat` call on first send;
+//! session picks switch the chat's working directory right away.
 //!
-//! Pure logic (repo ordering, folder-browser navigation, traits summary) lives
-//! in free functions with unit tests; RPC results land in [`Loadable`] slots
-//! rendered as skeletons / inline errors with Retry.
+//! Pure logic (repo ordering, folder-browser navigation, pick routing,
+//! traits summary) lives in free functions with unit tests; RPC results
+//! land in [`Loadable`] slots rendered as skeletons / inline errors with
+//! Retry.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -139,8 +143,9 @@ pub struct Pickers {
     providers: Loadable<Vec<Provider>>,
     models: HashMap<ProviderId, Loadable<Vec<Model>>>,
     refs: Loadable<Vec<RepoRef>>,
-    /// Space id the `refs` slot belongs to (invalidated on space change).
-    refs_space: Option<String>,
+    /// Working directory the `refs` slot was listed against (invalidated
+    /// when the target moves — a chat with its own folder, a space switch).
+    refs_target: Option<String>,
     /// Highlighted row in the open list (keyboard nav).
     active: usize,
     /// Models-list scroll — keyboard nav keeps the highlighted row in view.
@@ -170,7 +175,8 @@ pub struct Pickers {
     /// Own slot: the refs load runs concurrently with the eager
     /// provider/model loads — sharing `load_task` would abort one mid-flight.
     refs_task: Option<Task<()>>,
-    /// In-flight mid-session `SwitchRef` (the ref being switched to).
+    /// In-flight branch switch (the ref being switched to): one at a time,
+    /// draft or session alike (ADR-0007).
     switching: Option<String>,
     switch_task: Option<Task<()>>,
     /// The raised switch-failure dialog (ADR-0007): inform-only, dismissed
@@ -249,7 +255,7 @@ impl Pickers {
                 this.config.branch = None;
                 this.config.checkout = CheckoutKind::default();
                 this.refs = Loadable::Idle;
-                this.refs_space = None;
+                this.refs_target = None;
             }
             cx.notify();
         });
@@ -309,7 +315,7 @@ impl Pickers {
             providers: Loadable::Idle,
             models: HashMap::new(),
             refs: Loadable::Idle,
-            refs_space: None,
+            refs_target: None,
             active: 0,
             model_scroll: gpui::UniformListScrollHandle::new(),
             model_rows_cache: std::cell::RefCell::new(None),
@@ -876,12 +882,19 @@ impl Pickers {
     /// the picked (or session's) project has git. The project picker lives in
     /// the row above the pill ([`Self::render_target_selectors`]); sessions
     /// name their target in the titlebar.
+    /// The composer footer row: checkout-kind + branch chip, LEFT-aligned,
+    /// only when the picked (or session's) project has git. In a session the
+    /// branch chip is live (ADR-0007): it renders the working directory's
+    /// current branch and its picker switches the chat's own folder. The
+    /// project picker lives in the row above the pill
+    /// ([`Self::render_target_selectors`]); sessions name their target in
+    /// the titlebar.
     pub fn render_footer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
         // A selected chat whose workspace row hasn't synced yet (the moment
         // right after send mints it) still renders the DRAFT footer — the
         // values are identical, so the toolbar never blinks through a
-        // half-empty locked state.
+        // half-empty transitional state.
         let (space, session, change_request) = {
             let state = self.state.read(cx);
             let space = state.selected_space_row().cloned();
@@ -914,16 +927,44 @@ impl Pickers {
         };
 
         if let Some(chat) = &session {
-            // Sessions never move: read-only checkout-kind + ref labels,
-            // LEFT-aligned, only when the session's project has git. The
-            // target project lives in the titlebar now.
+            // A live session: the branch chip is the same interactive pick
+            // the draft renders (ADR-0007) — it shows the working
+            // directory's live current branch, and a pick safe-switches the
+            // chat's own folder immediately (mid-Turn included). The
+            // checkout-kind label stays display-only here; its "New
+            // worktree" option is a draft-only affordance.
             let space = space.as_ref().filter(|s| s.git_detected)?;
             let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
-            let (icon_path, label) = if is_worktree {
-                (crate::icons::FOLDER_WITH_FILES, "Worktree")
+            let icon_path = if is_worktree {
+                crate::icons::FOLDER_WITH_FILES
             } else {
-                (crate::icons::FOLDER, "Local checkout")
+                crate::icons::FOLDER
             };
+            // One rule for icon and label (see logic::session_checkout_label).
+            let kind_label = logic::session_checkout_label(&space.path, chat.cwd.as_deref());
+            // Refs feed the live label — eager + idempotent, keyed to the
+            // chat's own working directory.
+            self.ensure_refs(false, cx);
+            let branch_label = logic::session_branch_label(
+                self.live_current_branch().as_deref(),
+                chat.branch.as_deref(),
+            );
+            let closing = self.open.closing_since();
+            let mut overlay: Option<(PickerKind, AnyElement)> = match self.mounted_kind() {
+                Some(PickerKind::Branch) => {
+                    let content = self.render_branch_popover(cx);
+                    Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
+                }
+                _ => None,
+            };
+            let ref_chip = self.footer_chip(
+                PickerKind::Branch,
+                "picker-branch-session",
+                crate::icons::GIT_BRANCH,
+                SharedString::from(branch_label),
+                &theme,
+                cx,
+            );
             // Mirrors the draft chips: checkout hugs the left edge, ref the
             // right.
             let left = div()
@@ -933,7 +974,7 @@ impl Pickers {
                 .min_w_0()
                 .child(Self::footer_label(
                     icon_path,
-                    SharedString::from(label),
+                    SharedString::from(kind_label),
                     &theme,
                 ));
             let right = div()
@@ -950,13 +991,12 @@ impl Pickers {
                         &theme,
                     ))
                 })
-                .child(Self::footer_label(
-                    crate::icons::GIT_BRANCH,
-                    chat.branch
-                        .clone()
-                        .map(SharedString::from)
-                        .unwrap_or_else(|| SharedString::from("No ref")),
-                    &theme,
+                .child(attach_overlay_end(
+                    ref_chip,
+                    &mut overlay,
+                    PickerKind::Branch,
+                    "branch-popover-session",
+                    closing,
                 ));
             return Some(row().child(left).child(right).into_any_element());
         }

@@ -180,8 +180,8 @@ impl Pickers {
             )
     }
 
-    /// A read-only footer label (locked sessions — t3code's
-    /// `resolveLockedWorkspaceLabel` span).
+    /// A read-only footer label (the session footer's display-only
+    /// checkout-kind chip; the branch beside it is interactive — ADR-0007).
     pub(super) fn footer_label(
         icon_path: &'static str,
         label: SharedString,

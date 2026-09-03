@@ -1,7 +1,7 @@
-//! Branch/checkout behavior (the t3code env-mode semantics): ref selection
-//! (worktree reuse, new-worktree base, in-place checkout switches), branch
-//! creation, checkout-kind selection, and the branch + checkout popover
-//! rendering.
+//! Branch/checkout behavior: ref selection (in-place safe switches of the
+//! target working directory — the chat's own folder for sessions, the
+//! space's folder for the draft), branch creation, checkout-kind selection
+//! (draft-only), and the branch + checkout popover rendering.
 
 use gpui::{AnyElement, App, Context, Focusable as _, SharedString, div, prelude::*, px};
 
@@ -12,47 +12,83 @@ use crate::popover::{self, Loadable};
 use crate::theme::Theme;
 
 use super::Pickers;
-use super::logic::{CheckoutKind, CheckoutPlan, branch_create_name};
+use super::logic::{
+    CheckoutKind, CheckoutPlan, PickRouting, PickSurface, branch_create_name, pick_routing,
+    worktree_hosted_dialog,
+};
 use super::{MAX_REF_ROWS, PickerKind};
 
 impl Pickers {
     // ---- selections ----
 
+    /// One ref-pick, routed the same way on every surface (ADR-0007): the
+    /// already-current ref closes, a worktree-hosted ref explains itself,
+    /// and a plain ref safe-switches the target working directory right
+    /// away — mid-Turn included; the running Turn is never interrupted.
     pub(super) fn pick_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
-        // Refs are fixed at creation: an existing session can never move
-        // (wing's rule — the footer renders read-only labels there, so this
-        // is a belt-and-braces guard).
-        if self.state.read(cx).selected_chat_row().is_some() {
-            return;
+        let surface = self.pick_surface(cx);
+        match pick_routing(
+            surface,
+            self.config.checkout == CheckoutKind::NewWorktree,
+            &row,
+        ) {
+            PickRouting::AlreadyCurrent => {
+                self.animate_close(cx);
+                cx.notify();
+            }
+            PickRouting::RecordPick => {
+                // Draft state only (a new-worktree base, or a worktree
+                // reuse until that arm retires): no git yet.
+                self.config.branch = Some(row.name.clone());
+                if row.worktree_path.is_some() {
+                    self.config.checkout = CheckoutKind::Local;
+                }
+                self.animate_close(cx);
+                cx.notify();
+            }
+            PickRouting::Switch => {
+                self.switch_ref_in(row, surface, cx);
+            }
+            PickRouting::WorktreeHosted => {
+                self.switch_dialog = Some(worktree_hosted_dialog(
+                    &row.name,
+                    row.worktree_path.as_deref().unwrap_or_default(),
+                ));
+                self.animate_close(cx);
+                cx.notify();
+            }
         }
-        if row.worktree_path.is_some() {
-            // Reuse the ref's existing worktree ("Current worktree") — the
-            // t3code `reuseExistingWorktree` path.
-            self.config.branch = Some(row.name.clone());
-            self.config.checkout = CheckoutKind::Local;
-        } else if self.config.checkout == CheckoutKind::NewWorktree || row.current {
-            // Base pick for a new worktree, or the already-current ref.
-            self.config.branch = Some(row.name.clone());
-        } else {
-            // Local mode + a plain non-current ref: CHECK OUT the space
-            // folder (full t3code `switchRef` — picking `main` means "put my
-            // local checkout on main", it must never flip the mode).
-            self.switch_draft_ref(row, cx);
-            return;
-        }
-        self.animate_close(cx);
-        cx.notify();
     }
 
-    /// Draft-mode checkout switch: `git checkout` in the SPACE's folder.
-    /// Success records the pick and refreshes tags; failure closes the
-    /// popover and raises the switch dialog (ADR-0007 — refusal paths, the
-    /// blocking file list, and transport failures all land there).
-    fn switch_draft_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
+    /// Which surface the composer is configuring: an existing chat, or the
+    /// new-chat draft.
+    pub(super) fn pick_surface(&self, cx: &App) -> PickSurface {
+        match self.state.read(cx).selected_chat_row() {
+            Some(_) => PickSurface::Session,
+            None => PickSurface::Draft,
+        }
+    }
+
+    /// The working directory branch operations address (ADR-0007): the
+    /// chat's own folder in a session — a legacy worktree chat switches
+    /// inside its own worktree — and the space's folder in the draft.
+    pub(super) fn switch_target_path(&self, cx: &App) -> Option<String> {
+        let state = self.state.read(cx);
+        if let Some(cwd) = state.selected_chat_row().and_then(|chat| chat.cwd.clone()) {
+            return Some(cwd);
+        }
+        state.selected_space_row().map(|space| space.path.clone())
+    }
+
+    /// Safe-switch the target working directory to a plain ref. Success
+    /// closes the popover and refreshes the rows' `current` tags; failure
+    /// closes it too and raises the switch dialog (ADR-0007 — dirty-tree
+    /// refusals with their blocking files, and every other failure).
+    fn switch_ref_in(&mut self, row: RepoRef, surface: PickSurface, cx: &mut Context<Self>) {
         if self.switching.is_some() {
             return; // one switch at a time
         }
-        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+        let Some(repo_path) = self.switch_target_path(cx) else {
             return;
         };
         let Some(engine) = self.engine(cx) else {
@@ -64,7 +100,7 @@ impl Pickers {
             let mut params = serde_json::Map::new();
             params.insert(
                 "repoPath".into(),
-                serde_json::Value::String(space.path.clone()),
+                serde_json::Value::String(repo_path.clone()),
             );
             params.insert(
                 "refName".into(),
@@ -78,7 +114,12 @@ impl Pickers {
                 pickers.switching = None;
                 match result {
                     Ok(_) => {
-                        pickers.config.branch = Some(ref_name);
+                        // Draft-only bookkeeping: a session's branch label
+                        // is the working directory's live HEAD, restamped by
+                        // the refreshed rows (and by the next Turn).
+                        if surface == PickSurface::Draft {
+                            pickers.config.branch = Some(ref_name);
+                        }
                         pickers.animate_close(cx);
                         pickers.ensure_refs(true, cx);
                     }
@@ -95,11 +136,11 @@ impl Pickers {
         cx.notify();
     }
 
-    /// The create row's submit: `CreateBranch` in the SPACE's folder
-    /// (create-and-switch). Success selects the fresh branch for the draft,
-    /// closes the popover, and refreshes the ref list; failure raises the
-    /// switch dialog over the still-open popover, so the typed name
-    /// survives for a retry.
+    /// The create row's submit: `CreateBranch` in the TARGET working
+    /// directory (create-and-switch) — mid-chat included. Success closes
+    /// the popover and refreshes the rows (the fresh branch is current);
+    /// failure raises the switch dialog over the still-open popover, so
+    /// the typed name survives for a retry.
     pub(super) fn create_branch_submit(&mut self, cx: &mut Context<Self>) {
         if !self.branch_create_engaged || self.switching.is_some() {
             return; // not engaged, or a checkout-changing op is in flight
@@ -107,18 +148,19 @@ impl Pickers {
         let Some(name) = branch_create_name(self.branch_create.read(cx).text()) else {
             return; // empty after trim: nothing to create
         };
-        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+        let Some(repo_path) = self.switch_target_path(cx) else {
             return;
         };
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let surface = self.pick_surface(cx);
         self.switching = Some(name.clone());
         self.create_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             params.insert(
                 "repoPath".into(),
-                serde_json::Value::String(space.path.clone()),
+                serde_json::Value::String(repo_path.clone()),
             );
             params.insert("name".into(), serde_json::Value::String(name.clone()));
             let result = engine
@@ -129,9 +171,11 @@ impl Pickers {
                 pickers.switching = None;
                 match result {
                     Ok(_) => {
-                        pickers.config.branch = Some(name);
-                        // The fresh branch lives in the space's local checkout.
-                        pickers.config.checkout = CheckoutKind::Local;
+                        if surface == PickSurface::Draft {
+                            pickers.config.branch = Some(name);
+                            // The fresh branch lives in the space's local checkout.
+                            pickers.config.checkout = CheckoutKind::Local;
+                        }
                         pickers.branch_create_engaged = false;
                         pickers
                             .branch_create
@@ -179,24 +223,39 @@ impl Pickers {
             .collect()
     }
 
-    // ---- checkout resolution (the t3code env-mode semantics) ----
+    // ---- checkout resolution ----
 
     /// Index of the highlighted-by-default row in the (filtered) ref list:
-    /// the session's branch on an existing chat, the draft pick on a new one,
-    /// else the current branch. Capped to the displayed window.
+    /// the working directory's live current branch on an existing chat
+    /// (falling back to its stamped branch), the draft pick on a new one.
+    /// Capped to the displayed window.
     pub(super) fn selected_ref_index(&self, cx: &App) -> usize {
         let rows = self.filtered_ref_rows(cx);
-        let selected = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.branch.clone())
-            .or_else(|| self.config.branch.clone());
+        let selected = match self.pick_surface(cx) {
+            PickSurface::Session => self.live_current_branch().or_else(|| {
+                self.state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|c| c.branch.clone())
+            }),
+            PickSurface::Draft => self.config.branch.clone(),
+        };
         let index = match selected {
             Some(name) => rows.iter().position(|r| r.name == name).unwrap_or(0),
             None => rows.iter().position(|r| r.current).unwrap_or(0),
         };
         index.min(MAX_REF_ROWS.saturating_sub(1))
+    }
+
+    /// The target working directory's live current branch, as the loaded
+    /// rows tag it (the rows are listed against the chat's own folder in a
+    /// session — ADR-0007).
+    pub(super) fn live_current_branch(&self) -> Option<String> {
+        self.refs
+            .ready()?
+            .iter()
+            .find(|r| r.current)
+            .map(|r| r.name.clone())
     }
 
     /// The picked ref's row, else the repo's current branch's row.
@@ -280,14 +339,19 @@ impl Pickers {
         let rows = self.filtered_ref_rows(cx);
         let total = rows.len();
         let shown = total.min(MAX_REF_ROWS);
-        // Existing session: the highlighted row is the SESSION's branch and a
-        // pick switches the checkout (see `pick_ref`); a new chat highlights
-        // the draft pick.
-        let session_branch = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.branch.clone());
+        // Existing session: the highlighted row is the working directory's
+        // LIVE current branch (falling back to its stamped branch) and a
+        // pick safe-switches the chat's own folder (see `pick_ref`); a new
+        // chat highlights the draft pick.
+        let session_branch = match self.pick_surface(cx) {
+            PickSurface::Session => self.live_current_branch().or_else(|| {
+                self.state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|c| c.branch.clone())
+            }),
+            PickSurface::Draft => None,
+        };
         let switching = self.switching.clone();
         let body: AnyElement =
             match &self.refs {
@@ -387,12 +451,9 @@ impl Pickers {
     }
 
     /// The branch picker's create row: a collapsed affordance that expands
-    /// into an inline name input. Hidden for existing sessions — refs are
-    /// fixed at creation, and a create would re-point the space's checkout.
+    /// into an inline name input — mid-chat too, where a create lands on
+    /// the fresh branch in the chat's own working directory (ADR-0007).
     fn branch_create_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        if self.state.read(cx).selected_chat_row().is_some() {
-            return div().into_any_element();
-        }
         if !self.branch_create_engaged {
             return popover::menu_row_nav(theme, false, false, "branch-create-row".to_string())
                 .id("branch-create-row")
