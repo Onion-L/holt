@@ -258,10 +258,6 @@ impl Composer {
             cx.notify();
             return;
         };
-        let selected_worktree = match self.pickers.read(cx).checkout_plan() {
-            crate::pickers::CheckoutPlan::ReuseWorktree { path, .. } => Some(path),
-            _ => None,
-        };
         let (params, has_context) = {
             let state = self.state.read(cx);
             let mut params = serde_json::Map::new();
@@ -271,9 +267,6 @@ impl Composer {
                 true
             } else if let Some(space) = state.selected_space_row() {
                 params.insert("spaceId".into(), space.id.clone().into());
-                if let Some(path) = selected_worktree {
-                    params.insert("path".into(), path.into());
-                }
                 true
             } else {
                 false

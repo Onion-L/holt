@@ -37,12 +37,8 @@ impl Pickers {
                 cx.notify();
             }
             PickRouting::RecordPick => {
-                // Draft state only (a new-worktree base, or a worktree
-                // reuse until that arm retires): no git yet.
+                // Draft state only (a new-worktree base): no git yet.
                 self.config.branch = Some(row.name.clone());
-                if row.worktree_path.is_some() {
-                    self.config.checkout = CheckoutKind::Local;
-                }
                 self.animate_close(cx);
                 cx.notify();
             }
@@ -198,12 +194,10 @@ impl Pickers {
     pub(super) fn pick_checkout(&mut self, kind: CheckoutKind, cx: &mut Context<Self>) {
         if kind == CheckoutKind::Local
             && self.config.checkout == CheckoutKind::NewWorktree
-            && self.selected_ref_worktree().is_none()
             && self.selected_ref().is_some_and(|r| !r.current)
         {
-            // Back to "Current checkout" with a non-current plain ref picked:
-            // drop the pick (we don't checkout the main folder) — the current
-            // branch takes over.
+            // Back to "Current checkout" with a non-current base picked:
+            // drop the pick — the current branch takes over.
             self.config.branch = None;
         }
         self.config.checkout = kind;
@@ -275,41 +269,25 @@ impl Pickers {
             .or_else(|| self.selected_ref().map(|r| r.name.clone()))
     }
 
-    /// The existing worktree the picked ref is materialized in, if any.
-    pub(super) fn selected_ref_worktree(&self) -> Option<String> {
-        self.selected_ref().and_then(|r| r.worktree_path.clone())
-    }
-
-    /// The resolved on-send checkout action for a new session.
+    /// The resolved on-send checkout action for a new session. Two arms
+    /// only (ADR-0007): the space folder, or a fresh worktree — the picked
+    /// ref's existing worktree is never a target.
     pub fn checkout_plan(&self) -> CheckoutPlan {
         match self.config.checkout {
             CheckoutKind::NewWorktree => CheckoutPlan::NewWorktree {
                 base: self.effective_ref_name(),
             },
-            CheckoutKind::Local => match self.selected_ref_worktree() {
-                Some(path) => CheckoutPlan::ReuseWorktree {
-                    path,
-                    branch: self.effective_ref_name().unwrap_or_default(),
-                },
-                None => CheckoutPlan::CurrentCheckout {
-                    branch: self.effective_ref_name(),
-                },
+            CheckoutKind::Local => CheckoutPlan::CurrentCheckout {
+                branch: self.effective_ref_name(),
             },
         }
     }
 
-    /// Label of the checkout-kind trigger (t3code `resolveEnvModeLabel` /
-    /// `resolveCurrentWorkspaceLabel`).
+    /// Label of the checkout-kind trigger.
     pub(super) fn checkout_label(&self) -> &'static str {
         match self.config.checkout {
             CheckoutKind::NewWorktree => "New worktree",
-            CheckoutKind::Local => {
-                if self.selected_ref_worktree().is_some() {
-                    "Current worktree"
-                } else {
-                    "Current checkout"
-                }
-            }
+            CheckoutKind::Local => "Current checkout",
         }
     }
 
@@ -519,23 +497,17 @@ impl Pickers {
             .into_any_element()
     }
 
-    /// The checkout-kind dropdown (t3code BranchToolbarEnvModeSelector): two
-    /// rows — "Current checkout"/"Current worktree" (local) and "New worktree".
+    /// The checkout-kind dropdown: two rows — "Current checkout" (the
+    /// space's folder, always the new chat's working directory) and "New
+    /// worktree".
     pub(super) fn render_checkout_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let has_worktree = self.selected_ref_worktree().is_some();
-        let local_label: &'static str = if has_worktree {
-            "Current worktree"
-        } else {
-            "Current checkout"
-        };
-        let local_icon = if has_worktree {
-            crate::icons::FOLDER_WITH_FILES
-        } else {
-            crate::icons::FOLDER
-        };
         let options: [(CheckoutKind, &'static str, &'static str); 2] = [
-            (CheckoutKind::Local, local_label, local_icon),
+            (
+                CheckoutKind::Local,
+                "Current checkout",
+                crate::icons::FOLDER,
+            ),
             (
                 CheckoutKind::NewWorktree,
                 "New worktree",

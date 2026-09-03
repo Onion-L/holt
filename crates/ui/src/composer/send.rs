@@ -395,12 +395,11 @@ impl Composer {
                 }
 
                 // Resolve the working directory: existing chats keep theirs;
-                // new chats run per the checkout plan (t3code env-mode): the
-                // space's folder as-is, an EXISTING worktree of the picked ref
-                // (a plain cwd override — multiple sessions share one
-                // worktree), or a fresh isolated worktree created off the
-                // picked base ref (a WorktreeSpec riding the Run command).
-                let mut cwd = if is_new {
+                // a new chat always runs in its SPACE's folder (ADR-0007 —
+                // the reuse-worktree arm is gone), unless a fresh isolated
+                // worktree is minted off the picked base ref on send (a
+                // WorktreeSpec riding the Run command).
+                let cwd = if is_new {
                     // Project-less sessions run from the home dir — "~" is
                     // expanded by the engine when the run spawns.
                     space_path.clone().or_else(|| Some("~".to_string()))
@@ -408,7 +407,6 @@ impl Composer {
                     existing_cwd
                 }
                 .unwrap_or_else(|| ".".to_string());
-                let mut worktree_cwd: Option<String> = None;
                 // Fresh-worktree plans ride the QUEUED Run command (a
                 // WorktreeSpec the engine materializes at drain time) instead
                 // of a blocking CreateWorktree RPC here: the retired relay RPC
@@ -423,11 +421,6 @@ impl Composer {
                     match &plan {
                         crate::pickers::CheckoutPlan::CurrentCheckout { branch } => {
                             chat_branch = branch.clone();
-                        }
-                        crate::pickers::CheckoutPlan::ReuseWorktree { path, branch } => {
-                            cwd = path.clone();
-                            worktree_cwd = Some(path.clone());
-                            chat_branch = Some(branch.clone());
                         }
                         crate::pickers::CheckoutPlan::NewWorktree { base } => {
                             // Footer shows the base until the engine stamps
@@ -482,12 +475,6 @@ impl Composer {
                         }
                     }
                     if let Some(object) = mutate.as_object_mut() {
-                        if let Some(worktree_cwd) = &worktree_cwd {
-                            object.insert(
-                                "cwd".into(),
-                                serde_json::Value::String(worktree_cwd.clone()),
-                            );
-                        }
                         if let Some(branch) = &chat_branch {
                             object.insert(
                                 "branch".into(),

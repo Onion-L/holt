@@ -1033,9 +1033,9 @@ impl Pickers {
             &theme,
             cx,
         );
-        let kind_icon = match (self.config.checkout, self.selected_ref_worktree().is_some()) {
-            (CheckoutKind::Local, false) => crate::icons::FOLDER,
-            _ => crate::icons::FOLDER_WITH_FILES,
+        let kind_icon = match self.config.checkout {
+            CheckoutKind::Local => crate::icons::FOLDER,
+            CheckoutKind::NewWorktree => crate::icons::FOLDER_WITH_FILES,
         };
         let kind_chip = self.footer_chip(
             PickerKind::Checkout,

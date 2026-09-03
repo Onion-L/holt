@@ -23,19 +23,19 @@ pub struct DraftConfig {
     pub reasoning: Option<ReasoningLevel>,
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
-    /// The picked ref (base branch in NewWorktree mode; a worktree's branch
-    /// when reusing one). `None` = the repo's current branch.
+    /// The picked ref (base branch in NewWorktree mode). `None` = the
+    /// repo's current branch.
     pub branch: Option<String>,
-    /// Where the new session runs (the t3code env-mode).
+    /// Where the new session runs.
     pub checkout: CheckoutKind,
 }
 
-/// Where a new session runs (t3code's env-mode: `local | worktree`). "Current
-/// worktree" is NOT a third mode — it's `Local` when the picked ref is already
-/// materialized as a worktree (the session reuses that checkout's path).
+/// Where a new session runs: the space's own folder, or a fresh worktree
+/// minted on send. A ref already materialized as a worktree is never a
+/// target — that worktree joins holt as its own Space (ADR-0007).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CheckoutKind {
-    /// The space's own folder — or the picked ref's existing worktree.
+    /// The space's own folder — always the new chat's working directory.
     #[default]
     Local,
     /// A fresh isolated worktree created off the picked base ref on send.
@@ -50,8 +50,6 @@ pub enum CheckoutPlan {
     /// picked or current ref), carried onto `createChat` so the session names
     /// it from the first frame; `None` = refs never loaded.
     CurrentCheckout { branch: Option<String> },
-    /// Reuse the picked ref's existing worktree (a cwd override; no git).
-    ReuseWorktree { path: String, branch: String },
     /// `CreateWorktree` off `base` on send (holt mints a `holt/<name>`
     /// branch). `base: None` = refs never loaded — send falls back to the
     /// space folder rather than failing.
@@ -315,8 +313,8 @@ pub(crate) enum PickSurface {
 pub(crate) enum PickRouting {
     /// The ref is already the working directory's branch: close, no git.
     AlreadyCurrent,
-    /// Record the pick as draft state (a new-worktree base, or — until the
-    /// reuse arm retires — a worktree-hosted ref in the draft).
+    /// Record the pick as draft state (a new-worktree base, or naming the
+    /// current ref on the draft chip). No git.
     RecordPick,
     /// Safe-switch the target working directory right away.
     Switch,
@@ -327,27 +325,25 @@ pub(crate) enum PickRouting {
 
 /// Route one ref-pick. `new_worktree_mode` is the draft's checkout kind
 /// (`NewWorktree` makes every pick a base pick); sessions ignore it —
-/// their checkout kind is fixed and display-only.
+/// their checkout kind is fixed and display-only. One rule everywhere: a
+/// ref hosted in another worktree is never a target, draft or session —
+/// except a working directory's OWN branch, which carries both the
+/// `current` and the worktree flag and must read as current.
 pub(crate) fn pick_routing(
     surface: PickSurface,
     new_worktree_mode: bool,
     row: &holt_proto::RepoRef,
 ) -> PickRouting {
+    if row.current {
+        return PickRouting::AlreadyCurrent;
+    }
+    if row.worktree_path.is_some() {
+        return PickRouting::WorktreeHosted;
+    }
     match surface {
-        PickSurface::Session => {
-            // `current` first: a legacy worktree chat's own branch also
-            // carries a worktree path, and it must read as current, not as
-            // worktree-hosted.
-            if row.current {
-                PickRouting::AlreadyCurrent
-            } else if row.worktree_path.is_some() {
-                PickRouting::WorktreeHosted
-            } else {
-                PickRouting::Switch
-            }
-        }
+        PickSurface::Session => PickRouting::Switch,
         PickSurface::Draft => {
-            if row.worktree_path.is_some() || new_worktree_mode || row.current {
+            if new_worktree_mode {
                 PickRouting::RecordPick
             } else {
                 PickRouting::Switch
@@ -917,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_picks_record_except_plain_refs_which_switch() {
+    fn draft_picks_switch_or_record_but_never_target_a_worktree() {
         // Local mode + a plain non-current ref: the draft switches the
         // space's folder, exactly like a session.
         assert_eq!(
@@ -929,10 +925,29 @@ mod tests {
             pick_routing(PickSurface::Draft, true, &ref_row("feature", false, None)),
             PickRouting::RecordPick
         );
-        // The current ref records (or closes — same no-git outcome).
+        // The current ref is a no-op close on every surface.
         assert_eq!(
             pick_routing(PickSurface::Draft, false, &ref_row("main", true, None)),
-            PickRouting::RecordPick
+            PickRouting::AlreadyCurrent
+        );
+        // A worktree-hosted ref raises the import-as-a-Space dialog in the
+        // draft too — one rule everywhere (ADR-0007; the reuse arm is gone).
+        assert_eq!(
+            pick_routing(
+                PickSurface::Draft,
+                false,
+                &ref_row("feature", false, Some("/wt/feature"))
+            ),
+            PickRouting::WorktreeHosted
+        );
+        // Even in new-worktree mode: the dialog, never a target.
+        assert_eq!(
+            pick_routing(
+                PickSurface::Draft,
+                true,
+                &ref_row("feature", false, Some("/wt/feature"))
+            ),
+            PickRouting::WorktreeHosted
         );
     }
 
@@ -1013,21 +1028,20 @@ mod tests {
             }
         );
         assert_eq!(
-            CheckoutPlan::ReuseWorktree {
-                path: "/wt/holt/x".into(),
-                branch: "feat/x".into()
-            },
-            CheckoutPlan::ReuseWorktree {
-                path: "/wt/holt/x".into(),
-                branch: "feat/x".into()
-            }
-        );
-        assert_eq!(
             CheckoutPlan::CurrentCheckout { branch: None },
             CheckoutPlan::CurrentCheckout { branch: None }
         );
-        // The three variants are distinct matches (composer/send.rs relies on
-        // the discriminants).
+        assert_eq!(
+            CheckoutPlan::CurrentCheckout {
+                branch: Some("feat".into())
+            },
+            CheckoutPlan::CurrentCheckout {
+                branch: Some("feat".into())
+            }
+        );
+        // Two arms only — the reuse-worktree arm is deleted (ADR-0007): a
+        // new chat's working directory is always its space's folder, and
+        // composer/send.rs matches on exactly these discriminants.
         assert_ne!(
             CheckoutPlan::CurrentCheckout { branch: None },
             CheckoutPlan::NewWorktree { base: None }
