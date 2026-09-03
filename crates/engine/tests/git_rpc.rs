@@ -1969,7 +1969,7 @@ use holt_proto::Chat;
 
 /// Register a space at an explicit path (the plain `register_space` pins the
 /// fixture's repo folder).
-async fn register_space_at(engine: &StubEngine, space_id: &str, path: &str) {
+async fn register_space_at(engine: &LocalEngine, space_id: &str, path: &str) {
     engine
         .handle(
             methods::MUTATE,
@@ -1985,7 +1985,7 @@ async fn register_space_at(engine: &StubEngine, space_id: &str, path: &str) {
         .unwrap();
 }
 
-async fn create_chat(engine: &StubEngine, chat_id: &str, space_id: &str) {
+async fn create_chat(engine: &LocalEngine, chat_id: &str, space_id: &str) {
     engine
         .handle(
             methods::MUTATE,
@@ -1999,7 +1999,7 @@ async fn create_chat(engine: &StubEngine, chat_id: &str, space_id: &str) {
         .unwrap();
 }
 
-async fn chat_row(engine: &StubEngine, chat_id: &str) -> Chat {
+async fn chat_row(engine: &LocalEngine, chat_id: &str) -> Chat {
     let RpcReply::Stream(mut chats) = engine
         .handle(methods::WATCH_CHATS, serde_json::json!({}))
         .await
