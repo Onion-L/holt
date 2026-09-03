@@ -7,6 +7,10 @@
 - **Space**: a synced (device, folder) pair — the unit of organization in the sidebar. A space's folder may or may not be a git work tree.
 - **Checkout**: the canonical identity of one working copy of a git work tree, `sha256(deviceId ‖ NUL ‖ git_dir)`. Diffs are grouped per checkout, not per folder path.
 - **Turn**: one agent run of a chat — starts when its queued command begins running, ends when the run finishes or is interrupted.
+- **Working directory** (of a chat): the folder each of the chat's Turns runs in — the space's folder. It is fixed when the chat is created and never moves during the chat's life; only the branch inside it switches. A Turn always runs on whatever the working directory holds when the Turn starts.
+- **Branch switch**: moving a working directory's HEAD to another ref (a safe `git switch` — it never discards, merges, or stashes). A switch may happen while a Turn is live: the Turn is not interrupted, and the next Turn runs on whatever the working directory holds at its start. A ref already checked out in another worktree cannot be switched to — that worktree is reached by importing it as a Space, never by pointing a chat at it.
+- **Worktree**: a linked git work tree. It is a Space-level concept: a worktree joins holt by being imported as its own Space, and chats under it switch branches inside it like any other working directory.
+- **Source context**: the repository identity a chat's Turn is stamped with when it starts — repo root, branch, checkout id. It is the only branch metadata trusted for identity; the chat's scalar branch field just echoes the most recent Turn's stamp.
 - **Diff scope**: which comparison a Changes pane shows. Four flavors: **working tree** (uncommitted changes vs HEAD), **branch** (everything the branch adds over the merge-base with a base ref, working tree included), **latest turn** (net changes since the chat's last turn started), **history** (the commit graph); a fifth, **commit**, exists only as a pinned per-commit pane.
 - **Base ref**: the branch a branch diff is taken against; defaults to the repo's default branch.
 - **Turn diff**: the net working-tree changes since the chat's last turn started. Pre-existing uncommitted changes are not part of a turn unless the turn touched them.
@@ -19,3 +23,4 @@
 _Avoid_: grep tool, agent search
 _Avoid_: agent diff, session diff
 _Avoid_: importing or registering a skill (placement in a skill root is the only way in)
+_Avoid_: refs fixed at creation, locked session refs (a chat's working directory and branch are switchable at any time)
