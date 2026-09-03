@@ -101,6 +101,7 @@ impl EngineHandle {
         let engine = Arc::new(LocalEngine::assemble(&EngineConfig {
             data_dir: config.data_dir,
             personal_skills_dir: None,
+            stream_fn: None,
         })?);
         let engine_info = engine.engine_info().clone();
         let client = memory_client(engine.clone());

@@ -84,6 +84,7 @@ impl Fixture {
         LocalEngine::assemble(&EngineConfig {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         })
         .unwrap()
     }

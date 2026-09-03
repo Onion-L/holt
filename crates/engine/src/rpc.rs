@@ -543,6 +543,7 @@ impl LocalEngine {
             cancel,
             skills: self.skills.clone(),
             invocation,
+            stream_fn: self.runtime.stream_fn.clone(),
         }));
         Ok(())
     }

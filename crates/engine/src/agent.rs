@@ -127,10 +127,19 @@ pub(crate) struct AgentRuntime {
     sessions: RwLock<Vec<Session>>,
     pub(crate) sessions_tx: watch::Sender<serde_json::Value>,
     chat_runtime: Mutex<HashMap<String, Arc<ChatRuntime>>>,
+    /// Test-injected provider transport (`EngineConfig::stream_fn`): every
+    /// run's requests go through it instead of the built-in transport.
+    /// Production leaves it unset.
+    pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
 
 impl AgentRuntime {
-    pub(crate) fn new(device_id: String, data_dir: PathBuf, chats: Vec<Chat>) -> Self {
+    pub(crate) fn new(
+        device_id: String,
+        data_dir: PathBuf,
+        chats: Vec<Chat>,
+        stream_fn: Option<pi_core::agent::types::StreamFn>,
+    ) -> Self {
         let chats_value = serde_json::to_value(&chats).unwrap_or_else(|_| serde_json::json!([]));
         let (chats_tx, _) = watch::channel(chats_value);
         let (sessions_tx, _) = watch::channel(serde_json::json!([]));
@@ -142,6 +151,7 @@ impl AgentRuntime {
             sessions: RwLock::new(Vec::new()),
             sessions_tx,
             chat_runtime: Mutex::new(HashMap::new()),
+            stream_fn,
         }
     }
 
@@ -496,6 +506,8 @@ pub(crate) struct AgentRun {
     /// received), seeded as the FIRST part of the run's entry — the agent
     /// reply opens with the invocation, ahead of any thinking.
     pub(crate) invocation: Option<MessagePart>,
+    /// Test-injected provider transport; `None` means the built-in one.
+    pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
 
 pub(crate) async fn run_agent_command(run: AgentRun) {
@@ -512,6 +524,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         cancel,
         skills,
         invocation,
+        stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
     // AND the transcript's SKILL.md read collapsing — both see the same
@@ -670,11 +683,13 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         before_tool_call: None,
         after_tool_call: None,
     };
-    let stream_fn = Arc::new(
-        |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-            Ok(compat::stream_simple(model, context, options))
-        },
-    );
+    let stream_fn = stream_fn.unwrap_or_else(|| {
+        Arc::new(
+            |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
+                Ok(compat::stream_simple(model, context, options))
+            },
+        )
+    });
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {
@@ -1100,7 +1115,7 @@ mod tests {
     fn transcript_survives_runtime_restart() {
         let dir = std::env::temp_dir().join(format!("holt-restart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let runtime = AgentRuntime::new("device".into(), dir.clone(), Vec::new());
+        let runtime = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
         let chat = runtime.chat("chat-1");
         chat.transcript.write().unwrap().push(SessionMessageEntry {
             id: "m1".into(),
@@ -1118,7 +1133,7 @@ mod tests {
 
         // A fresh runtime over the same data dir replays the persisted
         // transcript both in memory and as the watch's opening `reset` frame.
-        let restarted = AgentRuntime::new("device".into(), dir.clone(), Vec::new());
+        let restarted = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
         let restored = restarted.chat("chat-1");
         assert_eq!(restored.transcript.read().unwrap().len(), 1);
         assert_eq!(restored.transcript_tx.borrow().len(), 1);

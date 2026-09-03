@@ -51,7 +51,7 @@ pub enum EngineError {
 }
 
 /// Configuration for the local backend.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineConfig {
     /// Data directory (default `~/.holt`).
     pub data_dir: PathBuf,
@@ -60,6 +60,24 @@ pub struct EngineConfig {
     /// each chat's cwd) are unaffected. Tests pin temp dirs here so the
     /// three-root catalog is fixture-driven.
     pub personal_skills_dir: Option<PathBuf>,
+    /// Injectable provider stream function, set only by tests (like
+    /// `personal_skills_dir`): when present, every agent request goes
+    /// through it instead of the built-in provider transport, so
+    /// integration tests script model replies and assert on the message
+    /// lists the "model" receives. Production assembly leaves it unset.
+    pub stream_fn: Option<pi_core::agent::types::StreamFn>,
+}
+
+impl std::fmt::Debug for EngineConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The injected stream function is an opaque closure; its presence is
+        // the only fact worth printing.
+        f.debug_struct("EngineConfig")
+            .field("data_dir", &self.data_dir)
+            .field("personal_skills_dir", &self.personal_skills_dir)
+            .field("stream_fn", &self.stream_fn.as_ref().map(|_| "injected"))
+            .finish()
+    }
 }
 
 /// The local backend. Serves the RPC method surface over the in-process
@@ -111,6 +129,7 @@ impl LocalEngine {
             device_id.clone(),
             config.data_dir.clone(),
             load_chats(&config.data_dir)?,
+            config.stream_fn.clone(),
         ));
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
@@ -171,6 +190,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let first = LocalEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
@@ -186,6 +206,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let _first = LocalEngine::assemble(&config).unwrap();
         assert!(LocalEngine::assemble(&config).is_err());
@@ -199,6 +220,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -261,6 +283,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -314,6 +337,7 @@ mod tests {
         let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
+            stream_fn: None,
         })
         .unwrap();
         engine
@@ -403,6 +427,7 @@ mod tests {
         let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
+            stream_fn: None,
         })
         .unwrap();
         engine
@@ -459,6 +484,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -531,6 +557,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -591,6 +618,7 @@ mod tests {
         let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         })
         .unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -639,6 +667,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -724,6 +753,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -804,6 +834,7 @@ mod tests {
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
+            stream_fn: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
