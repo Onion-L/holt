@@ -7,13 +7,13 @@ was removed.
 ## Topology
 
 ```
-gpui UI ── in-memory RPC (ndjson envelopes) ── StubEngine + pi-core agent loop
+gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + pi-core agent loop
 ```
 
 One binary, headed only. The UI never links backend logic directly: it talks
 the typed RPC contract in `crates/rpc` over an in-process duplex
-(`holt_rpc::memory_client`). A real backend replaces the stub behind the same
-`RpcService` trait and the UI lights up without further changes.
+(`holt_rpc::memory_client`). The local backend implements the `RpcService`
+contract; another backend can slot in behind the same trait.
 
 ## Crates
 
@@ -21,7 +21,7 @@ the typed RPC contract in `crates/rpc` over an in-process duplex
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `StubEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module. Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module. Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -54,7 +54,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   / turn (net-change baseline, ADR-0003) modes — plus `ListGitHistory`
   (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
   30 s timeout).
-- Capability surfaces the UI keeps rendered but the stub leaves empty:
+- Capability surfaces the UI keeps rendered but the local backend leaves empty:
   terminals, worktrees, change requests, and uploads.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips

@@ -34,7 +34,7 @@ Each plan's edit set is disjoint from the others (verified by grep at
 No file appears in two plans. `shell.rs` consumes `AppearancePage` via the
 path `crate::settings::appearance::AppearancePage` (shell.rs:33), which plan
 001 preserves unchanged (the struct stays in the facade file). `state.rs`
-consumes `holt_engine::{EngineConfig, StubEngine}` (state.rs:31), which plan
+consumes `holt_engine::{EngineConfig, LocalEngine}` (state.rs:31), which plan
 002 preserves unchanged (both stay in `lib.rs`). Therefore the three branches
 merge without conflicts, in any order.
 

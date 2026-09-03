@@ -31,7 +31,7 @@ filesystem browsing, and the `RpcService` dispatch. Per `ARCHITECTURE.md`
 splitting dispatch / agent / persistence now makes that future replacement a
 matter of swapping `rpc.rs` internals instead of dissecting a monolith.
 The crate's external surface is exactly two items —
-`crates/ui/src/state.rs:31`: `use holt_engine::{EngineConfig, StubEngine};`
+`crates/ui/src/state.rs:31`: `use holt_engine::{EngineConfig, LocalEngine};`
 — both of which stay in `lib.rs`, so the split changes nothing for the UI.
 
 ## Current state
@@ -45,10 +45,10 @@ The crate's external surface is exactly two items —
 | 1–13 | module doc (STALE — describes an empty stub; rewritten in Step 4) |
 | 15–59 | imports + `pub mod` declarations + `use` of the existing four modules |
 | 61–75 | `EngineError`, `EngineConfig` |
-| 77–88 | `pub struct StubEngine` (6 private fields: `engine_info`, `data_dir`, `spaces`, `spaces_tx`, `runtime`, `providers`, `_instance_lock`) |
+| 77–88 | `pub struct LocalEngine` (6 private fields: `engine_info`, `data_dir`, `spaces`, `spaces_tx`, `runtime`, `providers`, `_instance_lock`) |
 | 90–181 | `ChatRuntime` (+impl), `AgentRuntime` (+impl) |
-| 183–217 | `impl StubEngine`: `assemble`, `engine_info` (STAY in lib.rs) |
-| 219–493 | `impl StubEngine`: `watch_spaces`, `watch_value`, `create_space`, `create_chat`, `queue_command`, `set_chat_config` |
+| 183–217 | `impl LocalEngine`: `assemble`, `engine_info` (STAY in lib.rs) |
+| 219–493 | `impl LocalEngine`: `watch_spaces`, `watch_value`, `create_space`, `create_chat`, `queue_command`, `set_chat_config` |
 | 496–527 | `CreateSpaceParams`, `CreateChatParams`, `QueueCommandParams` (private Deserialize structs) |
 | 529–549 | `provider_reasoning`, `required_string` |
 | 551–613 | `user_agent_message`, `assistant_parts`, `update_assistant_entry` |
@@ -57,7 +57,7 @@ The crate's external surface is exactly two items —
 | 822–836 | `static_watch`, `pending_stream` |
 | 838–885 | `local_device`, `hostname`, `home_dir`, `expand_tilde` |
 | 887–965 | `FOLDER_ENTRY_CAP`, `list_folders`, `list_drives` |
-| 967–1107 | `impl RpcService for StubEngine` (~40-arm dispatch) |
+| 967–1107 | `impl RpcService for LocalEngine` (~40-arm dispatch) |
 | 1109–1121 | `load_or_create_device_id` |
 | 1123–1663 | `mod tests` (14 tests, `use super::*`) |
 
@@ -65,7 +65,7 @@ The crate's external surface is exactly two items —
 
 ```rust
 // lib.rs:77
-pub struct StubEngine {
+pub struct LocalEngine {
     engine_info: EngineInfo,
     data_dir: PathBuf,
     spaces: RwLock<Vec<Space>>,
@@ -79,13 +79,13 @@ pub struct StubEngine {
 
 - Wiring convention for this crate: the new modules are **private** `mod`s at
   the crate root with `pub(crate)` items, imported into `lib.rs` with plain
-  `use` lines. `rpc.rs` opens a second `impl StubEngine` block and reads the
+  `use` lines. `rpc.rs` opens a second `impl LocalEngine` block and reads the
   struct's private fields directly — legal because child modules see the
   parent's private items (the same trick `crates/ui/src/shell/spaces.rs:201`
-  uses). Trait impls (`impl RpcService for StubEngine`) are globally visible;
+  uses). Trait impls (`impl RpcService for LocalEngine`) are globally visible;
   nothing needs re-exporting for `state.rs` to keep working.
 - The 14 tests split 9/5: nine integration tests exercise the engine through
-  `StubEngine::assemble` + `handle` and STAY in lib.rs; five unit tests move
+  `LocalEngine::assemble` + `handle` and STAY in lib.rs; five unit tests move
   with their functions (listed per step). lib.rs's `mod tests` keeps
   `use super::*` and needs no new imports after the five moves (verified
   against every remaining test's references).
@@ -236,26 +236,26 @@ Review gate, commit C3.
 1. Create `crates/engine/src/rpc.rs`:
    - Header: `//! The RPC surface: `RpcService` dispatch plus the space/chat
      mutation and queue-command handlers it routes to.`
-   - Move: the handler section of `impl StubEngine` (219–493):
+   - Move: the handler section of `impl LocalEngine` (219–493):
      `watch_spaces`, `watch_value`, `create_space`, `create_chat`,
      `queue_command`, `set_chat_config` — as a new
-     `impl StubEngine { … }` block, all methods stay private (only the
+     `impl LocalEngine { … }` block, all methods stay private (only the
      `RpcService` impl in this same file calls them).
    - Move: `CreateSpaceParams`/`CreateChatParams`/`QueueCommandParams`
      (496–527), `required_string` (543–549), `static_watch` (822–830),
      `pending_stream` (832–836) — all stay private.
-   - Move: `impl RpcService for StubEngine` (967–1107) verbatim.
+   - Move: `impl RpcService for LocalEngine` (967–1107) verbatim.
    - Imports: `async_trait::async_trait`, `serde::Deserialize`,
      `serde_json`, `chrono::Utc`, `holt_doc::{MessagePart, MessageRole,
      SessionCommandPayload}`, `holt_proto::{AuthState, ChatConfig}`,
      `holt_rpc::{RpcError, RpcReply, RpcService, methods}`,
-     `tokio::sync::watch`, `use crate::StubEngine;`,
+     `tokio::sync::watch`, `use crate::LocalEngine;`,
      `use crate::agent::{AgentRun, run_agent_command};`,
      `use crate::local_fs::{list_drives, list_folders, local_device};`,
      `use crate::store::{persist_chats, persist_spaces};`,
      `use crate::providers::ProviderAdapter;` (for
      `ProviderAdapter::is_eligible`).
-   - These handlers read `StubEngine`'s private fields (`self.spaces`,
+   - These handlers read `LocalEngine`'s private fields (`self.spaces`,
      `self.spaces_tx`, `self.runtime`, `self.providers`, `self.data_dir`,
      `self.engine_info`) directly — that is intended and compiles (child
      module of the crate root). Do not change field visibility.
@@ -270,7 +270,7 @@ Review gate, commit C3.
 ```rust
 //! holt-engine — the in-process backend for the desktop shell.
 //!
-//! - [`StubEngine`] — the [`RpcService`] the UI speaks to over the
+//! - [`LocalEngine`] — the [`RpcService`] the UI speaks to over the
 //!   in-memory RPC transport: space/chat persistence, watch streams,
 //!   provider discovery and credentials, folder browsing, and a
 //!   single-agent LLM run loop over pi-core. A real backend replaces it
@@ -284,7 +284,7 @@ Review gate, commit C3.
 ```
 
 3. Check the tail state of lib.rs: module doc, imports, `EngineError`,
-   `EngineConfig`, `StubEngine`, `impl StubEngine { assemble, engine_info }`,
+   `EngineConfig`, `LocalEngine`, `impl LocalEngine { assemble, engine_info }`,
    the four existing `pub mod`s + four new private `mod`s, and `mod tests`
    with the 9 remaining integration tests. Target: lib.rs ≤ ~400 lines.
 
@@ -336,7 +336,7 @@ Stop and report back (do not improvise) if:
   body/signature/strings is not).
 - The 24-test or 525-test count changes at any commit.
 - `cargo test -p holt-ui` fails at Step 4 — means the facade lost an item
-  `state.rs` needs (`EngineConfig`/`StubEngine` must remain importable from
+  `state.rs` needs (`EngineConfig`/`LocalEngine` must remain importable from
   the crate root exactly as before).
 - The reviewer rejects a commit twice.
 
@@ -350,6 +350,6 @@ Stop and report back (do not improvise) if:
   the description of the run loop — the code runs real LLM turns; if
   someone reintroduces "stub" language, `ARCHITECTURE.md` line 24 is the
   doc to keep in sync.
-- Reviewers: expect `rpc.rs` to touch `StubEngine`'s private fields
+- Reviewers: expect `rpc.rs` to touch `LocalEngine`'s private fields
   directly; that is the crate's established child-module pattern, not a
   encapsulation bug.

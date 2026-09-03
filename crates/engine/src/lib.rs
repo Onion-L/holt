@@ -1,9 +1,9 @@
 //! holt-engine — the in-process backend for the desktop shell.
 //!
-//! - [`StubEngine`] — the [`RpcService`] the UI speaks to over the
+//! - [`LocalEngine`] — the [`RpcService`] the UI speaks to over the
 //!   in-memory RPC transport: space/chat persistence, watch streams,
 //!   provider discovery and credentials, folder browsing, and a
-//!   single-agent LLM run loop over pi-core. A real backend replaces it
+//!   single-agent LLM run loop over pi-core. Another backend can replace it
 //!   behind the same trait: implement the methods in its `handle`, keep
 //!   the reply shapes, and the whole UI keeps working.
 //! - [`InstanceLock`] — single-instance guard on the data dir.
@@ -50,8 +50,7 @@ pub enum EngineError {
     Other(String),
 }
 
-/// Everything the stub backend needs. A real engine grows this back
-/// (provider config, IPC port, …) as it needs it.
+/// Configuration for the local backend.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Data directory (default `~/.holt`).
@@ -63,9 +62,9 @@ pub struct EngineConfig {
     pub personal_skills_dir: Option<PathBuf>,
 }
 
-/// The no-op backend. Serves the RPC method surface with empty data so the
-/// shell boots with local catalogs and empty workspace data.
-pub struct StubEngine {
+/// The local backend. Serves the RPC method surface over the in-process
+/// transport, including the agent loop, git capability, and skills catalog.
+pub struct LocalEngine {
     engine_info: EngineInfo,
     data_dir: PathBuf,
     spaces: Arc<RwLock<Vec<Space>>>,
@@ -86,8 +85,8 @@ pub struct StubEngine {
     _instance_lock: InstanceLock,
 }
 
-impl StubEngine {
-    /// Assemble the stub against a data dir. Takes the instance lock and
+impl LocalEngine {
+    /// Assemble the local backend against a data dir. Takes the instance lock and
     /// resolves a stable device id.
     pub fn assemble(config: &EngineConfig) -> Result<Self, EngineError> {
         std::fs::create_dir_all(&config.data_dir)?;
@@ -173,11 +172,11 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let first = StubEngine::assemble(&config).unwrap();
+        let first = LocalEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
         // The lock dies with the engine; a fresh assemble reads the same id.
         drop(first);
-        let second = StubEngine::assemble(&config).unwrap();
+        let second = LocalEngine::assemble(&config).unwrap();
         assert_eq!(second.engine_info().device_id, id);
     }
 
@@ -188,8 +187,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let _first = StubEngine::assemble(&config).unwrap();
-        assert!(StubEngine::assemble(&config).is_err());
+        let _first = LocalEngine::assemble(&config).unwrap();
+        assert!(LocalEngine::assemble(&config).is_err());
     }
 
     #[tokio::test]
@@ -201,7 +200,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
             .handle(methods::WATCH_SPACES, serde_json::json!({}))
             .await
@@ -232,7 +231,7 @@ mod tests {
         drop(spaces);
         drop(engine);
 
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
             .handle(methods::WATCH_SPACES, serde_json::json!({}))
             .await
@@ -263,7 +262,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         engine
             .handle(
                 methods::ADD_PROVIDER_MODEL,
@@ -299,7 +298,7 @@ mod tests {
         );
         drop(engine);
 
-        let restored = StubEngine::assemble(&config).unwrap();
+        let restored = LocalEngine::assemble(&config).unwrap();
         assert!(
             restored
                 .providers
@@ -312,7 +311,7 @@ mod tests {
     #[tokio::test]
     async fn provider_credential_rpc_keeps_secrets_out_of_catalogs() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = StubEngine::assemble(&EngineConfig {
+        let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
         })
@@ -401,7 +400,7 @@ mod tests {
     #[tokio::test]
     async fn provider_catalog_groups_variants_by_organization() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = StubEngine::assemble(&EngineConfig {
+        let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
         })
@@ -461,7 +460,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         engine
             .handle(
                 methods::SAVE_PROVIDER_KEY,
@@ -514,7 +513,7 @@ mod tests {
         drop(engine);
 
         // Keys are per-variant and survive restart.
-        let restored = StubEngine::assemble(&config).unwrap();
+        let restored = LocalEngine::assemble(&config).unwrap();
         assert_eq!(
             restored
                 .providers
@@ -533,7 +532,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         engine
             .handle(
                 methods::SAVE_PROVIDER_KEY,
@@ -567,7 +566,7 @@ mod tests {
             .unwrap();
         drop(engine);
 
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         {
             let chats = engine.runtime.chats.read().unwrap();
             let selection = chats[0].config.as_ref().unwrap();
@@ -589,7 +588,7 @@ mod tests {
         use futures::StreamExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let engine = StubEngine::assemble(&EngineConfig {
+        let engine = LocalEngine::assemble(&EngineConfig {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         })
@@ -641,7 +640,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -691,7 +690,7 @@ mod tests {
 
         // The flag persists: a fresh engine replays it, and unarchive
         // round-trips.
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -726,7 +725,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -792,7 +791,7 @@ mod tests {
         drop(engine);
 
         // The marker persists: a fresh engine serves the chat as seen.
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let chats = engine.runtime.chats.read().unwrap();
         assert!(chats[0].last_seen_at.is_some());
     }
@@ -806,7 +805,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
         };
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -873,7 +872,7 @@ mod tests {
         drop(engine);
 
         // The deletion persists: a fresh engine only knows chat-2.
-        let engine = StubEngine::assemble(&config).unwrap();
+        let engine = LocalEngine::assemble(&config).unwrap();
         let chats = engine.runtime.chats.read().unwrap();
         let ids: Vec<&str> = chats.iter().map(|chat| chat.id.as_str()).collect();
         assert_eq!(ids, ["chat-2"]);

@@ -15,13 +15,13 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::StubEngine;
+use crate::LocalEngine;
 use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
 
-impl StubEngine {
+impl LocalEngine {
     fn watch_spaces(&self) -> RpcReply {
         let receiver = self.spaces_tx.subscribe();
         let stream =
@@ -647,14 +647,14 @@ fn static_watch(value: serde_json::Value) -> RpcReply {
     )
 }
 
-/// A stream that never emits — for subscriptions the stub has no data for.
+/// A stream that never emits — for subscriptions this backend has no data for.
 fn pending_stream() -> RpcReply {
     use futures::StreamExt;
     RpcReply::Stream(futures::stream::pending::<serde_json::Value>().boxed())
 }
 
 #[async_trait]
-impl RpcService for StubEngine {
+impl RpcService for LocalEngine {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         match method {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
@@ -1017,7 +1017,7 @@ impl RpcService for StubEngine {
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
 
-            // Everything the stub has no data for — mutations, terminals,
+            // Everything this backend has no data for — mutations, terminals,
             // repos, uploads — reports as an unknown method: that is the
             // wire convention the UI already treats as "this engine doesn't
             // serve it yet" and degrades gracefully on.

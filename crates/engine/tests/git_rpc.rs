@@ -6,7 +6,7 @@
 
 use futures::StreamExt as _;
 use git2::Repository;
-use holt_engine::{EngineConfig, StubEngine};
+use holt_engine::{EngineConfig, LocalEngine};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use tempfile::TempDir;
 
@@ -80,8 +80,8 @@ impl Fixture {
         Repository::open(self.repo_dir.path()).unwrap()
     }
 
-    fn engine(&self) -> StubEngine {
-        StubEngine::assemble(&EngineConfig {
+    fn engine(&self) -> LocalEngine {
+        LocalEngine::assemble(&EngineConfig {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: None,
         })
@@ -148,7 +148,7 @@ fn refs(value: serde_json::Value) -> Vec<(String, bool, Option<String>)> {
         .collect()
 }
 
-async fn list_refs(engine: &StubEngine, repo_path: &str) -> Vec<(String, bool, Option<String>)> {
+async fn list_refs(engine: &LocalEngine, repo_path: &str) -> Vec<(String, bool, Option<String>)> {
     let RpcReply::Value(value) = engine
         .handle(
             methods::LIST_REFS,
@@ -586,7 +586,7 @@ async fn list_refs_on_a_non_repo_reports_gits_message() {
 
 use holt_proto::{CheckoutDiff, GetCheckoutFileDiffTextRequest, Space};
 
-async fn register_space(engine: &StubEngine, fixture: &Fixture, space_id: &str) {
+async fn register_space(engine: &LocalEngine, fixture: &Fixture, space_id: &str) {
     engine
         .handle(
             methods::MUTATE,
@@ -602,7 +602,7 @@ async fn register_space(engine: &StubEngine, fixture: &Fixture, space_id: &str) 
         .unwrap();
 }
 
-async fn first_space(engine: &StubEngine) -> Space {
+async fn first_space(engine: &LocalEngine) -> Space {
     let RpcReply::Stream(mut spaces) = engine
         .handle(methods::WATCH_SPACES, serde_json::json!({}))
         .await
@@ -615,7 +615,7 @@ async fn first_space(engine: &StubEngine) -> Space {
     spaces.into_iter().next().expect("one registered space")
 }
 
-async fn working_tree_diff(engine: &StubEngine, cwd: &str) -> CheckoutDiff {
+async fn working_tree_diff(engine: &LocalEngine, cwd: &str) -> CheckoutDiff {
     let RpcReply::Value(value) = engine
         .handle(
             methods::GET_CHECKOUT_DIFF,
@@ -1054,7 +1054,11 @@ async fn file_diff_text_serves_old_new_sides_binary_and_staleness() {
 
 // ---- branch scope: merge-base diffs (git-capability issue 04) ----
 
-async fn branch_diff(engine: &StubEngine, cwd: &str, base: &str) -> Result<CheckoutDiff, RpcError> {
+async fn branch_diff(
+    engine: &LocalEngine,
+    cwd: &str,
+    base: &str,
+) -> Result<CheckoutDiff, RpcError> {
     match engine
         .handle(
             methods::GET_CHECKOUT_DIFF,
@@ -1305,7 +1309,7 @@ fn ref_kind(reference: &holt_proto::GitHistoryRef) -> String {
 }
 
 async fn history_page(
-    engine: &StubEngine,
+    engine: &LocalEngine,
     cwd: &str,
     cursor: u64,
     limit: u64,
@@ -1323,7 +1327,7 @@ async fn history_page(
     serde_json::from_value(value).unwrap()
 }
 
-async fn commit_diff(engine: &StubEngine, cwd: &str, sha: &str) -> Result<CheckoutDiff, RpcError> {
+async fn commit_diff(engine: &LocalEngine, cwd: &str, sha: &str) -> Result<CheckoutDiff, RpcError> {
     match engine
         .handle(
             methods::GET_CHECKOUT_DIFF,
@@ -1680,7 +1684,7 @@ async fn fetch_all_surfaces_errors_verbatim() {
 
 /// Queue a run against a bogus provider: the command is rejected, but the
 /// turn baseline is still captured deterministically (ADR-0003).
-async fn queue_bogus_run(engine: &StubEngine, chat_id: &str, cwd: &str) {
+async fn queue_bogus_run(engine: &LocalEngine, chat_id: &str, cwd: &str) {
     let result = engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -1709,7 +1713,7 @@ async fn queue_bogus_run(engine: &StubEngine, chat_id: &str, cwd: &str) {
 }
 
 async fn turn_diff(
-    engine: &StubEngine,
+    engine: &LocalEngine,
     cwd: &str,
     chat_id: &str,
 ) -> Result<CheckoutDiff, RpcError> {
