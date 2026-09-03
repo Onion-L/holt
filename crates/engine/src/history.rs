@@ -30,13 +30,30 @@ pub(crate) fn history_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     Some(data_dir.join("history").join(format!("{chat_id}.jsonl")))
 }
 
-/// One JSONL entry: `{"kind":"message","entry":{…AgentMessage…}}`. The
-/// adjacent-tag shape keeps the entry self-describing for the tolerant
-/// reader below (a `compaction` kind joins with the compaction slice).
+/// One JSONL entry: `{"kind":"message","entry":{…AgentMessage…}}` or
+/// `{"kind":"compaction","entry":{…CompactionRecord…}}`. The adjacent-tag
+/// shape keeps the entry self-describing for the tolerant reader below.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "entry", rename_all = "camelCase")]
 pub(crate) enum HistoryEntry {
     Message(AgentMessage),
+    Compaction(CompactionRecord),
+}
+
+/// A Compaction of the History (ADR-0011): everything before this entry is
+/// replaced on replay by the summary, with the last `retained_tail`
+/// messages kept verbatim (they are the file's own preceding message
+/// entries — the count is the replay rule, the messages are not
+/// duplicated into the record).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompactionRecord {
+    pub summary: String,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub trigger: holt_doc::parts::CompactionTrigger,
+    pub timestamp: i64,
+    pub retained_tail: u64,
 }
 
 /// Append one entry, creating the file (header first) when the chat has no
@@ -76,6 +93,17 @@ pub(crate) fn append_message(
     message: &AgentMessage,
 ) -> std::io::Result<()> {
     append_entry(data_dir, chat_id, &HistoryEntry::Message(message.clone()))
+}
+
+/// Append a compaction record to the chat's History. Must be written only
+/// after the compacted history is in effect — replay discards everything
+/// before it.
+pub(crate) fn append_compaction(
+    data_dir: &Path,
+    chat_id: &str,
+    record: &CompactionRecord,
+) -> std::io::Result<()> {
+    append_entry(data_dir, chat_id, &HistoryEntry::Compaction(record.clone()))
 }
 
 /// Replay the History linearly into the in-memory message sequence. A
@@ -137,6 +165,39 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                     tracing::warn!(target: "holt::history", %error, "skipping undecodable history entry")
                 }
             },
+            Some("compaction") => {
+                match serde_json::from_value::<CompactionRecord>(
+                    value
+                        .get("entry")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ) {
+                    Ok(record) => {
+                        // Linear replay (ADR-0011): the compaction replaces
+                        // everything before it with the upstream
+                        // `compactionSummary` custom message followed by the
+                        // retained tail — the file's own preceding message
+                        // entries, recovered by count.
+                        let tail_count = record.retained_tail as usize;
+                        let tail = if messages.len() >= tail_count {
+                            messages.split_off(messages.len() - tail_count)
+                        } else {
+                            std::mem::take(&mut messages)
+                        };
+                        messages.push(
+                            pi_core::agent::harness::messages::create_compaction_summary_message(
+                                record.summary,
+                                record.tokens_before,
+                                record.timestamp,
+                            ),
+                        );
+                        messages.extend(tail);
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "holt::history", %error, "skipping undecodable compaction entry")
+                    }
+                }
+            }
             other => {
                 // Unknown entry kinds are tolerated: a future holt wrote
                 // them, an older model must not choke on them.

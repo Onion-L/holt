@@ -24,6 +24,7 @@ pub use holt_proto::{EngineInfo, WorkspaceScope};
 use tokio::sync::watch;
 
 mod agent;
+pub mod compaction;
 pub mod credentials;
 mod git;
 mod git_watch;

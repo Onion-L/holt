@@ -109,7 +109,7 @@ fn now_millis() -> i64 {
 /// fixed at construction so compaction thresholds in tests are
 /// deterministic.
 pub struct ScriptedProvider {
-    requests: Arc<Mutex<Vec<Vec<Message>>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     script: Arc<Mutex<VecDeque<ScriptedReply>>>,
     usage: Usage,
 }
@@ -149,7 +149,11 @@ impl ScriptedProvider {
         let script = Arc::clone(&self.script);
         let usage = self.usage.clone();
         Arc::new(move |model: &Model, context: &Context, _options| {
-            requests.lock().unwrap().push(context.messages.clone());
+            requests.lock().unwrap().push(RecordedRequest {
+                messages: context.messages.clone(),
+                system_prompt: context.system_prompt.clone(),
+                tools: context.tools.as_ref().map_or(0, Vec::len),
+            });
             let reply = script.lock().unwrap().pop_front().unwrap_or_else(|| {
                 ScriptedReply::Failed("scripted provider ran out of replies".into())
             });
@@ -159,11 +163,20 @@ impl ScriptedProvider {
         })
     }
 
-    /// The message list of each request, in arrival order — what the model
-    /// would receive.
-    pub fn requests(&self) -> Vec<Vec<Message>> {
+    /// Each request in arrival order — what the model would receive, plus
+    /// the system prompt and tool count it was served with.
+    pub fn requests(&self) -> Vec<RecordedRequest> {
         self.requests.lock().unwrap().clone()
     }
+}
+
+/// One recorded provider request.
+#[derive(Clone)]
+pub struct RecordedRequest {
+    pub messages: Vec<Message>,
+    pub system_prompt: Option<String>,
+    /// How many tools the request advertised (0 = a bare completion).
+    pub tools: usize,
 }
 
 /// Render one scripted reply onto a fresh stream as its terminal event —

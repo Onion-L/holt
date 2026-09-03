@@ -11,9 +11,10 @@ use std::{
 use chrono::Utc;
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
 use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall};
+use pi_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
 use pi_core::{
     agent::{
-        agent_loop::{AgentEventSink, pass_through_llm_messages, run_agent_loop},
+        agent_loop::{AgentEventSink, run_agent_loop},
         types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentToolResult},
     },
     ai::{
@@ -27,6 +28,7 @@ use pi_core::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::history::CompactionRecord;
 use crate::store::{delete_transcript, load_transcript, persist_transcript};
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
@@ -420,6 +422,25 @@ fn resolve_tool_part(
     }
 }
 
+/// Append one housekeeping part (a compaction divider, a notice) as its
+/// own System entry at the transcript's tail and publish — the record
+/// grows, never shrinks (ADR-0011).
+fn push_system_part(chat: &ChatRuntime, device_id: &str, entry_id: String, part: MessagePart) {
+    chat.transcript
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(SessionMessageEntry {
+            id: entry_id,
+            role: MessageRole::System,
+            parts: vec![part],
+            created_at: Utc::now().timestamp_millis(),
+            device_id: device_id.to_string(),
+            status: None,
+            continuation_of: None,
+        });
+    chat.publish();
+}
+
 /// A run that ends early (abort, loop error) leaves tool parts without their
 /// results; settle them so no chip stays "in call" forever.
 fn settle_unresolved_tools(chat: &ChatRuntime) {
@@ -757,11 +778,86 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         })
     });
 
-    let history = chat
+    let stream_fn = stream_fn.unwrap_or_else(|| {
+        Arc::new(
+            |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
+                Ok(compat::stream_simple(model, context, options))
+            },
+        )
+    });
+    let mut history = chat
         .history
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    // Compaction before the Turn's first request (ADR-0011): when the
+    // History nears the model's context window, shrink it to a summary
+    // plus a verbatim tail BEFORE the prompt is appended — the compaction
+    // entry lands ahead of it in the file, so replay keeps the prompt
+    // verbatim after the summary. This is never a Turn: no source-context
+    // stamping, no turn-diff baseline reset, no status change.
+    match crate::compaction::compact(
+        &history,
+        &model,
+        &stream_fn,
+        &api_key,
+        holt_doc::parts::CompactionTrigger::Automatic,
+    )
+    .await
+    {
+        Ok(Some(outcome)) => {
+            let CompactionRecord {
+                summary,
+                tokens_before,
+                tokens_after,
+                trigger,
+                timestamp: divider_at,
+                ..
+            } = &outcome.record;
+            let divider = MessagePart::CompactionDivider {
+                id: "d0".into(),
+                summary: summary.clone(),
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+                trigger: *trigger,
+                timestamp: *divider_at,
+            };
+            if let Err(error) =
+                crate::history::append_compaction(&chat.data_dir, &chat.chat_id, &outcome.record)
+            {
+                tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
+            }
+            *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages.clone();
+            history = outcome.messages;
+            // The Transcript never shrinks: the divider marks where the
+            // model's verbatim memory now begins.
+            push_system_part(
+                &chat,
+                &runtime.device_id,
+                format!("compaction-{}", uuid::Uuid::new_v4()),
+                divider,
+            );
+        }
+        Ok(None) => {}
+        Err(reason) => {
+            // A failed automatic compaction never blocks the Turn: proceed
+            // uncompacted, with a visible notice (overflow, if it follows,
+            // is the overflow fallback's business).
+            tracing::warn!(target: "holt::compaction", %reason, "automatic compaction failed");
+            push_system_part(
+                &chat,
+                &runtime.device_id,
+                format!("compaction-failed-{}", uuid::Uuid::new_v4()),
+                MessagePart::Notice {
+                    id: "n0".into(),
+                    message: format!(
+                        "Automatic compaction failed ({reason}); the Turn continues \
+                         with the full conversation."
+                    ),
+                },
+            );
+        }
+    }
     let prompt_message = user_agent_message(prompt, timestamp);
     // The user prompt joins the History when the Turn starts (ADR-0010) —
     // before any request, so even a Turn that dies immediately keeps what
@@ -775,8 +871,12 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let config = AgentLoopConfig {
         stream_options,
         model,
+        // The harness converter (ADR-0011): identical to the pass-through
+        // for ordinary messages, but renders the `compactionSummary`
+        // custom message into the templated user message the model reads
+        // after a compaction — the pass-through would drop it.
         convert_to_llm: Arc::new(|messages| {
-            Box::pin(async move { pass_through_llm_messages(messages) })
+            Box::pin(async move { harness_convert_to_llm(messages) })
         }),
         transform_context: None,
         get_api_key: None,
@@ -788,13 +888,6 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         before_tool_call: None,
         after_tool_call: None,
     };
-    let stream_fn = stream_fn.unwrap_or_else(|| {
-        Arc::new(
-            |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-                Ok(compat::stream_simple(model, context, options))
-            },
-        )
-    });
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {

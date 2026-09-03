@@ -25,9 +25,9 @@ async fn a_scripted_text_reply_streams_into_the_transcript_and_returns_to_idle()
     // an empty prior History, exactly one message.
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].len(), 1);
+    assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(
-        common::summarize(&requests[0]),
+        common::summarize(&requests[0].messages),
         vec!["user:hello".to_string()]
     );
 }
@@ -55,7 +55,7 @@ async fn a_scripted_tool_call_runs_against_the_cwd_and_feeds_the_result_back() {
     // Two rounds: the tool-call reply, then the follow-up after the result.
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    let summary = common::summarize(&requests[1]);
+    let summary = common::summarize(&requests[1].messages);
     assert_eq!(summary[0], "user:read the notes");
     assert_eq!(summary[1], "assistant:toolcall:call-1");
     // The executed read rides back as the tool result for call-1 — read

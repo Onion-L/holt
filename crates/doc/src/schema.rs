@@ -119,6 +119,21 @@ struct DocPartJson {
     /// `text` as prose, and the block must not leak into their bubbles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skill_content: Option<String>,
+    /// Compaction summary for `kind: "compactionDivider"` rows (additive,
+    /// ADR-0011).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    /// Token counts flanking the compaction (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tokens_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tokens_after: Option<u64>,
+    /// Compaction trigger string (additive): automatic | manual | afterOverflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<String>,
+    /// Epoch millis of the compaction (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -212,6 +227,30 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             message: Some(message.clone()),
             ..Default::default()
         },
+        MessagePart::CompactionDivider {
+            id,
+            summary,
+            tokens_before,
+            tokens_after,
+            trigger,
+            timestamp,
+        } => DocPartJson {
+            id: id.clone(),
+            kind: "compactionDivider".into(),
+            summary: Some(summary.clone()),
+            tokens_before: Some(*tokens_before),
+            tokens_after: Some(*tokens_after),
+            trigger: Some(
+                match trigger {
+                    crate::parts::CompactionTrigger::Automatic => "automatic",
+                    crate::parts::CompactionTrigger::Manual => "manual",
+                    crate::parts::CompactionTrigger::AfterOverflow => "afterOverflow",
+                }
+                .to_owned(),
+            ),
+            timestamp: Some(*timestamp),
+            ..Default::default()
+        },
     })
 }
 
@@ -266,6 +305,18 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
         "notice" => MessagePart::Notice {
             id: p.id,
             message: p.message.unwrap_or_default(),
+        },
+        "compactionDivider" => MessagePart::CompactionDivider {
+            id: p.id,
+            summary: p.summary.unwrap_or_default(),
+            tokens_before: p.tokens_before.unwrap_or_default(),
+            tokens_after: p.tokens_after.unwrap_or_default(),
+            trigger: match p.trigger.as_deref() {
+                Some("manual") => crate::parts::CompactionTrigger::Manual,
+                Some("afterOverflow") => crate::parts::CompactionTrigger::AfterOverflow,
+                _ => crate::parts::CompactionTrigger::Automatic,
+            },
+            timestamp: p.timestamp.unwrap_or_default(),
         },
         "reasoning" => MessagePart::Reasoning {
             id: p.id,

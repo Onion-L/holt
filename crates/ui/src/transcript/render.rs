@@ -373,6 +373,106 @@ impl Transcript {
         column.into_any_element()
     }
 
+    /// The Compaction divider (ADR-0011): a quiet full-width row marking
+    /// where the model's verbatim memory begins — collapsed to one line
+    /// ("Compacted · 45,231 → 8,002 tokens · automatic"), expanding
+    /// thinking-style to the exact summary the model now carries. Neutral
+    /// ink like a notice (this is bookkeeping, not a failure), with the
+    /// same fold mechanics as the skill chip.
+    #[allow(clippy::too_many_arguments)]
+    fn render_compaction_divider(
+        &mut self,
+        row_id: &SharedString,
+        summary: &SharedString,
+        tokens_before: u64,
+        tokens_after: u64,
+        trigger: holt_doc::parts::CompactionTrigger,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fold = self.folds.get(row_id).copied().unwrap_or_default();
+        let open = fold.open.unwrap_or(false);
+        let trigger_label = match trigger {
+            holt_doc::parts::CompactionTrigger::Automatic => "automatic",
+            holt_doc::parts::CompactionTrigger::Manual => "manual",
+            holt_doc::parts::CompactionTrigger::AfterOverflow => "after overflow",
+        };
+        let toggle_row_id = row_id.clone();
+        let header =
+            div()
+                .id(SharedString::from(format!("{row_id}#divider-toggle")))
+                .h(px(CHIP_HEIGHT))
+                .w_full()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_skill_fold(toggle_row_id.clone(), cx)
+                }))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOCK_CIRCLE)
+                                .size(px(13.0))
+                                .flex_none()
+                                .text_color(theme.text_muted.opacity(0.85)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from("Compacted")),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.text_muted.opacity(0.65))
+                                .child(SharedString::from(format!(
+                                    "{tokens_before} → {tokens_after} tokens · {trigger_label}"
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(theme.text_muted.opacity(0.8))
+                                .child(SharedString::from(if open { "▾" } else { "▸" })),
+                        ),
+                );
+        let mut column = div().w_full().flex().flex_col().child(header);
+        if open {
+            column = column.child(
+                div()
+                    .w_full()
+                    .mt(px(2.0))
+                    .mb(px(6.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(crate::theme::ink(0.03))
+                    .id(SharedString::from(format!("{row_id}#divider-body")))
+                    .max_h(px(320.0))
+                    .overflow_y_scroll()
+                    .text_size(px(12.0))
+                    .line_height(px(17.0))
+                    .text_color(theme.text.opacity(0.85))
+                    .child(summary.clone()),
+            );
+        }
+        column.into_any_element()
+    }
+
     /// A `/skill` invocation inside the user bubble: the skill title as an
     /// accent chip at the head of the text flow (the composer's treatment),
     /// with a click through to the source file. The `<skill>` block itself
@@ -916,6 +1016,20 @@ impl Transcript {
             },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::CompactionDivider {
+                summary,
+                tokens_before,
+                tokens_after,
+                trigger,
+            } => self.render_compaction_divider(
+                &row.id,
+                summary,
+                *tokens_before,
+                *tokens_after,
+                *trigger,
+                &theme,
+                cx,
+            ),
         };
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the

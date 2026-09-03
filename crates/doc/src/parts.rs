@@ -117,6 +117,17 @@ pub enum SubagentStatus {
     Failed,
 }
 
+/// Why a Compaction ran (ADR-0011): automatic (the History neared the
+/// model's context window), manual (`/compact`), or the recovery after a
+/// context-overflow error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CompactionTrigger {
+    Automatic,
+    Manual,
+    AfterOverflow,
+}
+
 /// One rendered part of an assistant message.
 // Box-free by design: the doc type is cloned in folds, never hot, and
 // boxing would churn the serialized shape for no runtime win.
@@ -222,6 +233,21 @@ pub enum MessagePart {
         id: String,
         message: String,
     },
+    /// The Compaction divider (ADR-0011): marks where the model's verbatim
+    /// memory begins. The Transcript never loses rows — this row is
+    /// appended, never substituted — and expands to show the exact summary
+    /// the model now carries, with the before/after token counts and the
+    /// trigger. No mapping to the rows it summarizes is kept.
+    #[serde(rename_all = "camelCase")]
+    CompactionDivider {
+        id: String,
+        summary: String,
+        tokens_before: u64,
+        tokens_after: u64,
+        trigger: CompactionTrigger,
+        /// Epoch millis.
+        timestamp: i64,
+    },
 }
 
 impl MessagePart {
@@ -233,7 +259,8 @@ impl MessagePart {
             | MessagePart::Input { id, .. }
             | MessagePart::Skill { id, .. }
             | MessagePart::Error { id, .. }
-            | MessagePart::Notice { id, .. } => id,
+            | MessagePart::Notice { id, .. }
+            | MessagePart::CompactionDivider { id, .. } => id,
         }
     }
 
@@ -268,6 +295,7 @@ impl MessagePart {
             MessagePart::Error { message, .. } | MessagePart::Notice { message, .. } => {
                 message.len()
             }
+            MessagePart::CompactionDivider { summary, .. } => summary.len(),
         }
     }
 }

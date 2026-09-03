@@ -30,7 +30,7 @@ async fn the_history_survives_a_restart_and_feeds_the_next_turn() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "read the notes").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert_eq!(
-        common::summarize(&provider.requests()[0]),
+        common::summarize(&provider.requests()[0].messages),
         ["user:read the notes"]
     );
 
@@ -48,7 +48,7 @@ async fn the_history_survives_a_restart_and_feeds_the_next_turn() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
-    let restarted = common::summarize(&requests[3]);
+    let restarted = common::summarize(&requests[3].messages);
     assert_eq!(restarted.len(), 7);
     assert_eq!(restarted[0], "user:read the notes");
     assert_eq!(restarted[1], "assistant:toolcall:call-1");
@@ -96,7 +96,7 @@ async fn a_crash_mid_turn_loses_no_completed_tool_result() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
-    let summary = common::summarize(&requests[2]);
+    let summary = common::summarize(&requests[2].messages);
     assert_eq!(summary[0], "user:read before the crash");
     assert_eq!(summary[1], "assistant:toolcall:call-9");
     assert!(
@@ -201,7 +201,7 @@ async fn an_interrupted_turn_leaves_an_honest_record() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "actually, don't").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    let next = &requests[1];
+    let next = &requests[1].messages;
     let summary = common::summarize(next);
     assert_eq!(summary[0], "user:please tidy up");
     assert_eq!(summary[1], "assistant:text:i was about to +toolcall:call-7");
@@ -245,7 +245,7 @@ async fn an_errored_turn_keeps_the_prompt_and_drops_the_failed_answer() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(
-        common::summarize(&requests[1]),
+        common::summarize(&requests[1].messages),
         ["user:try this", "user:try again"]
     );
 }
@@ -279,7 +279,7 @@ async fn a_truncated_history_tail_opens_clean_and_repairs() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the truncation").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    let summary = common::summarize(&requests[2]);
+    let summary = common::summarize(&requests[2].messages);
     assert_eq!(summary[0], "user:leave a full record");
     assert_eq!(summary[1], "assistant:toolcall:call-1");
     assert!(
@@ -321,7 +321,7 @@ async fn a_legacy_chat_opens_with_one_persisted_notice_and_a_fresh_memory() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello again").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert_eq!(
-        common::summarize(&provider.requests()[1]),
+        common::summarize(&provider.requests()[1].messages),
         ["user:hello again"]
     );
 
@@ -381,7 +381,7 @@ async fn a_damaged_history_is_quarantined_with_the_reason_on_the_notice() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start over").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert_eq!(
-        common::summarize(&provider.requests()[1]),
+        common::summarize(&provider.requests()[1].messages),
         ["user:start over"]
     );
     assert!(history_file.exists());
