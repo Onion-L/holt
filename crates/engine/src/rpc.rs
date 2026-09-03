@@ -310,6 +310,7 @@ impl StubEngine {
                     parts,
                     prompt.clone(),
                     prompt,
+                    None,
                 )
                 .await?;
             }
@@ -328,15 +329,16 @@ impl StubEngine {
                 let block = crate::skills::invocation_prompt(&skill, None);
                 let prompt =
                     crate::skills::invocation_prompt(&skill, extra_instructions.as_deref());
-                // The transcript records a compact chip whose expandable
-                // body IS the block the model received — the UI never has
-                // to guess what the agent was told to follow. The raw
+                // The user entry keeps the compact chip (name + source
+                // pointer); the `<skill>` block rides the AGENT entry's
+                // opening chip instead — the reply opens with what the
+                // model was told to follow, ahead of any thinking. The raw
                 // `/skill` directive never appears anywhere.
                 let mut parts = vec![MessagePart::Skill {
                     id: "t0".into(),
                     name: skill.name.clone(),
                     file: skill.file_path.clone(),
-                    content: Some(block),
+                    content: None,
                 }];
                 if let Some(extra) = extra_instructions
                     .clone()
@@ -348,6 +350,12 @@ impl StubEngine {
                     });
                 }
                 let preview = format!("/skill {name}");
+                let invocation_seed = MessagePart::Skill {
+                    id: "s0".into(),
+                    name: skill.name.clone(),
+                    file: skill.file_path.clone(),
+                    content: Some(block),
+                };
                 self.start_turn(
                     &params.chat_id,
                     chat,
@@ -356,6 +364,7 @@ impl StubEngine {
                     parts,
                     preview,
                     prompt,
+                    Some(invocation_seed),
                 )
                 .await?;
             }
@@ -374,7 +383,8 @@ impl StubEngine {
     /// Accept and launch one ordinary Turn — the shared tail of `Run` and
     /// `InvokeSkill`. `parts` is the transcript user entry (prompt text or
     /// skill chip), `preview` the sidebar/title text, `prompt` the
-    /// model-visible text.
+    /// model-visible text, and `invocation` the chip seeded at the head of
+    /// the run's own entry (skill invocations only).
     #[allow(clippy::too_many_arguments)]
     async fn start_turn(
         &self,
@@ -385,6 +395,7 @@ impl StubEngine {
         parts: Vec<MessagePart>,
         preview: String,
         prompt: String,
+        invocation: Option<MessagePart>,
     ) -> Result<(), RpcError> {
         // Turn baseline FIRST (ADR-0003): captured synchronously at
         // acceptance, before validation and before the run starts —
@@ -484,6 +495,7 @@ impl StubEngine {
             timestamp,
             cancel,
             skills: self.skills.clone(),
+            invocation,
         }));
         Ok(())
     }

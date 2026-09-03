@@ -492,6 +492,10 @@ pub(crate) struct AgentRun {
     pub(crate) cancel: CancellationToken,
     /// Root resolution for the run's skill listing (ADR-0005/0006).
     pub(crate) skills: crate::skills::Skills,
+    /// A `/skill` invocation's chip (with the `<skill>` block the model
+    /// received), seeded as the FIRST part of the run's entry — the agent
+    /// reply opens with the invocation, ahead of any thinking.
+    pub(crate) invocation: Option<MessagePart>,
 }
 
 pub(crate) async fn run_agent_command(run: AgentRun) {
@@ -507,6 +511,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         timestamp,
         cancel,
         skills,
+        invocation,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
     // AND the transcript's SKILL.md read collapsing — both see the same
@@ -523,12 +528,15 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let sink_run_entry = entry_id.clone();
     // ONE transcript entry per run: every assistant message of the loop
     // appends its parts to the same entry (base holds the parts of the
-    // messages that already ended), so a reply with N tool round-trips
-    // renders as one message — one turn gap, one hover timestamp/copy strip
-    // at its end. Per-message entries stamped a strip mid-reply after every
-    // round-trip, which read as several half-finished replies (user report),
-    // and tool results update parts by tool-call id wherever they sit.
-    let base_parts: Arc<Mutex<Vec<MessagePart>>> = Arc::new(Mutex::new(Vec::new()));
+    // messages that already ended — seeded with the invocation chip, so the
+    // reply opens with the skill before any thinking), so a reply with N
+    // tool round-trips renders as one message — one turn gap, one hover
+    // timestamp/copy strip at its end. Per-message entries stamped a strip
+    // mid-reply after every round-trip, which read as several half-finished
+    // replies (user report), and tool results update parts by tool-call id
+    // wherever they sit.
+    let base_parts: Arc<Mutex<Vec<MessagePart>>> =
+        Arc::new(Mutex::new(invocation.into_iter().collect()));
     let sink_base = base_parts.clone();
     let sink_last_publish = Arc::new(Mutex::new(None::<Instant>));
     let sink_run_start = Instant::now();
@@ -728,13 +736,18 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                 });
                 existing.status = Some(MessageStatus::Aborted);
             } else {
+                // The loop died before its first message: the entry never
+                // materialized, so build it here — the invocation seed
+                // (if any) still leads, the error closes.
+                let mut parts = base_parts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                parts.push(MessagePart::Error {
+                    id: format!("e{}", parts.len()),
+                    message: error,
+                });
                 transcript.push(SessionMessageEntry {
                     id: entry_id,
                     role: MessageRole::Assistant,
-                    parts: vec![MessagePart::Error {
-                        id: "e0".into(),
-                        message: error,
-                    }],
+                    parts,
                     created_at: Utc::now().timestamp_millis(),
                     device_id: runtime.device_id.clone(),
                     status: Some(MessageStatus::Complete),

@@ -332,6 +332,8 @@ async fn invoking_a_skill_chips_in_the_transcript_and_unknown_names_fail() {
     assert_eq!(entry.role, MessageRole::User);
     assert_eq!(entry.parts.len(), 2);
     match &entry.parts[0] {
+        // The user entry keeps the compact chip (name + source pointer);
+        // the `<skill>` block rides the AGENT entry's opening chip.
         MessagePart::Skill {
             name,
             file,
@@ -340,24 +342,7 @@ async fn invoking_a_skill_chips_in_the_transcript_and_unknown_names_fail() {
         } => {
             assert_eq!(name, "grill");
             assert_eq!(file, skill_file.as_str());
-            // The chip's expandable body IS the block the model received —
-            // exactly what was sent, nothing invented.
-            let content = content.as_deref().expect("invocation carries its block");
-            assert!(content.contains("<skill name=\"grill\""), "{content}");
-            assert!(
-                content.contains(&format!("location=\"{skill_file}\"")),
-                "{content}"
-            );
-            assert!(
-                content.contains(&format!(
-                    "References are relative to {}",
-                    fixture.personal_dir.path().join("grill").display()
-                )),
-                "{content}"
-            );
-            assert!(content.ends_with("</skill>"), "{content}");
-            // Extra instructions ride their own part, NOT inside the block.
-            assert!(!content.contains("focus on the data layer"), "{content}");
+            assert_eq!(content, &None);
         }
         other => panic!("expected a skill chip, got {other:?}"),
     }
@@ -366,8 +351,7 @@ async fn invoking_a_skill_chips_in_the_transcript_and_unknown_names_fail() {
         other => panic!("expected the extra text, got {other:?}"),
     }
     // The description never rides the chip, and the raw `/skill <name>`
-    // directive appears nowhere on the entry (the `</skill>` closing tag
-    // of the block is not the directive).
+    // directive appears nowhere on the entry.
     let serialized = serde_json::to_string(entry).unwrap();
     assert!(!serialized.contains("Grill a plan."), "{serialized}");
     assert!(!serialized.contains("/skill "), "{serialized}");

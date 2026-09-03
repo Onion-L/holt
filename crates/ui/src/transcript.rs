@@ -906,10 +906,6 @@ pub fn diff_to_file(diff: &holt_proto::ToolDiff) -> crate::changes::FileDiff {
 pub struct UserSkill {
     pub name: SharedString,
     pub file: SharedString,
-    /// The model-visible `<skill>` block — the invocation chip's
-    /// expandable body. `None` until the engine frame lands (the composer
-    /// echo doesn't know it) and on pre-content docs.
-    pub content: Option<SharedString>,
 }
 
 /// Format a kebab-case or snake_case skill name into Title Case for user bubble display
@@ -1172,15 +1168,11 @@ pub fn rows_for_entry(
 
     if entry.role == MessageRole::User {
         let skill = entry.parts.iter().find_map(|p| match p {
-            MessagePart::Skill {
-                name,
-                file,
-                content,
-                ..
-            } => Some(Arc::new(UserSkill {
+            // The user bubble keeps the compact tag (name + source
+            // pointer); the `<skill>` block rides the agent entry's chip.
+            MessagePart::Skill { name, file, .. } => Some(Arc::new(UserSkill {
                 name: name.clone().into(),
                 file: file.clone().into(),
-                content: content.clone().map(SharedString::from),
             })),
             _ => None,
         });
@@ -1215,17 +1207,7 @@ pub fn rows_for_entry(
             (None, false) => None,
         };
         let skill_fp = skill.as_ref().map_or(0, |s| {
-            // The invocation block rides the fingerprint: the engine frame
-            // supersedes the block-less echo, and the row must re-key.
-            fnv1a(
-                format!(
-                    "{}\u{0}{}\u{0}{}",
-                    s.name,
-                    s.file,
-                    s.content.as_ref().map_or(0, |c| c.len())
-                )
-                .as_bytes(),
-            )
+            fnv1a(format!("{}\u{0}{}", s.name, s.file).as_bytes())
         });
         let version = ((raw.len() as u64) ^ skill_fp) << 1 | pending as u64;
 
@@ -1456,17 +1438,24 @@ pub fn rows_for_entry(
                         id: part_id,
                         name,
                         file,
-                        ..
+                        content,
                     } => {
+                        // The content rides the row version: an invocation
+                        // seed (or a doc carrying one) re-keys the row.
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
-                            version: fnv1a(format!("{name}\u{0}{file}").as_bytes()),
+                            version: fnv1a(
+                                format!(
+                                    "{name}\u{0}{file}\u{0}{}",
+                                    content.as_deref().map_or(0, str::len)
+                                )
+                                .as_bytes(),
+                            ),
                             turn_start: false,
                             kind: RowKind::SkillChip {
                                 name: name.clone().into(),
                                 file: file.clone().into(),
-                                // A read collapse carries no body.
-                                content: None,
+                                content: content.clone().map(SharedString::from),
                                 pending: false,
                             },
                             entry_id: entry_id.clone(),
@@ -3921,9 +3910,8 @@ impl Transcript {
         self.attachment_retries.insert(key, task);
     }
 
-    /// Toggle a `/skill` invocation's fold (the tag in the user bubble is
-    /// the header). Same `folds` map the tool-group accordions use, keyed
-    /// by row id.
+    /// Toggle a skill chip's fold. Same `folds` map the tool-group
+    /// accordions use, keyed by row id.
     fn toggle_skill_fold(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
         let entry = self.folds.entry(row_id).or_default();
         entry.open = Some(!entry.open.unwrap_or(false));
@@ -3931,13 +3919,158 @@ impl Transcript {
         cx.notify();
     }
 
+    /// The invocation chip that OPENS the agent's reply (seeded by the
+    /// engine ahead of any thinking): a process row in the tool-chip
+    /// language — guide rail, header, and a thinking-style fold. Expanding
+    /// reveals the exact `<skill>` block the model received, with the
+    /// source file one click away.
+    fn render_skill_invocation(
+        &mut self,
+        row_id: &SharedString,
+        name: &SharedString,
+        file: &SharedString,
+        content: &SharedString,
+        pending: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self
+            .folds
+            .get(row_id)
+            .and_then(|fold| fold.open)
+            .unwrap_or(false);
+        let formatted_title = format_skill_title(name);
+        let toggle_row_id = row_id.clone();
+        let header =
+            div()
+                .id(SharedString::from(format!("{row_id}#skill-toggle")))
+                .h(px(CHIP_HEIGHT))
+                .w_full()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .cursor_pointer()
+                .when(pending, |el| el.opacity(0.65))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_skill_fold(toggle_row_id.clone(), cx)
+                }))
+                // The tool rows' guide rail: the invocation hangs from the same
+                // rail the thoughts and tool chips hang from.
+                .child(
+                    div()
+                        .ml(px(12.0))
+                        .h_full()
+                        .w(px(1.0))
+                        .flex_none()
+                        .bg(crate::theme::ink(0.08)),
+                )
+                .child(
+                    div()
+                        .ml(px(12.0))
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            crate::icons::icon(crate::icons::CUBE)
+                                .size(px(14.0))
+                                .flex_none()
+                                .text_color(theme.accent),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(SharedString::from(formatted_title)),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .overflow_hidden()
+                                .truncate()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_muted.opacity(0.65))
+                                .child(file.clone()),
+                        )
+                        // Chevron (house pattern): right when closed, down when
+                        // open — gpui has no rotation transform at the pinned rev.
+                        .child(
+                            crate::icons::icon(if open {
+                                crate::icons::ALT_ARROW_DOWN
+                            } else {
+                                crate::icons::ALT_ARROW_RIGHT
+                            })
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(theme.text_muted),
+                        ),
+                );
+
+        let mut column = div().w_full().flex().flex_col().child(header);
+        if open {
+            let url = format!("file://{}", file.trim_start_matches("file://"));
+            column = column.child(
+                div()
+                    .ml(px(12.0))
+                    .pl(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .w_full()
+                            .mb(px(6.0))
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(crate::theme::ink(0.03))
+                            .id(SharedString::from(format!("{row_id}#skill-body")))
+                            .max_h(px(320.0))
+                            .overflow_y_scroll()
+                            .font_family(theme.font_mono.clone())
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .line_height(crate::typography::ui_rems(16.0))
+                            .text_color(theme.text_muted.opacity(0.9))
+                            .child(content.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{row_id}#skill-file")))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .cursor_pointer()
+                            .hover(|el| el.opacity(0.75))
+                            .on_click(move |_, _, cx| {
+                                cx.open_url(&url);
+                            })
+                            .child(
+                                crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
+                                    .size(px(11.0))
+                                    .text_color(theme.accent.opacity(0.8)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.5))
+                                    .text_color(theme.accent.opacity(0.8))
+                                    .child(SharedString::from("Open SKILL.md")),
+                            ),
+                    ),
+            );
+        }
+        column.into_any_element()
+    }
+
     /// A `/skill` invocation inside the user bubble: the
-    /// `[cube icon + Title]` tag is the collapse header (thinking-style).
-    /// Expanding reveals the exact `<skill>` block the model received —
-    /// the answer to "what was the agent actually told?" — with the source
-    /// file one click away inside the body. Without a block (the composer
-    /// echo before the engine frame lands, or a pre-content doc) the tag
-    /// keeps its open-the-file click.
+    /// `[cube icon + Title]` tag with a click through to the source file.
+    /// The `<skill>` block itself rides the AGENT entry's opening chip —
+    /// this bubble only records what the user did.
     fn render_user_skill(
         &mut self,
         row_id: &SharedString,
@@ -3945,17 +4078,12 @@ impl Transcript {
         text: &SharedString,
         mentions: &Arc<Vec<crate::composer::SentMentionSpan>>,
         theme: &Theme,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
-        let expandable = skill.content.is_some();
-        let open = expandable
-            && self
-                .folds
-                .get(row_id)
-                .and_then(|fold| fold.open)
-                .unwrap_or(false);
+        let open_url = (!skill.file.is_empty())
+            .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
         let formatted_title = format_skill_title(&skill.name);
-        let header = div()
+        let skill_tag = div()
             .flex_none()
             .flex()
             .flex_row()
@@ -3972,117 +4100,36 @@ impl Transcript {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.accent)
                     .child(SharedString::from(formatted_title)),
-            )
-            // Chevron (house pattern): right when closed, down when open —
-            // gpui has no rotation transform at the pinned rev.
-            .when(expandable, |el| {
-                el.child(
-                    crate::icons::icon(if open {
-                        crate::icons::ALT_ARROW_DOWN
-                    } else {
-                        crate::icons::ALT_ARROW_RIGHT
-                    })
-                    .size(px(12.0))
-                    .text_color(theme.accent.opacity(0.7)),
-                )
-            });
-        let header: AnyElement =
-            if expandable {
-                let toggle_id = row_id.clone();
-                header
-                    .id(SharedString::from(format!("{row_id}#skill-toggle")))
-                    .cursor_pointer()
-                    .hover(|el| el.opacity(0.8))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_skill_fold(toggle_id.clone(), cx)
-                    }))
-                    .into_any_element()
-            } else {
-                let open_url = (!skill.file.is_empty())
-                    .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
-                match open_url {
-                    Some(url) => header
-                        .id(SharedString::from(format!("{row_id}#skill-toggle")))
-                        .cursor_pointer()
-                        .hover(|el| el.opacity(0.8))
-                        .on_click(move |_, _, cx| {
-                            cx.open_url(&url);
-                        })
-                        .into_any_element(),
-                    None => header.into_any_element(),
-                }
-            };
-
-        let mut bubble = div().flex().flex_col().gap(px(2.0));
+            );
+        let skill_tag: AnyElement = match open_url {
+            Some(url) => skill_tag
+                .id(SharedString::from(format!("{row_id}#skill-file")))
+                .cursor_pointer()
+                .hover(|el| el.opacity(0.8))
+                .on_click(move |_, _, cx| {
+                    cx.open_url(&url);
+                })
+                .into_any_element(),
+            None => skill_tag.into_any_element(),
+        };
         if text.is_empty() {
-            bubble = bubble.child(header);
-        } else {
-            let multi_line = text.contains('\n');
-            bubble = bubble.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .when(multi_line, |el| el.items_start())
-                    .when(!multi_line, |el| el.items_center())
-                    .gap(px(8.0))
-                    .child(header)
-                    .child(div().min_w_0().child(user_bubble_text(
-                        row_id,
-                        text.clone(),
-                        mentions.clone(),
-                        theme,
-                    ))),
-            );
+            return skill_tag;
         }
-        if open && let Some(content) = &skill.content {
-            let file = skill.file.clone();
-            bubble = bubble.child(
-                div()
-                    .w_full()
-                    .mt(px(6.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(crate::theme::ink(0.03))
-                    .id(SharedString::from(format!("{row_id}#skill-body")))
-                    .max_h(px(320.0))
-                    .overflow_y_scroll()
-                    .font_family(theme.font_mono.clone())
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .line_height(crate::typography::ui_rems(16.0))
-                    .text_color(theme.text_muted.opacity(0.9))
-                    .child(SharedString::from(content.clone()))
-                    .child(
-                        div()
-                            .mt(px(8.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(4.0))
-                            .id(SharedString::from(format!("{row_id}#skill-file")))
-                            .cursor_pointer()
-                            .hover(|el| el.opacity(0.75))
-                            .on_click(move |_, _, cx| {
-                                cx.open_url(&format!(
-                                    "file://{}",
-                                    file.trim_start_matches("file://")
-                                ));
-                            })
-                            .child(
-                                crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
-                                    .size(px(11.0))
-                                    .text_color(theme.accent.opacity(0.8)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.5))
-                                    .text_color(theme.accent.opacity(0.8))
-                                    .child(SharedString::from("Open SKILL.md")),
-                            ),
-                    ),
-            );
-        }
-        bubble.into_any_element()
+        let multi_line = text.contains('\n');
+        div()
+            .flex()
+            .flex_row()
+            .when(multi_line, |el| el.items_start())
+            .when(!multi_line, |el| el.items_center())
+            .gap(px(8.0))
+            .child(skill_tag)
+            .child(div().min_w_0().child(user_bubble_text(
+                row_id,
+                text.clone(),
+                mentions.clone(),
+                theme,
+            )))
+            .into_any_element()
     }
 
     /// The right-aligned thumbnail strip above a user bubble.
@@ -4602,11 +4649,18 @@ impl Transcript {
             RowKind::SkillChip {
                 name,
                 file,
-                // Read-collapse chips carry no body today; the invocation
-                // path (user bubble) owns the expandable presentation.
-                content: _,
+                content,
                 pending,
-            } => skill_chip(name.clone(), file.clone(), *pending, &theme),
+            } => match content {
+                // An invocation: the collapsible process row that opens the
+                // agent's reply — expand to see the exact `<skill>` block
+                // the model received, thinking-style.
+                Some(content) => {
+                    self.render_skill_invocation(&row.id, name, file, content, *pending, &theme, cx)
+                }
+                // A read collapse: the compact pointer chip.
+                None => skill_chip(name.clone(), file.clone(), *pending, &theme),
+            },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
@@ -7443,6 +7497,58 @@ mod tests {
         assert_eq!(text.as_ref(), "");
         assert!(skill.is_some());
         assert_eq!(rows[0].copy_text.as_deref(), Some("/skill ask-matt"));
+    }
+
+    #[test]
+    fn invocation_chip_opens_the_agent_entry_before_thinking() {
+        // An invocation-seeded agent entry: the Skill chip (with its
+        // block) leads, thinking follows, text closes.
+        let entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![
+                MessagePart::Skill {
+                    id: "s0".into(),
+                    name: "ask-matt".into(),
+                    file: "/home/.agents/skills/ask-matt/SKILL.md".into(),
+                    content: Some("<skill name=\"ask-matt\">body</skill>".into()),
+                },
+                MessagePart::Reasoning {
+                    id: "r1".into(),
+                    text: "thinking…".into(),
+                },
+                text_part("t2", "answer"),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        match &rows[0].kind {
+            RowKind::SkillChip { name, content, .. } => {
+                assert_eq!(name.as_ref(), "ask-matt");
+                assert_eq!(
+                    content.as_deref(),
+                    Some("<skill name=\"ask-matt\">body</skill>")
+                );
+            }
+            _other => panic!("expected the invocation chip first"),
+        }
+        assert!(matches!(rows[1].kind, RowKind::ToolGroup { .. }));
+        assert!(matches!(rows[2].kind, RowKind::Markdown { .. }));
+
+        // A read-collapse chip (no content) keeps the compact shape and
+        // re-keys with content presence.
+        let mut plain = entry.clone();
+        plain.parts[0] = MessagePart::Skill {
+            id: "s0".into(),
+            name: "ask-matt".into(),
+            file: "/home/.agents/skills/ask-matt/SKILL.md".into(),
+            content: None,
+        };
+        let plain_rows = rows_for_entry(&plain, false, &mut parse);
+        match &plain_rows[0].kind {
+            RowKind::SkillChip { content, .. } => assert_eq!(content, &None),
+            _other => panic!("expected a skill chip"),
+        }
+        assert_ne!(plain_rows[0].version, rows[0].version);
     }
 
     #[test]
