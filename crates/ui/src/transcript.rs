@@ -924,6 +924,20 @@ pub fn format_skill_title(name: &str) -> String {
         .join(" ")
 }
 
+/// The invocation chip's source-file pointer with the home directory
+/// collapsed to `~`: the absolute path is noise in a 12px detail slot, and
+/// `~/.agents/skills/…` reads as the same file at a glance.
+fn skill_file_display(file: &str) -> String {
+    let path = file.trim_start_matches("file://");
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    let home = home.to_string_lossy();
+    if !home.is_empty() && path.starts_with(home.as_ref()) {
+        format!("~{}", &path[home.len()..])
+    } else {
+        path.to_string()
+    }
+}
+
 #[derive(Clone)]
 pub enum RowKind {
     User {
@@ -3911,19 +3925,37 @@ impl Transcript {
     }
 
     /// Toggle a skill chip's fold. Same `folds` map the tool-group
-    /// accordions use, keyed by row id.
+    /// accordions use, keyed by row id. The group's fold heights are
+    /// analytic; this body is intrinsic, so a COLLAPSE captures the row's
+    /// painted height at click time — the tween then shrinks through every
+    /// intermediate height instead of stepping, which is what the stick
+    /// spring oscillates on (user report: the page shook on collapse).
     fn toggle_skill_fold(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
+        let painted = self
+            .rows
+            .iter()
+            .position(|row| row.id == row_id)
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|bounds| f32::from(bounds.size.height));
         let entry = self.folds.entry(row_id).or_default();
-        entry.open = Some(!entry.open.unwrap_or(false));
+        let collapsing = entry.open.unwrap_or(false);
+        entry.from = if collapsing {
+            painted.unwrap_or(CHIP_HEIGHT)
+        } else {
+            CHIP_HEIGHT
+        };
+        entry.open = Some(!collapsing);
         entry.epoch += 1;
+        entry.toggled_at = Some(Instant::now());
         cx.notify();
     }
 
     /// The invocation chip that OPENS the agent's reply (seeded by the
-    /// engine ahead of any thinking): a process row in the tool-chip
-    /// language — guide rail, header, and a thinking-style fold. Expanding
+    /// engine ahead of any thinking): a flush-left process row in the
+    /// tool-chip language — quiet header, thinking-style fold. Expanding
     /// reveals the exact `<skill>` block the model received, with the
-    /// source file one click away.
+    /// source file one click away. Collapsing tweens the measured height
+    /// to zero like the tool-group folds.
     fn render_skill_invocation(
         &mut self,
         row_id: &SharedString,
@@ -3934,11 +3966,16 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let open = self
-            .folds
-            .get(row_id)
-            .and_then(|fold| fold.open)
-            .unwrap_or(false);
+        let fold = self.folds.get(row_id).copied().unwrap_or_default();
+        let open = fold.open.unwrap_or(false);
+        // A fresh COLLAPSE keeps the body mounted for one tween: the wrapper
+        // shrinks the measured height to zero over RESIZE (the tool-group
+        // fold pattern), then the settled closed state unmounts it.
+        let closing = !open
+            && fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
         let formatted_title = format_skill_title(name);
         let toggle_row_id = row_id.clone();
         let header =
@@ -3955,114 +3992,109 @@ impl Transcript {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_skill_fold(toggle_row_id.clone(), cx)
                 }))
-                // The tool rows' guide rail: the invocation hangs from the same
-                // rail the thoughts and tool chips hang from.
                 .child(
+                    // The chip rows' content language (chip_header_row): bare
+                    // 13px muted icon, medium muted label, hugging truncating
+                    // detail, inline disclosure triangle right after it.
                     div()
-                        .ml(px(12.0))
-                        .h_full()
-                        .w(px(1.0))
-                        .flex_none()
-                        .bg(crate::theme::ink(0.08)),
-                )
-                .child(
-                    div()
-                        .ml(px(12.0))
                         .min_w_0()
                         .flex_1()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(6.0))
+                        .gap(px(8.0))
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
                         .child(
                             crate::icons::icon(crate::icons::CUBE)
-                                .size(px(14.0))
+                                .size(px(13.0))
                                 .flex_none()
-                                .text_color(theme.accent),
+                                .text_color(theme.text_muted.opacity(0.85)),
                         )
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(crate::typography::ui_rems(12.5))
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
+                                .text_color(theme.text_muted)
                                 .child(SharedString::from(formatted_title)),
                         )
+                        .when(!file.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .min_w_0()
+                                    .flex_shrink(1.0)
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .text_color(theme.text_muted.opacity(0.65))
+                                    .child(SharedString::from(skill_file_display(file))),
+                            )
+                        })
                         .child(
                             div()
-                                .min_w_0()
-                                .flex_1()
-                                .overflow_hidden()
-                                .truncate()
-                                .text_size(crate::typography::ui_rems(11.0))
-                                .text_color(theme.text_muted.opacity(0.65))
-                                .child(file.clone()),
-                        )
-                        // Chevron (house pattern): right when closed, down when
-                        // open — gpui has no rotation transform at the pinned rev.
-                        .child(
-                            crate::icons::icon(if open {
-                                crate::icons::ALT_ARROW_DOWN
-                            } else {
-                                crate::icons::ALT_ARROW_RIGHT
-                            })
-                            .size(px(12.0))
-                            .flex_none()
-                            .text_color(theme.text_muted),
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(theme.text_muted.opacity(0.8))
+                                .child(SharedString::from(if open { "▾" } else { "▸" })),
                         ),
                 );
 
         let mut column = div().w_full().flex().flex_col().child(header);
-        if open {
+        if open || closing {
             let url = format!("file://{}", file.trim_start_matches("file://"));
-            column = column.child(
-                div()
-                    .ml(px(12.0))
-                    .pl(px(12.0))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .w_full()
-                            .mb(px(6.0))
-                            .px(px(10.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .bg(crate::theme::ink(0.03))
-                            .id(SharedString::from(format!("{row_id}#skill-body")))
-                            .max_h(px(320.0))
-                            .overflow_y_scroll()
-                            .font_family(theme.font_mono.clone())
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .line_height(crate::typography::ui_rems(16.0))
-                            .text_color(theme.text_muted.opacity(0.9))
-                            .child(content.clone()),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("{row_id}#skill-file")))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(4.0))
-                            .cursor_pointer()
-                            .hover(|el| el.opacity(0.75))
-                            .on_click(move |_, _, cx| {
-                                cx.open_url(&url);
-                            })
-                            .child(
-                                crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
-                                    .size(px(11.0))
-                                    .text_color(theme.accent.opacity(0.8)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.5))
-                                    .text_color(theme.accent.opacity(0.8))
-                                    .child(SharedString::from("Open SKILL.md")),
-                            ),
-                    ),
-            );
+            let body = div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .mb(px(6.0))
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .rounded(px(8.0))
+                        .bg(crate::theme::ink(0.03))
+                        .id(SharedString::from(format!("{row_id}#skill-body")))
+                        .max_h(px(320.0))
+                        .overflow_y_scroll()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .line_height(crate::typography::ui_rems(16.0))
+                        .text_color(theme.text_muted.opacity(0.9))
+                        .child(content.clone()),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{row_id}#skill-file")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .cursor_pointer()
+                        .hover(|el| el.opacity(0.75))
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(&url);
+                        })
+                        .child(
+                            crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
+                                .size(px(11.0))
+                                .text_color(theme.accent.opacity(0.8)),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(10.5))
+                                .text_color(theme.accent.opacity(0.8))
+                                .child(SharedString::from("Open SKILL.md")),
+                        ),
+                );
+            if open {
+                column = column.child(body);
+            } else {
+                let from = (fold.from - CHIP_HEIGHT).max(0.0);
+                column = column.child(div().overflow_hidden().child(body).with_animation(
+                    SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
+                    RESIZE.animation(),
+                    move |el, t| el.h(px(motion::lerp(from, 0.0, t))),
+                ));
+            }
         }
         column.into_any_element()
     }
@@ -7442,6 +7474,23 @@ mod tests {
         assert_eq!(
             format_skill_title("retro-manga-graphic-logo"),
             "Retro Manga Graphic Logo"
+        );
+    }
+
+    #[test]
+    fn skill_file_display_collapses_home_and_strips_file_scheme() {
+        let home = std::env::var("HOME").expect("HOME is set in test env");
+        assert_eq!(
+            skill_file_display(&format!("{home}/.agents/skills/ask-matt/SKILL.md")),
+            "~/.agents/skills/ask-matt/SKILL.md"
+        );
+        assert_eq!(
+            skill_file_display(&format!("file://{home}/SKILL.md")),
+            "~/SKILL.md"
+        );
+        assert_eq!(
+            skill_file_display("/opt/skills/ask-matt/SKILL.md"),
+            "/opt/skills/ask-matt/SKILL.md"
         );
     }
 
