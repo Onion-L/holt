@@ -137,6 +137,11 @@ pub struct Chat {
     /// dials the room the registry names. Per-chat and instantly revertible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_gen: Option<u32>,
+    /// The overflow fallback (ADR-0011): the last Turn ended on a context
+    /// overflow, so the next Turn compacts unconditionally before its
+    /// first request. Consumed by that Turn.
+    #[serde(default)]
+    pub compact_before_next_turn: bool,
 }
 
 impl Chat {

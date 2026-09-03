@@ -265,6 +265,53 @@ impl AgentRuntime {
         }
     }
 
+    /// Stamp the chat with the persisted "compact before next Turn" flag
+    /// (the overflow fallback, ADR-0011): the last Turn ended on a context
+    /// overflow, so the next Turn compacts unconditionally first.
+    pub(crate) fn set_compact_before_next_turn(&self, chat_id: &str) {
+        let mut chats = self.chats.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
+            row.compact_before_next_turn = true;
+        }
+        drop(chats);
+        if crate::store::persist_chats(
+            &self.data_dir,
+            &self.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .is_err()
+        {
+            tracing::warn!(target: "holt::agent", "could not persist the overflow flag");
+        }
+        self.publish_chats();
+    }
+
+    /// Read and clear the flag, persisting — consumed exactly once, by the
+    /// Turn that acts on it.
+    pub(crate) fn take_compact_before_next_turn(&self, chat_id: &str) -> bool {
+        let mut chats = self.chats.write().unwrap_or_else(|e| e.into_inner());
+        let flagged = chats
+            .iter_mut()
+            .find(|row| row.id == chat_id)
+            .is_some_and(|row| {
+                let flagged = row.compact_before_next_turn;
+                row.compact_before_next_turn = false;
+                flagged
+            });
+        drop(chats);
+        if flagged {
+            if crate::store::persist_chats(
+                &self.data_dir,
+                &self.chats.read().unwrap_or_else(|e| e.into_inner()),
+            )
+            .is_err()
+            {
+                tracing::warn!(target: "holt::agent", "could not persist clearing the overflow flag");
+            }
+            self.publish_chats();
+        }
+        flagged
+    }
+
     pub(crate) fn set_session(&self, chat_id: &str, status: SessionStatus) {
         let now = Utc::now();
         let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
@@ -889,17 +936,33 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     // History nears the model's context window, shrink it to a summary
     // plus a verbatim tail BEFORE the prompt is appended — the compaction
     // entry lands ahead of it in the file, so replay keeps the prompt
-    // verbatim after the summary. This is never a Turn: no source-context
-    // stamping, no turn-diff baseline reset, no status change.
-    match crate::compaction::compact(
-        &history,
-        &model,
-        &stream_fn,
-        &api_key,
-        holt_doc::parts::CompactionTrigger::Automatic,
-    )
-    .await
-    {
+    // verbatim after the summary. The overflow fallback compacts the same
+    // way UNCONDITIONALLY (the estimate already missed once), consuming
+    // the persisted flag. Either way this is never a Turn: no
+    // source-context stamping, no turn-diff baseline reset, no status
+    // change.
+    let overflow_recovery = runtime.take_compact_before_next_turn(&chat_id);
+    let turn_start_compaction = if overflow_recovery {
+        crate::compaction::compact_now(
+            &history,
+            &model,
+            &stream_fn,
+            &api_key,
+            holt_doc::parts::CompactionTrigger::AfterOverflow,
+            None,
+        )
+        .await
+    } else {
+        crate::compaction::compact(
+            &history,
+            &model,
+            &stream_fn,
+            &api_key,
+            holt_doc::parts::CompactionTrigger::Automatic,
+        )
+        .await
+    };
+    match turn_start_compaction {
         Ok(Some(outcome)) => {
             record_turn_start_compaction(&chat, &runtime.device_id, &outcome.record);
             *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages.clone();
@@ -1024,6 +1087,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             })
         },
     );
+    let overflow_model = model.clone();
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -1107,6 +1171,34 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             drop(transcript);
             if settled {
                 chat.publish();
+            }
+            // The overflow fallback (ADR-0011): the estimator missed and
+            // the provider said so (or the usage silently exceeded the
+            // window). Stamp the chat — the NEXT Turn compacts
+            // unconditionally — and say so readably. No in-Turn retry.
+            let overflowed = messages.iter().rev().find_map(|message| match message {
+                AgentMessage::Assistant(assistant) => {
+                    Some(pi_core::ai::utils::overflow::is_context_overflow(
+                        assistant,
+                        Some(overflow_model.context_window),
+                    ))
+                }
+                _ => None,
+            });
+            if overflowed == Some(true) {
+                runtime.set_compact_before_next_turn(&chat_id);
+                push_system_part(
+                    &chat,
+                    &runtime.device_id,
+                    format!("overflow-{}", uuid::Uuid::new_v4()),
+                    MessagePart::Notice {
+                        id: "n0".into(),
+                        message: "This conversation outgrew the model's context window. \
+                                  The next message will first compact the conversation \
+                                  into a summary, then continue."
+                            .into(),
+                    },
+                );
             }
             errored
         }

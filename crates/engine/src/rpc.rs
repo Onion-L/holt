@@ -185,6 +185,7 @@ impl LocalEngine {
             space_id: params.space_id,
             last_seen_at: None,
             room_gen: None,
+            compact_before_next_turn: false,
         });
         drop(chats);
         persist_chats(
