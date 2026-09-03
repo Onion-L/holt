@@ -404,6 +404,40 @@ impl StubEngine {
         if let Ok(baseline) = self.git.turn_baseline(&request.cwd).await {
             self.turns.insert(chat_id, baseline);
         }
+        // Turn identity (ADR-0007): beside the baseline, restamp the chat
+        // row's cwd from the request and stamp its branch + source context
+        // from the working directory's live HEAD — synchronously at
+        // acceptance, so a run rejected further down still records where its
+        // Turn would run. Non-git folders stamp only the cwd.
+        let source = self
+            .git
+            .turn_source_context(&request.cwd, &self.engine_info.device_id)
+            .await;
+        let stamped = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut stamped = false;
+            if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
+                row.cwd = Some(request.cwd.clone());
+                if let Some(source) = source.as_ref() {
+                    row.branch = Some(source.branch.clone());
+                    row.source_context = Some(source.clone());
+                }
+                stamped = true;
+            }
+            stamped
+        };
+        if stamped {
+            persist_chats(
+                &self.data_dir,
+                &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+            )
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+            self.runtime.publish_chats();
+        }
         let Some(api_key) = self
             .providers
             .credentials
@@ -450,7 +484,9 @@ impl StubEngine {
                 .write()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
-                row.cwd = Some(request.cwd.clone());
+                // cwd + branch + source context already restamped at
+                // acceptance, above — this pass records the run's config
+                // and sidebar bookkeeping.
                 row.config = Some(ChatConfig {
                     provider: request.provider.clone(),
                     model: request.model.clone(),

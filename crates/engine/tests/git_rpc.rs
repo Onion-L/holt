@@ -1958,3 +1958,181 @@ async fn turn_baseline_patch_rides_the_three_mib_cap() {
     assert!(diff.files.iter().any(|file| file.path == "README.md"));
     assert!(diff.patch.len() <= 4 * 1024 * 1024);
 }
+
+// ---- live branch switching: Turn identity stamps (ADR-0007) ----
+
+use holt_proto::Chat;
+
+/// Register a space at an explicit path (the plain `register_space` pins the
+/// fixture's repo folder).
+async fn register_space_at(engine: &StubEngine, space_id: &str, path: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createSpace",
+                "spaceId": space_id,
+                "deviceId": engine.engine_info().device_id,
+                "path": path,
+                "gitDetected": true,
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+async fn create_chat(engine: &StubEngine, chat_id: &str, space_id: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": chat_id,
+                "spaceId": space_id,
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+async fn chat_row(engine: &StubEngine, chat_id: &str) -> Chat {
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchChats did not return a stream");
+    };
+    let value = chats.next().await.expect("chats snapshot");
+    let chats: Vec<Chat> = serde_json::from_value(value).unwrap();
+    chats
+        .into_iter()
+        .find(|chat| chat.id == chat_id)
+        .expect("chat row present")
+}
+
+/// Canonicalize for comparison: a temp dir path and the workdir libgit2
+/// reports can disagree on symlink prefixes (/var vs /private/var).
+fn canon(path: &str) -> String {
+    std::fs::canonicalize(path).unwrap().display().to_string()
+}
+
+#[tokio::test]
+async fn accepted_run_stamps_branch_and_source_context_from_head() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+
+    // A bogus provider still lands the identity stamps: they happen
+    // synchronously at command acceptance, before validation.
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+
+    let chat = chat_row(&engine, "chat-1").await;
+    assert_eq!(chat.branch.as_deref(), Some("main"));
+    let source = chat.source_context.expect("source context stamped");
+    assert_eq!(source.branch, "main");
+    assert_eq!(source.cwd, fixture.repo_path());
+    assert_eq!(canon(&source.repo_root), canon(&fixture.repo_path()));
+    assert!(
+        source.head_sha.is_some(),
+        "the stamped HEAD sha rides along"
+    );
+    // The checkout id matches the identity the space minted for the folder.
+    let space = first_space(&engine).await;
+    assert_eq!(
+        source.checkout_id,
+        space.checkout_id.expect("space identity minted")
+    );
+}
+
+#[tokio::test]
+async fn a_run_restamps_the_chat_row_cwd_from_the_request() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    // The chat is minted with a cwd away from the repo folder; the Run's
+    // request carries the repo path.
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": "chat-1",
+                "spaceId": "space-1",
+                "cwd": "/elsewhere",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        chat_row(&engine, "chat-1").await.cwd.as_deref(),
+        Some("/elsewhere"),
+        "precondition: creation stamps the passed cwd"
+    );
+
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+
+    let chat = chat_row(&engine, "chat-1").await;
+    assert_eq!(
+        chat.cwd.as_deref(),
+        Some(fixture.repo_path().as_str()),
+        "the per-Run cwd restamp follows the request"
+    );
+}
+
+#[tokio::test]
+async fn a_switch_between_runs_restamps_branch_and_source_context() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    let first = chat_row(&engine, "chat-1").await;
+    let first = first.source_context.expect("first stamp landed");
+
+    engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "refName": "feature",
+            }),
+        )
+        .await
+        .unwrap();
+
+    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    let chat = chat_row(&engine, "chat-1").await;
+    assert_eq!(chat.branch.as_deref(), Some("feature"));
+    let second = chat.source_context.expect("second stamp landed");
+    assert_eq!(second.branch, "feature");
+    assert_eq!(second.cwd, first.cwd, "the working directory never moves");
+    assert_eq!(second.repo_root, first.repo_root);
+    assert_eq!(second.checkout_id, first.checkout_id);
+    assert_ne!(
+        second.head_sha, first.head_sha,
+        "main and feature point at different commits"
+    );
+}
+
+#[tokio::test]
+async fn a_run_on_a_non_git_folder_leaves_the_identity_unstamped() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    let plain = TempDir::new().unwrap();
+    let plain_path = plain.path().display().to_string();
+    register_space_at(&engine, "space-plain", &plain_path).await;
+    create_chat(&engine, "chat-1", "space-plain").await;
+
+    // The bogus-provider rejection here is the same as ever — the non-git
+    // folder must not turn it into a different failure.
+    queue_bogus_run(&engine, "chat-1", &plain_path).await;
+
+    let chat = chat_row(&engine, "chat-1").await;
+    assert_eq!(chat.branch, None, "no branch to stamp on a plain folder");
+    assert!(chat.source_context.is_none());
+    // The cwd restamp is unconditional: it still follows the request.
+    assert_eq!(chat.cwd.as_deref(), Some(plain_path.as_str()));
+}

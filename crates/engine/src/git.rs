@@ -239,6 +239,25 @@ impl Git {
         .await
     }
 
+    /// The Turn identity stamp (ADR-0007): the working directory's live HEAD
+    /// — branch, head sha, repo root, and the canonical checkout identity —
+    /// captured at Run acceptance. `None` when the folder is not a git work
+    /// tree or HEAD carries no branch: nothing is stamped, nothing fails.
+    pub(crate) async fn turn_source_context(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+    ) -> Option<holt_proto::ConversationSourceContext> {
+        let device_id = device_id.to_string();
+        let cwd = repo_path.to_string();
+        self.with_repo(repo_path, move |repo| {
+            Ok::<_, String>(source_context_stamp(&repo, &device_id, &cwd))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// The "Latest turn" capture: `HEAD@start → workdir`, net-change
     /// filtered against the turn baseline. Available live while a run is
     /// in flight; re-keys on the CURRENT head so commits during the turn
@@ -434,6 +453,32 @@ fn current_branch(repo: &Repository) -> Option<String> {
         return None;
     }
     head.shorthand().ok().map(str::to_string)
+}
+
+/// Build the [`holt_proto::ConversationSourceContext`] for a working
+/// directory's live HEAD: `None` when HEAD carries no branch (detached) or
+/// the repository has no work tree. The checkout id hashes the checkout's
+/// OWN git dir, so a linked worktree never collides with its parent (see
+/// [`checkout_identity`]).
+fn source_context_stamp(
+    repo: &Repository,
+    device_id: &str,
+    cwd: &str,
+) -> Option<holt_proto::ConversationSourceContext> {
+    let branch = current_branch(repo)?;
+    let head_sha = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string());
+    Some(holt_proto::ConversationSourceContext {
+        checkout_id: checkout_identity(device_id, &normalize(repo.path())),
+        repo_root: repo.workdir()?.display().to_string(),
+        cwd: cwd.to_string(),
+        branch,
+        head_sha,
+        observed_at: chrono::Utc::now(),
+    })
 }
 
 /// Create nothing, merge nothing, stash nothing: resolve the branch, check
