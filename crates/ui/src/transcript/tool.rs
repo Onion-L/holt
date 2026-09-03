@@ -388,3 +388,285 @@ pub(super) fn format_kb(bytes: u64) -> String {
         format!("{} KB", bytes.div_ceil(1024))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_diff_builds_real_hunks_with_context_and_numbers() {
+        use crate::changes::LineKind;
+        let old = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        let mut new = old.clone();
+        new[9] = "LINE 10".into();
+        let diff = holt_proto::ToolDiff {
+            path: "/w/a.rs".into(),
+            old_text: Some(old.join("\n") + "\n"),
+            new_text: new.join("\n") + "\n",
+        };
+        let Some(ToolDetail::Diff {
+            file,
+            old_text,
+            new_text,
+        }) = tool_detail(None, Some(&diff), None)
+        else {
+            panic!("expected diff detail");
+        };
+        // One hunk: the change plus 3 context lines each side, real numbers.
+        assert_eq!(file.hunks.len(), 1);
+        let hunk = &file.hunks[0];
+        assert_eq!(hunk.header, "@@ -7,7 +7,7 @@");
+        assert_eq!(hunk.lines.len(), 8); // 6 context + 1 del + 1 add
+        let del = hunk
+            .lines
+            .iter()
+            .find(|l| l.kind == LineKind::Del)
+            .expect("del line");
+        assert_eq!(del.old_no, Some(10));
+        assert_eq!(del.new_no, None);
+        assert_eq!(del.text, "line 10");
+        let add = hunk
+            .lines
+            .iter()
+            .find(|l| l.kind == LineKind::Add)
+            .expect("add line");
+        assert_eq!(add.new_no, Some(10));
+        assert_eq!(add.text, "LINE 10");
+        assert_eq!((file.additions, file.deletions), (1, 1));
+        assert_eq!(old_text.as_deref(), diff.old_text.as_deref());
+        assert_eq!(new_text.as_deref(), Some(diff.new_text.as_str()));
+        // New files carry Added status (and no old numbers).
+        let created = holt_proto::ToolDiff {
+            path: "/w/new.txt".into(),
+            old_text: None,
+            new_text: "only\n".into(),
+        };
+        let Some(ToolDetail::Diff {
+            file,
+            old_text,
+            new_text,
+        }) = tool_detail(None, Some(&created), None)
+        else {
+            panic!("expected diff detail");
+        };
+        assert_eq!(file.status, crate::changes::FileStatus::Added);
+        assert!(old_text.is_none());
+        assert_eq!(new_text.as_deref(), Some("only\n"));
+
+        // Output: verbatim lines (indentation intact), counted-tail cap.
+        // 40 lines rides whole — the doc carries full output now, the inline
+        // cap is the fetched-blob ceiling (400), not the old 24.
+        let output = (0..40)
+            .map(|i| format!("    indented {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let Some(ToolDetail::Output {
+            lines,
+            truncated_by,
+        }) = tool_detail(Some(&output), None, None)
+        else {
+            panic!("expected output detail");
+        };
+        assert_eq!(lines.len(), 40);
+        assert_eq!(truncated_by, 0);
+        assert_eq!(lines[0].as_ref(), "    indented 0");
+
+        // Past the ceiling the counted tail returns.
+        let big = (0..FULL_OUTPUT_MAX_LINES + 9)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let Some(ToolDetail::Output {
+            lines,
+            truncated_by,
+        }) = tool_detail(Some(&big), None, None)
+        else {
+            panic!("expected output detail");
+        };
+        assert_eq!(lines.len(), FULL_OUTPUT_MAX_LINES);
+        assert_eq!(truncated_by, 9);
+
+        // Nothing → no affordance.
+        assert!(tool_detail(None, None, None).is_none());
+        assert!(tool_detail(Some("\n\n"), None, None).is_none());
+    }
+
+    #[test]
+    fn tool_group_summaries() {
+        let exec = |c: &str| ToolItem {
+            call: ToolCall::Exec { command: c.into() },
+            is_error: false,
+            resolved: true,
+            detail: None,
+            invocation: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+            is_thought: false,
+        };
+        let edit = |p: &str| ToolItem {
+            call: ToolCall::EditFile {
+                path: p.into(),
+                old_string: None,
+                new_string: None,
+            },
+            is_error: false,
+            resolved: true,
+            detail: None,
+            invocation: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+            is_thought: false,
+        };
+        let tools = vec![
+            exec("ls"),
+            exec("pwd"),
+            exec("make"),
+            edit("a.rs"),
+            edit("b.rs"),
+        ];
+        assert_eq!(
+            tool_group_summary(&tools),
+            "Ran 3 commands · edited 2 files"
+        );
+        // Distinct-path dedupe: editing one file twice counts once.
+        let tools = vec![edit("a.rs"), edit("a.rs")];
+        assert_eq!(tool_group_summary(&tools), "Edited 1 file");
+        // Failures append.
+        let mut failing = exec("boom");
+        failing.is_error = true;
+        assert_eq!(tool_group_summary(&[failing]), "Ran 1 command · 1 failed");
+        // Reads / searches / misc.
+        let tools = vec![
+            ToolItem {
+                call: ToolCall::ReadFile { path: "x".into() },
+                is_error: false,
+                resolved: true,
+                detail: None,
+                invocation: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+                is_thought: false,
+            },
+            ToolItem {
+                call: ToolCall::Glob {
+                    pattern: "*.rs".into(),
+                },
+                is_error: false,
+                resolved: true,
+                detail: None,
+                invocation: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+                is_thought: false,
+            },
+            ToolItem {
+                call: ToolCall::WebSearch { query: "q".into() },
+                is_error: false,
+                resolved: true,
+                detail: None,
+                invocation: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+                is_thought: false,
+            },
+        ];
+        assert_eq!(tool_group_summary(&tools), "Read 1 file · searched 2 times");
+    }
+
+    #[test]
+    fn call_block_carries_the_full_invocation() {
+        // Multi-line command: verbatim lines, not the flattened chip line.
+        let Some(ToolDetail::Output {
+            lines,
+            truncated_by,
+        }) = call_block(&ToolCall::Exec {
+            command: "set -e\ncargo test".into(),
+        })
+        else {
+            panic!("expected an output block")
+        };
+        assert_eq!(truncated_by, 0);
+        assert_eq!(
+            lines.iter().map(|l| l.as_ref()).collect::<Vec<_>>(),
+            vec!["set -e", "cargo test"]
+        );
+
+        // A long single-line command soft-wraps instead of ellipsizing.
+        let Some(ToolDetail::Output { lines, .. }) = call_block(&ToolCall::Exec {
+            command: "x".repeat(CALL_WRAP_COLS * 2 + 10),
+        }) else {
+            panic!("expected an output block")
+        };
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.chars().count() <= CALL_WRAP_COLS));
+
+        // MCP input pretty-prints under the `server · tool` line.
+        let Some(ToolDetail::Output { lines, .. }) = call_block(&ToolCall::Mcp {
+            server: "gh".into(),
+            tool: "issues".into(),
+            input: Some(serde_json::json!({"repo": "holt"})),
+        }) else {
+            panic!("expected an output block")
+        };
+        assert_eq!(lines[0].as_ref(), "gh · issues");
+        assert!(lines.iter().any(|l| l.contains("\"repo\": \"holt\"")));
+
+        // Todos list one item per line with checkbox state.
+        let Some(ToolDetail::Output { lines, .. }) = call_block(&ToolCall::Todo {
+            items: vec![
+                holt_proto::TodoItem {
+                    text: "a".into(),
+                    done: true,
+                },
+                holt_proto::TodoItem {
+                    text: "b".into(),
+                    done: false,
+                },
+            ],
+        }) else {
+            panic!("expected an output block")
+        };
+        assert_eq!(
+            lines.iter().map(|l| l.as_ref()).collect::<Vec<_>>(),
+            vec!["[x] a", "[ ] b"]
+        );
+
+        // Blank invocation → no block; the chip stays a plain card.
+        assert!(
+            call_block(&ToolCall::Exec {
+                command: "  \n ".into()
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn chips_height_is_analytic() {
+        assert_eq!(chips_height(0), 0.0);
+        assert_eq!(chips_height(1), CHIPS_TOP_PAD + CHIP_HEIGHT);
+        assert_eq!(
+            chips_height(3),
+            CHIPS_TOP_PAD + 3.0 * CHIP_HEIGHT + 2.0 * CHIP_GAP
+        );
+    }
+}

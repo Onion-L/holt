@@ -7,7 +7,8 @@ use std::collections::{HashMap, VecDeque};
 
 use gpui::{Bounds, ListOffset, Pixels, Point, SharedString, px};
 
-use super::{Row, fnv1a};
+use super::Row;
+use super::model::fnv1a;
 use crate::theme::Theme;
 pub const STICK_THRESHOLD_PX: f32 = 70.0;
 /// List overdraw beyond the viewport.
