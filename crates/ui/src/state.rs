@@ -3,9 +3,8 @@
 //!
 //! ## EngineHandle
 //! The UI talks to the backend over the typed RPC. [`EngineHandle::bootstrap`]
-//! embeds the backend (currently the `holt-engine` stub) in-process over the
-//! in-memory RPC transport ([`InProcessEngine`]). A real backend replaces the
-//! stub without touching this file as long as it serves the same methods.
+//! embeds the backend (the local `holt-engine` backend) in-process over the
+//! in-memory RPC transport ([`InProcessEngine`]). The backend remains behind the same RPC contract.
 //!
 //! ## Async bridging
 //! `bootstrap` runs on tokio via `gpui_tokio::Tokio::spawn`. Once an [`RpcClient`]
@@ -28,7 +27,7 @@ use serde::de::DeserializeOwned;
 
 use crate::comments::DiffComment;
 use holt_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use holt_engine::{EngineConfig, StubEngine};
+use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, EngineInfo,
     Session, Space, WorkspaceScope,
@@ -68,9 +67,9 @@ trait EngineBackend: Send + Sync {
     async fn shutdown(&self);
 }
 
-/// Embedded backend: owns the [`StubEngine`] and an in-memory RPC loop.
+/// Embedded backend: owns the [`LocalEngine`] and an in-memory RPC loop.
 struct InProcessEngine {
-    _engine: Arc<StubEngine>,
+    _engine: Arc<LocalEngine>,
     client: RpcClient,
 }
 
@@ -83,7 +82,7 @@ impl EngineBackend for InProcessEngine {
         EngineMode::InProcess
     }
     async fn shutdown(&self) {
-        // Nothing to drain in the stub; a real backend flushes here.
+        // The in-process backend has no separate shutdown work.
     }
 }
 
@@ -99,7 +98,7 @@ impl EngineHandle {
     /// Must run on the tokio runtime (`Tokio::spawn`): the transport spawns
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
-        let engine = Arc::new(StubEngine::assemble(&EngineConfig {
+        let engine = Arc::new(LocalEngine::assemble(&EngineConfig {
             data_dir: config.data_dir,
             personal_skills_dir: None,
         })?);
@@ -1492,7 +1491,7 @@ mod tests {
     use holt_proto::{SessionStatus, UserProfile};
 
     #[tokio::test]
-    async fn bootstrap_embeds_the_stub_engine() {
+    async fn bootstrap_embeds_the_local_engine() {
         let dir = tempfile::tempdir().unwrap();
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),

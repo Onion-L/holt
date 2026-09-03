@@ -5,7 +5,7 @@
 //! `RpcService` trait exactly as the UI drives it. The scans are fresh per
 //! call, so entries can appear and disappear mid-test without rebuilds.
 
-use holt_engine::{EngineConfig, StubEngine};
+use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{SkillListing, SkillRoot};
 use holt_rpc::{RpcReply, RpcService, methods};
 use tempfile::TempDir;
@@ -29,8 +29,8 @@ impl Fixture {
         }
     }
 
-    fn engine(&self) -> StubEngine {
-        StubEngine::assemble(&EngineConfig {
+    fn engine(&self) -> LocalEngine {
+        LocalEngine::assemble(&EngineConfig {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
         })
@@ -41,7 +41,7 @@ impl Fixture {
         self.project_dir.path().display().to_string()
     }
 
-    async fn list(&self, engine: &StubEngine) -> SkillListing {
+    async fn list(&self, engine: &LocalEngine) -> SkillListing {
         let RpcReply::Value(value) = engine
             .handle(
                 methods::LIST_SKILLS,
@@ -236,7 +236,7 @@ async fn ignore_files_keep_entries_out_of_the_catalog() {
 
 /// Queue an `invokeSkill` command exactly as the composer serializes it.
 async fn invoke(
-    engine: &StubEngine,
+    engine: &LocalEngine,
     cwd: &str,
     name: &str,
     extra: Option<&str>,

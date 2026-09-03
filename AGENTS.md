@@ -24,8 +24,8 @@ path.
 
 - The UI never links backend logic. It talks the typed RPC contract in
   `crates/rpc` over the in-process memory transport; `rpc::methods` is the
-  full UI↔backend surface. `StubEngine` in `crates/engine` serves it today; a
-  different backend slots in behind the same `RpcService` trait.
+  full UI↔backend surface. `LocalEngine` in `crates/engine` serves it today; a
+  different backend can slot in behind the same `RpcService` trait.
 - `crates/ui` is agent-agnostic: it renders `MessagePart`s from `holt-doc`,
   never raw agent events.
 
