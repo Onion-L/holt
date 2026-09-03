@@ -45,6 +45,9 @@ pub enum ScriptedReply {
     /// directory and asks the model again, so the script needs a following
     /// entry for the second round.
     ToolCalls(Vec<ToolCall>),
+    /// Tool calls reporting different usage than the provider pin (the
+    /// mid-Turn compaction fires off a tool round's own usage).
+    ToolCallsWithUsage { calls: Vec<ToolCall>, usage: Usage },
     /// A stream cut mid-text — the shape an interruption leaves behind: the
     /// partial content and any tool calls already streamed land, stop
     /// reason `aborted`, and the calls never execute.
@@ -83,6 +86,19 @@ impl ScriptedReply {
         ScriptedReply::Aborted {
             partial: partial.into(),
             tool_calls: Vec::new(),
+        }
+    }
+
+    /// A single tool-call round with a usage pin (see `ToolCallsWithUsage`).
+    pub fn tool_call_with_usage(
+        id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+        usage: Usage,
+    ) -> Self {
+        ScriptedReply::ToolCallsWithUsage {
+            calls: vec![tool_call(id, name, arguments)],
+            usage,
         }
     }
 
@@ -231,6 +247,15 @@ fn push_reply(
             });
         }
         ScriptedReply::ToolCalls(calls) => {
+            message.content = calls.into_iter().map(AssistantContent::ToolCall).collect();
+            message.stop_reason = StopReason::ToolUse;
+            stream.push(AssistantMessageEvent::Done {
+                reason: DoneReason::ToolUse,
+                message,
+            });
+        }
+        ScriptedReply::ToolCallsWithUsage { calls, usage } => {
+            message.usage = usage;
             message.content = calls.into_iter().map(AssistantContent::ToolCall).collect();
             message.stop_reason = StopReason::ToolUse;
             stream.push(AssistantMessageEvent::Done {

@@ -21,7 +21,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module. Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -93,12 +93,39 @@ reads render as compact chips in the transcript.
 
 The implemented agent slice is intentionally narrow: provider configuration,
 provider/model discovery, `createChat`, chat/session watches, `QueueCommand`
-run/interrupt, and streamed transcript frames. The run loop mounts pi-core's
+run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run loop mounts pi-core's
 built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
 named `grep` (ripgrep's crates in process, ADR-0004); the transcript folds their
-calls and results into `MessagePart::Tool` chips. Durable sessions, steering,
-worktrees, and uploads remain outside this slice.
+calls and results into `MessagePart::Tool` chips.
+
+Conversation memory (ADR-0010/0011): a chat's **History** — the model-facing
+`AgentMessage` sequence — persists as its own append-only JSONL record next to
+the Transcript (`engine::history`), appended per message as a Turn runs and
+replayed on load, so the model remembers exactly what the Transcript shows
+across restarts and crashes. A repair invariant keeps the record a valid
+provider request (interrupted Turns keep an honest interrupted record with
+synthetic error tool results; errored Turns keep the prompt and drop the
+failed answer), and a damaged file is quarantined (`.corrupt`) with a
+Transcript notice rather than blocking the chat. **Compaction**
+(`engine::compaction`) shrinks a long History into a model-written summary
+plus a verbatim recent tail, using pi-core's compaction primitives through
+the same stream function the agent loop uses: automatically before a Turn
+and between tool rounds (`prepare_next_turn`), manually with the `/compact`
+slash command (a typed command — the `Compacting` session status is
+interruptible like a run), and unconditionally on the Turn after a context
+overflow. The Transcript never shrinks — dividers (expandable, with
+before/after token counts and the trigger) and notices mark what happened.
+Terminals, worktrees, change requests, uploads, and steering remain outside
+this slice.
+
+The engine's integration tests drive whole Turns through `RpcService::handle`
+against a scripted provider injected via `EngineConfig::stream_fn` (set only
+by tests): the fake transport records every request's message list — what
+the model would receive — and replies from a script (text, tool calls,
+aborted streams, provider errors, pinned usage), so persistence, repair,
+compaction, and overflow behavior are asserted without a real provider
+(`crates/engine/tests`).
 
 ## Provenance notes
 

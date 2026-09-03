@@ -16,12 +16,15 @@ use common::{RecordedRequest, ScriptedProvider, ScriptedReply};
 use holt_rpc::RpcService as _;
 use pi_core::ai::types::{Message, Usage};
 
-/// Past the threshold for openai/gpt-5.4 (272k window − 16384 reserve).
+/// Past the compaction threshold for openai/gpt-5.4 (272k window − 16384
+/// reserve) but still UNDER the window, so the silent-overflow detector
+/// (ticket 08) does not turn these automatic compactions into
+/// after-overflow ones.
 fn overflowing_usage() -> Usage {
     Usage {
-        input: 299_000,
-        output: 1_000,
-        total_tokens: 300_000,
+        input: 260_000,
+        output: 500,
+        total_tokens: 260_500,
         ..common::fixed_usage()
     }
 }

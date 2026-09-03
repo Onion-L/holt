@@ -1546,6 +1546,7 @@ mod tests {
             space_id: None,
             last_seen_at: None,
             room_gen: None,
+            compact_before_next_turn: false,
         }
     }
 
