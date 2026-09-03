@@ -2136,3 +2136,160 @@ async fn a_run_on_a_non_git_folder_leaves_the_identity_unstamped() {
     // The cwd restamp is unconditional: it still follows the request.
     assert_eq!(chat.cwd.as_deref(), Some(plain_path.as_str()));
 }
+
+#[tokio::test]
+async fn a_dirty_switch_refusal_names_the_blocking_files() {
+    let fixture = Fixture::new();
+    // A branch that changes two files relative to main: the tracked
+    // README (edited) and a fresh delta.txt.
+    let repo = fixture.repo();
+    let base = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    commit_on(
+        &repo,
+        "refs/heads/delta",
+        Some(base),
+        &[("README.md", "delta readme\n"), ("delta.txt", "delta\n")],
+        "delta",
+    );
+    drop(repo);
+
+    let engine = fixture.engine();
+    // Local dirt: README.md edited (tracked, the branch changes it too),
+    // delta.txt present untracked (the branch would overwrite it), and a
+    // scratch file the branch does NOT touch (must not block).
+    std::fs::write(fixture.repo_dir.path().join("README.md"), "local edit\n").unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("delta.txt"),
+        "precious uncommitted work\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.repo_dir.path().join("scratch.txt"),
+        "dirty but untouched by the branch\n",
+    )
+    .unwrap();
+
+    let error = match engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "refName": "delta",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("dirty switch must fail"),
+    };
+    let message = error.to_string();
+    assert!(
+        message.starts_with("switch refused:"),
+        "the refusal marker the UI parses must lead: {message}"
+    );
+    assert!(
+        message.contains("uncommitted changes would be overwritten"),
+        "the human-readable explanation rides along: {message}"
+    );
+    let files: Vec<&str> = message
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        files,
+        vec!["README.md", "delta.txt"],
+        "exactly the conflicting paths, sorted, one per line: {message}"
+    );
+
+    // The refusal left the tree and HEAD where they were.
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+    assert_eq!(
+        std::fs::read_to_string(fixture.repo_dir.path().join("delta.txt")).unwrap(),
+        "precious uncommitted work\n"
+    );
+}
+
+#[tokio::test]
+async fn a_clean_switch_between_branches_moves_head() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine();
+    engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "refName": "alpha",
+            }),
+        )
+        .await
+        .unwrap();
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "alpha");
+    // And back — the working tree stays clean through both hops.
+    engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "refName": "main",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fixture.repo().head().unwrap().shorthand().unwrap(), "main");
+}
+
+#[tokio::test]
+async fn a_worktree_hosted_ref_is_refused_by_git_itself() {
+    let fixture = Fixture::new();
+    let wt_dir = TempDir::new().unwrap();
+    let wt_path = wt_dir.path().join("wt");
+    let repo = fixture.repo();
+    let feature_ref = repo
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap()
+        .into_reference();
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(&feature_ref));
+    repo.worktree("wt-switch", &wt_path, Some(&options))
+        .unwrap();
+    drop(feature_ref);
+    drop(repo);
+
+    let engine = fixture.engine();
+    let error = match engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({
+                "repoPath": fixture.repo_path(),
+                "refName": "feature",
+            }),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a ref held by another worktree must not be switchable"),
+    };
+    // Not a dirty-tree refusal: git's own "checked out elsewhere" rule.
+    let message = error.to_string();
+    assert!(
+        !message.starts_with("switch refused:"),
+        "worktree-hosted refs are a different refusal: {message}"
+    );
+    assert!(
+        message.to_lowercase().contains("linked"),
+        "git's worktree refusal message expected: {message}"
+    );
+    // Both checkouts keep their HEAD.
+    let repo = fixture.repo();
+    assert_eq!(repo.head().unwrap().shorthand().unwrap(), "main");
+    let wt_repo = Repository::open(&wt_path).unwrap();
+    assert_eq!(wt_repo.head().unwrap().shorthand().unwrap(), "feature");
+}

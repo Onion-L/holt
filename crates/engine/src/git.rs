@@ -483,23 +483,83 @@ fn source_context_stamp(
 
 /// Create nothing, merge nothing, stash nothing: resolve the branch, check
 /// its tree out with git's SAFE strategy, then move HEAD. A checkout that
-/// would clobber uncommitted data fails before HEAD moves, with git's
-/// message verbatim.
+/// would clobber uncommitted data fails before HEAD moves — with the
+/// blocking file paths in [`switch_refusal_message`] — and the safe
+/// checkout behind it stays as the race-day guard, with git's message
+/// verbatim.
 fn switch_branch(repo: &Repository, branch_name: &str) -> Result<(), String> {
     let branch = repo
         .find_branch(branch_name, BranchType::Local)
         .map_err(git_message)?;
     let reference = branch.into_reference();
     let ref_name = reference.name().map_err(git_message)?.to_string();
-    let tree = reference
+    let treeish = reference
         .peel(git2::ObjectType::Tree)
         .map_err(git_message)?;
+    let tree = treeish
+        .as_tree()
+        .ok_or_else(|| "ref does not point at a tree".to_string())?;
+    let conflicts = switch_conflicts(repo, tree)?;
+    if !conflicts.is_empty() {
+        return Err(switch_refusal_message(&conflicts));
+    }
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.safe();
-    repo.checkout_tree(&tree, Some(&mut checkout))
+    repo.checkout_tree(&treeish, Some(&mut checkout))
         .map_err(git_message)?;
     repo.set_head(&ref_name).map_err(git_message)?;
     Ok(())
+}
+
+/// The files git's safe checkout would refuse to overwrite: paths with
+/// uncommitted changes (index or worktree, untracked included) that the
+/// target tree also changes relative to HEAD. Sorted for a stable message.
+fn switch_conflicts(repo: &Repository, target_tree: &git2::Tree) -> Result<Vec<String>, String> {
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| commit.tree().ok());
+    let mut options = git2::DiffOptions::new();
+    options.include_untracked(true).recurse_untracked_dirs(true);
+    let dirty = repo
+        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))
+        .map_err(git_message)?;
+    let dirty_paths: Vec<String> = dirty.deltas().filter_map(delta_path).collect();
+    let changed = repo
+        .diff_tree_to_tree(head_tree.as_ref(), Some(target_tree), None)
+        .map_err(git_message)?;
+    let changed_paths: std::collections::HashSet<String> =
+        changed.deltas().filter_map(delta_path).collect();
+    let mut conflicts: Vec<String> = dirty_paths
+        .into_iter()
+        .filter(|path| changed_paths.contains(path))
+        .collect();
+    conflicts.sort();
+    conflicts.dedup();
+    Ok(conflicts)
+}
+
+/// A delta's path, new side first (renames read as their post-move name).
+fn delta_path(delta: git2::DiffDelta) -> Option<String> {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .map(|path| path.display().to_string())
+}
+
+/// The refusal the UI's switch dialog parses: a stable first line, then one
+/// blocking path per line (ADR-0007 — inform-only, never a force/stash
+/// escape hatch).
+pub(crate) fn switch_refusal_message(files: &[String]) -> String {
+    let mut message =
+        String::from("switch refused: uncommitted changes would be overwritten by checkout:");
+    for file in files {
+        message.push('\n');
+        message.push_str(file);
+    }
+    message
 }
 
 /// `checkout -b`: git itself validates the name (ref-format rules) and

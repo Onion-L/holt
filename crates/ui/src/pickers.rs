@@ -53,10 +53,10 @@ mod space;
 use common::{attach_overlay, attach_overlay_end};
 pub(crate) use logic::normalize_model_rows;
 pub use logic::{
-    CheckoutKind, CheckoutPlan, DraftConfig, ResolvedRunConfig, breadcrumbs, browser_rows,
-    child_path, clamp_reasoning, completion_prefix_len, default_model, default_reasoning,
-    offered_providers, parent_path, reasoning_label, segment_target, traits_customized,
-    traits_summary, typed_path_target,
+    CheckoutKind, CheckoutPlan, DraftConfig, ResolvedRunConfig, SwitchDialogContent, breadcrumbs,
+    browser_rows, child_path, clamp_reasoning, completion_prefix_len, default_model,
+    default_reasoning, offered_providers, parent_path, reasoning_label, segment_target,
+    traits_customized, traits_summary, typed_path_target,
 };
 pub(crate) use provider_model::provider_brand_icon;
 use provider_model::{ModelRail, ModelRowData, ModelRowsKey};
@@ -173,8 +173,9 @@ pub struct Pickers {
     /// In-flight mid-session `SwitchRef` (the ref being switched to).
     switching: Option<String>,
     switch_task: Option<Task<()>>,
-    /// Last mid-session switch failure (shown in the ref popover).
-    switch_error: Option<String>,
+    /// The raised switch-failure dialog (ADR-0007): inform-only, dismissed
+    /// explicitly. Set by the pick/create failure paths; `None` = quiet.
+    switch_dialog: Option<SwitchDialogContent>,
     mutate_task: Option<Task<()>>,
     /// The branch picker's create row: an inline name input collapsed behind
     /// an affordance until engaged (`CreateBranch` — create-and-switch).
@@ -239,7 +240,6 @@ impl Pickers {
                 this.config.model = None;
                 this.config.reasoning = None;
                 this.config.model_options.clear();
-                this.switch_error = None;
             }
             // A space switch invalidates the branch draft + cache — the folder
             // changed under them.
@@ -323,7 +323,7 @@ impl Pickers {
             refs_task: None,
             switching: None,
             switch_task: None,
-            switch_error: None,
+            switch_dialog: None,
             mutate_task: None,
             branch_create,
             branch_create_engaged: false,
@@ -603,7 +603,6 @@ impl Pickers {
         // the frame itself for pure keyboard nav.
         match kind {
             PickerKind::Branch => {
-                self.switch_error = None; // stale mid-session failures don't linger
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
                     input.set_placeholder("Search refs…", cx);
@@ -753,6 +752,74 @@ impl Pickers {
     }
 
     // ---- render ----
+
+    /// The switch-failure modal (ADR-0007): inform-only — explanation, the
+    /// blocking file list when the refusal carried one, and a single
+    /// dismiss. No force, stash, or discard action exists anywhere.
+    fn render_switch_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let Some(content) = self.switch_dialog.clone() else {
+            return div().into_any_element();
+        };
+        let mut card = popover::dialog_card(&theme)
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    this.switch_dialog = None;
+                    cx.notify();
+                }
+            }))
+            .child(popover::dialog_title(&theme, &content.title))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .child(popover::dialog_body(&theme, content.message.clone())),
+            );
+        if !content.files.is_empty() {
+            card = card.child(
+                div()
+                    .id("switch-refusal-files")
+                    .mt(px(10.0))
+                    .max_h(px(180.0))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(crate::theme::hairline(0.08))
+                    .bg(crate::theme::ink(0.04))
+                    .children(content.files.iter().map(|file| {
+                        div()
+                            .px(px(10.0))
+                            .py(px(4.0))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .font_family(theme.font_mono.clone())
+                            .text_color(theme.text_muted.opacity(0.9))
+                            .child(SharedString::from(file.clone()))
+                    })),
+            );
+        }
+        card = card.child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_primary(&theme, "Got it")
+                        .id("switch-dialog-dismiss")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.switch_dialog = None;
+                            cx.notify();
+                        })),
+                ),
+        );
+        popover::modal(
+            "switch-refusal-dialog",
+            window.viewport_size(),
+            card.into_any_element(),
+        )
+    }
 
     /// The new-session target row — the project selector chip rendered ABOVE
     /// the composer pill, left-aligned like the checkout toolbar (the
@@ -1142,6 +1209,14 @@ impl Render for Pickers {
                 "model-popover",
                 closing,
             ));
+        // The switch-failure modal rides this entity wherever the composer
+        // mounts it (deferred + priority: it floats above all session
+        // chrome); an empty div when the dialog is down.
+        let switch_dialog = if self.switch_dialog.is_some() {
+            self.render_switch_dialog(window, cx)
+        } else {
+            div().into_any_element()
+        };
         div()
             .w_full()
             .min_w_0()
@@ -1155,5 +1230,6 @@ impl Render for Pickers {
             .on_drag_move(cx.listener(Self::on_model_scrollbar_drag_move))
             .child(left)
             .child(right)
+            .child(switch_dialog)
     }
 }

@@ -45,8 +45,9 @@ impl Pickers {
     }
 
     /// Draft-mode checkout switch: `git checkout` in the SPACE's folder.
-    /// Success records the pick and refreshes tags; failure keeps the popover
-    /// open with git's message.
+    /// Success records the pick and refreshes tags; failure closes the
+    /// popover and raises the switch dialog (ADR-0007 — refusal paths, the
+    /// blocking file list, and transport failures all land there).
     fn switch_draft_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
         if self.switching.is_some() {
             return; // one switch at a time
@@ -57,7 +58,6 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
-        self.switch_error = None;
         self.switching = Some(row.name.clone());
         let ref_name = row.name.clone();
         self.switch_task = Some(cx.spawn(async move |this, cx| {
@@ -82,7 +82,11 @@ impl Pickers {
                         pickers.animate_close(cx);
                         pickers.ensure_refs(true, cx);
                     }
-                    Err(err) => pickers.switch_error = Some(err.to_string()),
+                    Err(err) => {
+                        pickers.switch_dialog =
+                            Some(super::logic::switch_dialog_content(&err.to_string()));
+                        pickers.animate_close(cx);
+                    }
                 }
                 cx.notify();
             })
@@ -93,8 +97,9 @@ impl Pickers {
 
     /// The create row's submit: `CreateBranch` in the SPACE's folder
     /// (create-and-switch). Success selects the fresh branch for the draft,
-    /// closes the popover, and refreshes the ref list; failure keeps the
-    /// popover open with git's message in the existing error slot.
+    /// closes the popover, and refreshes the ref list; failure raises the
+    /// switch dialog over the still-open popover, so the typed name
+    /// survives for a retry.
     pub(super) fn create_branch_submit(&mut self, cx: &mut Context<Self>) {
         if !self.branch_create_engaged || self.switching.is_some() {
             return; // not engaged, or a checkout-changing op is in flight
@@ -108,7 +113,6 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
-        self.switch_error = None;
         self.switching = Some(name.clone());
         self.create_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
@@ -135,7 +139,10 @@ impl Pickers {
                         pickers.animate_close(cx);
                         pickers.ensure_refs(true, cx);
                     }
-                    Err(err) => pickers.switch_error = Some(err.to_string()),
+                    Err(err) => {
+                        pickers.switch_dialog =
+                            Some(super::logic::switch_dialog_content(&err.to_string()));
+                    }
                 }
                 cx.notify();
             })
@@ -362,20 +369,6 @@ impl Pickers {
             .child(self.search_box(&theme))
             .child(body)
             .child(self.branch_create_row(&theme, cx));
-        // Mid-session switch failure (dirty tree, ref checked out elsewhere):
-        // git's own message, under a hairline.
-        if let Some(error) = &self.switch_error {
-            popover = popover.child(
-                popover::menu_section().child(
-                    div()
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.danger.opacity(0.9))
-                        .child(SharedString::from(error.clone())),
-                ),
-            );
-        }
         if total > shown {
             popover = popover.child(
                 popover::menu_section().child(

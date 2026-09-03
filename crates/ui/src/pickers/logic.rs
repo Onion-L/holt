@@ -232,6 +232,54 @@ pub(crate) fn branch_create_name(text: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Pure: the switch-failure dialog (ADR-0007)
+// ---------------------------------------------------------------------------
+
+/// Content of the switch-failure dialog: inform-only — a short explanation
+/// plus the blocking file list when the refusal carried one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchDialogContent {
+    pub title: String,
+    pub message: String,
+    /// Blocking file paths, engine-sorted, one per line after the marker.
+    pub files: Vec<String>,
+}
+
+/// The engine's dirty-tree refusal marker: the error's first line, with the
+/// blocking paths on the lines after it (see `engine::git`'s
+/// `switch_refusal_message` — the format is pinned by tests on both sides).
+pub(crate) const SWITCH_REFUSAL_MARKER: &str =
+    "switch refused: uncommitted changes would be overwritten by checkout:";
+
+/// Assemble the dialog content from a `SwitchRef`/`CreateBranch` failure.
+/// A dirty-tree refusal explains the blocked files and what to do about
+/// them; any other failure — git's own worktree refusal, a transport error
+/// — surfaces verbatim with no file list. The dialog only informs: there is
+/// no force/stash/discard arm anywhere.
+pub(crate) fn switch_dialog_content(error_message: &str) -> SwitchDialogContent {
+    if let Some(rest) = error_message.strip_prefix(SWITCH_REFUSAL_MARKER) {
+        let files = rest
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        return SwitchDialogContent {
+            title: "Couldn't switch branches".into(),
+            message: "The switch was refused to protect uncommitted changes. \
+Commit or stash these files, then switch again:"
+                .into(),
+            files,
+        };
+    }
+    SwitchDialogContent {
+        title: "Couldn't switch branches".into(),
+        message: error_message.to_string(),
+        files: Vec::new(),
+    }
+}
+
 /// Byte length of `name`'s prefix matching `query`, compared char-for-char
 /// case-insensitively; `None` when `query` isn't a prefix of `name`. The
 /// length indexes into `name` (not `query`) so the completion suffix keeps
@@ -666,6 +714,57 @@ mod tests {
             branch_create_name("  fix-engine  ").as_deref(),
             Some("fix-engine")
         );
+    }
+
+    // ---- switch-failure dialog assembly ----
+
+    #[test]
+    fn a_refusal_parses_into_message_and_sorted_file_list() {
+        let content = switch_dialog_content(
+            "switch refused: uncommitted changes would be overwritten by checkout:\nREADME.md\ndelta.txt",
+        );
+        assert_eq!(content.title, "Couldn't switch branches");
+        assert_eq!(
+            content.files,
+            vec!["README.md".to_string(), "delta.txt".to_string()]
+        );
+        assert!(
+            content.message.contains("uncommitted changes"),
+            "the copy explains the refusal: {}",
+            content.message
+        );
+        assert!(
+            content.message.contains("Commit or stash"),
+            "the copy says what to do next: {}",
+            content.message
+        );
+    }
+
+    #[test]
+    fn any_other_failure_surfaces_verbatim_with_no_file_list() {
+        // git's own worktree refusal — the other refusal family.
+        let content = switch_dialog_content(
+            "cannot set HEAD to reference 'refs/heads/feature' as it is the current HEAD of a linked repository.",
+        );
+        assert_eq!(content.files, Vec::<String>::new());
+        assert!(content.message.contains("linked repository"));
+        // A transport/engine failure.
+        let content = switch_dialog_content("the engine is unreachable");
+        assert_eq!(content.files, Vec::<String>::new());
+        assert_eq!(content.message, "the engine is unreachable");
+        // Both keep the shared title so the surface reads as one dialog.
+        assert_eq!(content.title, "Couldn't switch branches");
+    }
+
+    #[test]
+    fn a_marker_without_files_still_dialogs_without_a_list() {
+        // The engine never emits this, but a mid-format change must not
+        // render an empty list frame.
+        let content = switch_dialog_content(
+            "switch refused: uncommitted changes would be overwritten by checkout:",
+        );
+        assert_eq!(content.files, Vec::<String>::new());
+        assert!(content.message.contains("uncommitted changes"));
     }
 
     // ---- checkout draft semantics ----
