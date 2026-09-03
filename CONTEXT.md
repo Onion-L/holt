@@ -20,10 +20,14 @@
 - **Skill root**: a directory holt scans for skills. Three, in precedence order when names collide: **project** (`.agents/skills` at the chat's working directory) > **personal** (`~/.agents/skills`) > **holt** (`~/.holt/skills`). The nearest root wins; shadowed and invalid skills surface only in Settings, never in the composer's skill menu.
 - **Skill listing**: the model-visible advertisement of available skills — name, description, and location only, never content. Skills marked `disable-model-invocation` are excluded from it but stay manually invocable.
 - **Skill invocation**: handing a skill's full content to the agent. The model does it itself by reading the skill file once the listing matches its task; the user forces it with the `/skill` slash command, which starts a Turn whose prompt is the skill's formatted content plus any extra instructions.
-- **Transcript**: the scrollable rendered history of a chat — user messages, agent output, and tool rows in order. It is anchored document-style: rows lay out from the top of the pane, and a short transcript leaves empty space below rather than rising from the bottom.
+- **Transcript**: the scrollable rendered history of a chat — user messages, agent output, and tool rows in order. It only ever grows; Compaction never removes rows from it. It is anchored document-style: rows lay out from the top of the pane, and a short transcript leaves empty space below rather than rising from the bottom.
+- **History**: a chat's model-facing message sequence — everything a Turn sends to the model as prior conversation. Persisted alongside the Transcript, but a separate record: Compaction shrinks the History, never the Transcript.
+- **Compaction**: replacing the older part of a chat's History with a model-written summary while keeping a recent tail verbatim. Triggered automatically when the History approaches the model's context window, or manually with `/compact`. Marked in the Transcript by a divider whose summary can be expanded.
 - **Pinned** (a transcript): the state in which the viewport follows the tail as new rows stream in. Scrolling up releases the pin; scrolling back near the tail re-engages it.
 - **Saved viewport**: a chat's remembered scroll position, restored when the chat is reopened. A chat with no saved viewport opens at its latest content.
 _Avoid_: grep tool, agent search
 _Avoid_: agent diff, session diff
 _Avoid_: importing or registering a skill (placement in a skill root is the only way in)
 _Avoid_: refs fixed at creation, locked session refs (a chat's working directory and branch are switchable at any time)
+_Avoid_: context, conversation, memory (for the model-facing message sequence — it is the History)
+_Avoid_: summarization, truncation, pruning (for shrinking the History — it is Compaction)
