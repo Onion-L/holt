@@ -115,7 +115,6 @@ mod tests {
         assert_eq!(send_button_mode(true, false), SendButtonMode::Stop);
     }
     use crate::composer::wizard::question;
-    use holt_doc::MessageStatus;
 
     #[test]
     fn pending_input_detection() {

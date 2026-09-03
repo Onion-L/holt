@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn breadcrumbs_accumulate_root_first() {
         let crumbs = breadcrumbs("/a/b/c");
-        let pairs: Vec<((&str, &str))> = crumbs
+        let pairs: Vec<(&str, &str)> = crumbs
             .iter()
             .map(|(label, path)| (label.as_str(), path.as_str()))
             .collect();

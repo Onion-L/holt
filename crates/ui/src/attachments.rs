@@ -911,7 +911,7 @@ mod tests {
         // The budget descends from the retired relay's 1 MiB WebSocket frame
         // cap (small JSON envelope + uleb header); kept as a conservative
         // ceiling for the in-process transport.
-        assert!(UPLOAD_CHUNK_B64_CHARS + 1_024 < 1_048_576);
+        const { assert!(UPLOAD_CHUNK_B64_CHARS + 1_024 < 1_048_576) };
         // A slice of the whole-file base64 must stay independently decodable.
         assert_eq!(UPLOAD_CHUNK_B64_CHARS % 4, 0);
     }

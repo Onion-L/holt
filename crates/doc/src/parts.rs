@@ -51,14 +51,12 @@ pub fn summarize_tool_output(text: &str) -> Option<String> {
         .find(|l| !l.trim().is_empty())
         .unwrap_or(stripped)
         .trim_end();
-    let mut chars = 0usize;
     let mut end = line.len();
-    for (i, _) in line.char_indices() {
+    for (chars, (i, _)) in line.char_indices().enumerate() {
         if chars == TOOL_OUTPUT_SUMMARY_MAX {
             end = i;
             break;
         }
-        chars += 1;
     }
     let mut out = line[..end].to_owned();
     out.push('…');
@@ -120,6 +118,9 @@ pub enum SubagentStatus {
 }
 
 /// One rendered part of an assistant message.
+// Box-free by design: the doc type is cloned in folds, never hot, and
+// boxing would churn the serialized shape for no runtime win.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePart {

@@ -7,6 +7,7 @@
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
 
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 pub(crate) fn install() {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};

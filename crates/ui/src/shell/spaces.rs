@@ -57,6 +57,9 @@ struct ActiveChatRow {
     group: Option<(String, String)>,
 }
 
+/// Sidebar session groups: optional group key + its rows.
+type ChatGroups = Vec<(Option<(String, String)>, Vec<ActiveChatRow>)>;
+
 fn compare_sidebar_chats(
     sort: SidebarSort,
     left: &holt_proto::Chat,
@@ -800,7 +803,7 @@ impl Shell {
             }
         }
 
-        let mut groups: Vec<(Option<(String, String)>, Vec<ActiveChatRow>)> = Vec::new();
+        let mut groups: ChatGroups = Vec::new();
         for row in rows {
             if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &row.group) {
                 existing.push(row);
@@ -1061,11 +1064,10 @@ impl Shell {
         };
         if rows.is_empty() {
             let text = flow.search.read(cx).text().to_string();
-            if text.starts_with('/') || text.starts_with('~') {
-                if let Some(target) = crate::pickers::typed_path_target(&text, flow.home.as_deref())
-                {
-                    self.add_space_descend(target, false, cx);
-                }
+            if (text.starts_with('/') || text.starts_with('~'))
+                && let Some(target) = crate::pickers::typed_path_target(&text, flow.home.as_deref())
+            {
+                self.add_space_descend(target, false, cx);
             }
             return;
         }

@@ -902,6 +902,28 @@ pub fn diff_to_file(diff: &holt_proto::ToolDiff) -> crate::changes::FileDiff {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserSkill {
+    pub name: SharedString,
+    pub file: SharedString,
+}
+
+/// Format a kebab-case or snake_case skill name into Title Case for user bubble display
+/// (e.g. "ask-matt" -> "Ask Matt", "code-review" -> "Code Review").
+pub fn format_skill_title(name: &str) -> String {
+    name.split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Clone)]
 pub enum RowKind {
     User {
@@ -918,6 +940,8 @@ pub enum RowKind {
         attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
         /// Context the prompt folded in as text, lifted back out by `badges`.
         badges: Arc<Vec<crate::badges::MessageBadge>>,
+        /// Skill invocation metadata when the turn was launched via `/skill`.
+        skill: Option<Arc<UserSkill>>,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -1139,6 +1163,13 @@ pub fn rows_for_entry(
     let entry_id: SharedString = entry.id.clone().into();
 
     if entry.role == MessageRole::User {
+        let skill = entry.parts.iter().find_map(|p| match p {
+            MessagePart::Skill { name, file, .. } => Some(Arc::new(UserSkill {
+                name: name.clone().into(),
+                file: file.clone().into(),
+            })),
+            _ => None,
+        });
         let raw: String = entry
             .parts
             .iter()
@@ -1148,29 +1179,6 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        // A skill invocation renders as its compact chip; the user's extra
-        // instructions (if any) follow as an ordinary bubble.
-        let mut rows: Vec<Row> = entry
-            .parts
-            .iter()
-            .enumerate()
-            .filter_map(|(part_ix, part)| match part {
-                MessagePart::Skill { id, name, file } => Some(Row {
-                    id: format!("{}#{}", entry.id, id).into(),
-                    version: fnv1a(format!("{name}\u{0}{file}").as_bytes()) << 1 | pending as u64,
-                    turn_start: part_ix == 0,
-                    kind: RowKind::SkillChip {
-                        name: name.clone().into(),
-                        file: file.clone().into(),
-                        pending,
-                    },
-                    entry_id: entry_id.clone(),
-                    timestamp: None,
-                    copy_text: None,
-                }),
-                _ => None,
-            })
-            .collect();
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let parsed = crate::attachments::parse_user_message_images(&raw);
@@ -1184,19 +1192,30 @@ pub fn rows_for_entry(
             Some((display, spans)) => (display, spans),
             None => (body, Vec::new()),
         };
-        let copy_text = (!text.trim().is_empty()).then(|| SharedString::from(text.clone()));
-        // A skill-only invocation (no extra instructions) leaves nothing for
-        // the bubble; otherwise the user row rides below the chip.
-        if !raw.trim().is_empty() || rows.is_empty() {
+        let copy_text = match (&skill, !text.trim().is_empty()) {
+            (Some(skill), true) => {
+                Some(SharedString::from(format!("/skill {} {text}", skill.name)))
+            }
+            (Some(skill), false) => Some(SharedString::from(format!("/skill {}", skill.name))),
+            (None, true) => Some(SharedString::from(text.clone())),
+            (None, false) => None,
+        };
+        let skill_fp = skill.as_ref().map_or(0, |s| {
+            fnv1a(format!("{}\u{0}{}", s.name, s.file).as_bytes())
+        });
+        let version = ((raw.len() as u64) ^ skill_fp) << 1 | pending as u64;
+
+        if !raw.trim().is_empty() || skill.is_some() {
             rows.push(Row {
                 id: entry.id.clone().into(),
-                version: (raw.len() as u64) << 1 | pending as u64,
-                turn_start: rows.is_empty(),
+                version,
+                turn_start: true,
                 kind: RowKind::User {
                     text: text.into(),
                     mentions: Arc::new(mentions),
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),
+                    skill,
                     pending,
                 },
                 entry_id,
@@ -3140,7 +3159,7 @@ impl Transcript {
                     // The legal rest zone below the hold is the epsilon plus
                     // rounding; anything deeper is a transient-collision sink
                     // and rubber-bands back.
-                    err > 0.5 || err < -(OWN_SEND_SCROLL_SLACK_PX + 2.0)
+                    !(-(OWN_SEND_SCROLL_SLACK_PX + 2.0)..=0.5).contains(&err)
                 }
                 // Bounds vanish in the glued representation (dissolved
                 // above, so at most for this one frame) and through splice
@@ -3238,8 +3257,7 @@ impl Transcript {
             }
             self.own_turn_last_tick = None;
         } else if anchored
-            && err <= OWN_SEND_GLIDE_SNAP_PX
-            && err >= -(OWN_SEND_SCROLL_SLACK_PX + 2.0)
+            && (-(OWN_SEND_SCROLL_SLACK_PX + 2.0)..=OWN_SEND_GLIDE_SNAP_PX).contains(&err)
         {
             // At the hold — or resting inside the slack under it (a restick
             // that fired at the true bottom): land WITHOUT pulling the view
@@ -4082,7 +4100,7 @@ impl Transcript {
             if !live {
                 return None;
             }
-            let elapsed = ((now.timestamp_millis() - last.created_at).max(0) / 1000) as i64;
+            let elapsed = (now.timestamp_millis() - last.created_at).max(0) / 1000;
             (false, false, elapsed, flavour_seed(doc_id))
         } else {
             let chat_id = self.chat_id.clone()?;
@@ -4229,12 +4247,14 @@ impl Transcript {
                 mentions,
                 attachments,
                 badges,
+                skill,
                 pending,
             } => {
                 let attachments = attachments.clone();
                 let badges = badges.clone();
                 let text = text.clone();
                 let mentions = mentions.clone();
+                let skill = skill.clone();
                 let pending = *pending;
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
@@ -4263,7 +4283,65 @@ impl Transcript {
                             })),
                     );
                 }
-                if !text.is_empty() {
+                if !text.is_empty() || skill.is_some() {
+                    let bubble_child = match skill {
+                        Some(skill) => {
+                            let open_url = (!skill.file.is_empty()).then(|| {
+                                format!("file://{}", skill.file.trim_start_matches("file://"))
+                            });
+                            let formatted_title = format_skill_title(&skill.name);
+                            let skill_tag = div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    crate::icons::icon(crate::icons::CUBE)
+                                        .size(px(16.0))
+                                        .text_color(theme.accent),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.accent)
+                                        .child(SharedString::from(formatted_title)),
+                                );
+                            let skill_tag: AnyElement = if let Some(url) = open_url {
+                                skill_tag
+                                    .id(SharedString::from(format!("user-skill-{}", skill.name)))
+                                    .cursor_pointer()
+                                    .hover(|el| el.opacity(0.8))
+                                    .on_click(move |_, _, cx| {
+                                        cx.open_url(&url);
+                                    })
+                                    .into_any_element()
+                            } else {
+                                skill_tag.into_any_element()
+                            };
+                            if text.is_empty() {
+                                skill_tag
+                            } else {
+                                let multi_line = text.contains('\n');
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .when(multi_line, |el| el.items_start())
+                                    .when(!multi_line, |el| el.items_center())
+                                    .gap(px(8.0))
+                                    .child(skill_tag)
+                                    .child(
+                                        div().min_w_0().child(user_bubble_text(
+                                            &row.id, text, mentions, &theme,
+                                        )),
+                                    )
+                                    .into_any_element()
+                            }
+                        }
+                        None => user_bubble_text(&row.id, text, mentions, &theme),
+                    };
+
                     // `min_w_0` is load-bearing: gpui text answers min/max-content
                     // probes with its UNWRAPPED width, so without it the bubble's
                     // automatic min-size is the full single-line width — the flex
@@ -4283,7 +4361,7 @@ impl Transcript {
                                 .line_height(crate::typography::ui_rems(22.0))
                                 .text_color(theme.text)
                                 .when(pending, |el| el.opacity(0.65))
-                                .child(user_bubble_text(&row.id, text, mentions, &theme)),
+                                .child(bubble_child),
                         ),
                     );
                 }
@@ -4541,28 +4619,27 @@ impl Transcript {
             .map(|(_, ix)| *ix);
         let row_key = row_id.clone();
         let entity = cx.weak_entity();
-        let handler: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)> =
-            Rc::new(move |ix, code, _window, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
-                let row_key = row_key.clone();
-                entity
-                    .update(cx, |this, cx| {
-                        this.copied_code = Some((row_key, ix));
-                        this.copied_clear = Some(cx.spawn(async move |this, cx| {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(1200))
-                                .await;
-                            this.update(cx, |this, cx| {
-                                this.copied_code = None;
-                                this.copied_clear = None;
-                                cx.notify();
-                            })
-                            .ok();
-                        }));
-                        cx.notify();
-                    })
-                    .ok();
-            });
+        let handler: Rc<render::CopyHandler> = Rc::new(move |ix, code, _window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+            let row_key = row_key.clone();
+            entity
+                .update(cx, |this, cx| {
+                    this.copied_code = Some((row_key, ix));
+                    this.copied_clear = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(1200))
+                            .await;
+                        this.update(cx, |this, cx| {
+                            this.copied_code = None;
+                            this.copied_clear = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                    cx.notify();
+                })
+                .ok();
+        });
         render::CopyUi { handler, copied_ix }
     }
 
@@ -5276,9 +5353,9 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
 }
 
 /// A collapsed skill invocation / skill-file read (ADR-0006): the skill's
-/// name plus a pointer to the source `SKILL.md` — clicking opens the file
-/// so the user can inspect exactly what the agent was told to follow.
-/// Right-aligned like the user bubble it replaces.
+/// name in the accent colour with a cube glyph — clicking opens the source
+/// `SKILL.md` so the user can inspect exactly what the agent was told to
+/// follow. Right-aligned like the user bubble it replaces.
 fn skill_chip(name: SharedString, file: SharedString, pending: bool, theme: &Theme) -> AnyElement {
     let open_url =
         (!file.is_empty()).then(|| format!("file://{}", file.trim_start_matches("file://")));
@@ -5288,32 +5365,25 @@ fn skill_chip(name: SharedString, file: SharedString, pending: bool, theme: &The
             .min_h(px(34.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(7.0))
             .overflow_hidden()
             .rounded(px(10.0))
-            .border_1()
-            .border_color(crate::theme::hairline(0.08))
-            .bg(crate::theme::ink(0.045))
-            .px(px(10.0))
-            .text_size(px(12.0))
+            .bg(crate::theme::ink(0.06))
+            .px(px(12.0))
+            .text_size(px(13.0))
             .when(pending, |el| el.opacity(0.65))
+            .child(
+                crate::icons::icon(crate::icons::CUBE)
+                    .size(px(15.0))
+                    .text_color(theme.accent),
+            )
             .child(
                 div()
                     .flex_none()
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.accent)
                     .child(name),
-            )
-            .when(!file.is_empty(), |el| {
-                el.child(
-                    div()
-                        .min_w_0()
-                        .max_w(px(420.0))
-                        .truncate()
-                        .text_color(theme.text_muted.opacity(0.8))
-                        .child(file),
-                )
-            }),
+            ),
     );
     match (clickable_id, open_url) {
         (Some(id), Some(url)) => chip
@@ -6604,7 +6674,7 @@ mod tests {
             tools[0].detail.as_deref(),
             Some(ToolDetail::Thought { lines, .. }) if !lines.is_empty()
         ));
-        let summary = tool_group_summary(&tools);
+        let summary = tool_group_summary(tools);
         assert!(summary.starts_with("Thought 2 times"), "{summary}");
         assert!(summary.contains("2 commands"), "{summary}");
 
@@ -6620,7 +6690,7 @@ mod tests {
         let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
             panic!("expected a tool group");
         };
-        assert_eq!(tool_group_summary(&tools), "Thought process");
+        assert_eq!(tool_group_summary(tools), "Thought process");
 
         // Empty reasoning renders nothing.
         let entry = assistant(
@@ -7162,6 +7232,70 @@ mod tests {
         };
         assert_eq!(text.as_ref(), "no mentions here");
         assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn format_skill_title_converts_kebab_and_snake_case() {
+        assert_eq!(format_skill_title("ask-matt"), "Ask Matt");
+        assert_eq!(format_skill_title("code-review"), "Code Review");
+        assert_eq!(format_skill_title("triage"), "Triage");
+        assert_eq!(format_skill_title("grill_with_docs"), "Grill With Docs");
+        assert_eq!(
+            format_skill_title("retro-manga-graphic-logo"),
+            "Retro Manga Graphic Logo"
+        );
+    }
+
+    #[test]
+    fn user_rows_with_skill_invocation_render_in_single_bubble() {
+        let mut entry = assistant("u4", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![
+            MessagePart::Skill {
+                id: "s0".into(),
+                name: "ask-matt".into(),
+                file: "/home/.agents/skills/ask-matt/SKILL.md".into(),
+            },
+            text_part("t0", "你好吗"),
+        ];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1, "should produce a single user row");
+        let RowKind::User {
+            text,
+            skill,
+            mentions,
+            attachments,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "你好吗");
+        assert!(mentions.is_empty());
+        assert!(attachments.is_empty());
+        let skill = skill.as_ref().expect("expected skill metadata");
+        assert_eq!(skill.name.as_ref(), "ask-matt");
+        assert_eq!(
+            skill.file.as_ref(),
+            "/home/.agents/skills/ask-matt/SKILL.md"
+        );
+        assert_eq!(rows[0].copy_text.as_deref(), Some("/skill ask-matt 你好吗"));
+
+        // Skill invocation without extra text produces a single user row
+        entry.parts = vec![MessagePart::Skill {
+            id: "s0".into(),
+            name: "ask-matt".into(),
+            file: "/home/.agents/skills/ask-matt/SKILL.md".into(),
+        }];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::User { text, skill, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "");
+        assert!(skill.is_some());
+        assert_eq!(rows[0].copy_text.as_deref(), Some("/skill ask-matt"));
     }
 
     #[test]

@@ -297,7 +297,7 @@ mod tests {
     fn cluster_inset_glides_between_the_source_endpoints() {
         assert_eq!(ACTION_UTILITY_GAP, 2.0);
         assert_eq!(ACTION_PRIMARY_GAP, Theme::SPACE_SM);
-        assert!(ACTION_UTILITY_GAP < ACTION_PRIMARY_GAP);
+        const { assert!(ACTION_UTILITY_GAP < ACTION_PRIMARY_GAP) };
         // The morph starts from the OLD mode's resting inset (no sideways
         // step at the commit) and eases to the committed mode's…
         assert_eq!(morph_cluster_inset(true, 0.0), 8.0); // expand: from compact pr-2

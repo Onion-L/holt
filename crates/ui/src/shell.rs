@@ -304,6 +304,10 @@ impl NavHistory {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Drag marker for the sidebar resize handle.
@@ -1900,7 +1904,7 @@ impl Shell {
                         .flex_none()
                         .text_color(theme.danger),
                 )
-                .child(SharedString::from(error))
+                .child(error)
                 .child(
                     div()
                         .id("provider-error-dismiss")

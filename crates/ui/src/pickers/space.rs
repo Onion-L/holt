@@ -71,10 +71,10 @@ impl Pickers {
             self.defaults.project = state.selected_space.clone();
             self.defaults.no_project = state.no_project;
         }
-        if let Some(dir) = &self.data_dir {
-            if let Err(err) = self.defaults.save(dir) {
-                tracing::warn!(error = %err, "composer-defaults save failed");
-            }
+        if let Some(dir) = &self.data_dir
+            && let Err(err) = self.defaults.save(dir)
+        {
+            tracing::warn!(error = %err, "composer-defaults save failed");
         }
     }
 

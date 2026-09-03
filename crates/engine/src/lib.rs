@@ -568,11 +568,12 @@ mod tests {
         drop(engine);
 
         let engine = StubEngine::assemble(&config).unwrap();
-        let chats = engine.runtime.chats.read().unwrap();
-        let selection = chats[0].config.as_ref().unwrap();
-        assert_eq!(selection.provider.as_str(), "openai");
-        assert_eq!(selection.model, "openai/gpt-5.4");
-        drop(chats);
+        {
+            let chats = engine.runtime.chats.read().unwrap();
+            let selection = chats[0].config.as_ref().unwrap();
+            assert_eq!(selection.provider.as_str(), "openai");
+            assert_eq!(selection.model, "openai/gpt-5.4");
+        }
         assert!(
             engine
                 .providers

@@ -133,9 +133,30 @@ impl gpui::Element for ComposerTextElement {
         let caret_color = Theme::of(cx).caret;
         // The inline-code recipe: chips use the spectrum wash like `code` spans.
         let mention_color = Theme::of(cx).code_wash;
+        // Skill chips sit on the accent wash, matching their accent label.
+        let skill_color = Theme::of(cx).accent_wash;
 
         let mut mention_quads = Vec::new();
         let mut mention_hits = Vec::new();
+        for (_, display) in &input.projection.skills {
+            for local_bounds in input.bounds_for_display_range(display.clone()) {
+                let chip_bounds = Bounds::new(
+                    point(
+                        origin.x + local_bounds.origin.x,
+                        origin.y + local_bounds.origin.y + px(2.0),
+                    ),
+                    size(local_bounds.size.width, local_bounds.size.height - px(4.0)),
+                );
+                mention_quads.push(quad(
+                    chip_bounds,
+                    px(5.0),
+                    skill_color,
+                    px(0.0),
+                    gpui::transparent_black(),
+                    BorderStyle::default(),
+                ));
+            }
+        }
         for (mention, display) in &input.projection.mentions {
             let target = MentionTooltipTarget {
                 range: mention.range.clone(),

@@ -147,6 +147,31 @@ fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
     links
 }
 
+/// A leading `/skill <name>` token. The composer projects it to the chip
+/// treatment skill invocations get elsewhere (accent colour, name only);
+/// the raw text stays the submission format (`slash::parse`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SkillToken {
+    pub(super) range: Range<usize>,
+    name: String,
+}
+
+/// Skill names are single words; brackets are excluded so a token can never
+/// overlap a file-mention link's Markdown.
+fn skill_token(text: &str) -> Option<SkillToken> {
+    const PREFIX: &str = "/skill ";
+    let rest = text.strip_prefix(PREFIX)?;
+    let name_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let name = &rest[..name_len];
+    if name.is_empty() || name.contains(['[', ']', '(', ')']) {
+        return None;
+    }
+    Some(SkillToken {
+        range: 0..PREFIX.len() + name_len,
+        name: name.to_string(),
+    })
+}
+
 /// The glyph a masked character projects to (U+2022 bullet, three UTF-8
 /// bytes).
 const MASK_CHAR: char = '•';
@@ -155,6 +180,8 @@ const MASK_CHAR: char = '•';
 pub(super) struct TextProjection {
     pub(super) display: String,
     pub(super) mentions: Vec<(FileMentionLink, Range<usize>)>,
+    /// Leading `/skill <name>` chip: at most one, always at raw offset 0.
+    pub(super) skills: Vec<(SkillToken, Range<usize>)>,
     /// Secret projection: one bullet per raw char. Holds the raw byte offset
     /// of every char plus the end offset, for raw↔display translation.
     /// Mutually exclusive with `mentions` — secret inputs never enable them.
@@ -166,6 +193,7 @@ impl TextProjection {
         Self {
             display: raw.to_string(),
             mentions: Vec::new(),
+            skills: Vec::new(),
             mask_starts: None,
         }
     }
@@ -185,15 +213,68 @@ impl TextProjection {
         Self {
             display,
             mentions: Vec::new(),
+            skills: Vec::new(),
             mask_starts: Some(mask_starts),
         }
     }
 
+    /// Every chip — skill tokens and file mentions — as (raw range, display
+    /// range) pairs in raw-text order. Skill chips sit at offset 0, so a
+    /// stable sort keeps them ahead of any mention.
+    fn chips(&self) -> Vec<(&Range<usize>, &Range<usize>)> {
+        let mut chips: Vec<_> = self
+            .skills
+            .iter()
+            .map(|(token, display)| (&token.range, display))
+            .chain(
+                self.mentions
+                    .iter()
+                    .map(|(link, display)| (&link.range, display)),
+            )
+            .collect();
+        chips.sort_by_key(|(raw, _)| raw.start);
+        chips
+    }
+
+    /// Chip display ranges in order, skill chips flagged — the text layout
+    /// paints skill chips in the accent colour, file mentions as inline code.
+    pub(super) fn chip_spans(&self) -> Vec<(Range<usize>, bool)> {
+        let mut spans: Vec<_> = self
+            .skills
+            .iter()
+            .map(|(_, display)| (display.clone(), true))
+            .chain(
+                self.mentions
+                    .iter()
+                    .map(|(_, display)| (display.clone(), false)),
+            )
+            .collect();
+        spans.sort_by_key(|(display, _)| display.start);
+        spans
+    }
+
     pub(super) fn new(raw: &str) -> Self {
-        let links = file_mention_links(raw);
+        let skill = skill_token(raw);
+        let mut links = file_mention_links(raw);
+        if let Some(skill) = &skill {
+            links.retain(|link| link.range.start >= skill.range.end);
+        }
         let labels = mention_display_labels(&links);
         let mut projection = Self::default();
         let mut raw_at = 0;
+        if let Some(skill) = skill {
+            let display_start = projection.display.len();
+            projection.display.push_str(MENTION_SIDE_PAD);
+            for ch in skill.name.chars() {
+                projection
+                    .display
+                    .push(if ch == ' ' { '\u{00A0}' } else { ch });
+            }
+            projection.display.push('\u{00A0}');
+            let display_end = projection.display.len();
+            raw_at = skill.range.end;
+            projection.skills.push((skill, display_start..display_end));
+        }
         for (link, label) in links.into_iter().zip(labels) {
             projection.display.push_str(&raw[raw_at..link.range.start]);
             let display_start = projection.display.len();
@@ -229,14 +310,14 @@ impl TextProjection {
         }
         let mut raw_at = 0;
         let mut display_at = 0;
-        for (link, display) in &self.mentions {
-            if raw <= link.range.start {
+        for (link, display) in self.chips() {
+            if raw <= link.start {
                 return display_at + raw.saturating_sub(raw_at);
             }
-            if raw < link.range.end {
+            if raw < link.end {
                 return display.start;
             }
-            raw_at = link.range.end;
+            raw_at = link.end;
             display_at = display.end;
         }
         display_at + raw.saturating_sub(raw_at)
@@ -251,18 +332,18 @@ impl TextProjection {
         }
         let mut raw_at = 0;
         let mut display_at = 0;
-        for (link, display) in &self.mentions {
+        for (link, display) in self.chips() {
             if display_offset <= display.start {
                 return raw_at + display_offset.saturating_sub(display_at);
             }
             if display_offset < display.end {
                 return if display_offset - display.start < display.len() / 2 {
-                    link.range.start
+                    link.start
                 } else {
-                    link.range.end
+                    link.end
                 };
             }
-            raw_at = link.range.end;
+            raw_at = link.end;
             display_at = display.end;
         }
         raw_at + display_offset.saturating_sub(display_at)
@@ -270,13 +351,13 @@ impl TextProjection {
 
     pub(super) fn normalize_range(&self, range: Range<usize>) -> Range<usize> {
         if range.is_empty() {
-            for (link, _) in &self.mentions {
-                if link.range.start < range.start && range.start < link.range.end {
-                    let midpoint = link.range.start + link.range.len() / 2;
+            for (link, _) in self.chips() {
+                if link.start < range.start && range.start < link.end {
+                    let midpoint = link.start + link.len() / 2;
                     let at = if range.start < midpoint {
-                        link.range.start
+                        link.start
                     } else {
-                        link.range.end
+                        link.end
                     };
                     return at..at;
                 }
@@ -284,25 +365,25 @@ impl TextProjection {
             return range;
         }
         let mut normalized = range;
-        for (link, _) in &self.mentions {
-            if normalized.start < link.range.end && normalized.end > link.range.start {
-                normalized.start = normalized.start.min(link.range.start);
-                normalized.end = normalized.end.max(link.range.end);
+        for (link, _) in self.chips() {
+            if normalized.start < link.end && normalized.end > link.start {
+                normalized.start = normalized.start.min(link.start);
+                normalized.end = normalized.end.max(link.end);
             }
         }
         normalized
     }
 
     pub(super) fn previous_boundary(&self, raw: usize) -> Option<usize> {
-        self.mentions
-            .iter()
-            .find_map(|(link, _)| (raw == link.range.end).then_some(link.range.start))
+        self.chips()
+            .into_iter()
+            .find_map(|(link, _)| (raw == link.end).then_some(link.start))
     }
 
     pub(super) fn next_boundary(&self, raw: usize) -> Option<usize> {
-        self.mentions
-            .iter()
-            .find_map(|(link, _)| (raw == link.range.start).then_some(link.range.end))
+        self.chips()
+            .into_iter()
+            .find_map(|(link, _)| (raw == link.start).then_some(link.end))
     }
 }
 /// Basenames are compact in the common case. When the same basename appears
@@ -517,6 +598,37 @@ mod tests {
             projection.normalize_range(link.range.start + 2..link.range.end - 2),
             link.range
         );
+    }
+
+    #[test]
+    fn leading_skill_token_projects_to_an_accent_chip() {
+        let projection = TextProjection::new("/skill setup refactor this");
+        let (token, chip) = &projection.skills[0];
+        assert_eq!(token.name, "setup");
+        assert_eq!(&projection.display[chip.clone()], "\u{00A0}setup\u{00A0}");
+        // The chip is atomic: offsets inside it snap to its raw boundaries.
+        assert_eq!(projection.display_to_raw(chip.start + 1), token.range.start);
+        assert_eq!(projection.display_to_raw(chip.end - 1), token.range.end);
+        assert_eq!(
+            projection.previous_boundary(token.range.end),
+            Some(token.range.start)
+        );
+        // Extra instructions stay plain text right after the chip.
+        let extra_at = projection.raw_to_display(token.range.end);
+        assert_eq!(&projection.display[extra_at..], " refactor this");
+        assert!(
+            projection
+                .chip_spans()
+                .first()
+                .is_some_and(|(_, skill)| *skill)
+        );
+    }
+
+    #[test]
+    fn skill_token_needs_the_leading_command_form() {
+        assert!(TextProjection::new("/skill").skills.is_empty());
+        assert!(TextProjection::new("/skill  setup").skills.is_empty());
+        assert!(TextProjection::new("use /skill setup").skills.is_empty());
     }
 
     #[test]

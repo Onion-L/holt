@@ -1602,18 +1602,28 @@ impl ComposerInput {
 
         // Chips read as inline code: the markdown renderer's recipe (mono font
         // + the spectrum's `code_text`) over the rounded `code_wash` beneath.
-        let (chip_font, chip_color) = {
+        // Skill chips are the exception — accent-coloured label in the UI
+        // font, matching the transcript's skill chip.
+        let (chip_font, chip_color, skill_color) = {
             let theme = Theme::of(cx);
-            (gpui::font(theme.font_mono.clone()), theme.code_text)
+            (
+                gpui::font(theme.font_mono.clone()),
+                theme.code_text,
+                theme.accent,
+            )
         };
-        let run_for = |len: usize, underline: bool, chip: bool| TextRun {
+        let run_for = |len: usize, underline: bool, chip: Option<bool>| TextRun {
             len,
-            font: if chip {
+            font: if chip == Some(false) {
                 chip_font.clone()
             } else {
                 style.font()
             },
-            color: if chip { chip_color } else { style.color },
+            color: match chip {
+                Some(false) => chip_color,
+                Some(true) => skill_color,
+                None => style.color,
+            },
             // Rounded mention washes are painted explicitly beneath the text;
             // TextRun backgrounds are square and can disappear in wrapped runs.
             background_color: None,
@@ -1629,27 +1639,27 @@ impl ComposerInput {
                 let start = self.projection.raw_to_display(marked.start);
                 let end = self.projection.raw_to_display(marked.end);
                 vec![
-                    run_for(start, false, false),
-                    run_for(end.saturating_sub(start), true, false),
-                    run_for(display.len() - end, false, false),
+                    run_for(start, false, None),
+                    run_for(end.saturating_sub(start), true, None),
+                    run_for(display.len() - end, false, None),
                 ]
                 .into_iter()
                 .filter(|r| r.len > 0)
                 .collect()
             }
-            _ if is_placeholder => vec![run_for(display.len(), false, false)],
+            _ if is_placeholder => vec![run_for(display.len(), false, None)],
             _ => {
                 let mut runs = Vec::new();
                 let mut at = 0;
-                for (_, chip) in &self.projection.mentions {
+                for (chip, is_skill) in self.projection.chip_spans() {
                     if at < chip.start {
-                        runs.push(run_for(chip.start - at, false, false));
+                        runs.push(run_for(chip.start - at, false, None));
                     }
-                    runs.push(run_for(chip.len(), false, true));
+                    runs.push(run_for(chip.len(), false, Some(is_skill)));
                     at = chip.end;
                 }
                 if at < display.len() {
-                    runs.push(run_for(display.len() - at, false, false));
+                    runs.push(run_for(display.len() - at, false, None));
                 }
                 runs
             }
@@ -1694,16 +1704,16 @@ impl ComposerInput {
     /// Keep the cursor visible when content exceeds the element height.
     pub(super) fn clamp_scroll(&mut self, element_height: f32) -> bool {
         let previous = self.scroll_top;
-        if self.follow_cursor {
-            if let Some(cursor) = self.point_for_index(self.cursor_offset()) {
-                self.scroll_top = input_scroll_offset_for_cursor(
-                    self.scroll_top,
-                    f32::from(cursor.y),
-                    f32::from(self.line_height),
-                    self.content_height,
-                    element_height,
-                );
-            }
+        if self.follow_cursor
+            && let Some(cursor) = self.point_for_index(self.cursor_offset())
+        {
+            self.scroll_top = input_scroll_offset_for_cursor(
+                self.scroll_top,
+                f32::from(cursor.y),
+                f32::from(self.line_height),
+                self.content_height,
+                element_height,
+            );
         }
         self.scroll_top = self
             .scroll_top

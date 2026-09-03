@@ -171,6 +171,10 @@ icon_assets![
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
+    // Hand-drawn isometric cube in the Solar Linear style (like the
+    // terminal/plus/return ports) — the embedded set has no cube/box glyph.
+    // The skill chip's identity glyph.
+    (CUBE, "cube"),
     (WIFI_OFF, "wifi-off"),
     (CLOSE_CIRCLE, "close-circle"),
     // Hand-drawn info glyph in the Solar Linear style (like the terminal/

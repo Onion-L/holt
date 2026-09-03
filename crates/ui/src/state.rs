@@ -2243,8 +2243,10 @@ mod tests {
     fn delivery_degradation_and_queued_sends_tell_the_truth() {
         use holt_proto::{ChatConnectivity, ConnectivityState};
         let now = Utc::now();
-        let mut s = AppState::default();
-        s.local_device_id = Some("local".into());
+        let mut s = AppState {
+            local_device_id: Some("local".into()),
+            ..Default::default()
+        };
         let mut remote = chat("c-remote", 0, None);
         remote.device_id = "remote".into();
         let mut local = chat("c-local", 0, None);

@@ -850,9 +850,7 @@ impl Pickers {
             // Sessions never move: read-only checkout-kind + ref labels,
             // LEFT-aligned, only when the session's project has git. The
             // target project lives in the titlebar now.
-            let Some(space) = space.as_ref().filter(|s| s.git_detected) else {
-                return None;
-            };
+            let space = space.as_ref().filter(|s| s.git_detected)?;
             let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
             let (icon_path, label) = if is_worktree {
                 (crate::icons::FOLDER_WITH_FILES, "Worktree")

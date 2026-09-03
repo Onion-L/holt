@@ -299,6 +299,7 @@ fn model_appearance(appearance: Appearance) -> holt_theme::Appearance {
 /// to a name there too would freeze the chrome across OS sunset switches
 /// until our own notification round-trip repainted it.
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 fn sync_ns_appearance(mode: AppearanceMode) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};

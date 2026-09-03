@@ -32,9 +32,7 @@ fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
         .rev()
         .find_map(|(at, ch)| ch.is_whitespace().then_some(at + ch.len_utf8()))
         .unwrap_or(0);
-    let Some(relative_at) = text[token_start..cursor].rfind('@') else {
-        return None;
-    };
+    let relative_at = text[token_start..cursor].rfind('@')?;
     let at = token_start + relative_at;
     let valid_boundary = at == 0
         || text[..at]
@@ -835,20 +833,24 @@ impl Composer {
                         // the source root as a quiet right-aligned tag.
                         .child(
                             crate::icons::icon(if is_skill {
-                                crate::icons::WIDGET
+                                crate::icons::CUBE
                             } else {
                                 crate::icons::COMMAND
                             })
                             .size(px(15.0))
                             .flex_none()
-                            .text_color(theme.text_muted),
+                            .text_color(if is_skill {
+                                theme.accent
+                            } else {
+                                theme.text_muted
+                            }),
                         )
                         .child(
                             div()
                                 .flex_none()
                                 .text_size(crate::typography::ui_rems(12.5))
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
+                                .text_color(if is_skill { theme.accent } else { theme.text })
                                 .child(label),
                         )
                         .child(
