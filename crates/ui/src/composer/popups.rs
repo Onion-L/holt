@@ -667,13 +667,19 @@ impl Composer {
             .as_ref()
             .map(|t| t.query.clone())
             .unwrap_or_default();
-        let titles: Vec<String> = self
+        let labels: Vec<String> = self
             .slash
             .candidates
             .iter()
-            .map(|candidate| candidate.title())
+            .map(|candidate| candidate.filter_label())
             .collect();
-        self.slash.filtered = crate::popover::filter_indices(&query, &titles);
+        let mut ranked = crate::popover::filter_indices(&query, &labels);
+        // Section order: skills before commands (stable, so within-section
+        // match rank survives) — the menu renders contiguous groups under
+        // their headers, and `filtered` stays the rendered row order.
+        ranked
+            .sort_by_key(|&ix| matches!(self.slash.candidates[ix], SlashCandidate::Command { .. }));
+        self.slash.filtered = ranked;
         self.slash.active = (!self.slash.filtered.is_empty()).then_some(0);
         // A fresh query/reopen restarts the row stack at the top.
         reset_scroll_offset(&self.slash_scroll);
@@ -796,15 +802,27 @@ impl Composer {
                     }),
             );
         } else {
-            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(self.slash.filtered.len());
+            let mut rows: Vec<gpui::AnyElement> = Vec::with_capacity(self.slash.filtered.len() + 2);
+            // Section headers ("Skills" / "Commands") introduce each
+            // contiguous group, reference-menu style; `filtered` is already
+            // section-ordered.
+            let mut in_skills_section: Option<bool> = None;
             for (row_ix, &candidate_ix) in self.slash.filtered.iter().enumerate() {
                 let Some(candidate) = candidates.get(candidate_ix) else {
                     continue;
                 };
-                let selected = self.slash.active == Some(row_ix);
-                let name: SharedString = candidate.title().into();
-                let description: SharedString = candidate.description().into();
                 let is_skill = matches!(candidate, SlashCandidate::Skill { .. });
+                if in_skills_section != Some(is_skill) {
+                    in_skills_section = Some(is_skill);
+                    rows.push(slash_section_header(
+                        theme,
+                        if is_skill { "Skills" } else { "Commands" },
+                    ));
+                }
+                let selected = self.slash.active == Some(row_ix);
+                let label: SharedString = candidate.row_label().into();
+                let description: SharedString = candidate.description().into();
+                let root_tag = candidate.root_tag();
                 rows.push(
                     crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
                         .id(("slash-result", row_ix))
@@ -812,40 +830,47 @@ impl Composer {
                             this.slash.active = Some(row_ix);
                             this.accept_slash(cx);
                         }))
+                        // Label and description share one line (reference
+                        // style): bold name, muted truncating description,
+                        // the source root as a quiet right-aligned tag.
+                        .child(
+                            crate::icons::icon(if is_skill {
+                                crate::icons::WIDGET
+                            } else {
+                                crate::icons::COMMAND
+                            })
+                            .size(px(15.0))
+                            .flex_none()
+                            .text_color(theme.text_muted),
+                        )
                         .child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    crate::icons::icon(if is_skill {
-                                        crate::icons::WIDGET
-                                    } else {
-                                        crate::icons::COMMAND
-                                    })
-                                    .size(px(14.0))
-                                    .text_color(theme.text_muted),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(crate::typography::ui_rems(12.5))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(theme.text)
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .truncate()
-                                        .text_size(crate::typography::ui_rems(12.0))
-                                        .text_color(theme.text_muted)
-                                        .child(description),
-                                ),
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(label),
                         )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .overflow_hidden()
+                                .truncate()
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .text_color(theme.text_muted.opacity(0.75))
+                                .child(description),
+                        )
+                        .when_some(root_tag, |row, tag| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .pl(px(8.0))
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(theme.text_muted.opacity(0.65))
+                                    .child(SharedString::from(tag)),
+                            )
+                        })
                         .into_any_element(),
                 );
             }
@@ -986,6 +1011,20 @@ impl Composer {
         self.popup_bar.end_press();
         cx.notify();
     }
+}
+
+/// A slash popup section caption ("Skills" / "Commands"), reference-menu
+/// style: small, quiet, aligned with the rows' content column.
+fn slash_section_header(theme: &Theme, label: &'static str) -> gpui::AnyElement {
+    div()
+        .px(px(12.0))
+        .pt(px(8.0))
+        .pb(px(3.0))
+        .text_size(crate::typography::ui_rems(10.5))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.text_muted.opacity(0.6))
+        .child(SharedString::from(label))
+        .into_any_element()
 }
 
 #[cfg(test)]

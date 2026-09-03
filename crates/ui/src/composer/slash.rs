@@ -4,7 +4,7 @@
 //! per the picker-logic pattern. Also owns the `/` popup's mixed-source
 //! candidate model (skills + provider commands).
 
-use holt_proto::{SkillListing, SlashCommand};
+use holt_proto::{SkillListing, SkillRoot, SlashCommand};
 
 /// What the composer learned from one input string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +30,8 @@ pub(crate) enum SlashCandidate {
     Skill {
         name: String,
         description: String,
+        /// The source root, shown as the row's right-aligned tag.
+        root: SkillRoot,
     },
     Command {
         name: String,
@@ -39,10 +41,21 @@ pub(crate) enum SlashCandidate {
 }
 
 impl SlashCandidate {
-    /// The row's primary label and what accepting fills into the composer.
+    /// What accepting fills into the composer: `/skill <name>` for a skill
+    /// — ready for extra instructions and submit — `/name` for a command.
     pub(crate) fn title(&self) -> String {
         match self {
             SlashCandidate::Skill { name, .. } => format!("/skill {name}"),
+            SlashCandidate::Command { name, .. } => format!("/{name}"),
+        }
+    }
+
+    /// The row's primary label: a skill shows its bare name (the reference
+    /// menu style), a command its slash word — each row names its own
+    /// identity.
+    pub(crate) fn row_label(&self) -> String {
+        match self {
+            SlashCandidate::Skill { name, .. } => name.to_string(),
             SlashCandidate::Command { name, .. } => format!("/{name}"),
         }
     }
@@ -68,6 +81,32 @@ impl SlashCandidate {
             } => description.clone(),
         }
     }
+
+    /// What per-keystroke local filtering matches against: name plus
+    /// description for skills, the slash word plus description for
+    /// commands (typing `co` still finds `/compact`).
+    pub(crate) fn filter_label(&self) -> String {
+        match self {
+            SlashCandidate::Skill {
+                name, description, ..
+            } => format!("{name} {description}"),
+            SlashCandidate::Command { .. } => {
+                format!("{} {}", self.row_label(), self.description())
+            }
+        }
+    }
+
+    /// The right-aligned source-root tag; commands carry none.
+    pub(crate) fn root_tag(&self) -> Option<&'static str> {
+        match self {
+            SlashCandidate::Skill { root, .. } => Some(match root {
+                SkillRoot::Project => "project",
+                SkillRoot::Personal => "personal",
+                SkillRoot::Holt => "holt",
+            }),
+            SlashCandidate::Command { .. } => None,
+        }
+    }
 }
 
 /// Merge the popup's two sources: invocable skills first, the provider's
@@ -84,6 +123,7 @@ pub(crate) fn popup_candidates(
         .map(|skill| SlashCandidate::Skill {
             name: skill.name.clone(),
             description: skill.description.clone(),
+            root: skill.root,
         })
         .chain(commands.iter().map(|command| SlashCandidate::Command {
             name: command.name.clone(),
@@ -177,12 +217,14 @@ mod tests {
             description: "Compact the session.".into(),
             input_hint: None,
         }];
+        let candidates = popup_candidates(&listing, &commands);
         assert_eq!(
-            popup_candidates(&listing, &commands),
+            candidates,
             vec![
                 SlashCandidate::Skill {
                     name: "grill".into(),
                     description: "Grill a plan.".into(),
+                    root: SkillRoot::Personal,
                 },
                 SlashCandidate::Command {
                     name: "compact".into(),
@@ -191,12 +233,17 @@ mod tests {
                 },
             ]
         );
-        // The row label is also the fill text: `/skill grill` is ready for
-        // extra instructions and submit.
-        assert_eq!(
-            popup_candidates(&listing, &commands)[0].title(),
-            "/skill grill"
-        );
+        // The fill text stays `/skill grill` — ready for extra instructions
+        // and submit — while the ROW shows the bare name and its root tag.
+        assert_eq!(candidates[0].title(), "/skill grill");
+        assert_eq!(candidates[0].row_label(), "grill");
+        assert_eq!(candidates[0].root_tag(), Some("personal"));
+        assert_eq!(candidates[1].row_label(), "/compact");
+        assert_eq!(candidates[1].root_tag(), None);
+        // Filtering matches name+description for skills, slash word for
+        // commands.
+        assert!(candidates[0].filter_label().contains("Grill a plan."));
+        assert!(candidates[1].filter_label().starts_with("/compact"));
     }
 
     #[test]
