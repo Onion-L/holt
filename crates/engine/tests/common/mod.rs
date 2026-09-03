@@ -420,6 +420,22 @@ pub async fn subscribe(
     (transcript, sessions)
 }
 
+/// The transcript watch's opening frame — the whole-history `reset` a
+/// freshly opened chat replays (restored rows, notices and all).
+pub async fn transcript_snapshot(engine: &LocalEngine, chat_id: &str) -> serde_json::Value {
+    let RpcReply::Stream(mut transcript) = engine
+        .handle(
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchDocMessages did not return a stream");
+    };
+    transcript.next().await.expect("transcript watch ended")
+}
+
 // ---------------------------------------------------------------------------
 // Request-message summaries — the assertion vocabulary for "what the model
 // would receive"

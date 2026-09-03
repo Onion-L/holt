@@ -31,6 +31,11 @@ use crate::store::{delete_transcript, load_transcript, persist_transcript};
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
+/// Transcript entry id of the where-the-model's-memory-begins notice
+/// (ADR-0010): appended once when a legacy or damaged History is found,
+/// and the guard that keeps it from being written twice.
+const HISTORY_NOTICE_ENTRY_ID: &str = "history-notice";
+
 fn system_prompt(cwd: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{cwd}}", cwd)
 }
@@ -92,16 +97,65 @@ impl ChatRuntime {
     /// open; the next publish overwrites it. The History (ADR-0010)
     /// replays the same way: the model-facing record is the replayed
     /// JSONL, so a reopened chat's next Turn carries what the Transcript
-    /// shows.
-    fn load(data_dir: &Path, chat_id: &str) -> Self {
-        let transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        let replayed = crate::history::load(data_dir, chat_id).unwrap_or_else(|error| {
-            tracing::warn!(target: "holt::history", %error, "history replay failed; starting empty");
-            Vec::new()
-        });
-        // The repair invariant runs after replay (ADR-0010): a
-        // crash-truncated tail must never reach the model as-is.
-        let history = crate::history::repair_history(&replayed);
+    /// shows. A missing record (a legacy chat) or a damaged one opens with
+    /// an empty History and one persisted Transcript notice saying where
+    /// the model's memory begins — written once, never rebuilt from the
+    /// Transcript.
+    fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
+        let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
+        let replayed = crate::history::load(data_dir, chat_id);
+        let (history, mut notice) = match replayed {
+            Ok(replayed) => (crate::history::repair_history(&replayed), None),
+            Err(reason) => {
+                // A damaged record never blocks the chat (ADR-0010): the
+                // file is set aside — kept, never overwritten — and the
+                // model starts over, with the reason on the notice.
+                crate::history::quarantine(data_dir, chat_id);
+                (
+                    Vec::new(),
+                    Some(format!(
+                        "This chat's saved conversation could not be read ({reason}). \
+                         The damaged file was set aside, and the model does not remember \
+                         anything before this point."
+                    )),
+                )
+            }
+        };
+        // A legacy chat — a Transcript on disk but no History file, from
+        // before the record existed — opens with the same notice, worded
+        // for pre-feature chats. The stable entry id is the written-once
+        // guard (it also suppresses a legacy notice after a damaged one).
+        if notice.is_none()
+            && !transcript
+                .iter()
+                .any(|entry| entry.id == HISTORY_NOTICE_ENTRY_ID)
+            && crate::store::transcript_path(data_dir, chat_id).is_some_and(|p| p.exists())
+            && !crate::history::exists(data_dir, chat_id)
+        {
+            notice = Some(
+                "This chat was kept from before holt saved the model's conversation. \
+                 Everything above this line is visible to you, but the model starts \
+                 fresh after it."
+                    .into(),
+            );
+        }
+        if let Some(message) = notice {
+            transcript.push(SessionMessageEntry {
+                id: HISTORY_NOTICE_ENTRY_ID.into(),
+                role: MessageRole::System,
+                parts: vec![MessagePart::Notice {
+                    id: "n0".into(),
+                    message,
+                }],
+                created_at: Utc::now().timestamp_millis(),
+                device_id: device_id.to_string(),
+                status: None,
+                continuation_of: None,
+            });
+            // Written now, not on the next publish: the notice is part of
+            // the record the moment the chat opens.
+            let _ = persist_transcript(data_dir, chat_id, &transcript);
+        }
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
@@ -184,7 +238,9 @@ impl AgentRuntime {
         let mut chats = self.chat_runtime.lock().unwrap_or_else(|e| e.into_inner());
         chats
             .entry(chat_id.to_string())
-            .or_insert_with(|| Arc::new(ChatRuntime::load(&self.data_dir, chat_id)))
+            .or_insert_with(|| {
+                Arc::new(ChatRuntime::load(&self.data_dir, chat_id, &self.device_id))
+            })
             .clone()
     }
 
@@ -1196,10 +1252,24 @@ mod tests {
 
         // A fresh runtime over the same data dir replays the persisted
         // transcript both in memory and as the watch's opening `reset` frame.
+        // With no History file beside it, this is a legacy chat: the replay
+        // ends with the one written-once notice marking where the model's
+        // memory begins.
         let restarted = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
         let restored = restarted.chat("chat-1");
-        assert_eq!(restored.transcript.read().unwrap().len(), 1);
-        assert_eq!(restored.transcript_tx.borrow().len(), 1);
+        let transcript = restored.transcript.read().unwrap();
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0].id, "m1");
+        assert_eq!(transcript[1].id, HISTORY_NOTICE_ENTRY_ID);
+        assert!(matches!(
+            transcript[1].parts.first(),
+            Some(MessagePart::Notice { .. })
+        ));
+        drop(transcript);
+        assert_eq!(restored.transcript_tx.borrow().len(), 2);
+        // Reopening never adds a second notice.
+        let again = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
+        assert_eq!(again.chat("chat-1").transcript.read().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 

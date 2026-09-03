@@ -290,3 +290,133 @@ async fn a_truncated_history_tail_opens_clean_and_repairs() {
     // The truncated closing reply is gone; the new prompt follows.
     assert_eq!(summary[3], "user:after the truncation");
 }
+
+#[tokio::test]
+async fn a_legacy_chat_opens_with_one_persisted_notice_and_a_fresh_memory() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("legacy-era reply"),
+        ScriptedReply::text("post-notice reply"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "before the feature").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // A transcript with no History beside it — the pre-feature shape.
+    std::fs::remove_file(fixture.data_dir.path().join("history/chat-1.jsonl")).unwrap();
+    drop(engine);
+
+    // The chat opens normally, the Transcript ends with the notice, and the
+    // model's memory starts after it.
+    let engine = fixture.engine(&provider);
+    let opening = common::transcript_snapshot(&engine, "chat-1").await;
+    let opening = opening.to_string();
+    assert!(
+        opening.contains("before holt saved the model's conversation"),
+        "no legacy notice in the opening frame: {opening}"
+    );
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello again").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert_eq!(
+        common::summarize(&provider.requests()[1]),
+        ["user:hello again"]
+    );
+
+    // The notice persists — reopening replays it exactly once, never a
+    // second copy.
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let reopened = common::transcript_snapshot(&engine, "chat-1").await;
+    let reopened = reopened.to_string();
+    assert_eq!(
+        reopened
+            .matches("before holt saved the model's conversation")
+            .count(),
+        1,
+        "legacy notice not persisted exactly once: {reopened}"
+    );
+}
+
+#[tokio::test]
+async fn a_damaged_history_is_quarantined_with_the_reason_on_the_notice() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("first reply"),
+        ScriptedReply::text("starts over"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "leave a record").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // A garbage header — one bad file must not lock the chat or the app.
+    let history_file = fixture.data_dir.path().join("history/chat-1.jsonl");
+    std::fs::write(&history_file, "definitely not a header\n").unwrap();
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let opening = common::transcript_snapshot(&engine, "chat-1").await;
+    let opening = opening.to_string();
+    assert!(
+        opening.contains("could not be read"),
+        "no damaged-file notice in the opening frame: {opening}"
+    );
+    // Set aside, never overwritten or deleted.
+    assert!(
+        fixture
+            .data_dir
+            .path()
+            .join("history/chat-1.jsonl.corrupt")
+            .exists()
+    );
+    assert!(!history_file.exists());
+
+    // A new History starts on the next Turn: the request carries only the
+    // new prompt, and the file exists again.
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start over").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert_eq!(
+        common::summarize(&provider.requests()[1]),
+        ["user:start over"]
+    );
+    assert!(history_file.exists());
+}
+
+#[tokio::test]
+async fn an_unknown_history_version_is_quarantined_like_a_damaged_file() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "leave a record").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let history_file = fixture.data_dir.path().join("history/chat-1.jsonl");
+    std::fs::write(&history_file, "{\"version\":99}\n").unwrap();
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let opening = common::transcript_snapshot(&engine, "chat-1").await;
+    let opening = opening.to_string();
+    assert!(
+        opening.contains("could not be read"),
+        "no damaged-file notice in the opening frame: {opening}"
+    );
+    assert!(
+        opening.contains("unknown history format version 99"),
+        "{opening}"
+    );
+    assert!(
+        fixture
+            .data_dir
+            .path()
+            .join("history/chat-1.jsonl.corrupt")
+            .exists()
+    );
+}

@@ -915,6 +915,7 @@ impl Transcript {
                 None => skill_chip(name.clone(), file.clone(), *pending, &theme),
             },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
+            RowKind::Notice { message } => notice_row(message.clone(), &theme),
         };
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the
@@ -1855,6 +1856,38 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
                         .text_color(theme.text.opacity(0.8))
                         .child(message),
                 ),
+        )
+        .into_any_element()
+}
+
+/// The transcript notice row (ADR-0010): a quiet full-width line of
+/// housekeeping prose — the legacy-chat and damaged-History notices.
+/// Deliberately quieter than a message (no bubble, 12px muted text, a
+/// faint info glyph) and distinct from an error (neutral ink, no red,
+/// no border): it states where the model's memory begins, it does not
+/// report a failure. The text wraps — the damaged-file reason can be long.
+fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
+    div()
+        .py(px(4.0))
+        .w_full()
+        .flex()
+        .items_start()
+        .gap(px(6.0))
+        .text_size(px(12.0))
+        .child(
+            crate::icons::icon(crate::icons::INFO_CIRCLE)
+                .size(px(12.0))
+                .flex_none()
+                .mt(px(3.0))
+                .text_color(theme.text_muted.opacity(0.55)),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .line_height(px(17.0))
+                .text_color(theme.text_muted.opacity(0.9))
+                .child(message),
         )
         .into_any_element()
 }

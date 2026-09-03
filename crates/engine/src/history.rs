@@ -147,6 +147,28 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
     Ok(messages)
 }
 
+/// Whether the chat has a History file on disk (a missing one alongside an
+/// existing Transcript means a legacy chat — see `ChatRuntime::load`).
+pub(crate) fn exists(data_dir: &Path, chat_id: &str) -> bool {
+    history_path(data_dir, chat_id).is_some_and(|path| path.exists())
+}
+
+/// Rename a damaged History file aside with a `.corrupt` suffix — kept,
+/// never overwritten or deleted, so nothing is silently thrown away. The
+/// chat opens with an empty History; the next Turn starts a fresh file.
+pub(crate) fn quarantine(data_dir: &Path, chat_id: &str) {
+    let Some(path) = history_path(data_dir, chat_id) else {
+        return;
+    };
+    let mut aside = path.clone();
+    aside.set_extension("jsonl.corrupt");
+    if let Err(error) = std::fs::rename(&path, &aside)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(target: "holt::history", %error, "could not set the damaged history aside");
+    }
+}
+
 /// Drop a chat's persisted History. Missing files are fine — chats that
 /// never ran have nothing on disk.
 pub(crate) fn delete_history(data_dir: &Path, chat_id: &str) {

@@ -241,6 +241,13 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
+    /// A quiet full-width housekeeping row (ADR-0010): the legacy-chat and
+    /// damaged-History notices — later the overflow and failed-compaction
+    /// messages ride the same shape. Not an error: nothing went wrong with
+    /// the Turn it sits in; it states where the model's memory begins.
+    Notice {
+        message: SharedString,
+    },
 }
 
 /// A transcript row: stable id + content version (diff key) + block payload.
@@ -710,6 +717,23 @@ pub fn rows_for_entry(
                                 file: file.clone().into(),
                                 content: content.clone().map(SharedString::from),
                                 pending: false,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
+                    MessagePart::Notice {
+                        id: part_id,
+                        message,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: message.len() as u64,
+                            turn_start: false,
+                            kind: RowKind::Notice {
+                                // Engine-authored prose; the row wraps.
+                                message: message.clone().into(),
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -1461,6 +1485,29 @@ mod tests {
         assert_eq!(text.as_ref(), "");
         assert!(skill.is_some());
         assert_eq!(rows[0].copy_text.as_deref(), Some("/skill ask-matt"));
+    }
+
+    /// The History notice (ADR-0010) renders as one quiet full-width row —
+    /// not an error chip, not markdown — with the engine's prose intact.
+    #[test]
+    fn a_notice_part_renders_one_quiet_row() {
+        let mut entry = assistant(
+            "s1",
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Everything above this line is visible to you, but the model starts fresh after it.".into(),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        match &rows[0].kind {
+            RowKind::Notice { message } => assert!(message.contains("model starts fresh")),
+            _other => panic!("expected a notice row"),
+        }
+        assert!(rows[0].copy_text.is_none());
     }
 
     #[test]

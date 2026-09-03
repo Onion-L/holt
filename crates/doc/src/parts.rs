@@ -213,6 +213,15 @@ pub enum MessagePart {
         id: String,
         message: String,
     },
+    /// A quiet housekeeping row addressed to the reader, never the model
+    /// (ADR-0010): the legacy-chat and damaged-History notices here — the
+    /// compaction divider, overflow, and failed-compaction notices join as
+    /// their own shapes later. Persisted with the Transcript like any part;
+    /// not an `Error`: nothing went wrong with the Turn the row sits in.
+    Notice {
+        id: String,
+        message: String,
+    },
 }
 
 impl MessagePart {
@@ -223,7 +232,8 @@ impl MessagePart {
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Skill { id, .. }
-            | MessagePart::Error { id, .. } => id,
+            | MessagePart::Error { id, .. }
+            | MessagePart::Notice { id, .. } => id,
         }
     }
 
@@ -255,7 +265,9 @@ impl MessagePart {
                 content,
                 ..
             } => name.len() + file.len() + content.as_ref().map_or(0, String::len),
-            MessagePart::Error { message, .. } => message.len(),
+            MessagePart::Error { message, .. } | MessagePart::Notice { message, .. } => {
+                message.len()
+            }
         }
     }
 }
