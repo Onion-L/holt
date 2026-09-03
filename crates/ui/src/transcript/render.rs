@@ -1170,7 +1170,7 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let fold = self.folds.get(row_id).copied().unwrap_or_default();
+        let mut fold = self.folds.get(row_id).copied().unwrap_or_default();
         // Agent/spawn chips never fold: they are their own row, always open,
         // no "Called N tools" header — a running subagent stays visible.
         let collapses = tool_group_collapses(tools);
@@ -1262,9 +1262,32 @@ impl Transcript {
                 None
             })
             .collect();
+        // Per-chip card metrics (analytic, single source of truth for the
+        // detail folds, the chips loop, and auto-flip arming): `(auto-derived
+        // open, open height, closed height)`. Chips without a detail body —
+        // bare calls, spawn links — have no card at all.
+        let card_metrics: Vec<Option<(bool, f32, f32)>> = tools
+            .iter()
+            .enumerate()
+            .map(|(ix, tool)| {
+                if details[ix].is_none() && invocations[ix].is_none() {
+                    return None;
+                }
+                let affordance_h = if affordances[ix].is_some() {
+                    BLOB_AFFORDANCE_HEIGHT
+                } else {
+                    0.0
+                };
+                let open_h = CHIP_HEIGHT
+                    + invocations[ix].as_deref().map_or(0.0, detail_height)
+                    + details[ix].as_deref().map_or(0.0, detail_height)
+                    + affordance_h;
+                Some((tool.is_thought && !tool.resolved, open_h, CHIP_HEIGHT))
+            })
+            .collect();
         // Which chips have their detail block open (render-local, analytic —
         // the FINAL state; a mid-tween detail already counts as its target).
-        let detail_folds: Vec<FoldState> = details
+        let mut detail_folds: Vec<FoldState> = details
             .iter()
             .zip(&invocations)
             .enumerate()
@@ -1278,17 +1301,14 @@ impl Transcript {
                     .unwrap_or_default()
             })
             .collect();
-        let detail_opens: Vec<bool> = details
+        let detail_opens: Vec<bool> = card_metrics
             .iter()
-            .zip(&invocations)
             .zip(&detail_folds)
-            .zip(tools.iter())
-            .map(|(((detail, invocation), fold), tool)| {
+            .map(|(card, fold)| {
                 // A STREAMING thought chip defaults open (the live thinking
                 // is the point); settled chips default closed. A user toggle
                 // overrides either way.
-                let default_open = tool.is_thought && !tool.resolved;
-                (detail.is_some() || invocation.is_some()) && fold.open.unwrap_or(default_open)
+                card.is_some_and(|(default_open, ..)| fold.open.unwrap_or(default_open))
             })
             .collect();
         let detail_highlights: Vec<Option<Arc<crate::changes::DiffHighlights>>> = details
@@ -1319,6 +1339,72 @@ impl Transcript {
                 })
                 .sum::<f32>();
         let target = if open { open_height } else { 0.0 };
+
+        // ---- auto-flip tween arming ----------------------------------------
+        // The streaming tail moves between parts at doc-commit cadence: a
+        // trailing group loses `auto_open` when text follows, a thought chip
+        // closes when it loses the tail, and the settle closes both. Those
+        // flips used to hard-cut the row height, and the bottom-pinned
+        // viewport follows content height 1:1 — every flip read as a
+        // page-wide jump (user report: jitter while the agent outputs). Arm
+        // the same 200ms tween a user toggle gets, seeded from the height
+        // committed at the previous render. First sight seeds silently (a
+        // new row simply appears at its height); a user pin masks the auto
+        // rule; reduced motion keeps the snap.
+        {
+            let reduced = motion::reduced_motion(cx);
+            let group_flipped =
+                collapses && !reduced && auto_flip_armed(fold.open, fold.auto_open_last, auto_open);
+            if group_flipped {
+                fold.from = fold.last_target.max(0.0);
+                fold.epoch += 1;
+                fold.toggled_at = Some(Instant::now());
+            }
+            // Detail flips are invisible inside a closing group body — the
+            // body tween carries the motion alone — and only exist while the
+            // group is open.
+            let mut detail_armed = false;
+            for (ix, card) in card_metrics.iter().enumerate() {
+                let Some((default_open, open_h, closed_h)) = *card else {
+                    continue;
+                };
+                let dfold = &mut detail_folds[ix];
+                if !group_flipped
+                    && open
+                    && !reduced
+                    && auto_flip_armed(dfold.open, dfold.auto_open_last, default_open)
+                {
+                    dfold.from = if default_open { closed_h } else { open_h };
+                    dfold.epoch += 1;
+                    dfold.toggled_at = Some(Instant::now());
+                    detail_armed = true;
+                }
+                dfold.auto_open_last = Some(default_open);
+            }
+            if detail_armed && collapses && open && !reduced {
+                // The group body's height is analytic over the FINAL detail
+                // state, so it must tween alongside an auto-flipping card for
+                // the row to track the card's edge frame-for-frame — the same
+                // composition the click handler arms. `last_target` is the
+                // pre-flip committed height, exact even when the flip lands
+                // in the same commit as an appended chip.
+                fold.from = fold.last_target.max(0.0);
+                fold.epoch += 1;
+                fold.toggled_at = Some(Instant::now());
+            }
+            if collapses {
+                fold.auto_open_last = Some(auto_open);
+            }
+            fold.last_target = target;
+            for (ix, dfold) in detail_folds.iter().enumerate() {
+                if card_metrics[ix].is_some() {
+                    self.tool_details
+                        .insert(SharedString::from(format!("{row_id}#d{ix}")), *dfold);
+                }
+            }
+            self.folds.insert(row_id.clone(), fold);
+        }
+
         let summary = tool_group_summary(tools);
 
         let toggle_id = row_id.clone();
@@ -1406,11 +1492,9 @@ impl Transcript {
                     return tool_chip(tool, collapses, theme, cx.entity_id(), cx);
                 }
                 let affordance = affordances[ix].clone();
-                let affordance_h = if affordance.is_some() {
-                    BLOB_AFFORDANCE_HEIGHT
-                } else {
-                    0.0
-                };
+                // Card heights come from the precomputed metrics — the same
+                // analytic values the auto-flip arming tweens between.
+                let (_, open_h, closed_h) = card_metrics[ix].expect("carded chip has card metrics");
                 let open = detail_opens[ix];
                 let dfold = detail_folds[ix];
                 let key = SharedString::from(format!("{row_id}#d{ix}"));
@@ -1423,11 +1507,6 @@ impl Transcript {
                 // group's analytic height exactly or stacked chips drift
                 // (the old bordered card overflowed by its own 2px of
                 // borders — user report: "tool calls cut off at the bottom").
-                let closed_h = CHIP_HEIGHT;
-                let open_h = CHIP_HEIGHT
-                    + invocation.as_deref().map_or(0.0, detail_height)
-                    + detail.as_deref().map_or(0.0, detail_height)
-                    + affordance_h;
                 let card_target = if open { open_h } else { closed_h };
                 let animating = dfold.epoch > 0
                     && dfold
@@ -1593,6 +1672,15 @@ impl Transcript {
             .child(body)
             .into_any_element()
     }
+}
+
+/// Whether an AUTO-derived open state flipped on a row the user hasn't
+/// pinned — the streaming tail moving off a trailing group, a thought losing
+/// the tail, or the settle. `last_auto` is `None` until first sight: a row
+/// APPEARS at its height, and only a flip on an already-rendered row arms
+/// the height tween. Pure.
+fn auto_flip_armed(pinned: Option<bool>, last_auto: Option<bool>, auto_now: bool) -> bool {
+    pinned.is_none() && last_auto.is_some_and(|last| last != auto_now)
 }
 
 /// A sent message's text with its file-mention chips. The same recipe as the
@@ -2530,6 +2618,24 @@ impl Render for Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_flip_arms_only_on_an_unpinned_edge() {
+        // First sight seeds silently — a new row appears at its height.
+        assert!(!auto_flip_armed(None, None, true));
+        assert!(!auto_flip_armed(None, None, false));
+        // Steady state (streaming growth included) never re-arms.
+        assert!(!auto_flip_armed(None, Some(true), true));
+        assert!(!auto_flip_armed(None, Some(false), false));
+        // The flip on an existing, unpinned row arms: the tail moving off
+        // the group, a thought losing the tail, the settle…
+        assert!(auto_flip_armed(None, Some(true), false));
+        // …and, symmetrically, a re-open.
+        assert!(auto_flip_armed(None, Some(false), true));
+        // A user pin masks the auto rule entirely, either way.
+        assert!(!auto_flip_armed(Some(true), Some(true), false));
+        assert!(!auto_flip_armed(Some(false), Some(false), true));
+    }
 
     #[test]
     fn subagent_tab_titles() {

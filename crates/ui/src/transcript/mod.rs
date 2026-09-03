@@ -133,6 +133,18 @@ struct FoldState {
     /// tween made every once-collapsed group flash open→closed on each
     /// reappearance (user report).
     toggled_at: Option<Instant>,
+    /// The auto-derived open this row last rendered with (`None` until first
+    /// sight). An AUTO flip — the streaming tail moving off this group, a
+    /// thought losing the tail, the settle — arms the height tween exactly
+    /// like a user toggle: the bottom-pinned viewport follows content height
+    /// 1:1, so an untweened auto flip reads as a page-wide jump (user report:
+    /// jitter while the agent outputs). Tracked in the entity (not element)
+    /// so a virtualized remount cannot re-edge.
+    auto_open_last: Option<bool>,
+    /// Committed analytic body height at the previous render — the start
+    /// height an auto-armed group tween lerps from. The committed (not
+    /// mid-tween) value, matching what a user toggle's `from` captures.
+    last_target: f32,
 }
 
 pub struct Transcript {
