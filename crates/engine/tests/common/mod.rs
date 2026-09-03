@@ -43,8 +43,12 @@ pub enum ScriptedReply {
     /// entry for the second round.
     ToolCalls(Vec<ToolCall>),
     /// A stream cut mid-text — the shape an interruption leaves behind: the
-    /// partial content lands, stop reason `aborted`.
-    Aborted { partial: String },
+    /// partial content and any tool calls already streamed land, stop
+    /// reason `aborted`, and the calls never execute.
+    Aborted {
+        partial: String,
+        tool_calls: Vec<ToolCall>,
+    },
     /// A provider failure: the error string rides the assistant message,
     /// stop reason `error`.
     Failed(String),
@@ -62,6 +66,23 @@ impl ScriptedReply {
     /// A single tool call with the given id, name, and JSON arguments.
     pub fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> Self {
         ScriptedReply::ToolCalls(vec![tool_call(id, name, arguments)])
+    }
+
+    /// An interruption with only partial text on the wire.
+    pub fn aborted(partial: impl Into<String>) -> Self {
+        ScriptedReply::Aborted {
+            partial: partial.into(),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// An interruption that cut the stream after tool calls had streamed
+    /// but before they could run.
+    pub fn aborted_with_tool_calls(partial: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        ScriptedReply::Aborted {
+            partial: partial.into(),
+            tool_calls,
+        }
     }
 }
 
@@ -182,15 +203,20 @@ fn push_reply(
                 message,
             });
         }
-        ScriptedReply::Aborted { partial } => {
+        ScriptedReply::Aborted {
+            partial,
+            tool_calls,
+        } => {
             // The half-streamed shape: a start with the partial content,
             // then the abort terminal carrying the same content — mirroring
             // the real transports' aborted message (stop reason `aborted`,
             // "Request was aborted" as its error message).
-            message.content = vec![AssistantContent::Text(TextContent {
+            let mut content = vec![AssistantContent::Text(TextContent {
                 text: partial,
                 ..Default::default()
             })];
+            content.extend(tool_calls.into_iter().map(AssistantContent::ToolCall));
+            message.content = content;
             message.stop_reason = StopReason::Aborted;
             message.error_message = Some("Request was aborted".into());
             stream.push(AssistantMessageEvent::Start {
@@ -328,6 +354,20 @@ where
                 .any(|row| row["chatId"] == chat_id && row["status"] == status)
         });
         if hit {
+            return;
+        }
+    }
+}
+
+/// Pump transcript frames until some entry or append carries `needle` (a
+/// text or error part, or a streaming append).
+pub async fn wait_for_transcript_text<S>(transcript: &mut S, needle: &str)
+where
+    S: StreamExt<Item = serde_json::Value> + Unpin,
+{
+    loop {
+        let frame = next_frame(transcript).await;
+        if frame.to_string().contains(needle) {
             return;
         }
     }

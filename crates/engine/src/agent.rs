@@ -95,10 +95,13 @@ impl ChatRuntime {
     /// shows.
     fn load(data_dir: &Path, chat_id: &str) -> Self {
         let transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        let history = crate::history::load(data_dir, chat_id).unwrap_or_else(|error| {
+        let replayed = crate::history::load(data_dir, chat_id).unwrap_or_else(|error| {
             tracing::warn!(target: "holt::history", %error, "history replay failed; starting empty");
             Vec::new()
         });
+        // The repair invariant runs after replay (ADR-0010): a
+        // crash-truncated tail must never reach the model as-is.
+        let history = crate::history::repair_history(&replayed);
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
@@ -666,8 +669,15 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                         true,
                     );
                     // The completed assistant message joins the persisted
-                    // History as it ends (ADR-0010).
-                    chat.append_history((*message).clone());
+                    // History as it ends (ADR-0010), in its History version:
+                    // a message the run ends on is rewritten to a normal
+                    // end (or dropped when it carries nothing but the
+                    // error) — the repair invariant, applied per message.
+                    if let AgentMessage::Assistant(assistant) = &*message
+                        && let Some(for_history) = crate::history::history_assistant(assistant)
+                    {
+                        chat.append_history(AgentMessage::Assistant(Box::new(for_history)));
+                    }
                 }
                 AgentEvent::MessageEnd { message }
                     if matches!(&*message, AgentMessage::ToolResult(_)) =>
@@ -755,8 +765,22 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                 .unwrap_or(false);
             let mut stored = chat.history.write().unwrap_or_else(|e| e.into_inner());
             *stored = history;
-            stored.extend(messages);
+            // The run's outcome joins the in-memory History in its repaired
+            // form, matching what the per-message appends put on disk:
+            // terminal messages rewritten (or dropped when contentless
+            // errors), dangling tool calls given their synthetic
+            // interrupted results.
+            let repaired = crate::history::repair_history(&messages);
+            for message in &repaired {
+                stored.push(message.clone());
+            }
             drop(stored);
+            // Disk already carries every completed message from the sink;
+            // the sweep only adds the synthetic results for calls the run
+            // ended before they could execute.
+            for message in crate::history::interrupted_results_for(&messages) {
+                chat.append_history(message);
+            }
             // An interrupted loop never sends the closing MessageEnd, so its
             // last entry would stream forever — settle it here.
             let end_status = if cancel.is_cancelled() || errored {

@@ -12,6 +12,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use pi_core::agent::types::AgentMessage;
+use pi_core::ai::types::{
+    AssistantContent, AssistantMessage, BlockContent, StopReason, TextContent, ToolResultMessage,
+};
 
 use crate::store::chat_id_is_path_safe;
 
@@ -152,6 +155,109 @@ pub(crate) fn delete_history(data_dir: &Path, chat_id: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The repair invariant (ADR-0010): the History must always be a valid
+// provider request payload — every tool call has a matching tool result,
+// and the record never ends on a half-streamed assistant message.
+// ---------------------------------------------------------------------------
+
+/// The History's version of one finished assistant message. A message the
+/// run ended on — aborted by the user, or carrying a provider error — is
+/// rewritten to a normal end: the model learns what happened from the
+/// synthetic interrupted tool results, not from a stop reason that makes
+/// the next request invalid (upstream's request-time normalizer would drop
+/// an aborted message outright, hiding the interruption from the model).
+/// An errored message with no content at all is dropped; the Transcript
+/// keeps the visible error either way.
+pub(crate) fn history_assistant(assistant: &AssistantMessage) -> Option<AssistantMessage> {
+    match assistant.stop_reason {
+        StopReason::Error if assistant.content.is_empty() => None,
+        StopReason::Error | StopReason::Aborted => {
+            let mut repaired = assistant.clone();
+            repaired.stop_reason = StopReason::Stop;
+            repaired.error_message = None;
+            Some(repaired)
+        }
+        _ => Some(assistant.clone()),
+    }
+}
+
+/// Tool calls in `messages` that never received their result, in call
+/// order — the crash-mid-run and interrupted-mid-run shapes.
+fn dangling_tool_calls(messages: &[AgentMessage]) -> Vec<(String, String)> {
+    let mut dangling = Vec::new();
+    for message in messages {
+        match message {
+            AgentMessage::Assistant(assistant) => {
+                for block in &assistant.content {
+                    if let AssistantContent::ToolCall(call) = block {
+                        dangling.push((call.id.clone(), call.name.clone()));
+                    }
+                }
+            }
+            AgentMessage::ToolResult(result) => {
+                dangling.retain(|(id, _)| *id != result.tool_call_id);
+            }
+            _ => {}
+        }
+    }
+    dangling
+}
+
+/// A synthetic error tool result for a call that never ran: an honest
+/// "this was interrupted" record, distinguishable from a real failure.
+/// holt writes these itself so upstream's request-time normalizer ("No
+/// result provided") never has anything to synthesize.
+fn interrupted_tool_result(tool_call_id: &str, tool_name: &str) -> AgentMessage {
+    AgentMessage::ToolResult(Box::new(ToolResultMessage {
+        role: Default::default(),
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        content: vec![BlockContent::Text(TextContent {
+            text: format!(
+                "The Turn was interrupted by the user; the \"{tool_name}\" tool call was not executed."
+            ),
+            ..Default::default()
+        })],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: true,
+        timestamp: 0,
+    }))
+}
+
+/// The synthetic interrupted-results for calls in `messages` that never
+/// got their result — the run-end sweep's disk appends (everything else
+/// already landed per-message as it completed).
+pub(crate) fn interrupted_results_for(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    dangling_tool_calls(messages)
+        .into_iter()
+        .map(|(id, name)| interrupted_tool_result(&id, &name))
+        .collect()
+}
+
+/// Enforce the invariant over a whole History sequence: rewrite or drop
+/// terminal assistant messages, then give every remaining dangling tool
+/// call its synthetic interrupted result. Runs after replay on load — the
+/// crash-truncated tail never reaches the model as-is.
+pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    let mut repaired = Vec::with_capacity(messages.len());
+    for message in messages {
+        match message {
+            AgentMessage::Assistant(assistant) => match history_assistant(assistant) {
+                Some(repaired_message) => {
+                    repaired.push(AgentMessage::Assistant(Box::new(repaired_message)))
+                }
+                None => continue,
+            },
+            other => repaired.push(other.clone()),
+        }
+    }
+    repaired.extend(interrupted_results_for(messages));
+    repaired
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +282,189 @@ mod tests {
             model: "mock".into(),
             ..Default::default()
         }))
+    }
+
+    /// An assistant message that ended a run the hard way — `stop` is the
+    /// terminal stop reason, `content` whatever streamed before the end.
+    fn terminal_assistant(stop: StopReason, content: Vec<AssistantContent>) -> AgentMessage {
+        AgentMessage::Assistant(Box::new(AssistantMessage {
+            content,
+            stop_reason: stop,
+            error_message: (stop != StopReason::Stop).then(|| "the failure".into()),
+            model: "mock".into(),
+            ..Default::default()
+        }))
+    }
+
+    fn tool_call_block(id: &str, name: &str) -> AssistantContent {
+        AssistantContent::ToolCall(pi_core::ai::types::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            ..Default::default()
+        })
+    }
+
+    fn text_block(text: &str) -> AssistantContent {
+        AssistantContent::Text(TextContent {
+            text: text.into(),
+            ..Default::default()
+        })
+    }
+
+    fn tool_result(id: &str) -> AgentMessage {
+        AgentMessage::ToolResult(Box::new(ToolResultMessage {
+            tool_call_id: id.into(),
+            tool_name: "read".into(),
+            content: vec![BlockContent::Text(TextContent {
+                text: "ran".into(),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }))
+    }
+
+    fn result_ids(messages: &[AgentMessage]) -> Vec<String> {
+        messages
+            .iter()
+            .filter_map(|message| match message {
+                AgentMessage::ToolResult(result) => Some(result.tool_call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn result_text(result: &ToolResultMessage) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                BlockContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repair_gives_each_dangling_call_one_interrupted_result() {
+        let messages = vec![
+            user("tidy up"),
+            terminal_assistant(
+                StopReason::Aborted,
+                vec![
+                    tool_call_block("call-1", "bash"),
+                    tool_call_block("call-2", "read"),
+                    tool_call_block("call-3", "edit"),
+                ],
+            ),
+        ];
+        let repaired = repair_history(&messages);
+        assert_eq!(repaired.len(), 5);
+        // The assistant message survives as a normal end…
+        let AgentMessage::Assistant(assistant) = &repaired[1] else {
+            panic!("expected the assistant message");
+        };
+        assert_eq!(assistant.stop_reason, StopReason::Stop);
+        assert_eq!(assistant.error_message, None);
+        // …and each call gets exactly one synthetic error result, in call
+        // order, under its own tool name, stating the user interrupted.
+        assert_eq!(result_ids(&repaired), ["call-1", "call-2", "call-3"]);
+        for (message, name) in repaired[2..].iter().zip(["bash", "read", "edit"]) {
+            let AgentMessage::ToolResult(result) = message else {
+                panic!("expected synthetic results");
+            };
+            assert!(result.is_error);
+            assert_eq!(result.tool_name, name);
+            assert!(result_text(result).contains("interrupted by the user"));
+        }
+    }
+
+    #[test]
+    fn repair_keeps_results_that_arrived_and_sweeps_only_the_rest() {
+        // Interrupted mid-execution: call-1 ran, call-2 never did.
+        let messages = vec![
+            user("do two things"),
+            AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![
+                    tool_call_block("call-1", "bash"),
+                    tool_call_block("call-2", "read"),
+                ],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+            tool_result("call-1"),
+        ];
+        let repaired = repair_history(&messages);
+        assert_eq!(repaired.len(), 4);
+        assert_eq!(result_ids(&repaired), ["call-1", "call-2"]);
+        let AgentMessage::ToolResult(synthetic) = &repaired[3] else {
+            panic!("expected the synthetic result");
+        };
+        assert_eq!(synthetic.tool_call_id, "call-2");
+        assert!(synthetic.is_error);
+    }
+
+    #[test]
+    fn an_aborted_message_with_no_content_is_kept_as_a_normal_end() {
+        let messages = vec![
+            user("hello"),
+            terminal_assistant(StopReason::Aborted, vec![]),
+        ];
+        let repaired = repair_history(&messages);
+        assert_eq!(repaired.len(), 2);
+        let AgentMessage::Assistant(assistant) = &repaired[1] else {
+            panic!("expected the assistant message");
+        };
+        assert_eq!(assistant.stop_reason, StopReason::Stop);
+        assert_eq!(assistant.error_message, None);
+    }
+
+    #[test]
+    fn an_errored_message_is_dropped_when_empty_and_kept_when_partial() {
+        // No content: the question stays, the failed answer goes — the
+        // Transcript keeps the visible error.
+        let messages = vec![
+            user("try this"),
+            terminal_assistant(StopReason::Error, vec![]),
+        ];
+        assert_eq!(repair_history(&messages), vec![user("try this")]);
+
+        // Partial content before the error: the interrupted rule applies —
+        // the content survives as a normal end, the error does not.
+        let messages = vec![
+            user("try this"),
+            terminal_assistant(StopReason::Error, vec![text_block("half an a")]),
+        ];
+        let repaired = repair_history(&messages);
+        assert_eq!(repaired.len(), 2);
+        let AgentMessage::Assistant(assistant) = &repaired[1] else {
+            panic!("expected the assistant message");
+        };
+        assert_eq!(assistant.stop_reason, StopReason::Stop);
+        assert_eq!(assistant.error_message, None);
+    }
+
+    #[test]
+    fn a_load_with_a_dangling_tail_returns_a_repaired_history() {
+        // The crash-mid-run shape on disk: the assistant tool-call message
+        // landed, its results did not.
+        let dir = temp_dir();
+        append_message(&dir, "chat-1", &user("go")).unwrap();
+        append_message(
+            &dir,
+            "chat-1",
+            &AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![tool_call_block("call-1", "bash")],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+        let replayed = load(&dir, "chat-1").unwrap();
+        assert_eq!(replayed.len(), 2);
+        let repaired = repair_history(&replayed);
+        assert_eq!(result_ids(&repaired), ["call-1"]);
+        assert_eq!(repaired.len(), 3);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn temp_dir() -> PathBuf {

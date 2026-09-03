@@ -8,40 +8,6 @@
 mod common;
 
 use common::{ScriptedProvider, ScriptedReply};
-use futures::StreamExt;
-use holt_doc::{MessagePart, SessionMessageEntry, TranscriptFrame};
-
-fn entry_mentions(entry: &SessionMessageEntry, needle: &str) -> bool {
-    entry.parts.iter().any(|part| match part {
-        MessagePart::Text { text, .. } => text.contains(needle),
-        MessagePart::Error { message, .. } => message.contains(needle),
-        _ => false,
-    })
-}
-
-fn frame_mentions(frame: &TranscriptFrame, needle: &str) -> bool {
-    match frame {
-        TranscriptFrame::Reset { reset } => reset.iter().any(|e| entry_mentions(e, needle)),
-        TranscriptFrame::Delta { upsert, append, .. } => {
-            upsert.iter().any(|u| entry_mentions(&u.entry, needle))
-                || append.iter().any(|a| a.text.contains(needle))
-        }
-    }
-}
-
-/// Pump transcript frames until some entry or append carries `needle`.
-async fn wait_for_transcript_text<S>(transcript: &mut S, needle: &str)
-where
-    S: StreamExt<Item = serde_json::Value> + Unpin,
-{
-    loop {
-        let frame: TranscriptFrame =
-            serde_json::from_value(common::next_frame(transcript).await).unwrap();
-        if frame_mentions(&frame, needle) {
-            return;
-        }
-    }
-}
 
 #[tokio::test]
 async fn a_scripted_text_reply_streams_into_the_transcript_and_returns_to_idle() {
@@ -52,7 +18,7 @@ async fn a_scripted_text_reply_streams_into_the_transcript_and_returns_to_idle()
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
-    wait_for_transcript_text(&mut transcript, "scripted reply text").await;
+    common::wait_for_transcript_text(&mut transcript, "scripted reply text").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     // Exactly one request reached the "model", and it carried the prompt —
@@ -83,7 +49,7 @@ async fn a_scripted_tool_call_runs_against_the_cwd_and_feeds_the_result_back() {
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "read the notes").await;
-    wait_for_transcript_text(&mut transcript, "done after reading").await;
+    common::wait_for_transcript_text(&mut transcript, "done after reading").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     // Two rounds: the tool-call reply, then the follow-up after the result.
@@ -107,15 +73,13 @@ async fn a_scripted_tool_call_runs_against_the_cwd_and_feeds_the_result_back() {
 #[tokio::test]
 async fn a_scripted_aborted_stream_lands_its_partial_text() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::Aborted {
-        partial: "cut short mid-sentence".into(),
-    }]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::aborted("cut short mid-sentence")]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
-    wait_for_transcript_text(&mut transcript, "cut short mid-sentence").await;
+    common::wait_for_transcript_text(&mut transcript, "cut short mid-sentence").await;
     // The abort carries an error message, so the session settles on errored
     // — never stuck working.
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
@@ -131,7 +95,7 @@ async fn a_scripted_error_string_surfaces_in_the_transcript() {
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
-    wait_for_transcript_text(&mut transcript, "provider exploded").await;
+    common::wait_for_transcript_text(&mut transcript, "provider exploded").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
     assert_eq!(provider.requests().len(), 1);
 }
