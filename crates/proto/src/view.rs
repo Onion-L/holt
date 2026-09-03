@@ -48,16 +48,18 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
     match session.status {
         SessionStatus::Idle => Indicator::None,
         SessionStatus::Errored => Indicator::Errored,
-        SessionStatus::Working | SessionStatus::AwaitingInput => {
+        // Compacting shows like Working — the interrupt affordance is the
+        // same Stop control (ADR-0011).
+        SessionStatus::Working | SessionStatus::AwaitingInput | SessionStatus::Compacting => {
             let age_ms = now
                 .signed_duration_since(session.updated_at)
                 .num_milliseconds();
             if age_ms > SESSION_STALE_MS {
                 Indicator::None
-            } else if session.status == SessionStatus::Working {
-                Indicator::Working
-            } else {
+            } else if session.status == SessionStatus::AwaitingInput {
                 Indicator::AwaitingInput
+            } else {
+                Indicator::Working
             }
         }
     }

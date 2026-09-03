@@ -376,8 +376,120 @@ impl LocalEngine {
                     "input responses are not available yet".into(),
                 ));
             }
+            SessionCommandPayload::Compact { request } => {
+                self.compact(chat, request).await?;
+            }
         }
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// A manual `/compact` (ADR-0011): compaction on demand — never a
+    /// Turn. Nothing Turn-scoped is stamped or reset; the session enters
+    /// `Compacting` (same interrupt affordance as a run) and returns to
+    /// idle on completion, failure, or interruption.
+    async fn compact(&self, chat: Arc<ChatRuntime>, request: RunRequest) -> Result<(), RpcError> {
+        // Refused while a Turn runs, with the same message as a second
+        // prompt — queueing belongs to the future message queue.
+        if chat
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|token| !token.is_cancelled())
+        {
+            return Err(RpcError::Failed("this chat is already running".into()));
+        }
+        // A History that fits the retained tail has nothing to compact:
+        // refuse before any status change or model request.
+        let history = chat
+            .history
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if !crate::compaction::has_compactable_content(&history) {
+            return Err(RpcError::Failed("There is nothing to compact".into()));
+        }
+        let Some(api_key) = self
+            .providers
+            .credentials
+            .reveal_key(request.provider.as_str())
+            .await
+        else {
+            return Err(RpcError::Failed(format!(
+                "provider {} is not configured",
+                request.provider
+            )));
+        };
+        let model = self
+            .providers
+            .resolve_model(request.provider.as_str(), &request.model)
+            .map_err(RpcError::BadParams)?;
+        let stream_fn = self
+            .runtime
+            .stream_fn
+            .clone()
+            .unwrap_or_else(crate::agent::default_stream_fn);
+        let cancel = CancellationToken::new();
+        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
+        self.runtime
+            .set_session(&chat.chat_id, SessionStatus::Compacting);
+
+        let runtime = self.runtime.clone();
+        let device_id = self.engine_info.device_id.clone();
+        let compacting_chat = chat.clone();
+        let compacting_chat_id = chat.chat_id.clone();
+        tokio::spawn(async move {
+            let outcome = crate::compaction::compact_now(
+                &history,
+                &model,
+                &stream_fn,
+                &api_key,
+                holt_doc::parts::CompactionTrigger::Manual,
+                Some(&cancel),
+            )
+            .await;
+            match outcome {
+                Ok(Some(outcome)) => {
+                    crate::agent::record_turn_start_compaction(
+                        &compacting_chat,
+                        &device_id,
+                        &outcome.record,
+                    );
+                    *compacting_chat
+                        .history
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner()) = outcome.messages;
+                }
+                // Pre-checked at acceptance; losing the race just settles.
+                Ok(None) => {}
+                Err(reason) => {
+                    // An interruption is the user's own act — settle
+                    // quietly. A real failure surfaces on the Transcript;
+                    // the History is untouched either way.
+                    if !cancel.is_cancelled() {
+                        tracing::warn!(target: "holt::compaction", %reason, "manual compaction failed");
+                        crate::agent::push_system_part(
+                            &compacting_chat,
+                            &device_id,
+                            format!("compaction-failed-{}", uuid::Uuid::new_v4()),
+                            holt_doc::MessagePart::Notice {
+                                id: "n0".into(),
+                                message: format!(
+                                    "Compaction failed ({reason}); the conversation was \
+                                     left unchanged."
+                                ),
+                            },
+                        );
+                    }
+                }
+            }
+            *compacting_chat
+                .cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            runtime.set_session(&compacting_chat_id, SessionStatus::Idle);
+        });
+        Ok(())
     }
 
     /// Accept and launch one ordinary Turn — the shared tail of `Run` and
@@ -744,7 +856,11 @@ impl RpcService for LocalEngine {
                 let provider = required_string(&params, "providerId")?;
                 RpcReply::value(&self.providers.models_for(provider))
             }
-            methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([])),
+            // The composer's slash menu (ADR-0011): the one command this
+            // backend intercepts itself.
+            methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
+                { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" }
+            ])),
             // The skills catalog (ADR-0005): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.
             // Absent roots are skipped silently inside the scan.

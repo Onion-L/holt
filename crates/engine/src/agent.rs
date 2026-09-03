@@ -64,13 +64,13 @@ async fn run_system_prompt(
 
 pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
-    history: RwLock<Vec<AgentMessage>>,
+    pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// Where this chat's transcript persists; empty for the ephemeral
     /// runtimes tests build directly.
-    data_dir: PathBuf,
-    chat_id: String,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) chat_id: String,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -425,7 +425,12 @@ fn resolve_tool_part(
 /// Append one housekeeping part (a compaction divider, a notice) as its
 /// own System entry at the transcript's tail and publish — the record
 /// grows, never shrinks (ADR-0011).
-fn push_system_part(chat: &ChatRuntime, device_id: &str, entry_id: String, part: MessagePart) {
+pub(crate) fn push_system_part(
+    chat: &ChatRuntime,
+    device_id: &str,
+    entry_id: String,
+    part: MessagePart,
+) {
     chat.transcript
         .write()
         .unwrap_or_else(|e| e.into_inner())
@@ -442,7 +447,7 @@ fn push_system_part(chat: &ChatRuntime, device_id: &str, entry_id: String, part:
 }
 
 /// The Transcript's row for one recorded compaction.
-fn divider_part(record: &CompactionRecord) -> MessagePart {
+pub(crate) fn divider_part(record: &CompactionRecord) -> MessagePart {
     let CompactionRecord {
         summary,
         tokens_before,
@@ -463,7 +468,11 @@ fn divider_part(record: &CompactionRecord) -> MessagePart {
 
 /// Record a Turn-boundary compaction: the `compaction` entry into the
 /// History file and the divider as its own Transcript entry at the tail.
-fn record_turn_start_compaction(chat: &ChatRuntime, device_id: &str, record: &CompactionRecord) {
+pub(crate) fn record_turn_start_compaction(
+    chat: &ChatRuntime,
+    device_id: &str,
+    record: &CompactionRecord,
+) {
     if let Err(error) = crate::history::append_compaction(&chat.data_dir, &chat.chat_id, record) {
         tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
     }
@@ -510,6 +519,16 @@ fn record_mid_turn_compaction(
         trigger,
         timestamp,
     });
+}
+
+/// The built-in provider transport: the compat stream over the resolved
+/// model. Tests inject their own through `EngineConfig::stream_fn`.
+pub(crate) fn default_stream_fn() -> pi_core::agent::types::StreamFn {
+    Arc::new(
+        |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
+            Ok(compat::stream_simple(model, context, options))
+        },
+    )
 }
 
 /// The base a run's loop continues from, shared with the mid-Turn
@@ -860,13 +879,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         })
     });
 
-    let stream_fn = stream_fn.unwrap_or_else(|| {
-        Arc::new(
-            |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-                Ok(compat::stream_simple(model, context, options))
-            },
-        )
-    });
+    let stream_fn = stream_fn.unwrap_or_else(default_stream_fn);
     let mut history = chat
         .history
         .read()

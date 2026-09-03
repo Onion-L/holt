@@ -575,6 +575,7 @@ fn status_str(status: SessionStatus) -> &'static str {
         SessionStatus::Working => "working",
         SessionStatus::AwaitingInput => "awaitingInput",
         SessionStatus::Errored => "errored",
+        SessionStatus::Compacting => "compacting",
     }
 }
 

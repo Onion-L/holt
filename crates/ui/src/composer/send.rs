@@ -59,14 +59,24 @@ impl Composer {
             return;
         }
         let text = self.input.read(cx).text().trim().to_string();
-        // Slash commands are handled by the composer itself (ADR-0006): a
-        // recognized-but-nameless `/skill` never reaches the prompt path —
-        // surface the usage instead.
-        if matches!(super::slash::parse(&text), super::slash::Parsed::Malformed) {
-            self.failure = Some("Usage: /skill <name> [extra instructions]".into());
-            self.failure_key = None;
-            cx.notify();
-            return;
+        // Slash commands are handled by the composer itself (ADR-0006):
+        // a recognized-but-nameless `/skill` never reaches the prompt
+        // path — surface the usage instead. Same for `/compact` with
+        // arguments (ADR-0011 — it takes none).
+        match super::slash::parse(&text) {
+            super::slash::Parsed::Malformed => {
+                self.failure = Some("Usage: /skill <name> [extra instructions]".into());
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
+            super::slash::Parsed::MalformedCompact => {
+                self.failure = Some("Usage: /compact (no arguments)".into());
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
+            _ => {}
         }
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
@@ -128,8 +138,14 @@ impl Composer {
         // text. A skill invocation travels alone: staged attachments and
         // diff-comment folding stay put for the next ordinary message.
         let slash = super::slash::parse(&text);
-        let is_skill = matches!(slash, super::slash::Parsed::Skill { .. });
-        let staged = if is_skill {
+        // Both intercepted commands travel alone (ADR-0006/0011): staged
+        // attachments and diff-comment folding stay put for the next
+        // ordinary message.
+        let travels_alone = matches!(
+            slash,
+            super::slash::Parsed::Skill { .. } | super::slash::Parsed::Compact
+        );
+        let staged = if travels_alone {
             Vec::new()
         } else {
             self.attachments
@@ -140,7 +156,7 @@ impl Composer {
         // restoring the folded prompt would paste the comment block into the
         // input as literal text.
         let key = self.current_key.clone();
-        let comments = if is_skill {
+        let comments = if travels_alone {
             Vec::new()
         } else {
             self.state.update(cx, |state, cx| {
@@ -254,11 +270,15 @@ impl Composer {
             if is_new {
                 s.select_chat(Some(chat_id.clone()), cx);
             }
-            s.push_echo(&chat_id, echo);
-            // Working overlay until the engine executes the queued command —
-            // without it a send flashed Completed (and could ring the
-            // done-chime) in the queue→drain→sync gap.
-            s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
+            // `/compact` has no user entry to echo — the Compacting status
+            // is the whole UI story until the divider lands (ADR-0011).
+            if !matches!(slash, super::slash::Parsed::Compact) {
+                s.push_echo(&chat_id, echo);
+                // Working overlay until the engine executes the queued
+                // command — without it a send flashed Completed (and could
+                // ring the done-chime) in the queue→drain→sync gap.
+                s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
+            }
             cx.notify();
         });
 
@@ -526,6 +546,29 @@ impl Composer {
                             message_id: message_id.clone(),
                         }
                     }
+                    // `/compact` rides the same queue as a typed command
+                    // (ADR-0011); the engine needs only the provider/model
+                    // resolution — its prompt is unused and the raw
+                    // directive never reaches the model.
+                    super::slash::Parsed::Compact => SessionCommandPayload::Compact {
+                        request: RunRequest {
+                            prompt: String::new(),
+                            provider: resolved.provider.clone().ok_or_else(|| {
+                                "Configure a provider before sending".to_string()
+                            })?,
+                            model: resolved
+                                .model
+                                .clone()
+                                .ok_or_else(|| "Choose a model before sending".to_string())?,
+                            reasoning: resolved.reasoning,
+                            model_options: resolved.model_options.clone(),
+                            cwd,
+                            sandbox: SandboxLevel::WorkspaceWrite,
+                            auto_approve: false,
+                            attachments: Vec::new(),
+                            worktree: run_worktree,
+                        },
+                    },
                     _
                         if steer_cmd => SessionCommandPayload::Steer {
                             prompt: content.clone(),

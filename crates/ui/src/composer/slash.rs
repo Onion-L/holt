@@ -20,6 +20,11 @@ pub(crate) enum Parsed {
     /// `/skill` with no name — still intercepted (the raw directive must
     /// never leak), with the usage message for the composer to surface.
     Malformed,
+    /// `/compact` — intercepted; never sent as prompt text (ADR-0011).
+    Compact,
+    /// `/compact` with arguments — still intercepted, with the usage
+    /// message for the composer to surface.
+    MalformedCompact,
 }
 
 /// One `/` popup row, from either source: a catalog skill (ADR-0005 —
@@ -138,10 +143,10 @@ pub(crate) fn popup_candidates(
 /// longer words are not `/skill`.
 pub(crate) fn parse(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/skill") else {
-        return Parsed::Plain;
+        return parse_compact(text);
     };
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-        return Parsed::Plain;
+        return parse_compact(text);
     }
     let rest = rest.trim();
     if rest.is_empty() {
@@ -156,6 +161,22 @@ pub(crate) fn parse(text: &str) -> Parsed {
         name: name.to_string(),
         extra: (!extra.is_empty()).then(|| extra.to_string()),
     }
+}
+
+/// `/compact` takes no arguments; `/compacted`-style longer words stay
+/// plain text.
+fn parse_compact(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/compact") else {
+        return Parsed::Plain;
+    };
+    if rest.is_empty() || rest.trim().is_empty() {
+        return Parsed::Compact;
+    }
+    if rest.starts_with(char::is_whitespace) {
+        return Parsed::MalformedCompact;
+    }
+    // `/compacted …` and friends are ordinary text.
+    Parsed::Plain
 }
 
 #[cfg(test)]
@@ -185,6 +206,19 @@ mod tests {
         // The raw directive must never fall through to the prompt path.
         assert_eq!(parse("/skill"), Parsed::Malformed);
         assert_eq!(parse("   /skill   "), Parsed::Malformed);
+    }
+
+    #[test]
+    fn recognizes_compact_and_refuses_arguments() {
+        assert_eq!(parse("/compact"), Parsed::Compact);
+        assert_eq!(parse("  /compact  "), Parsed::Compact);
+        // Arguments are refused — still intercepted, usage surfaced.
+        assert_eq!(parse("/compact now"), Parsed::MalformedCompact);
+        // Longer words stay ordinary text.
+        assert_eq!(parse("/compacted"), Parsed::Plain);
+        assert_eq!(parse("/compaction please"), Parsed::Plain);
+        // Mid-text directives stay ordinary text.
+        assert_eq!(parse("please /compact"), Parsed::Plain);
     }
 
     #[test]

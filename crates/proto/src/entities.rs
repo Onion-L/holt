@@ -174,7 +174,7 @@ pub enum ChatIndicator {
 /// caller (the UI's 45s window) — pass `None` for a stale/absent session row.
 pub fn chat_indicator(chat: &Chat, live: Option<&Session>) -> ChatIndicator {
     match live.map(|s| s.status) {
-        Some(SessionStatus::Working) => ChatIndicator::Working,
+        Some(SessionStatus::Working) | Some(SessionStatus::Compacting) => ChatIndicator::Working,
         Some(SessionStatus::AwaitingInput) => ChatIndicator::AwaitingInput,
         Some(SessionStatus::Errored) if chat.unseen() => ChatIndicator::Errored,
         _ if chat.unseen() => ChatIndicator::Completed,
@@ -189,6 +189,10 @@ pub enum SessionStatus {
     Working,
     AwaitingInput,
     Errored,
+    /// A manual `/compact` is running (ADR-0011): the summary request is
+    /// in flight. Displayed like `Working` with the same interrupt
+    /// affordance; never set by the automatic in-Turn compaction.
+    Compacting,
 }
 
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.

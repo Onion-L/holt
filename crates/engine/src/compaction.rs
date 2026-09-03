@@ -54,13 +54,20 @@ pub(crate) fn needed(history: &[AgentMessage], model: &Model) -> bool {
     )
 }
 
-/// Compact `history` through `stream_fn`, or return `None` when the
-/// upstream rule says there is nothing to do. The flat History is adapted
-/// into a linear session-entry list for the upstream cut-point
-/// preparation (`compactionSummary` custom messages become compaction
-/// entries whose embedded tail is empty — the messages that follow them
-/// in the flat list ARE the tail); the summarization itself operates on
-/// plain message vectors.
+/// Whether anything lies outside the retained tail — the pure, no-model
+/// gate for a manual `/compact`: when the cut would keep everything,
+/// there is nothing to compact and no request is made.
+pub(crate) fn has_compactable_content(history: &[AgentMessage]) -> bool {
+    matches!(
+        compaction::prepare_compaction(&flat_entries(history), DEFAULT_COMPACTION_SETTINGS),
+        Ok(Some(preparation))
+            if !preparation.messages_to_summarize.is_empty()
+                || !preparation.turn_prefix_messages.is_empty()
+    )
+}
+
+/// Compact `history` through `stream_fn` when the upstream threshold rule
+/// fires (the automatic placements). Returns `None` when it does not.
 pub(crate) async fn compact(
     history: &[AgentMessage],
     model: &Model,
@@ -71,6 +78,26 @@ pub(crate) async fn compact(
     if !needed(history, model) {
         return Ok(None);
     }
+    compact_now(history, model, stream_fn, api_key, trigger, None).await
+}
+
+/// Compact `history` unconditionally (the manual `/compact` path — the
+/// user picks the break point, the threshold rule does not apply), with
+/// an optional interruption signal for the summary requests. Returns
+/// `None` when the upstream preparation finds nothing outside the
+/// retained tail. The flat History is adapted into a linear session-entry
+/// list for the upstream cut-point preparation (`compactionSummary`
+/// custom messages become compaction entries whose embedded tail is empty
+/// — the messages that follow them in the flat list ARE the tail); the
+/// summarization itself operates on plain message vectors.
+pub(crate) async fn compact_now(
+    history: &[AgentMessage],
+    model: &Model,
+    stream_fn: &StreamFn,
+    api_key: &str,
+    trigger: holt_doc::parts::CompactionTrigger,
+    signal: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<Option<CompactionOutcome>, String> {
     let Some(preparation) =
         compaction::prepare_compaction(&flat_entries(history), DEFAULT_COMPACTION_SETTINGS)
             .map_err(|error| error.to_string())?
@@ -101,11 +128,12 @@ pub(crate) async fn compact(
                 model,
                 stream_fn,
                 api_key,
+                signal,
             )
             .await?
         };
         let prefix =
-            summarize_turn_prefix(&turn_prefix_messages, model, stream_fn, api_key).await?;
+            summarize_turn_prefix(&turn_prefix_messages, model, stream_fn, api_key, signal).await?;
         format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
     } else {
         summarize(
@@ -114,6 +142,7 @@ pub(crate) async fn compact(
             model,
             stream_fn,
             api_key,
+            signal,
         )
         .await?
     };
@@ -147,6 +176,7 @@ async fn summarize(
     model: &Model,
     stream_fn: &StreamFn,
     api_key: &str,
+    signal: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, String> {
     let base_prompt = if previous_summary.is_some() {
         UPDATE_SUMMARIZATION_PROMPT
@@ -161,7 +191,7 @@ async fn summarize(
         ));
     }
     prompt.push_str(base_prompt);
-    complete_summary(&prompt, model, stream_fn, api_key, 0.8).await
+    complete_summary(&prompt, model, stream_fn, api_key, signal, 0.8).await
 }
 
 /// The split-turn prefix request — upstream `generate_turn_prefix_summary`
@@ -171,13 +201,14 @@ async fn summarize_turn_prefix(
     model: &Model,
     stream_fn: &StreamFn,
     api_key: &str,
+    signal: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, String> {
     let conversation = serialize_conversation(&convert_to_llm(messages.to_vec()));
     let prompt = format!(
         "<conversation>\n{conversation}\n</conversation>\n\n{}",
         TURN_PREFIX_SUMMARIZATION_PROMPT
     );
-    complete_summary(&prompt, model, stream_fn, api_key, 0.5).await
+    complete_summary(&prompt, model, stream_fn, api_key, signal, 0.5).await
 }
 
 /// Run one summary completion and return its text. `max_tokens_factor`
@@ -187,6 +218,7 @@ async fn complete_summary(
     model: &Model,
     stream_fn: &StreamFn,
     api_key: &str,
+    signal: Option<&tokio_util::sync::CancellationToken>,
     max_tokens_factor: f64,
 ) -> Result<String, String> {
     let max_tokens =
@@ -200,6 +232,10 @@ async fn complete_summary(
         base: StreamOptions {
             max_tokens: Some(max_tokens),
             cache_retention: Some(CacheRetention::None),
+            base: pi_core::ai::types::ProviderRequestOptions {
+                signal: signal.cloned(),
+                ..Default::default()
+            },
             ..Default::default()
         },
         // No extended reasoning, no custom instructions (ADR-0011).
@@ -220,9 +256,28 @@ async fn complete_summary(
         tools: None,
     };
     let stream = stream_fn(model, &context, Some(&options))?;
-    while let Some(event) = stream.next().await {
-        if event.is_terminal() {
-            break;
+    // A manual compaction is interruptible (ADR-0011): race the stream
+    // against the token — the scripted seam's never-ending streams can
+    // only be cancelled this way, and a real transport sees the signal in
+    // the options too.
+    let cancelled = async {
+        match signal {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(cancelled);
+    let consume = async {
+        while let Some(event) = stream.next().await {
+            if event.is_terminal() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = consume => {}
+        _ = &mut cancelled => {
+            return Err("Compaction was interrupted".into());
         }
     }
     let response = stream.result().await;

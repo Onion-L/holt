@@ -22,6 +22,7 @@ pub enum SessionCommandKind {
     Interrupt,
     RespondInput,
     InvokeSkill,
+    Compact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +73,15 @@ pub enum SessionCommandPayload {
         /// Client-minted message id for the transcript's chip entry.
         message_id: String,
     },
+    /// A manual `/compact` (ADR-0011): compaction on demand. NOT a Turn —
+    /// the session enters `Compacting` instead, and nothing Turn-scoped is
+    /// stamped or reset. The raw `/compact` directive never reaches the
+    /// model; `request` carries only the provider/model resolution, its
+    /// prompt is unused.
+    #[serde(rename_all = "camelCase")]
+    Compact {
+        request: RunRequest,
+    },
 }
 
 impl SessionCommandPayload {
@@ -82,6 +92,7 @@ impl SessionCommandPayload {
             SessionCommandPayload::Interrupt {} => SessionCommandKind::Interrupt,
             SessionCommandPayload::RespondInput { .. } => SessionCommandKind::RespondInput,
             SessionCommandPayload::InvokeSkill { .. } => SessionCommandKind::InvokeSkill,
+            SessionCommandPayload::Compact { .. } => SessionCommandKind::Compact,
         }
     }
 }
