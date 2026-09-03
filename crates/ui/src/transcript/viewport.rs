@@ -92,10 +92,16 @@ pub(super) fn should_anchor_live_stream(
 pub const SPRING_SETTLE_GRACE_MS: u64 = 500;
 /// Teleport when farther than this many viewports from the end; glide the rest.
 pub const GLIDE_MAX_VIEWPORTS: f32 = 2.5;
-/// A freshly-sent prompt rests this far below the transcript viewport's top.
-/// The titlebar overlays the full-height list, so its height is part of the
-/// inset; the extra 10px matches the first row's breathing room.
+/// A freshly-sent prompt rests this far below the transcript viewport's top
+/// when it is pulled up to the top (no reply room below it). The titlebar
+/// overlays the full-height list, so its height is part of the inset; the
+/// extra 10px matches the first row's breathing room.
 pub(crate) const OWN_SEND_TOP_INSET_PX: f32 = Theme::TITLEBAR_HEIGHT + 10.0;
+/// The fraction of the viewport height a freshly-sent prompt must leave free
+/// below itself (on top of the bottom chrome pad) to hold in place instead of
+/// gliding to the top. Less room than this reads as "the reply won't fit" —
+/// better to claim the full viewport.
+pub(super) const OWN_SEND_MIN_REPLY_ROOM_FRAC: f32 = 1.0 / 3.0;
 /// Epsilon of extra height under the reservation. The runway ends AT the
 /// app's bottom — this is not scroll room (24px of it read as a janky
 /// overshoot-and-fight zone, user report) — it exists only to keep the held
@@ -118,6 +124,31 @@ pub(super) const OWN_SEND_GLIDE_SNAP_PX: f32 = 1.0;
 /// filled the reserved space — the notes-app `minHeight` analogue.
 pub(super) fn own_turn_reservation(usable: f32, turn_height: f32) -> f32 {
     (usable - turn_height).max(0.0)
+}
+
+/// Where a freshly-sent prompt holds: its top offset from the viewport top.
+/// Decided ONCE from the anchor row's first measured bounds (`natural_top`,
+/// relative to the viewport top), then frozen on the anchor; the caller
+/// decides what an unmeasured row means. With enough reply room below — at least
+/// [`OWN_SEND_MIN_REPLY_ROOM_FRAC`] of the viewport under the bottom chrome
+/// pad — the prompt holds where it already sits (no motion at all); otherwise
+/// it glides to [`OWN_SEND_TOP_INSET_PX`]. Row 0 always holds at 0: its box
+/// already carries the titlebar chrome.
+pub(super) fn own_send_hold_inset(
+    anchor_ix: usize,
+    natural_top: f32,
+    viewport_height: f32,
+    base_pad: f32,
+) -> f32 {
+    if anchor_ix == 0 {
+        return 0.0;
+    }
+    let max_top = viewport_height - base_pad - viewport_height * OWN_SEND_MIN_REPLY_ROOM_FRAC;
+    if natural_top > OWN_SEND_TOP_INSET_PX && natural_top <= max_top {
+        natural_top
+    } else {
+        OWN_SEND_TOP_INSET_PX
+    }
 }
 
 /// Pure stick-to-bottom spring stepper — the mugen `tick()` integration:
@@ -272,14 +303,22 @@ pub fn format_elapsed(secs: i64) -> String {
 /// alignment the absolute hold is belt-and-braces, ADR-0008). Wheel
 /// input releases the hold, leaving the reservation as plain scrollable
 /// space. The anchor retires once the reply overflows the reservation (pad
-/// ~0, height-neutral). Chat switches snapshot its runway with the viewport
-/// and restore it released, so revisiting never resumes hidden auto-follow.
+/// ~0, height-neutral). The hold position (the prompt's top offset) is
+/// decided once by [`own_send_hold_inset`] on the first frame the anchor's
+/// row measures bounds, then frozen in `hold_inset`. Chat switches snapshot
+/// its runway with the viewport and restore it released, so revisiting never
+/// resumes hidden auto-follow.
 #[derive(Clone, Debug)]
 pub(super) struct OwnTurnAnchor {
     pub(super) chat_id: String,
     pub(super) message_id: SharedString,
     /// Current reservation pad on the last row (`usable − turn_height`).
     pub(super) runway: f32,
+    /// The prompt's held top offset from the viewport top. `None` until the
+    /// first frame the anchor's row measures bounds resolves it via
+    /// [`own_send_hold_inset`]; frozen from then on (resticks glide back to
+    /// the SAME position, and a restored viewport keeps it).
+    pub(super) hold_inset: Option<f32>,
     /// The step still owns the viewport (glide → hold). Any wheel/touch
     /// input releases it — the reservation stays behind as plain scrollable
     /// space, and the ordinary escape/restick rules apply from then on.
@@ -661,6 +700,50 @@ mod tests {
         assert_eq!(own_turn_reservation(usable, 1_200.0), 0.0);
     }
 
+    #[test]
+    fn own_send_holds_in_place_only_with_reply_room_below() {
+        let h = 900.0;
+        let base_pad = 60.0;
+        let max_top = h - base_pad - h * OWN_SEND_MIN_REPLY_ROOM_FRAC;
+
+        // Row 0 always holds at 0: its box already carries the titlebar chrome.
+        assert_eq!(own_send_hold_inset(0, 400.0, h, base_pad), 0.0);
+
+        // Already at/above the top inset: land in place at the inset.
+        assert_eq!(
+            own_send_hold_inset(3, OWN_SEND_TOP_INSET_PX, h, base_pad),
+            OWN_SEND_TOP_INSET_PX
+        );
+        assert_eq!(
+            own_send_hold_inset(3, 10.0, h, base_pad),
+            OWN_SEND_TOP_INSET_PX
+        );
+
+        // Reply room below: hold exactly where the prompt already sits.
+        assert_eq!(
+            own_send_hold_inset(3, OWN_SEND_TOP_INSET_PX + 1.0, h, base_pad),
+            OWN_SEND_TOP_INSET_PX + 1.0
+        );
+        assert_eq!(own_send_hold_inset(3, 300.0, h, base_pad), 300.0);
+        // The boundary itself still holds in place…
+        assert_eq!(own_send_hold_inset(3, max_top, h, base_pad), max_top);
+        // …one pixel past it the reply no longer fits: glide to the top.
+        assert_eq!(
+            own_send_hold_inset(3, max_top + 0.5, h, base_pad),
+            OWN_SEND_TOP_INSET_PX
+        );
+
+        // Hugging the bottom edge or past the viewport: glide to the top.
+        assert_eq!(
+            own_send_hold_inset(3, h - base_pad, h, base_pad),
+            OWN_SEND_TOP_INSET_PX
+        );
+        assert_eq!(
+            own_send_hold_inset(3, h * 1.5, h, base_pad),
+            OWN_SEND_TOP_INSET_PX
+        );
+    }
+
     fn viewport_row(id: &str, entry_id: &str) -> Row {
         Row {
             id: id.into(),
@@ -774,6 +857,7 @@ mod tests {
             chat_id: "chat-a".into(),
             message_id: "prompt".into(),
             runway: 640.0,
+            hold_inset: None,
             held: true,
             positioned: true,
             seen_prompt: true,
@@ -829,6 +913,7 @@ mod tests {
             chat_id: "chat-a".into(),
             message_id: "prompt".into(),
             runway: 0.0,
+            hold_inset: None,
             held: true,
             positioned: false,
             seen_prompt: false,
@@ -850,6 +935,7 @@ mod tests {
             chat_id: "chat-a".into(),
             message_id: "prompt".into(),
             runway: 640.0,
+            hold_inset: None,
             held: true,
             positioned: true,
             seen_prompt: true,

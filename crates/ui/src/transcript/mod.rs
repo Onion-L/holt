@@ -24,8 +24,9 @@
 //! smoothed target growth, so 120ms doc commits read as a continuous glide
 //! instead of per-commit snaps. The pin breaks only on user input (the list's
 //! scroll handler fires exclusively from its wheel/touch path) and re-engages
-//! inside the 70px band; the first send in an empty chat anchors the prompt at
-//! the viewport top and hands off to the same glide when the reply overflows.
+//! inside the 70px band. A send holds its prompt in place when the reply has
+//! room below it (a frozen per-anchor inset) or glides it to the viewport top
+//! otherwise, and hands off to the same glide when the reply overflows.
 //! While that anchor holds, wheel/touch is clamped rather than obeyed — the
 //! whole turn is already visible, so there is nothing to scroll to.
 //!
@@ -69,7 +70,7 @@ pub use viewport::{
 use viewport::{
     OWN_SEND_GLIDE_RETAIN, OWN_SEND_GLIDE_SNAP_PX, OWN_SEND_SCROLL_SLACK_PX, OwnTurnAnchor,
     SELECTION_SCROLL_TICK_MS, SavedViewport, SavedViewportCache, TranscriptReplayState,
-    own_turn_reservation, selection_scroll_step, should_anchor_live_stream,
+    own_send_hold_inset, own_turn_reservation, selection_scroll_step, should_anchor_live_stream,
 };
 
 mod tool;
@@ -694,11 +695,16 @@ impl Transcript {
                         // (scroll_to is bounds-free, so this also covers the
                         // wheel gluing the offset at the end.)
                         if let Some(ix) = this.own_turn_anchor_ix() {
-                            this.list.scroll_to(ListOffset {
-                                item_ix: ix,
-                                offset_in_item: px(0.0),
-                            });
-                            this.list.scroll_by(px(-Self::own_send_inset(ix)));
+                            // Before the hold inset resolves there is no
+                            // position to re-assert; the prompt has not
+                            // moved yet either.
+                            if let Some(inset) = this.own_turn.as_ref().and_then(|a| a.hold_inset) {
+                                this.list.scroll_to(ListOffset {
+                                    item_ix: ix,
+                                    offset_in_item: px(0.0),
+                                });
+                                this.list.scroll_by(px(-inset));
+                            }
                         }
                         this.last_scroll_distance = this.distance_from_bottom();
                     }
@@ -858,6 +864,7 @@ impl Transcript {
             chat_id,
             message_id: SharedString::from(message_id),
             runway: 0.0,
+            hold_inset: None,
             held: true,
             positioned: false,
             seen_prompt,
@@ -888,18 +895,6 @@ impl Transcript {
                 });
                 return;
             }
-        }
-    }
-
-    /// The held prompt's top offset from the viewport top. Row 0 already
-    /// carries the titlebar chrome inside its own box (the first row's
-    /// top gap), so the hold adds nothing — adding the inset on top parked
-    /// a new chat's first prompt a double-chrome ~66px low (user report).
-    fn own_send_inset(anchor_ix: usize) -> f32 {
-        if anchor_ix == 0 {
-            0.0
-        } else {
-            OWN_SEND_TOP_INSET_PX
         }
     }
 
@@ -968,7 +963,6 @@ impl Transcript {
             return;
         };
         let base_pad = self.bottom_clearance + Theme::TRANSCRIPT_FADE_BAND + 8.0;
-        let inset = Self::own_send_inset(anchor_ix);
         // A glued offset hard-tracks a GROWING end — streamed text visually
         // pushes everything above it up while the runway blank persists
         // below (user report; the glued representation also hides every
@@ -986,10 +980,68 @@ impl Transcript {
         if self.is_glued() {
             self.list.scroll_by(px(-viewport_height));
         }
+        let current = self.own_turn.as_ref().map_or(0.0, |a| a.runway);
+        // Resolve the hold inset ONCE, from the anchor row's first measured
+        // bounds, and freeze it on the anchor: with reply room below, the
+        // prompt holds where it already sits (the first glide tick's err is
+        // ~0 and lands immediately); otherwise it glides to the top inset.
+        // Missing bounds are NOT "below the fold": `remeasure_items` turns
+        // the row Unmeasured until the next layout, and this callback runs
+        // before that layout — every `sync` between the previous layout and
+        // now (the echo's ack, the session going live) remeasures the last
+        // row, i.e. the prompt itself. Freezing the top inset on that
+        // transient pulled a mid-screen prompt to the top (user report). A
+        // row is only known to be below the fold when the FIRST tick (pad
+        // not yet in layout, so the distance is real) sees the content
+        // overflow the viewport with the anchor beyond the measured window;
+        // otherwise wait a frame — the anchor is on screen and the next
+        // layout measures it.
+        let inset = match self.own_turn.as_ref().and_then(|a| a.hold_inset) {
+            Some(inset) => inset,
+            None => {
+                let natural_top = self
+                    .list
+                    .bounds_for_item(anchor_ix)
+                    .map(|b| f32::from(b.top()) - f32::from(viewport.top()));
+                let below_fold =
+                    current <= 0.0 && self.distance_from_bottom() > OWN_SEND_SCROLL_SLACK_PX;
+                let resolved = match natural_top {
+                    Some(top) => Some(own_send_hold_inset(
+                        anchor_ix,
+                        top,
+                        viewport_height,
+                        base_pad,
+                    )),
+                    None if anchor_ix == 0 => Some(0.0),
+                    None if below_fold => Some(OWN_SEND_TOP_INSET_PX),
+                    None => None,
+                };
+                let Some(inset) = resolved else {
+                    // Transiently unmeasured. The provisional pad still goes
+                    // in now, at the widest sizing (an overshoot is safe —
+                    // the refinement below trues it once the inset is
+                    // known); the glide and the sizing wait for bounds.
+                    if current <= 0.0 {
+                        let widest = viewport_height - OWN_SEND_TOP_INSET_PX - base_pad
+                            + OWN_SEND_SCROLL_SLACK_PX;
+                        if let Some(anchor) = self.own_turn.as_mut() {
+                            anchor.runway = widest.max(0.0);
+                        }
+                        self.remeasure_last_row();
+                    }
+                    self.own_turn_kick = true;
+                    cx.notify();
+                    return;
+                };
+                if let Some(anchor) = self.own_turn.as_mut() {
+                    anchor.hold_inset = Some(inset);
+                }
+                inset
+            }
+        };
         // The slack keeps the held layout scrollable (see the constant) —
         // the reservation deliberately over-fills by this much.
         let usable = viewport_height - inset - base_pad + OWN_SEND_SCROLL_SLACK_PX;
-        let current = self.own_turn.as_ref().map_or(0.0, |a| a.runway);
 
         // A fresh anchor installs a provisional pad BEFORE anything needs
         // bounds: the just-sent rows sit below the fold, unmeasured, and
