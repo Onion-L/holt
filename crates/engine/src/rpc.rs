@@ -325,15 +325,18 @@ impl StubEngine {
                 let Some(skill) = self.skills.resolve(Some(&request.cwd), &name).await else {
                     return Err(RpcError::Failed(format!("unknown skill: {name}")));
                 };
+                let block = crate::skills::invocation_prompt(&skill, None);
                 let prompt =
                     crate::skills::invocation_prompt(&skill, extra_instructions.as_deref());
-                // The transcript sees a compact chip (plus the user's own
-                // extra words), never the skill content or the raw
-                // `/skill` directive.
+                // The transcript records a compact chip whose expandable
+                // body IS the block the model received — the UI never has
+                // to guess what the agent was told to follow. The raw
+                // `/skill` directive never appears anywhere.
                 let mut parts = vec![MessagePart::Skill {
                     id: "t0".into(),
                     name: skill.name.clone(),
                     file: skill.file_path.clone(),
+                    content: Some(block),
                 }];
                 if let Some(extra) = extra_instructions
                     .clone()

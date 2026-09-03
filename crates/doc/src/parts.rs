@@ -196,14 +196,18 @@ pub enum MessagePart {
     },
     /// A skill invocation (or a read of a catalog skill's `SKILL.md`)
     /// collapsed to a compact chip (ADR-0006): the skill name plus a
-    /// pointer to the source file. The full content went to the model
-    /// context only — never the transcript.
+    /// pointer to the source file. On invocations `content` carries the
+    /// model-visible `<skill>` block so the chip can expand to show exactly
+    /// what the agent was told to follow; read-collapse chips leave it
+    /// `None` (the file pointer stands in).
     #[serde(rename_all = "camelCase")]
     Skill {
         id: String,
         name: String,
         /// Absolute path of the `SKILL.md` the chip points at.
         file: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
     Error {
         id: String,
@@ -245,7 +249,12 @@ impl MessagePart {
             MessagePart::Input { questions, .. } => {
                 serde_json::to_vec(questions).map_or(0, |v| v.len())
             }
-            MessagePart::Skill { name, file, .. } => name.len() + file.len(),
+            MessagePart::Skill {
+                name,
+                file,
+                content,
+                ..
+            } => name.len() + file.len() + content.as_ref().map_or(0, String::len),
             MessagePart::Error { message, .. } => message.len(),
         }
     }

@@ -224,6 +224,9 @@ impl Composer {
                     id: "t0".into(),
                     name: name.clone(),
                     file: String::new(),
+                    // The engine's entry carries the invocation block and
+                    // supersedes this echo by id once its frame lands.
+                    content: None,
                 }];
                 if let Some(extra) = extra {
                     parts.push(MessagePart::Text {

@@ -441,6 +441,9 @@ fn skill_read_part(
         id: tool_call.id.clone(),
         name: name.clone(),
         file: resolved,
+        // The read result is not the chip's to carry (it lands in the
+        // model context, not the doc); the file pointer stands in.
+        content: None,
     })
 }
 
@@ -985,6 +988,7 @@ mod tests {
                 id: "call-1".into(),
                 name: "grill".into(),
                 file: "/roots/grill/SKILL.md".into(),
+                content: None,
             }]
         );
         // …and the same file reached through a relative path.
@@ -994,6 +998,7 @@ mod tests {
                 id: "call-1".into(),
                 name: "grill".into(),
                 file: "/roots/grill/SKILL.md".into(),
+                content: None,
             }]
         );
         // Any other file — including another `.md` inside the skill's own
@@ -1073,6 +1078,7 @@ mod tests {
                     .find(|path| path.ends_with("grill/SKILL.md"))
                     .cloned()
                     .unwrap(),
+                content: None,
             })
         );
     }

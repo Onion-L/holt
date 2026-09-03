@@ -113,6 +113,12 @@ struct DocPartJson {
     /// Source-file pointer for `kind: "skill"` chips (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<String>,
+    /// The model-visible invocation block for `kind: "skill"` chips
+    /// (additive) — the chip's expandable body. Deliberately its own
+    /// field, never `text`: old readers' unknown-kind fallback renders
+    /// `text` as prose, and the block must not leak into their bubbles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    skill_content: Option<String>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -181,11 +187,17 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             resolved: Some(*resolved),
             ..Default::default()
         },
-        MessagePart::Skill { id, name, file } => DocPartJson {
+        MessagePart::Skill {
+            id,
+            name,
+            file,
+            content,
+        } => DocPartJson {
             id: id.clone(),
             kind: "skill".into(),
             name: Some(name.clone()),
             file: Some(file.clone()),
+            skill_content: content.clone(),
             ..Default::default()
         },
         MessagePart::Error { id, message } => DocPartJson {
@@ -239,6 +251,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             name: p.name.unwrap_or_default(),
             file: p.file.unwrap_or_default(),
+            content: p.skill_content,
         },
         "error" => MessagePart::Error {
             id: p.id,
