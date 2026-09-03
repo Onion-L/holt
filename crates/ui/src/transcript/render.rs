@@ -373,10 +373,11 @@ impl Transcript {
         column.into_any_element()
     }
 
-    /// A `/skill` invocation inside the user bubble: the
-    /// `[cube icon + Title]` tag with a click through to the source file.
-    /// The `<skill>` block itself rides the AGENT entry's opening chip —
-    /// this bubble only records what the user did.
+    /// A `/skill` invocation inside the user bubble: the skill title as an
+    /// accent chip at the head of the text flow (the composer's treatment),
+    /// with a click through to the source file. The `<skill>` block itself
+    /// rides the AGENT entry's opening chip — this bubble only records what
+    /// the user did.
     fn render_user_skill(
         &mut self,
         row_id: &SharedString,
@@ -388,54 +389,33 @@ impl Transcript {
     ) -> AnyElement {
         let open_url = (!skill.file.is_empty())
             .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
-        let formatted_title = format_skill_title(&skill.name);
-        let skill_tag = div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .child(
-                crate::icons::icon(crate::icons::CUBE)
-                    .size(px(16.0))
-                    .text_color(theme.accent),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.accent)
-                    .child(SharedString::from(formatted_title)),
-            );
-        let skill_tag: AnyElement = match open_url {
-            Some(url) => skill_tag
-                .id(SharedString::from(format!("{row_id}#skill-file")))
-                .cursor_pointer()
-                .hover(|el| el.opacity(0.8))
-                .on_click(move |_, _, cx| {
-                    cx.open_url(&url);
-                })
-                .into_any_element(),
-            None => skill_tag.into_any_element(),
+        // Non-breaking side bearings keep the wash from hugging the glyphs
+        // and stop the chip from splitting across a wrap.
+        let label = format!("\u{00A0}{}\u{00A0}", format_skill_title(&skill.name));
+        let chip = SkillChipRun {
+            range: 0..label.len(),
+            open_url,
         };
-        if text.is_empty() {
-            return skill_tag;
-        }
-        let multi_line = text.contains('\n');
-        div()
-            .flex()
-            .flex_row()
-            .when(multi_line, |el| el.items_start())
-            .when(!multi_line, |el| el.items_center())
-            .gap(px(8.0))
-            .child(skill_tag)
-            .child(div().min_w_0().child(user_bubble_text(
-                row_id,
-                text.clone(),
-                mentions.clone(),
-                theme,
-            )))
-            .into_any_element()
+        let (full, mentions) = if text.is_empty() {
+            (label, Vec::new())
+        } else {
+            let offset = label.len() + 1;
+            let shifted = mentions
+                .iter()
+                .map(|span| crate::composer::SentMentionSpan {
+                    range: span.range.start + offset..span.range.end + offset,
+                    ..span.clone()
+                })
+                .collect();
+            (format!("{label} {text}"), shifted)
+        };
+        user_bubble_text_with_chip(
+            row_id,
+            SharedString::from(full),
+            Arc::new(mentions),
+            Some(chip),
+            theme,
+        )
     }
 
     /// The right-aligned thumbnail strip above a user bubble.
@@ -1704,9 +1684,27 @@ fn user_bubble_text(
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     theme: &Theme,
 ) -> AnyElement {
+    user_bubble_text_with_chip(row_id, text, mentions, None, theme)
+}
+
+/// A leading skill chip inside the bubble text: `range` covers the label
+/// (always at offset 0), `open_url` is the click-through to its source file.
+struct SkillChipRun {
+    range: std::ops::Range<usize>,
+    open_url: Option<String>,
+}
+
+fn user_bubble_text_with_chip(
+    row_id: &SharedString,
+    text: SharedString,
+    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+    skill: Option<SkillChipRun>,
+    theme: &Theme,
+) -> AnyElement {
     // Split runs at chip boundaries (spans are in order): body text keeps the
-    // sans font, chips read as inline code. Size/line-height flow from the
-    // bubble's div like every text child.
+    // sans font, mention chips read as inline code, the skill chip reads in
+    // the accent like the composer's. Size/line-height flow from the bubble's
+    // div like every text child.
     let body_run = |len: usize| TextRun {
         len,
         font: gpui::font(theme.font_sans.clone()),
@@ -1723,8 +1721,23 @@ fn user_bubble_text(
         underline: None,
         strikethrough: None,
     };
-    let mut runs = Vec::with_capacity(mentions.len() * 2 + 1);
+    let skill_run = |len: usize| TextRun {
+        len,
+        font: gpui::Font {
+            weight: gpui::FontWeight::MEDIUM,
+            ..gpui::font(theme.font_sans.clone())
+        },
+        color: theme.accent,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut runs = Vec::with_capacity(mentions.len() * 2 + 2);
     let mut at = 0;
+    if let Some(chip) = &skill {
+        runs.push(skill_run(chip.range.len()));
+        at = chip.range.end;
+    }
     for span in mentions.iter() {
         if at < span.range.start {
             runs.push(body_run(span.range.start - at));
@@ -1737,23 +1750,39 @@ fn user_bubble_text(
     }
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
+    let skill_range = skill.as_ref().map(|chip| chip.range.clone());
+    let text_el: AnyElement = match skill.and_then(|chip| Some((chip.range, chip.open_url?))) {
+        Some((range, url)) => {
+            gpui::InteractiveText::new(SharedString::from(format!("{row_id}#skill-file")), styled)
+                .on_click(vec![range], move |_, _, cx| cx.open_url(&url))
+                .into_any_element()
+        }
+        None => styled.into_any_element(),
+    };
     let wash = theme.code_wash;
+    let skill_wash = theme.accent_wash;
     let sel_key: std::sync::Arc<str> = format!("{row_id}:u").into();
     let sel_theme = theme.clone();
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
-            for span in mentions.iter() {
-                for rect in render::range_rects(&layout, &span.range, 0.0, 2.0) {
+            let paint = |window: &mut Window, range: &std::ops::Range<usize>, color| {
+                for rect in render::range_rects(&layout, range, 0.0, 2.0) {
                     window.paint_quad(quad(
                         rect,
                         px(5.0),
-                        wash,
+                        color,
                         px(0.0),
                         gpui::transparent_black(),
                         BorderStyle::default(),
                     ));
                 }
+            };
+            if let Some(range) = &skill_range {
+                paint(window, range, skill_wash);
+            }
+            for span in mentions.iter() {
+                paint(window, &span.range, wash);
             }
             render::paint_text_selection(window, &sel_key, &text, &layout, &sel_theme);
         },
@@ -1763,7 +1792,7 @@ fn user_bubble_text(
     div()
         .relative()
         .child(underlay)
-        .child(styled)
+        .child(text_el)
         .into_any_element()
 }
 
