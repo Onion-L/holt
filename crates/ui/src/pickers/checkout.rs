@@ -43,7 +43,7 @@ impl Pickers {
                 cx.notify();
             }
             PickRouting::Switch => {
-                self.switch_ref_in(row, surface, cx);
+                self.safe_switch_ref(row, surface, cx);
             }
             PickRouting::WorktreeHosted => {
                 self.switch_dialog = Some(worktree_hosted_dialog(
@@ -80,7 +80,7 @@ impl Pickers {
     /// closes the popover and refreshes the rows' `current` tags; failure
     /// closes it too and raises the switch dialog (ADR-0007 — dirty-tree
     /// refusals with their blocking files, and every other failure).
-    fn switch_ref_in(&mut self, row: RepoRef, surface: PickSurface, cx: &mut Context<Self>) {
+    fn safe_switch_ref(&mut self, row: RepoRef, surface: PickSurface, cx: &mut Context<Self>) {
         if self.switching.is_some() {
             return; // one switch at a time
         }
@@ -220,12 +220,22 @@ impl Pickers {
     // ---- checkout resolution ----
 
     /// Index of the highlighted-by-default row in the (filtered) ref list:
-    /// the working directory's live current branch on an existing chat
-    /// (falling back to its stamped branch), the draft pick on a new one.
-    /// Capped to the displayed window.
+    /// [`Self::highlighted_branch`] on a session, the draft pick on a new
+    /// chat. Capped to the displayed window.
     pub(super) fn selected_ref_index(&self, cx: &App) -> usize {
         let rows = self.filtered_ref_rows(cx);
-        let selected = match self.pick_surface(cx) {
+        let index = match self.highlighted_branch(cx) {
+            Some(name) => rows.iter().position(|r| r.name == name).unwrap_or(0),
+            None => rows.iter().position(|r| r.current).unwrap_or(0),
+        };
+        index.min(MAX_REF_ROWS.saturating_sub(1))
+    }
+
+    /// The branch the popover highlights: the working directory's live
+    /// current branch on an existing chat (falling back to its stamped
+    /// branch — its latest Turn's), the draft pick on a new one.
+    fn highlighted_branch(&self, cx: &App) -> Option<String> {
+        match self.pick_surface(cx) {
             PickSurface::Session => self.live_current_branch().or_else(|| {
                 self.state
                     .read(cx)
@@ -233,12 +243,7 @@ impl Pickers {
                     .and_then(|c| c.branch.clone())
             }),
             PickSurface::Draft => self.config.branch.clone(),
-        };
-        let index = match selected {
-            Some(name) => rows.iter().position(|r| r.name == name).unwrap_or(0),
-            None => rows.iter().position(|r| r.current).unwrap_or(0),
-        };
-        index.min(MAX_REF_ROWS.saturating_sub(1))
+        }
     }
 
     /// The target working directory's live current branch, as the loaded
@@ -317,19 +322,9 @@ impl Pickers {
         let rows = self.filtered_ref_rows(cx);
         let total = rows.len();
         let shown = total.min(MAX_REF_ROWS);
-        // Existing session: the highlighted row is the working directory's
-        // LIVE current branch (falling back to its stamped branch) and a
-        // pick safe-switches the chat's own folder (see `pick_ref`); a new
-        // chat highlights the draft pick.
-        let session_branch = match self.pick_surface(cx) {
-            PickSurface::Session => self.live_current_branch().or_else(|| {
-                self.state
-                    .read(cx)
-                    .selected_chat_row()
-                    .and_then(|c| c.branch.clone())
-            }),
-            PickSurface::Draft => None,
-        };
+        // A pick safe-switches the chat's own folder (see `pick_ref`); the
+        // highlighted row is [`Self::highlighted_branch`].
+        let selected = self.highlighted_branch(cx);
         let switching = self.switching.clone();
         let body: AnyElement =
             match &self.refs {
@@ -348,7 +343,6 @@ impl Pickers {
                     .into_any_element(),
                 Loadable::Ready(_) => {
                     let active = self.active;
-                    let selected = session_branch.or_else(|| self.config.branch.clone());
                     div()
                         .id("branch-list")
                         .flex()

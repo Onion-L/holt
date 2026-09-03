@@ -245,10 +245,10 @@ pub struct SwitchDialogContent {
 }
 
 /// The engine's dirty-tree refusal marker: the error's first line, with the
-/// blocking paths on the lines after it (see `engine::git`'s
-/// `switch_refusal_message` — the format is pinned by tests on both sides).
-pub(crate) const SWITCH_REFUSAL_MARKER: &str =
-    "switch refused: uncommitted changes would be overwritten by checkout:";
+/// blocking paths on the lines after it. Shared with the engine through
+/// [`holt_proto::SWITCH_REFUSAL_MARKER`] — one definition, tests pinning the
+/// shape on both sides.
+pub(crate) use holt_proto::SWITCH_REFUSAL_MARKER;
 
 /// Assemble the dialog content from a `SwitchRef`/`CreateBranch` failure.
 /// A dirty-tree refusal explains the blocked files and what to do about
@@ -352,12 +352,19 @@ pub(crate) fn pick_routing(
     }
 }
 
+/// Whether a session's working directory is a legacy worktree (cwd away
+/// from the space folder) — the one rule behind both the footer kind icon
+/// and its label.
+pub(crate) fn session_runs_in_worktree(space_path: &str, chat_cwd: Option<&str>) -> bool {
+    chat_cwd.is_some_and(|cwd| cwd != space_path)
+}
+
 /// The session footer's checkout-kind label (display-only in sessions —
 /// the "New worktree" option is a draft-only affordance): a legacy
 /// worktree chat (cwd away from the space folder) reads "Worktree"; every
 /// other chat runs in its space's folder.
 pub(crate) fn session_checkout_label(space_path: &str, chat_cwd: Option<&str>) -> &'static str {
-    if chat_cwd.is_some_and(|cwd| cwd != space_path) {
+    if session_runs_in_worktree(space_path, chat_cwd) {
         "Worktree"
     } else {
         "Local checkout"

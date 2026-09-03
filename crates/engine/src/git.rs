@@ -549,12 +549,11 @@ fn delta_path(delta: git2::DiffDelta) -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-/// The refusal the UI's switch dialog parses: a stable first line, then one
-/// blocking path per line (ADR-0007 — inform-only, never a force/stash
-/// escape hatch).
+/// The refusal the UI's switch dialog parses (ADR-0007 — inform-only, never
+/// a force/stash escape hatch): the shared [`SWITCH_REFUSAL_MARKER`] line,
+/// then one blocking path per line.
 pub(crate) fn switch_refusal_message(files: &[String]) -> String {
-    let mut message =
-        String::from("switch refused: uncommitted changes would be overwritten by checkout:");
+    let mut message = String::from(holt_proto::SWITCH_REFUSAL_MARKER);
     for file in files {
         message.push('\n');
         message.push_str(file);

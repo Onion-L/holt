@@ -878,10 +878,6 @@ impl Pickers {
             .into_any_element()
     }
 
-    /// The composer footer row: checkout-kind + ref, LEFT-aligned, only when
-    /// the picked (or session's) project has git. The project picker lives in
-    /// the row above the pill ([`Self::render_target_selectors`]); sessions
-    /// name their target in the titlebar.
     /// The composer footer row: checkout-kind + branch chip, LEFT-aligned,
     /// only when the picked (or session's) project has git. In a session the
     /// branch chip is live (ADR-0007): it renders the working directory's
@@ -934,13 +930,13 @@ impl Pickers {
             // checkout-kind label stays display-only here; its "New
             // worktree" option is a draft-only affordance.
             let space = space.as_ref().filter(|s| s.git_detected)?;
-            let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
+            // One rule for the kind icon and its label (ADR-0007).
+            let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
             let icon_path = if is_worktree {
                 crate::icons::FOLDER_WITH_FILES
             } else {
                 crate::icons::FOLDER
             };
-            // One rule for icon and label (see logic::session_checkout_label).
             let kind_label = logic::session_checkout_label(&space.path, chat.cwd.as_deref());
             // Refs feed the live label — eager + idempotent, keyed to the
             // chat's own working directory.

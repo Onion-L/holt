@@ -408,12 +408,23 @@ impl StubEngine {
         // row's cwd from the request and stamp its branch + source context
         // from the working directory's live HEAD — synchronously at
         // acceptance, so a run rejected further down still records where its
-        // Turn would run. Non-git folders stamp only the cwd.
-        let source = self
-            .git
-            .turn_source_context(&request.cwd, &self.engine_info.device_id)
-            .await;
-        let stamped = {
+        // Turn would run. Non-git folders stamp only the cwd. A chat whose
+        // Turn is still live does NOT restamp (a mid-run send fails loudly
+        // and must not move the label off the running Turn's branch); the
+        // atomic running check further down still guards the spawn itself.
+        let chat_running = chat
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|token| !token.is_cancelled());
+        let stamped = if chat_running {
+            false
+        } else {
+            let source = self
+                .git
+                .turn_source_context(&request.cwd, &self.engine_info.device_id)
+                .await;
             let mut chats = self
                 .runtime
                 .chats

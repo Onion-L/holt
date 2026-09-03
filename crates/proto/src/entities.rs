@@ -228,6 +228,15 @@ pub struct RepoRef {
     pub worktree_path: Option<String>,
 }
 
+/// The first line of a `SwitchRef`/`CreateBranch` refusal error whose dirty
+/// tree would be overwritten (ADR-0007): the engine formats it followed by
+/// one blocking file path per line, and the UI parses it back to raise the
+/// inform-only switch dialog. The error channel is stringly by design; this
+/// shared constant is its one definition, with tests pinning the shape on
+/// both sides.
+pub const SWITCH_REFUSAL_MARKER: &str =
+    "switch refused: uncommitted changes would be overwritten by checkout:";
+
 /// Public Git reference attached to a commit in the history graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
