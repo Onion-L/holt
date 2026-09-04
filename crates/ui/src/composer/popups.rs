@@ -716,10 +716,22 @@ impl Composer {
         };
         // The title is the fill: `/compact` for a command, `/skill <name>`
         // for a skill — ready for extra instructions and submit.
-        self.input.update(cx, |input, cx| {
-            input.replace_plain_token(token.range, &candidate.title(), cx)
-        });
+        let title = candidate.title();
+        // `/compact` takes no arguments, so a selection sends it right
+        // away instead of staging it in the input for review; anything
+        // else (skills, argument-taking commands) still fills.
+        let send_now = matches!(super::slash::parse(&title), super::slash::Parsed::Compact);
         self.reset_slash(None, cx);
+        if send_now {
+            // Dispatch the completed command directly. Writing it into the
+            // input first makes the command flash in the composer and also
+            // causes failed compact requests to be restored as draft text.
+            self.submit_text(title, cx);
+        } else {
+            self.input.update(cx, |input, cx| {
+                input.replace_plain_token(token.range, &title, cx)
+            });
+        }
         cx.notify();
     }
 

@@ -14,6 +14,10 @@ use crate::attachments::{self};
 use crate::state::Indicator;
 use crate::theme::Theme;
 
+fn failure_restore_text(parsed: &super::slash::Parsed, typed: String) -> Option<String> {
+    (!matches!(parsed, super::slash::Parsed::Compact)).then_some(typed)
+}
+
 impl Composer {
     fn run_live(&self, cx: &App) -> bool {
         let s = self.state.read(cx);
@@ -59,6 +63,13 @@ impl Composer {
             return;
         }
         let text = self.input.read(cx).text().trim().to_string();
+        self.submit_text(text, cx);
+    }
+
+    /// Submit text that may have come from the slash popup instead of the
+    /// input. Keeping this separate lets commands such as `/compact` dispatch
+    /// without briefly filling the composer first.
+    pub(super) fn submit_text(&mut self, text: String, cx: &mut Context<Self>) {
         // Slash commands are handled by the composer itself (ADR-0006):
         // a recognized-but-nameless `/skill` never reaches the prompt
         // path — surface the usage instead. Same for `/compact` with
@@ -293,7 +304,7 @@ impl Composer {
         cx.notify();
 
         let steer_cmd = steer && !is_new;
-        let restore_text = typed;
+        let restore_text = failure_restore_text(&slash, typed);
         let err_chat_id = chat_id.clone();
         let err_message_id = message_id.clone();
         self.send_task = Some(cx.spawn(async move |this, cx| {
@@ -663,18 +674,20 @@ impl Composer {
                         }
                         cx.notify();
                     });
-                    if is_new && composer.current_key != restore_key {
-                        // A re-key swap to the canvas is pending (the
-                        // select_chat(None) above); it loads this draft into
-                        // the input on flush — setting the input directly
-                        // here would be clobbered by that same swap.
-                        composer.drafts.insert(restore_key.clone(), restore_text.clone());
-                    } else {
-                        // Already keyed to the restore target (either an
-                        // existing chat, or the deleted row's watch event
-                        // re-keyed to the canvas before this handler ran —
-                        // no further swap will fire). Set the input directly.
-                        composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
+                    if let Some(restore_text) = restore_text {
+                        if is_new && composer.current_key != restore_key {
+                            // A re-key swap to the canvas is pending (the
+                            // select_chat(None) above); it loads this draft into
+                            // the input on flush — setting the input directly
+                            // here would be clobbered by that same swap.
+                            composer.drafts.insert(restore_key.clone(), restore_text);
+                        } else {
+                            // Already keyed to the restore target (either an
+                            // existing chat, or the deleted row's watch event
+                            // re-keyed to the canvas before this handler ran —
+                            // no further swap will fire). Set the input directly.
+                            composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
+                        }
                     }
                     if !staged.is_empty() {
                         // Merge by id (stashAttachments): files the user staged
@@ -777,5 +790,25 @@ impl Composer {
                     .into_any_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::slash, failure_restore_text};
+
+    #[test]
+    fn compact_failure_does_not_restore_the_command_as_draft() {
+        let parsed = slash::parse("/compact");
+        assert_eq!(failure_restore_text(&parsed, "/compact".into()), None);
+    }
+
+    #[test]
+    fn ordinary_send_failure_still_restores_typed_text() {
+        let parsed = slash::parse("keep working");
+        assert_eq!(
+            failure_restore_text(&parsed, "keep working".into()),
+            Some("keep working".into())
+        );
     }
 }
