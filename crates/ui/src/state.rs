@@ -1534,6 +1534,8 @@ mod tests {
             id: id.into(),
             device_id: "dev".into(),
             title: None,
+            title_source: Default::default(),
+            title_task_started: false,
             archived: false,
             cwd: None,
             branch: None,

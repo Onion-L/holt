@@ -51,6 +51,8 @@ mod tests {
             id: "chat-a".into(),
             device_id: device.id.clone(),
             title: Some("Work".into()),
+            title_source: holt_proto::TitleSource::UserManual,
+            title_task_started: false,
             archived: false,
             cwd: Some(space.path.clone()),
             branch: None,

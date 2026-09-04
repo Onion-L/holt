@@ -448,6 +448,8 @@ mod tests {
             id: id.into(),
             device_id: "d".into(),
             title: None,
+            title_source: Default::default(),
+            title_task_started: false,
             archived,
             cwd: None,
             branch: None,

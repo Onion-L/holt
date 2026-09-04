@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroMap, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
 
-use holt_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
+use holt_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space, TitleSource};
 
 use crate::schema::DocError;
 
@@ -710,6 +710,10 @@ impl From<RawChat> for Chat {
             id: raw.id,
             device_id: raw.device_id,
             title: raw.title,
+            // Doc-store rows predate title ownership; treat them as manual
+            // so sync data is never auto-renamed.
+            title_source: TitleSource::UserManual,
+            title_task_started: false,
             archived: raw.archived,
             cwd: raw.cwd,
             branch: raw.branch,
@@ -776,6 +780,8 @@ mod tests {
             id: id.into(),
             device_id: device_id.into(),
             title: Some("First chat".into()),
+            title_source: TitleSource::UserManual,
+            title_task_started: false,
             archived: false,
             cwd: Some("/tmp/repo".into()),
             branch: Some("main".into()),

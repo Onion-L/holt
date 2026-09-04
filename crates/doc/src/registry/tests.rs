@@ -4,7 +4,7 @@
 //! tested, not asserted.
 
 use super::*;
-use holt_proto::{ProviderId, SandboxLevel, SessionStatus};
+use holt_proto::{ProviderId, SandboxLevel, SessionStatus, TitleSource};
 
 fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap_or(DateTime::UNIX_EPOCH)
@@ -253,6 +253,8 @@ fn chat(id: &str, device_id: &str) -> Chat {
         id: id.into(),
         device_id: device_id.into(),
         title: Some("First chat".into()),
+        title_source: TitleSource::UserManual,
+        title_task_started: false,
         archived: false,
         cwd: Some("/tmp/repo".into()),
         branch: Some("main".into()),

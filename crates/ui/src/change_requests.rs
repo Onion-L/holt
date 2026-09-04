@@ -307,6 +307,8 @@ mod tests {
             id: id.into(),
             device_id: device.into(),
             title: None,
+            title_source: Default::default(),
+            title_task_started: false,
             archived: false,
             cwd: cwd.map(str::to_owned),
             branch: Some("feature/pr".into()),

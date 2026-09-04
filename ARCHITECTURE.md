@@ -92,7 +92,7 @@ directive never reaches the model, and both invocations and `SKILL.md`
 reads render as compact chips in the transcript.
 
 The implemented agent slice is intentionally narrow: provider configuration,
-provider/model discovery, `createChat`, chat/session watches, `QueueCommand`
+provider/model discovery, `createChat`/`renameChat`, chat/session watches, `QueueCommand`
 run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run loop mounts pi-core's
 built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,

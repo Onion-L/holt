@@ -7,7 +7,7 @@ use holt_doc::{
     MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry, TranscriptFrame,
     diff_transcript,
 };
-use holt_proto::{AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space};
+use holt_proto::{AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space, TitleSource};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
 use serde::Deserialize;
@@ -20,6 +20,10 @@ use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
+
+/// The sidebar title ceiling shared by the first-line fallback, manual
+/// renames, and automatic titles.
+const TITLE_CHAR_LIMIT: usize = 60;
 
 impl LocalEngine {
     fn watch_spaces(&self) -> RpcReply {
@@ -171,6 +175,8 @@ impl LocalEngine {
                 .or_else(|| space.as_ref().map(|space| space.device_id.clone()))
                 .unwrap_or_else(|| self.engine_info.device_id.clone()),
             title: None,
+            title_source: TitleSource::Automatic,
+            title_task_started: false,
             archived: false,
             cwd: params
                 .cwd
@@ -249,6 +255,42 @@ impl LocalEngine {
             self.runtime.publish_chats();
         }
         // Unknown chat: idempotent no-op, matching the archive path.
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    fn rename_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: RenameChatParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.chat_id.trim().is_empty() {
+            return Err(RpcError::BadParams("chatId must not be empty".into()));
+        }
+        let title = params.title.trim();
+        if title.is_empty() {
+            return Err(RpcError::BadParams("title must not be empty".into()));
+        }
+        // Same ceiling as the fallback and automatic titles, so the sidebar
+        // geometry assumption holds for manual names too.
+        let title: String = title.chars().take(TITLE_CHAR_LIMIT).collect();
+        let mut chats = self
+            .runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(row) = chats.iter_mut().find(|row| row.id == params.chat_id) else {
+            // Unknown chat: idempotent no-op, matching the archive path.
+            return RpcReply::value(&serde_json::json!({}));
+        };
+        row.title = Some(title);
+        // A manual rename locks the title even when the text is unchanged,
+        // so ownership is unambiguous — always persist and publish.
+        row.title_source = TitleSource::UserManual;
+        drop(chats);
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
 
@@ -629,7 +671,7 @@ impl LocalEngine {
                             .next()
                             .unwrap_or("New chat")
                             .chars()
-                            .take(60)
+                            .take(TITLE_CHAR_LIMIT)
                             .collect(),
                     );
                 }
@@ -727,6 +769,13 @@ struct SetChatArchivedParams {
 #[serde(rename_all = "camelCase")]
 struct DeleteChatParams {
     chat_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameChatParams {
+    chat_id: String,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -1134,6 +1183,11 @@ impl RpcService for LocalEngine {
                 if params.get("op").and_then(|op| op.as_str()) == Some("markChatSeen") =>
             {
                 self.mark_chat_seen(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("renameChat") =>
+            {
+                self.rename_chat(params)
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
 

@@ -5159,6 +5159,8 @@ rename to new_name.rs
             id: "c1".into(),
             device_id: device.into(),
             title: None,
+            title_source: Default::default(),
+            title_task_started: false,
             archived: false,
             cwd: cwd.map(Into::into),
             branch: None,

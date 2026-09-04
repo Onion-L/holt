@@ -100,6 +100,19 @@ pub struct ConversationSourceContext {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Who owns a chat's title (ADR-0012). `Automatic` titles (the first-line
+/// fallback or the one-shot Title task's result) may still be replaced;
+/// `UserManual` titles are locked — any rename mutation switches to this
+/// state, even when the text is unchanged. Rows that predate this field
+/// load as `UserManual` so existing names are never auto-renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TitleSource {
+    Automatic,
+    #[default]
+    UserManual,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -107,6 +120,14 @@ pub struct Chat {
     /// Owning (host) device.
     pub device_id: String,
     pub title: Option<String>,
+    /// Ownership of `title`; see `TitleSource`.
+    #[serde(default)]
+    pub title_source: TitleSource,
+    /// Set once the chat's one-shot automatic Title task has started. A
+    /// restarted engine never retries a started task, so this persists with
+    /// the chat.
+    #[serde(default)]
+    pub title_task_started: bool,
     pub archived: bool,
     pub cwd: Option<String>,
     pub branch: Option<String>,
