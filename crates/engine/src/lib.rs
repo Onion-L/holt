@@ -37,6 +37,7 @@ mod rpc;
 mod skills;
 mod store;
 mod title_settings;
+mod title_task;
 mod tools;
 
 use agent::AgentRuntime;

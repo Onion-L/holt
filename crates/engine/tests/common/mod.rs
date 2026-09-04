@@ -62,6 +62,13 @@ pub enum ScriptedReply {
     /// stand-in: nothing arrives and the Turn hangs, so the test can drop
     /// the engine with the run in flight.
     Silent,
+    /// A text reply held back until the test releases the gate — the
+    /// deterministic "resolve AFTER some other RPC has landed" primitive
+    /// (rename/delete racing a Title-task result).
+    Gated {
+        gate: Arc<tokio::sync::Notify>,
+        text: String,
+    },
 }
 
 impl ScriptedReply {
@@ -86,6 +93,14 @@ impl ScriptedReply {
         ScriptedReply::Aborted {
             partial: partial.into(),
             tool_calls: Vec::new(),
+        }
+    }
+
+    /// A text reply that lands only once `gate.notify_one()` fires.
+    pub fn gated(gate: Arc<tokio::sync::Notify>, text: impl Into<String>) -> Self {
+        ScriptedReply::Gated {
+            gate,
+            text: text.into(),
         }
     }
 
@@ -137,7 +152,17 @@ fn now_millis() -> i64 {
 pub struct ScriptedProvider {
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     script: Arc<Mutex<VecDeque<ScriptedReply>>>,
+    /// Replies reserved for Title-task requests (identified by their system
+    /// prompt), so a turn's multi-round script never interleaves with title
+    /// replies.
+    title: Option<TitleScript>,
     usage: Usage,
+}
+
+#[derive(Clone)]
+struct TitleScript {
+    instruction: String,
+    replies: Arc<Mutex<VecDeque<ScriptedReply>>>,
 }
 
 /// The usage every scripted reply reports by default — small, fixed, and
@@ -158,8 +183,19 @@ impl ScriptedProvider {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             script: Arc::new(Mutex::new(script.into())),
+            title: None,
             usage: fixed_usage(),
         }
+    }
+
+    /// Route Title-task requests — the ones whose system prompt is exactly
+    /// `instruction` — to their own reply queue.
+    pub fn with_title_script(mut self, instruction: &str, replies: Vec<ScriptedReply>) -> Self {
+        self.title = Some(TitleScript {
+            instruction: instruction.to_string(),
+            replies: Arc::new(Mutex::new(replies.into())),
+        });
+        self
     }
 
     /// Pin the usage every reply reports (the knob compaction tests turn to
@@ -173,6 +209,7 @@ impl ScriptedProvider {
     pub fn stream_fn(&self) -> StreamFn {
         let requests = Arc::clone(&self.requests);
         let script = Arc::clone(&self.script);
+        let title = self.title.clone();
         let usage = self.usage.clone();
         Arc::new(move |model: &Model, context: &Context, _options| {
             requests.lock().unwrap().push(RecordedRequest {
@@ -180,7 +217,15 @@ impl ScriptedProvider {
                 system_prompt: context.system_prompt.clone(),
                 tools: context.tools.as_ref().map_or(0, Vec::len),
             });
-            let reply = script.lock().unwrap().pop_front().unwrap_or_else(|| {
+            let reply = match &title {
+                Some(title)
+                    if context.system_prompt.as_deref() == Some(title.instruction.as_str()) =>
+                {
+                    title.replies.lock().unwrap().pop_front()
+                }
+                _ => script.lock().unwrap().pop_front(),
+            }
+            .unwrap_or_else(|| {
                 ScriptedReply::Failed("scripted provider ran out of replies".into())
             });
             let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
@@ -297,6 +342,33 @@ fn push_reply(
         }
         // Nothing is pushed: `next` never resolves, the Turn never ends.
         ScriptedReply::Silent => {}
+        ScriptedReply::Gated { gate, text } => {
+            // Push the terminal event only after the test releases the gate.
+            let stream = stream.clone();
+            let usage = usage.clone();
+            let (api, provider, model_id) =
+                (model.api.clone(), model.provider.clone(), model.id.clone());
+            tokio::spawn(async move {
+                gate.notified().await;
+                let mut message = AssistantMessage {
+                    api,
+                    provider,
+                    model: model_id,
+                    usage,
+                    timestamp: now_millis(),
+                    ..Default::default()
+                };
+                message.content = vec![AssistantContent::Text(TextContent {
+                    text,
+                    ..Default::default()
+                })];
+                message.stop_reason = StopReason::Stop;
+                stream.push(AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message,
+                });
+            });
+        }
     }
 }
 

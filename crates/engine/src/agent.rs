@@ -67,6 +67,10 @@ pub(crate) struct ChatRuntime {
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
+    /// The one-shot Title task's token (ADR-0012): independent of `cancel`
+    /// — a Turn interrupt must not stop title generation; only chat
+    /// deletion cancels it (in `AgentRuntime::remove_chat`).
+    pub(crate) title_cancel: Mutex<Option<CancellationToken>>,
     /// Where this chat's transcript persists; empty for the ephemeral
     /// runtimes tests build directly.
     pub(crate) data_dir: PathBuf,
@@ -88,6 +92,7 @@ impl ChatRuntime {
             history: RwLock::new(Vec::new()),
             transcript_tx,
             cancel: Mutex::new(None),
+            title_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
             chat_id: String::new(),
         }
@@ -167,6 +172,7 @@ impl ChatRuntime {
             history: RwLock::new(history),
             transcript_tx,
             cancel: Mutex::new(None),
+            title_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
             chat_id: chat_id.to_string(),
         }
@@ -248,12 +254,24 @@ impl AgentRuntime {
 
     /// Drop a chat's runtime slot and its persisted records. An in-flight
     /// run keeps its `Arc` and runs to completion, but nothing ever reads the
-    /// transcript again: the chat row is gone from the watches.
+    /// transcript again: the chat row is gone from the watches. A pending
+    /// Title task is actively cancelled (ADR-0012): a late result must
+    /// never resurrect or mutate a deleted chat.
     pub(crate) fn remove_chat(&self, chat_id: &str) {
-        self.chat_runtime
+        let runtime = self
+            .chat_runtime
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
+        if let Some(runtime) = runtime
+            && let Some(token) = runtime
+                .title_cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+        {
+            token.cancel();
+        }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
     }

@@ -27,7 +27,7 @@ use crate::title_settings::MAX_TITLE_INSTRUCTION_CHARS;
 
 /// The sidebar title ceiling shared by the first-line fallback, manual
 /// renames, and automatic titles.
-const TITLE_CHAR_LIMIT: usize = 60;
+pub(crate) const TITLE_CHAR_LIMIT: usize = 60;
 
 impl LocalEngine {
     fn watch_spaces(&self) -> RpcReply {
@@ -625,13 +625,24 @@ impl LocalEngine {
             .providers
             .resolve_model(request.provider.as_str(), &request.model)
             .map_err(RpcError::BadParams)?;
-        let mut active = chat.cancel.lock().unwrap_or_else(|e| e.into_inner());
-        if active.as_ref().is_some_and(|token| !token.is_cancelled()) {
-            return Err(RpcError::Failed("this chat is already running".into()));
-        }
         let cancel = CancellationToken::new();
-        *active = Some(cancel.clone());
-        drop(active);
+        {
+            let mut active = chat.cancel.lock().unwrap_or_else(|e| e.into_inner());
+            if active.as_ref().is_some_and(|token| !token.is_cancelled()) {
+                return Err(RpcError::Failed("this chat is already running".into()));
+            }
+            *active = Some(cancel.clone());
+        }
+
+        // Title task (ADR-0012): resolve its inputs only when the row could
+        // still be eligible, so later prompts never touch title settings.
+        // Every failure here is silent — a missing or invalid title model
+        // must never fail the Turn.
+        let mut title_spec = if self.title_may_be_eligible(chat_id) {
+            self.prepare_title_task(chat_id, &preview).await
+        } else {
+            None
+        };
 
         let now = Utc::now();
         let timestamp = now.timestamp_millis();
@@ -649,6 +660,7 @@ impl LocalEngine {
             });
         chat.publish();
 
+        let mut title_spawn = None;
         {
             let mut chats = self
                 .runtime
@@ -678,6 +690,17 @@ impl LocalEngine {
                             .take(TITLE_CHAR_LIMIT)
                             .collect(),
                     );
+                    // The first prompt is the only eligibility window:
+                    // stamp the one-shot marker in the same write as the
+                    // fallback title, so a second prompt can never start a
+                    // second task and a restart never retries.
+                    if let Some(spec) = title_spec.take()
+                        && row.title_source == TitleSource::Automatic
+                        && !row.title_task_started
+                    {
+                        row.title_task_started = true;
+                        title_spawn = Some((spec, row.created_at));
+                    }
                 }
             }
         }
@@ -688,6 +711,19 @@ impl LocalEngine {
         .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
+
+        // The Title task runs in parallel with the Turn on its own token —
+        // a Turn interrupt must not cancel it (only chat deletion does).
+        if let Some((spec, generation)) = title_spawn {
+            let token = CancellationToken::new();
+            *chat.title_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
+            tokio::spawn(crate::title_task::run_title_task(
+                self.runtime.clone(),
+                spec,
+                generation,
+                token,
+            ));
+        }
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();
@@ -760,6 +796,47 @@ impl LocalEngine {
         Some(format!(
             "Provider {provider} has no saved credentials — automatic titles will keep the fallback until a key is configured."
         ))
+    }
+
+    /// Cheap read-side pre-check for the Title task's eligibility window:
+    /// an untitled, automatically-owned chat whose one-shot task has not
+    /// started. Only a first prompt can satisfy this — the fallback title
+    /// is stamped in the same acceptance pass.
+    fn title_may_be_eligible(&self, chat_id: &str) -> bool {
+        let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+        chats.iter().any(|row| {
+            row.id == chat_id
+                && row.title.is_none()
+                && row.title_source == TitleSource::Automatic
+                && !row.title_task_started
+        })
+    }
+
+    /// Resolve the Title task's inputs from the current settings. `None`
+    /// means no task: automatic titles disabled, an unresolvable model, or
+    /// missing credentials — all silent, the fallback title stays.
+    async fn prepare_title_task(
+        &self,
+        chat_id: &str,
+        prompt: &str,
+    ) -> Option<crate::title_task::TitleTaskSpec> {
+        let settings = self.title_settings.get();
+        let model_id = settings.model_id?;
+        let (provider, _) = model_id.split_once('/')?;
+        if !ProviderAdapter::is_eligible(provider) {
+            return None;
+        }
+        let model = self.providers.resolve_model(provider, &model_id).ok()?;
+        let api_key = self.providers.credentials.reveal_key(provider).await?;
+        Some(crate::title_task::TitleTaskSpec {
+            chat_id: chat_id.to_string(),
+            data_dir: self.data_dir.clone(),
+            prompt: prompt.to_string(),
+            instruction: settings.instruction,
+            model,
+            api_key,
+            stream_fn: self.runtime.stream_fn.clone(),
+        })
     }
 
     async fn save_title_settings(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
