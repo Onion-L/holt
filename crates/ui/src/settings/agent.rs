@@ -6,15 +6,15 @@
 //! and the missing-credentials warning.
 
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*,
-    px,
+    div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Task,
+    Window,
 };
 use holt_proto::{Model, TitleSettingsState};
 use holt_rpc::methods;
 
 use crate::{
     composer::ComposerInput,
-    popover::{self, Loadable},
+    popover::{self, Loadable, Popup},
     settings::widgets,
     state::AppState,
     theme::Theme,
@@ -69,11 +69,29 @@ fn model_rows(models: &[Model], selected: Option<&str>) -> Vec<ModelRow> {
     rows
 }
 
+fn effective_instruction(custom_enabled: bool, instruction: &str) -> String {
+    if custom_enabled && !instruction.trim().is_empty() {
+        instruction.to_string()
+    } else {
+        holt_proto::DEFAULT_TITLE_INSTRUCTION.to_string()
+    }
+}
+
+fn configured_providers(providers: &[holt_proto::Provider]) -> Vec<holt_proto::Provider> {
+    providers
+        .iter()
+        .flat_map(holt_proto::Provider::concrete_providers)
+        .filter(|provider| provider.configured)
+        .collect()
+}
+
 pub struct AgentPage {
     state: Entity<AppState>,
     settings: Loadable<TitleSettingsState>,
     models: Loadable<Vec<Model>>,
     selected_model: Option<String>,
+    model_menu: Popup<()>,
+    custom_instruction_enabled: bool,
     instruction: Entity<ComposerInput>,
     save_error: Option<String>,
     task: Option<Task<()>>,
@@ -86,6 +104,8 @@ impl AgentPage {
             settings: Loadable::Idle,
             models: Loadable::Idle,
             selected_model: None,
+            model_menu: Popup::default(),
+            custom_instruction_enabled: false,
             instruction: cx
                 .new(|cx| ComposerInput::new("Instruction sent with the first prompt", cx)),
             save_error: None,
@@ -104,6 +124,8 @@ impl AgentPage {
     fn apply_state(&mut self, state: TitleSettingsState, cx: &mut Context<Self>) {
         self.selected_model = state.settings.model_id.clone();
         let instruction = state.settings.instruction.clone();
+        self.custom_instruction_enabled =
+            instruction.trim() != holt_proto::DEFAULT_TITLE_INSTRUCTION;
         self.instruction
             .update(cx, |input, cx| input.set_text(instruction, cx));
         self.settings = Loadable::Ready(state);
@@ -152,9 +174,13 @@ impl AgentPage {
             cx.notify();
             return;
         };
+        let instruction = effective_instruction(
+            self.custom_instruction_enabled,
+            self.instruction.read(cx).text(),
+        );
         let params = serde_json::json!({
             "modelId": self.selected_model,
-            "instruction": self.instruction.read(cx).text(),
+            "instruction": instruction,
         });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
@@ -177,6 +203,21 @@ impl AgentPage {
             .ok();
         }));
     }
+
+    fn close_model_menu(&mut self, cx: &mut Context<Self>) {
+        if self.model_menu.begin_close() {
+            popover::reap_popup(cx, |page| &mut page.model_menu);
+        }
+    }
+
+    fn toggle_model_menu(&mut self, cx: &mut Context<Self>) {
+        if self.model_menu.take_press_was_open() || self.model_menu.is_open() {
+            self.close_model_menu(cx);
+        } else {
+            self.model_menu.open(());
+        }
+        cx.notify();
+    }
 }
 
 /// Every resolvable model across the configured catalog, one LIST_MODELS
@@ -194,10 +235,7 @@ async fn load_model_catalog(engine: &crate::state::EngineHandle) -> Loadable<Vec
         Err(error) => return Loadable::Error(error.to_string()),
     };
     let mut models = Vec::new();
-    for provider in providers
-        .iter()
-        .flat_map(holt_proto::Provider::concrete_providers)
-    {
+    for provider in configured_providers(&providers) {
         let Ok(value) = engine
             .client()
             .call(
@@ -230,27 +268,145 @@ impl Render for AgentPage {
                 let catalog: &[Model] = models.ready().map(Vec::as_slice).unwrap_or(&[]);
                 let rows = model_rows(catalog, self.selected_model.as_deref());
 
-                let mut model_card = widgets::section_card(&theme);
-                for (index, row) in rows.iter().enumerate() {
+                let model_menu_rows = rows.iter().enumerate().map(|(index, row)| {
                     let row_id = row.id.clone();
-                    let status: Option<AnyElement> = if row.unresolved {
-                        Some(widgets::badge(&theme, "unresolved").into_any_element())
-                    } else if row.selected {
-                        Some(widgets::badge_active(&theme, "In use").into_any_element())
+                    let selected = row.selected;
+                    let title = row.title.clone();
+                    let detail = row.detail.clone();
+                    popover::menu_row(&theme, selected, format!("title-model-option-{index}"))
+                        .id(SharedString::from(format!("title-model-option-{index}")))
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            cx.stop_propagation();
+                            page.selected_model = row_id.clone();
+                            page.close_model_menu(cx);
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(div().truncate().child(SharedString::from(title)))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(crate::typography::ui_rems(
+                                            widgets::ROW_DESCRIPTION_SIZE,
+                                        ))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(detail)),
+                                ),
+                        )
+                        .when(row.unresolved, |row| {
+                            row.child(widgets::badge(&theme, "unavailable"))
+                        })
+                        .when(selected, |row| {
+                            row.child(
+                                crate::icons::icon(crate::icons::CHECK)
+                                    .size(px(14.0))
+                                    .text_color(theme.accent),
+                            )
+                        })
+                        .into_any_element()
+                });
+                let model_menu = popover::popover_card(&theme)
+                    .id("title-model-scroll")
+                    .w(px(360.0))
+                    .max_h(px(320.0))
+                    .overflow_y_scroll()
+                    .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_model_menu(cx)))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .children(model_menu_rows)
+                    .into_any_element();
+                let selected_row = rows.iter().find(|row| row.selected).unwrap_or(&rows[0]);
+                let selected_label = SharedString::from(selected_row.title.clone());
+                let selected_detail = SharedString::from(selected_row.detail.clone());
+                let model_trigger = div()
+                    .id("title-model-dropdown")
+                    .relative()
+                    .w(px(360.0))
+                    .h(px(38.0))
+                    .px(px(11.0))
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(if self.model_menu.is_open() {
+                        theme.border_strong
                     } else {
-                        None
-                    };
-                    model_card = model_card.child(
-                        widgets::card_row(&theme, index == 0)
-                            .id(SharedString::from(format!(
-                                "title-model-{}",
-                                row.id.as_deref().unwrap_or("disabled")
-                            )))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |page, _, _, cx| {
-                                page.selected_model = row_id.clone();
-                                cx.notify();
-                            }))
+                        theme.border
+                    })
+                    .bg(theme.input_glass_bg())
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|page, _, _, _| page.model_menu.note_trigger_press()),
+                    )
+                    .on_click(cx.listener(|page, _, _, cx| page.toggle_model_menu(cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.0))
+                            .child(div().truncate().child(selected_label))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(
+                                        widgets::ROW_DESCRIPTION_SIZE,
+                                    ))
+                                    .text_color(theme.text_muted)
+                                    .child(selected_detail),
+                            ),
+                    )
+                    .child(
+                        crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                            .size(px(14.0))
+                            .flex_none()
+                            .text_color(theme.text_muted),
+                    )
+                    .when_some(self.model_menu.get(), |trigger, _| {
+                        trigger.child(popover::anchored_menu_below(
+                            "title-model-menu",
+                            model_menu,
+                            self.model_menu.closing_since(),
+                        ))
+                    });
+
+                let model_card = widgets::section_card(&theme).child(
+                    widgets::card_row(&theme, true)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(&theme, "Title model"))
+                                .child(widgets::row_description(
+                                    &theme,
+                                    "Choose a configured provider model. Disabled keeps the fallback title.",
+                                )),
+                        )
+                        .child(model_trigger),
+                );
+
+                let mut column = div().flex().flex_col().child(model_card);
+                if let Some(warning) = state.warning.clone() {
+                    column = column.child(widgets::warning_strip(&theme, warning));
+                }
+
+                column = column.child(
+                    div().mt(px(24.0)).child(
+                        widgets::card_row(&theme, true)
                             .child(
                                 div()
                                     .flex_1()
@@ -258,65 +414,69 @@ impl Render for AgentPage {
                                     .flex()
                                     .flex_col()
                                     .gap(px(3.0))
-                                    .child(widgets::row_title(&theme, row.title.clone()))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(crate::typography::ui_rems(
-                                                widgets::ROW_DESCRIPTION_SIZE,
-                                            ))
-                                            .text_color(theme.text_muted)
-                                            .child(SharedString::from(row.detail.clone())),
-                                    ),
+                                    .child(widgets::row_title(&theme, "Custom title prompt"))
+                                    .child(widgets::row_description(
+                                        &theme,
+                                        "Use a custom instruction instead of the built-in prompt.",
+                                    )),
                             )
-                            .when_some(status, |card, status| card.child(status)),
+                            .child(
+                                div()
+                                    .id("custom-title-prompt-toggle")
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|page, _, _, cx| {
+                                        page.custom_instruction_enabled =
+                                            !page.custom_instruction_enabled;
+                                        cx.notify();
+                                    }))
+                                    .child(widgets::toggle_switch(
+                                        &theme,
+                                        self.custom_instruction_enabled,
+                                    )),
+                            ),
+                    ),
+                );
+                if self.custom_instruction_enabled {
+                    let restore_theme = theme.clone();
+                    column = column.child(
+                        div()
+                            .mt(px(8.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(widgets::field_label(&theme, "Title prompt"))
+                            .child(
+                                widgets::ghost_action(&theme)
+                                    .id("restore-title-instruction")
+                                    .hover(move |style| widgets::ghost_hover(&restore_theme, style))
+                                    .on_click(cx.listener(|page, _, _, cx| {
+                                        page.instruction.update(cx, |input, cx| {
+                                            input.set_text(
+                                                holt_proto::DEFAULT_TITLE_INSTRUCTION,
+                                                cx,
+                                            );
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child("Restore default"),
+                            ),
+                    );
+                    column = column.child(
+                        div()
+                            .mt(px(8.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.input_glass_bg())
+                            .child(self.instruction.clone()),
                     );
                 }
-
-                let mut column = div().flex().flex_col().child(model_card);
-                if let Some(warning) = state.warning.clone() {
-                    column = column.child(widgets::warning_strip(&theme, warning));
-                }
-
-                let restore_theme = theme.clone();
-                column = column.child(
-                    div()
-                        .mt(px(24.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .child(widgets::field_label(&theme, "Title instruction"))
-                        .child(
-                            widgets::ghost_action(&theme)
-                                .id("restore-title-instruction")
-                                .hover(move |style| widgets::ghost_hover(&restore_theme, style))
-                                .on_click(cx.listener(|page, _, _, cx| {
-                                    page.instruction.update(cx, |input, cx| {
-                                        input.set_text(holt_proto::DEFAULT_TITLE_INSTRUCTION, cx);
-                                    });
-                                    cx.notify();
-                                }))
-                                .child("Restore default"),
-                        ),
-                );
-                column = column.child(
-                    div()
-                        .mt(px(8.0))
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.input_glass_bg())
-                        .child(self.instruction.clone()),
-                );
                 column = column.child(widgets::row_description(
                     &theme,
-                    "Sent with only the first prompt of a new chat. The reply replaces the \
-                     first-line title when it is short and non-empty; failures keep the \
-                     fallback silently.",
+                    "Sent with only the first prompt of a new chat. Failures keep the fallback silently.",
                 ));
 
                 let save_theme = theme.clone();
@@ -368,7 +528,7 @@ impl Render for AgentPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use holt_proto::ProviderId;
+    use holt_proto::{Provider, ProviderId, ProviderVariant};
 
     fn model(id: &str, label: &str) -> Model {
         Model {
@@ -421,5 +581,43 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, None);
         assert!(rows[0].selected);
+    }
+
+    #[test]
+    fn configured_provider_filter_keeps_only_variants_with_credentials() {
+        let providers = vec![Provider {
+            id: ProviderId::from("acme"),
+            name: "Acme".into(),
+            abbreviation: "A".into(),
+            configured: true,
+            variants: vec![
+                ProviderVariant {
+                    id: ProviderId::from("acme-us"),
+                    name: "Acme US".into(),
+                    configured: true,
+                },
+                ProviderVariant {
+                    id: ProviderId::from("acme-eu"),
+                    name: "Acme EU".into(),
+                    configured: false,
+                },
+            ],
+        }];
+        let configured = configured_providers(&providers);
+        assert_eq!(configured.len(), 1);
+        assert_eq!(configured[0].id, ProviderId::from("acme-us"));
+    }
+
+    #[test]
+    fn empty_custom_instruction_uses_the_default() {
+        assert_eq!(
+            effective_instruction(true, "  \n"),
+            holt_proto::DEFAULT_TITLE_INSTRUCTION
+        );
+        assert_eq!(
+            effective_instruction(false, "custom"),
+            holt_proto::DEFAULT_TITLE_INSTRUCTION
+        );
+        assert_eq!(effective_instruction(true, "custom"), "custom");
     }
 }
