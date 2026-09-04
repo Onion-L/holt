@@ -464,6 +464,10 @@ impl Transcript {
                     .id(SharedString::from(format!("{row_id}#divider-body")))
                     .max_h(px(320.0))
                     .overflow_y_scroll()
+                    // This is a nested reading viewport. Occlude the outer
+                    // transcript hitbox so one wheel gesture cannot scroll
+                    // both the summary and the transcript list.
+                    .occlude()
                     .text_size(px(12.0))
                     .line_height(px(17.0))
                     .text_color(theme.text.opacity(0.85))
@@ -2794,6 +2798,72 @@ impl Render for Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn nested_compaction_scroll_does_not_move_transcript_list(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let outer = gpui::ListState::new(4, gpui::ListAlignment::Top, gpui::px(200.0));
+        let inner = gpui::ScrollHandle::new();
+
+        struct TestView {
+            outer: gpui::ListState,
+            inner: gpui::ScrollHandle,
+        }
+
+        impl gpui::Render for TestView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let inner = self.inner.clone();
+                gpui::list(self.outer.clone(), move |ix, _, _| {
+                    if ix == 0 {
+                        gpui::div()
+                            .h(gpui::px(100.0))
+                            .child(
+                                gpui::div()
+                                    .id("compaction-body")
+                                    .h(gpui::px(50.0))
+                                    .flex()
+                                    .flex_col()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&inner)
+                                    .occlude()
+                                    .children((0..10).map(|_| gpui::div().h(gpui::px(20.0)))),
+                            )
+                            .into_any()
+                    } else {
+                        gpui::div().h(gpui::px(100.0)).into_any()
+                    }
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TestView {
+                outer: outer.clone(),
+                inner: inner.clone(),
+            })
+        });
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(100.0), gpui::px(100.0)),
+            |_, _| view.clone().into_any_element(),
+        );
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(gpui::px(50.0), gpui::px(25.0)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(-40.0))),
+            ..Default::default()
+        });
+
+        assert_eq!(outer.logical_scroll_top().item_ix, 0);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(0.0));
+        assert_eq!(inner.offset().y, gpui::px(-40.0));
+    }
 
     #[test]
     fn auto_flip_arms_only_on_an_unpinned_edge() {

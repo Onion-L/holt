@@ -36,6 +36,11 @@ path.
   place when needed; never resolve gpui from git, and don't guess its pre-1.0
   API from online docs — `docs/research/gpui.md` and the vendored sources are
   the API truth.
+- GPUI nested scroll containers do not contain wheel events automatically:
+  `.overflow_y_scroll()` inside a `List` must use `.occlude()` or one wheel
+  gesture can move both the child and the outer list. A bubble-phase
+  `.on_scroll_wheel()` handler is insufficient because the outer List listener
+  may run first. See ADR-0013.
 - The agent loop itself lives in the external `pi-core-rs` crate (git
   dependency in the root `Cargo.toml`); `crates/engine` only adapts it — run
   wiring, tools via `engine::tools`, credentials, provider settings.
