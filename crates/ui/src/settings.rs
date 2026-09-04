@@ -250,6 +250,12 @@ pub struct UiSettings {
     pub accent: holt_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
     pub surface: holt_theme::SurfacePreference,
+    /// Skills switched off on the Skills settings page: hidden from the `/`
+    /// menu and refused on a typed `/skill` invocation. Names are
+    /// catalog-unique (nearest root wins on collisions), so the bare name is
+    /// the identity. Device-local.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_skills: Vec<String>,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
     /// [`Self::accent`], and never write it again.
     #[serde(default, rename = "accentColor", skip_serializing)]
@@ -284,6 +290,7 @@ impl Default for UiSettings {
             diff_split: false,
             accent: holt_theme::AccentSelection::default(),
             surface: holt_theme::SurfacePreference::default(),
+            disabled_skills: Vec::new(),
             legacy_accent_color: None,
         }
     }
@@ -845,6 +852,7 @@ mod tests {
             diff_split: true,
             accent: holt_theme::AccentSelection::Preset(holt_theme::AccentPreset::Cyan),
             surface: holt_theme::SurfacePreference::Frosted,
+            disabled_skills: vec!["grill".into()],
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();

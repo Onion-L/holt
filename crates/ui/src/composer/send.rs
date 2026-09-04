@@ -87,6 +87,19 @@ impl Composer {
                 cx.notify();
                 return;
             }
+            // A skill switched off in Settings → Skills is refused even when
+            // typed out in full — disabled means unusable, not just hidden.
+            super::slash::Parsed::Skill { name, .. }
+                if crate::settings::current(cx).disabled_skills.contains(&name) =>
+            {
+                self.failure = Some(
+                    format!("Skill \"{name}\" is disabled — re-enable it in Settings → Skills")
+                        .into(),
+                );
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
             _ => {}
         }
         let no_content =

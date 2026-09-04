@@ -319,7 +319,14 @@ impl Shell {
                     .into_any_element()
             }
         } else if corner_hovered {
+            let archive_id = id.clone();
             div()
+                // The PILL carries the click, not the 14px corner wrapper:
+                // the wrapper pins the line height so the pill overflows it
+                // (18px tall, 4px right bleed), and a click target smaller
+                // than the painted pill let edge clicks fall through to the
+                // row and open the chat (user-reported).
+                .id(SharedString::from(format!("chat-archive-{id}")))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -336,6 +343,17 @@ impl Shell {
                 .rounded(px(5.0))
                 .bg(crate::theme::wash(0.10))
                 .hover(|s| s.bg(crate::theme::wash(0.18)))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    // Archiving confirms first (destructive-ish: the
+                    // thread leaves the sidebar); unarchive is direct.
+                    if archived {
+                        this.set_chat_archived(archive_id.clone(), false, cx);
+                    } else {
+                        this.request_archive_chat(archive_id.clone(), cx);
+                    }
+                }))
                 .child(
                     icon(if archived {
                         icons::ARCHIVE_UP_MINIMALISTIC
@@ -411,40 +429,24 @@ impl Shell {
         // One stable wrapper across both states (identity keeps the hover
         // from flickering as the content swaps); the swap is driven by the
         // ROW's hover (user request — corner-only felt undiscoverable), but
-        // archiving only clicks on the corner itself, so the row's own click
+        // archiving only clicks on the pill itself, so the row's own click
         // stays the selector.
-        let corner: AnyElement = {
-            let archive_id = id.clone();
-            div()
-                .id(SharedString::from(format!("chat-corner-{id}")))
-                .flex_none()
-                // Pin the corner to line 1's text height so the archive pill
-                // (taller, padded) overflows vertically instead of growing the
-                // row — the swap must not shift the card's content.
-                // NO occlude: the ROW's hover drives the swap, and an
-                // occluding corner un-hovered the row underneath it —
-                // pill mounts, steals the pointer, row un-hovers, pill
-                // unmounts, repeat (user-reported flicker). The pill's
-                // stop_propagation click is separation enough.
-                .h(px(14.0))
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .when(corner_hovered, |el| {
-                    el.on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        // Archiving confirms first (destructive-ish: the
-                        // thread leaves the sidebar); unarchive is direct.
-                        if archived {
-                            this.set_chat_archived(archive_id.clone(), false, cx);
-                        } else {
-                            this.request_archive_chat(archive_id.clone(), cx);
-                        }
-                    }))
-                })
-                .child(corner_body)
-                .into_any_element()
-        };
+        let corner: AnyElement = div()
+            .id(SharedString::from(format!("chat-corner-{id}")))
+            .flex_none()
+            // Pin the corner to line 1's text height so the archive pill
+            // (taller, padded) overflows vertically instead of growing the
+            // row — the swap must not shift the card's content.
+            // NO occlude: the ROW's hover drives the swap, and an
+            // occluding corner un-hovered the row underneath it —
+            // pill mounts, steals the pointer, row un-hovers, pill
+            // unmounts, repeat (user-reported flicker). The pill's
+            // stop_propagation click is separation enough.
+            .h(px(14.0))
+            .flex()
+            .items_center()
+            .child(corner_body)
+            .into_any_element();
         let (hover, text) = (theme.glass_hover(), theme.text);
         let selected_wash = crate::theme::glass_selected_bg();
         let subline = theme.text_muted.opacity(0.5);

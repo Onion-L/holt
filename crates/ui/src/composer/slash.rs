@@ -118,10 +118,12 @@ impl SlashCandidate {
 /// Merge the popup's two sources: the provider's commands first, invocable
 /// skills after. The valid-entry filter rides the listing's shape — only
 /// `skills` entries are invocable; shadowed and invalid entries never
-/// enter the menu.
+/// enter the menu. Skills the user disabled on the Skills settings page
+/// (`disabled`, by catalog-unique name) are hidden too.
 pub(crate) fn popup_candidates(
     listing: &SkillListing,
     commands: &[SlashCommand],
+    disabled: &[String],
 ) -> Vec<SlashCandidate> {
     commands
         .iter()
@@ -130,11 +132,17 @@ pub(crate) fn popup_candidates(
             description: command.description.clone(),
             input_hint: command.input_hint.clone(),
         })
-        .chain(listing.skills.iter().map(|skill| SlashCandidate::Skill {
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            root: skill.root,
-        }))
+        .chain(
+            listing
+                .skills
+                .iter()
+                .filter(|skill| !disabled.iter().any(|name| name == &skill.name))
+                .map(|skill| SlashCandidate::Skill {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    root: skill.root,
+                }),
+        )
         .collect()
 }
 
@@ -251,7 +259,7 @@ mod tests {
             description: "Compact the session.".into(),
             input_hint: None,
         }];
-        let candidates = popup_candidates(&listing, &commands);
+        let candidates = popup_candidates(&listing, &commands, &[]);
         assert_eq!(
             candidates,
             vec![
@@ -306,9 +314,30 @@ mod tests {
                 message: "description is required".into(),
             }],
         };
-        let candidates = popup_candidates(&listing, &[]);
+        let candidates = popup_candidates(&listing, &[], &[]);
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].title(), "/skill grill");
         assert_eq!(candidates[1].title(), "/skill manual-only");
+    }
+
+    #[test]
+    fn popup_candidates_hide_disabled_skills() {
+        let listing = SkillListing {
+            skills: vec![
+                listing_entry("grill", "Grill a plan."),
+                listing_entry("diagnose", "Diagnose a bug."),
+            ],
+            ..SkillListing::default()
+        };
+        let disabled = vec!["grill".to_string()];
+        let candidates = popup_candidates(&listing, &[], &disabled);
+        assert_eq!(
+            candidates,
+            vec![SlashCandidate::Skill {
+                name: "diagnose".into(),
+                description: "Diagnose a bug.".into(),
+                root: SkillRoot::Personal,
+            }]
+        );
     }
 }

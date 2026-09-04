@@ -512,7 +512,8 @@ impl Composer {
 
     /// Rebuild the merged candidate list from the cached sources: the
     /// loaded skills catalog plus the resolved provider's commands.
-    fn rebuild_slash_candidates(&mut self) {
+    /// Skills disabled on the Skills settings page never enter the menu.
+    fn rebuild_slash_candidates(&mut self, cx: &App) {
         let commands = self
             .slash
             .provider
@@ -520,7 +521,11 @@ impl Composer {
             .and_then(|provider| self.slash_cache.get(provider))
             .cloned()
             .unwrap_or_default();
-        self.slash.candidates = popup_candidates(&self.slash.skills, &commands);
+        self.slash.candidates = popup_candidates(
+            &self.slash.skills,
+            &commands,
+            &crate::settings::current(cx).disabled_skills,
+        );
     }
 
     /// Track the `/` token on every edit: open/refresh the popup, fetch the
@@ -558,7 +563,7 @@ impl Composer {
         }
         // Show what is cached while anything stale is in flight.
         self.slash.error = None;
-        self.rebuild_slash_candidates();
+        self.rebuild_slash_candidates(cx);
         self.refilter_slash(cx);
 
         // Skills: one ListSkills against the engine for this cwd. Unknown
@@ -588,7 +593,7 @@ impl Composer {
                                 Ok(listing) => {
                                     composer.slash.skills = listing;
                                     composer.slash.skills_cwd = cwd;
-                                    composer.rebuild_slash_candidates();
+                                    composer.rebuild_slash_candidates(cx);
                                 }
                                 Err(err) => {
                                     tracing::warn!(%err, "skill listing decode failed")
@@ -630,7 +635,7 @@ impl Composer {
                         Ok(value) => match serde_json::from_value::<Vec<SlashCommand>>(value) {
                             Ok(commands) => {
                                 composer.slash_cache.insert(provider, commands);
-                                composer.rebuild_slash_candidates();
+                                composer.rebuild_slash_candidates(cx);
                             }
                             Err(err) => tracing::warn!(%err, "slash command decode failed"),
                         },

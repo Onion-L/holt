@@ -1,7 +1,10 @@
 //! The Skills settings page: every catalog entry across the three skill
 //! roots with its status — the diagnostics surface the `/` menu
-//! deliberately is not (ADR-0005). Read-only: a skill becomes available by
-//! being placed in a root, and that is the only way in.
+//! deliberately is not (ADR-0005). Placement is still the only way IN (a
+//! skill becomes available by being placed in a root), but each invocable
+//! row carries an enable switch: a disabled skill hides from the `/` menu
+//! and is refused on a typed `/skill` invocation. The disabled set persists
+//! by catalog-unique name in `ui-settings.json` (`disabledSkills`).
 
 use gpui::{Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};
 use holt_proto::{InvalidSkillEntry, ShadowedSkillEntry, SkillEntry, SkillListing, SkillRoot};
@@ -9,9 +12,9 @@ use holt_rpc::methods;
 
 use crate::{
     popover::{self, Loadable},
-    settings::widgets,
+    settings::{self, SavePolicy, widgets},
     state::AppState,
-    theme::Theme,
+    theme::{Theme, ink},
 };
 
 /// One rendered catalog row, carrying everything the page explains: the
@@ -56,6 +59,16 @@ impl SkillRow {
             SkillRow::Invalid(entry) => entry.root,
         }
     }
+
+    /// The source file — unique per row, so it doubles as the element id key
+    /// (stable ids are what make gpui's hover repaint on the transition).
+    fn file(&self) -> &str {
+        match self {
+            SkillRow::Ok(skill) => &skill.file,
+            SkillRow::Shadowed(entry) => &entry.file,
+            SkillRow::Invalid(entry) => &entry.file,
+        }
+    }
 }
 
 fn file_basename(path: &str) -> String {
@@ -77,6 +90,12 @@ pub struct SkillsPage {
     state: Entity<AppState>,
     listing: Loadable<SkillListing>,
     task: Option<Task<()>>,
+    /// The last enable-switch flip and when it happened. The toggle renders
+    /// its animated variant only inside a short window after the click —
+    /// the keyed element's first mount IS the transition — and the static
+    /// switch (same end state) outside it, so opening the page or reloading
+    /// the listing never replays every knob slide at once.
+    toggle_flip: Option<(String, std::time::Instant)>,
 }
 
 impl SkillsPage {
@@ -85,6 +104,7 @@ impl SkillsPage {
             state,
             listing: Loadable::Idle,
             task: None,
+            toggle_flip: None,
         };
         page.load(cx);
         page
@@ -156,19 +176,29 @@ impl Render for SkillsPage {
                         )
                         .into_any_element()
                 } else {
-                    let card = rows.iter().enumerate().fold(
-                        widgets::section_card(&theme),
-                        |card, (index, row)| {
+                    let disabled = settings::current(cx).disabled_skills;
+                    let list = rows.iter().fold(
+                        div().mt(px(16.0)).flex().flex_col().gap(px(2.0)),
+                        |list, row| {
                             let name = row.name();
-                            let status: gpui::SharedString = match row {
+                            // Only invocable rows get the enable switch;
+                            // shadowed/invalid entries never enter the menu.
+                            let enabled = match row {
+                                SkillRow::Ok(_) => !disabled.iter().any(|n| n == &name),
+                                _ => true,
+                            };
+                            let status: Option<(gpui::SharedString, gpui::Hsla)> = match row {
                                 SkillRow::Ok(skill) if skill.disable_model_invocation => {
-                                    "ok · manual only".into()
+                                    Some(("manual only".into(), theme.text_muted.opacity(0.7)))
                                 }
-                                SkillRow::Ok(_) => "ok".into(),
-                                SkillRow::Shadowed(entry) => {
-                                    format!("shadowed by {}", root_label(entry.shadowed_by)).into()
+                                SkillRow::Ok(_) => None,
+                                SkillRow::Shadowed(entry) => Some((
+                                    format!("shadowed by {}", root_label(entry.shadowed_by)).into(),
+                                    theme.warning_muted.opacity(0.9),
+                                )),
+                                SkillRow::Invalid(_) => {
+                                    Some(("invalid".into(), theme.danger_muted.opacity(0.9)))
                                 }
-                                SkillRow::Invalid(_) => "invalid".into(),
                             };
                             let secondary: gpui::SharedString = match row {
                                 SkillRow::Ok(skill) => {
@@ -180,17 +210,106 @@ impl Render for SkillsPage {
                                 }
                             };
                             let row_theme = theme.clone();
-                            let status_color = match row {
-                                SkillRow::Ok(_) => row_theme.text_muted.opacity(0.7),
-                                SkillRow::Shadowed(_) => row_theme.warning_muted.opacity(0.9),
-                                SkillRow::Invalid(_) => row_theme.danger_muted.opacity(0.9),
-                            };
                             let secondary_color = match row {
                                 SkillRow::Invalid(_) => row_theme.danger_muted.opacity(0.9),
+                                _ if !enabled => row_theme.text_muted.opacity(0.5),
                                 _ => row_theme.text_muted,
                             };
-                            card.child(
-                                widgets::card_row(&row_theme, index == 0)
+                            let title_color = if enabled {
+                                row_theme.text
+                            } else {
+                                row_theme.text_muted
+                            };
+                            let mut side = div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(10.5))
+                                        .text_color(row_theme.text_muted.opacity(0.7))
+                                        .child(root_label(row.root())),
+                                )
+                                .when_some(status, |side, (label, color)| {
+                                    side.child(
+                                        div()
+                                            .text_size(crate::typography::ui_rems(10.5))
+                                            .text_color(color)
+                                            .child(label),
+                                    )
+                                });
+                            if let SkillRow::Ok(_) = row {
+                                let toggle_name = name.clone();
+                                let toggle_file = row.file().to_string();
+                                let animating =
+                                    self.toggle_flip.as_ref().is_some_and(|(file, at)| {
+                                        file == row.file()
+                                            && at.elapsed() < std::time::Duration::from_millis(400)
+                                    });
+                                let switch = if animating {
+                                    // The state in the key restarts gpui's
+                                    // element-id-keyed clock, so the flip
+                                    // plays exactly once as the transition.
+                                    widgets::animated_toggle_switch(
+                                        &row_theme,
+                                        enabled,
+                                        format!("skill-switch-{}-{}", row.file(), enabled),
+                                    )
+                                } else {
+                                    widgets::toggle_switch(&row_theme, enabled)
+                                };
+                                side = side.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "skill-toggle-{}",
+                                            row.file()
+                                        )))
+                                        .flex_none()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |page, _, _, cx| {
+                                            let name = toggle_name.clone();
+                                            settings::update(
+                                                SavePolicy::Immediate,
+                                                cx,
+                                                |settings| {
+                                                    if enabled {
+                                                        if !settings.disabled_skills.contains(&name)
+                                                        {
+                                                            settings
+                                                                .disabled_skills
+                                                                .push(name.clone());
+                                                            settings.disabled_skills.sort();
+                                                        }
+                                                    } else {
+                                                        settings
+                                                            .disabled_skills
+                                                            .retain(|n| n != &name);
+                                                    }
+                                                },
+                                            );
+                                            page.toggle_flip = Some((
+                                                toggle_file.clone(),
+                                                std::time::Instant::now(),
+                                            ));
+                                            cx.notify();
+                                        }))
+                                        .child(switch),
+                                );
+                            }
+                            list.child(
+                                div()
+                                    .id(SharedString::from(format!("skill-row-{}", row.file())))
+                                    .w_full()
+                                    .px(px(12.0))
+                                    .py(px(12.0))
+                                    .rounded(px(8.0))
+                                    .hover(|s| s.bg(ink(0.03)))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(14.0))
                                     .child(
                                         div()
                                             .flex_1()
@@ -198,7 +317,17 @@ impl Render for SkillsPage {
                                             .flex()
                                             .flex_col()
                                             .gap(px(3.0))
-                                            .child(widgets::row_title(&row_theme, name))
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(crate::typography::ui_rems(
+                                                        widgets::ROW_TITLE_SIZE,
+                                                    ))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .text_color(title_color)
+                                                    .child(name),
+                                            )
                                             .child(
                                                 div()
                                                     .min_w_0()
@@ -209,28 +338,11 @@ impl Render for SkillsPage {
                                                     .child(secondary),
                                             ),
                                     )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .flex()
-                                            .flex_col()
-                                            .items_end()
-                                            .gap(px(6.0))
-                                            .child(widgets::badge(
-                                                &row_theme,
-                                                root_label(row.root()),
-                                            ))
-                                            .child(
-                                                div()
-                                                    .text_size(crate::typography::ui_rems(10.5))
-                                                    .text_color(status_color)
-                                                    .child(status),
-                                            ),
-                                    ),
+                                    .child(side),
                             )
                         },
                     );
-                    card.mt(px(24.0)).into_any_element()
+                    list.into_any_element()
                 }
             }
         };
