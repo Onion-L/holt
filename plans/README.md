@@ -16,6 +16,7 @@ repo survey into module directories, following the convention established by
 | 003  | Extract `shell/titlebar.rs`, `shell/chat_list.rs`, `shell/right_pane.rs` | P1 | L | none | DONE — MERGED to `main` (branch `refactor/003-split-shell`, 3 review-gated commits `81c56ad..c46474b`, merged as `50bf047`; main HEAD `bd82381` = 001+002+003 union re-verified green: fmt clean, clippy exit 0, 525 ui + 24 engine tests). shell.rs 6014 → 3010 lines; spaces.rs also receives `SidebarDisclosureMotion` + its test per the plan. Required visibility fixes beyond the manifest, all compiler-forced: `pub(super)` on `grid_backdrop`/`header_icon_button` (external callers the manifest missed), `pub(crate)` on `SidebarDisclosureMotion` (private_interfaces vs the `Shell` field's pub(crate) ceiling), `pub(super)` fields on `ChatMenuState`, and `pub use <mod>::*;` re-imports (private globs shrink the public API and trip dead_code on test-only `pub` items) |
 | 004  | Split `pickers.rs` into cohesive picker modules | P1 | L | none | DONE on `refactor/004-split-pickers` (single review-gated commit, unmerged — the operator merges; fmt clean, clippy exit 0 with the pre-existing warning set unchanged — both pickers-located warnings are pre-existing code that moved — ui tests 529 → 556 with 27 new characterization tests, workspace tests green). pickers.rs 4036 → 1161 lines + `pickers/{logic,catalog,provider_model,checkout,space,common}.rs`; move-verified by normalized line-multiset diff vs `481a273` (only 6 old lines absent: import rewiring, one doc-link path fix, 3 signatures fmt re-wrapped behind their new `pub(super)`). Disclosed deviations: entity-level `checkout_plan()` cases are untestable without a gpui test harness (enabling `test-support` means a Cargo.toml edit, which the Scope excludes) — covered via pure-input cases (`DraftConfig`/`CheckoutKind` defaults, all three `CheckoutPlan` variant shapes) instead; the plan's "525 baseline" was stale, actual baseline at `481a273` is 529; "provider icons" split across modules to honor both "icons in logic.rs" and "no GPUI types in logic.rs" (pure `provider_brand_icon_for` → logic.rs, GPUI-tinted `provider_brand_icon` wrapper → provider_model.rs, still re-exported at `crate::pickers`); model-row ranking `scoped_model_rows` lives in provider_model.rs beside its `SharedString`-typed `ModelRowData` (same no-GPUI constraint); the unused `pub(crate) use logic::branch_create_name` facade re-export was dropped (zero external callers, rustc warns on unused pub(crate) re-exports) |
 | 005  | Split `transcript.rs` into cohesive model, parsing, viewport, tool, and rendering modules | P1 | L | none | DONE on `refactor/005-split-transcript` (6 commits `28c2dae..`, unmerged — the operator merges; fmt clean, clippy exit 0 with the baseline unchanged — the one pre-existing `render_skill_invocation` too-many-args warning moved with its fn to render.rs — ui tests 568 = the re-derived `4746ba4` baseline, workspace 860 green). transcript.rs 8150 → `transcript/{mod,model,markdown,viewport,tool,render}.rs` (mod.rs 976 entity/sync/events); move-verified by normalized line-multiset diff vs `4746ba4` (all 9 absent lines are import rewiring, 2 `render::update_drag_at` call-prefix drops, and one fmt re-wrap behind `pub(super)`). Manifest re-derived at `4746ba4` for the post-plan skill-fold drift (commits `8926678`..`4746ba4`: `RowKind::SkillChip.content`, `skill_file_display`, `render_skill_invocation`/`render_user_skill`, new tests) before execution. Compiler-forced deviations beyond the manifest, all disclosed: `pub(super)` on viewport/tool/model/render internals consumed across siblings, `HighlightStore` moved to render.rs with `pub(super)` fields (facade clears `highlights.entries` on switch), and test fixtures duplicated verbatim per child per the plan's test section |
+| 006  | Split `changes.rs` into model, rows, sync, comments, and render modules | P1 | L | none | DONE on `refactor/006-split-changes` (4 review-gated commits `d55bd99..853b1a1`, unmerged — the operator merges; fmt clean, clippy exit 0 with the baseline warning set, ui tests 587 = baseline, workspace 967 passed + 1 ignored green; move-verified by normalized line-multiset diff vs `9b20de6`: every delta is wiring, a `pub(super)` keyword, an fmt re-wrap behind one, or the plan-sanctioned PATCH fixture duplication into both children's test modules — 29 tests relocated without rewrite, 21 model / 8 rows). changes.rs 5,517 → `changes/{mod,model,rows,sync,comments,render}.rs`; mod.rs 371 (constants, `DiffMode`/persistence, entity structs/fields, events, constructors, re-exports). Compiler-forced deviations beyond the manifest, all disclosed: the plan's step 3/4 execution order is swapped (render extracted before sync+comments) because `mod render;`/`mod comments;` collide (E0255) with the facade's `use crate::markdown::render;` / `use crate::comments::{self,…}` imports until that code leaves the facade; the manifest-unnamed menu methods (`close_scope_menu`, `close_ref_menu`, `open_ref_menu`, `ref_menu_rows`, `ref_menu_key`) live in render.rs as "GPUI rendering state transitions" (every caller is a render_* menu or its listener); `pub(super)` widened on 44 child declarations for cross-sibling/facade access (model 5 fns, rows 15 — 3 sticky-header types + 7 fields + 2 `FileHeaderPresentation` methods + 3 fns, sync 11 methods, comments 13 methods — task/subscription ownership stays on `Changes` fields throughout) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -96,6 +97,18 @@ settings page into a module directory`, `refactor(engine): …`,
 `refactor(ui): …`. Do NOT push or merge to `main` from an executor session
 unless the operator instructed it — the operator merges.
 
+## Plan 006 dependency notes
+
+Plan 006 was added on 2026-09-04 at commit `9b20de6` for the explicitly
+requested split of `crates/ui/src/changes.rs` into a module directory. It
+supersedes the earlier 2026-09-01 survey's deferral of Changes splitting; the
+scope and manifest are re-derived against the current 5,517-line file. It is
+independent of plans 001–005 at the file level. It changes only
+`crates/ui/src/changes.rs` and creates children under `crates/ui/src/changes/`;
+the existing `crate::changes` facade paths preserve callers in the shell and
+transcript. Execute it after any in-flight work that edits `changes.rs`, or
+re-run the plan's drift check and re-derive the manifest first.
+
 ### Reviewer dispatch prompt (copy verbatim for each commit review)
 
 ```text
@@ -133,8 +146,9 @@ Treat any ambiguity as FAIL with a question, not a guess.
 
 ## Findings considered and rejected (do not re-plan)
 
-- Splitting `changes.rs` (5514),
-  `state.rs` (2279), `theme.rs` (2569), `shell/spaces.rs` beyond the
+- Splitting `changes.rs` (5517) was deferred by the 2026-09-01 survey, but is
+  now explicitly requested and is covered by plan 006. `state.rs` (2279),
+  `theme.rs` (2569), `shell/spaces.rs` beyond the
   `SidebarDisclosureMotion` move, `popover.rs`, `markdown/render.rs`,
   `composer/input.rs` (freshly split in `e76c903`), `doc/schema.rs`,
   `theme/vscode.rs`: deferred — lower necessity than the three planned, per
