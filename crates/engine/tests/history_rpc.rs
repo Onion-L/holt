@@ -11,6 +11,23 @@ use common::{ScriptedProvider, ScriptedReply};
 use holt_rpc::{RpcService as _, methods};
 use pi_core::ai::types::{Message, StopReason};
 
+/// Whether the chat's damaged History was set aside (a timestamped
+/// `.corrupt` sibling in the history dir).
+fn quarantined(fixture: &common::Fixture) -> bool {
+    fixture
+        .data_dir
+        .path()
+        .join("history")
+        .read_dir()
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("chat-1.jsonl.") && name.ends_with(".corrupt")
+            })
+        })
+        .unwrap_or(false)
+}
+
 #[tokio::test]
 async fn the_history_survives_a_restart_and_feeds_the_next_turn() {
     let fixture = common::Fixture::new();
@@ -292,6 +309,72 @@ async fn a_truncated_history_tail_opens_clean_and_repairs() {
 }
 
 #[tokio::test]
+async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo hi" }),
+        ),
+        ScriptedReply::Silent,
+        ScriptedReply::text("after the first restart"),
+        ScriptedReply::text("after the second restart"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let _ = common::subscribe(&engine, "chat-1").await;
+    // The tool-call message lands; the run hangs on the next request —
+    // kill it there, then cut the tool result off the file so the record
+    // ends on a dangling call (the crash-before-the-result shape).
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "crash me").await;
+    common::wait_for_requests(&provider, 2).await;
+    drop(engine);
+    let history_file = fixture.data_dir.path().join("history/chat-1.jsonl");
+    let text = std::fs::read_to_string(&history_file).unwrap();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.contains("\"toolResult\""))
+        .collect();
+    std::fs::write(&history_file, format!("{}\n", kept.join("\n"))).unwrap();
+
+    // Restart 1: the load-time repair answers call-1, a Turn runs on top.
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first restart").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    drop(engine);
+
+    // Restart 2: the synthetic result is still right after its call, not
+    // re-derived at the tail behind the later Turn — and there is exactly
+    // one of it.
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second restart").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    let summary = common::summarize(&requests.last().unwrap().messages);
+    assert_eq!(summary[0], "user:crash me");
+    assert_eq!(summary[1], "assistant:toolcall:call-1");
+    assert!(
+        summary[2].starts_with("toolresult:call-1:"),
+        "{}",
+        summary[2]
+    );
+    assert!(
+        summary[2].contains("interrupted by the user"),
+        "{}",
+        summary[2]
+    );
+    assert_eq!(summary[3], "user:first restart");
+    assert_eq!(summary[4], "assistant:text:after the first restart");
+    assert_eq!(summary[5], "user:second restart");
+    assert_eq!(summary.len(), 6);
+    let serialized = serde_json::to_string(&requests.last().unwrap().messages).unwrap();
+    assert!(!serialized.contains("No result provided"));
+}
+
+#[tokio::test]
 async fn a_legacy_chat_opens_with_one_persisted_notice_and_a_fresh_memory() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![
@@ -366,13 +449,7 @@ async fn a_damaged_history_is_quarantined_with_the_reason_on_the_notice() {
         "no damaged-file notice in the opening frame: {opening}"
     );
     // Set aside, never overwritten or deleted.
-    assert!(
-        fixture
-            .data_dir
-            .path()
-            .join("history/chat-1.jsonl.corrupt")
-            .exists()
-    );
+    assert!(quarantined(&fixture), "no quarantined history file");
     assert!(!history_file.exists());
 
     // A new History starts on the next Turn: the request carries only the
@@ -412,11 +489,5 @@ async fn an_unknown_history_version_is_quarantined_like_a_damaged_file() {
         opening.contains("unknown history format version 99"),
         "{opening}"
     );
-    assert!(
-        fixture
-            .data_dir
-            .path()
-            .join("history/chat-1.jsonl.corrupt")
-            .exists()
-    );
+    assert!(quarantined(&fixture), "no quarantined history file");
 }

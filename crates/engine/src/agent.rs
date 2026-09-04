@@ -105,9 +105,9 @@ impl ChatRuntime {
     /// Transcript.
     fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
-        let replayed = crate::history::load(data_dir, chat_id);
+        let replayed = crate::history::load_repaired(data_dir, chat_id);
         let (history, mut notice) = match replayed {
-            Ok(replayed) => (crate::history::repair_history(&replayed), None),
+            Ok(repaired) => (repaired, None),
             Err(reason) => {
                 // A damaged record never blocks the chat (ADR-0010): the
                 // file is set aside — kept, never overwritten — and the
@@ -581,12 +581,10 @@ pub(crate) fn default_stream_fn() -> pi_core::agent::types::StreamFn {
 /// The base a run's loop continues from, shared with the mid-Turn
 /// compaction hook and the end-of-run consolidation. `consumed` counts the
 /// run's own messages a mid-Turn compaction folded into `history`, so the
-/// consolidation never re-appends them; `compacted` enforces the
-/// once-per-Turn rule.
+/// consolidation never re-appends them.
 struct RunBase {
     history: Vec<AgentMessage>,
     consumed: usize,
-    compacted: bool,
 }
 
 /// A run that ends early (abort, loop error) leaves tool parts without their
@@ -972,7 +970,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         Err(reason) => {
             // A failed automatic compaction never blocks the Turn: proceed
             // uncompacted, with a visible notice (overflow, if it follows,
-            // is the overflow fallback's business).
+            // is the overflow fallback's business). An overflow recovery
+            // that failed is still owed: keep the flag for the next Turn.
+            if overflow_recovery {
+                runtime.set_compact_before_next_turn(&chat_id);
+            }
             tracing::warn!(target: "holt::compaction", %reason, "automatic compaction failed");
             push_system_part(
                 &chat,
@@ -996,7 +998,6 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let run_base = Arc::new(Mutex::new(RunBase {
         history: history.clone(),
         consumed: 0,
-        compacted: false,
     }));
     let prompt_message = user_agent_message(prompt, timestamp);
     // The user prompt joins the History when the Turn starts (ADR-0010) —
@@ -1009,11 +1010,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     };
     stream_options.base.base.api_key = Some(api_key.clone());
     // Between tool rounds (ADR-0011): the same estimate-and-compact check
-    // as the Turn-start one, through the loop's `prepare_next_turn` hook.
-    // At most once per Turn — the retained tail still carries the last
-    // real usage as the estimator's anchor, so a pure estimate rule would
-    // re-fire every round; a Turn that overflows anyway is the overflow
-    // fallback's business. The session status never changes.
+    // as the Turn-start one, through the loop's `prepare_next_turn` hook,
+    // as often as the estimate calls for it — the round after a compaction
+    // reports the compacted request's usage, which becomes the estimator's
+    // anchor. A Turn that overflows anyway is the overflow fallback's
+    // business. The session status never changes.
     let hook_chat = chat.clone();
     let hook_device_id = runtime.device_id.clone();
     let hook_model = model.clone();
@@ -1030,13 +1031,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             let base_parts = Arc::clone(&hook_base_parts);
             let device_id = hook_device_id.clone();
             Box::pin(async move {
-                let pre_run_len = {
-                    let initial = base.lock().unwrap_or_else(|e| e.into_inner());
-                    if initial.compacted {
-                        return None;
-                    }
-                    initial.history.len()
-                };
+                let pre_run_len = base.lock().unwrap_or_else(|e| e.into_inner()).history.len();
                 if !crate::compaction::needed(&last_turn.context.messages, &model) {
                     return None;
                 }
@@ -1071,13 +1066,14 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                     }
                 };
                 record_mid_turn_compaction(&chat, &outcome.record, &base_parts);
+                // Run messages since the previous base — cumulative, since
+                // the loop's returned list spans every compaction.
                 let consumed = last_turn.context.messages.len().saturating_sub(pre_run_len);
                 let mut context = last_turn.context.clone();
                 context.messages = outcome.messages.clone();
                 let mut guard = base.lock().unwrap_or_else(|e| e.into_inner());
                 guard.history = outcome.messages;
-                guard.consumed = consumed;
-                guard.compacted = true;
+                guard.consumed += consumed;
                 drop(guard);
                 Some(pi_core::agent::types::AgentLoopTurnUpdate {
                     context: Some(context),

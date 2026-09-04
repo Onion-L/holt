@@ -572,3 +572,65 @@ async fn a_mid_turn_summary_failure_continues_the_turn_with_a_notice() {
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(!snapshot.to_string().contains("compactionDivider"));
 }
+
+#[tokio::test]
+async fn a_long_turn_compacts_as_often_as_its_rounds_need() {
+    let fixture = common::Fixture::new();
+    // Two tool rounds that each report an overflowing request; the
+    // summaries and the closing reply report ordinary usage — the shape a
+    // real provider produces after a compaction takes effect.
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call_with_usage(
+            "call-1",
+            "bash",
+            serde_json::json!({ "command": "echo round-one" }),
+            overflowing_usage(),
+        ),
+        ScriptedReply::text("first mid-turn summary"),
+        ScriptedReply::tool_call_with_usage(
+            "call-2",
+            "bash",
+            serde_json::json!({ "command": "echo round-two" }),
+            overflowing_usage(),
+        ),
+        ScriptedReply::text("second mid-turn summary"),
+        ScriptedReply::text("final reply text"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do three rounds").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // round one, summary, round two, summary, round three.
+    let requests = provider.requests();
+    assert_eq!(
+        requests.len(),
+        5,
+        "{:?}",
+        requests.iter().map(|r| r.tools).collect::<Vec<_>>()
+    );
+    assert_eq!(requests[1].tools, 0);
+    assert_eq!(requests[3].tools, 0);
+    // The second summary chains the first, and round three runs on it.
+    let second_prompt = user_text(&requests[3].messages[0]);
+    assert!(
+        second_prompt.contains("<previous-summary>"),
+        "{second_prompt}"
+    );
+    let round_three = user_text(&requests[4].messages[0]);
+    assert!(
+        round_three.contains("second mid-turn summary"),
+        "{round_three}"
+    );
+    let round_text = serde_json::to_string(&requests[4].messages).unwrap();
+    assert!(round_text.contains("round-two"), "{round_text}");
+
+    // After the run the in-memory History matches what the file replays.
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let (_, _) = common::subscribe(&engine, "chat-1").await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(snapshot.to_string().matches("compactionDivider").count(), 2);
+}

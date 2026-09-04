@@ -74,12 +74,14 @@ pub(crate) fn append_entry(
     std::fs::create_dir_all(&dir)?;
     let line =
         serde_json::to_string(entry).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let fresh = !path.exists();
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)?;
-    if fresh {
+    // Header on an empty file, not on a new one: a crash between create
+    // and the header write leaves a zero-byte file that must not collect
+    // headerless entries.
+    if file.metadata()?.len() == 0 {
         let header = serde_json::json!({ "version": HISTORY_VERSION });
         writeln!(file, "{header}")?;
     }
@@ -214,15 +216,21 @@ pub(crate) fn exists(data_dir: &Path, chat_id: &str) -> bool {
     history_path(data_dir, chat_id).is_some_and(|path| path.exists())
 }
 
-/// Rename a damaged History file aside with a `.corrupt` suffix — kept,
-/// never overwritten or deleted, so nothing is silently thrown away. The
-/// chat opens with an empty History; the next Turn starts a fresh file.
+/// Rename a damaged History file aside with a timestamped `.corrupt`
+/// suffix — kept, never overwritten or deleted, so nothing is silently
+/// thrown away even when the same chat is damaged twice. The chat opens
+/// with an empty History; the next Turn starts a fresh file.
 pub(crate) fn quarantine(data_dir: &Path, chat_id: &str) {
     let Some(path) = history_path(data_dir, chat_id) else {
         return;
     };
-    let mut aside = path.clone();
-    aside.set_extension("jsonl.corrupt");
+    let stamp = chrono::Utc::now().timestamp_millis();
+    let mut aside = path.with_extension(format!("jsonl.{stamp}.corrupt"));
+    let mut bump = 1;
+    while aside.exists() {
+        aside = path.with_extension(format!("jsonl.{stamp}-{bump}.corrupt"));
+        bump += 1;
+    }
     if let Err(error) = std::fs::rename(&path, &aside)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -250,11 +258,14 @@ pub(crate) fn delete_history(data_dir: &Path, chat_id: &str) {
 /// synthetic interrupted tool results, not from a stop reason that makes
 /// the next request invalid (upstream's request-time normalizer would drop
 /// an aborted message outright, hiding the interruption from the model).
-/// An errored message with no content at all is dropped; the Transcript
-/// keeps the visible error either way.
+/// A terminal message with no content at all is dropped — it carries
+/// nothing, providers reject empty assistant turns, and (for the
+/// interrupted-mid-batch shape, where the loop emits one after the
+/// aborted tool results) it would sit between a call and its synthetic
+/// result. The Transcript keeps the visible error either way.
 pub(crate) fn history_assistant(assistant: &AssistantMessage) -> Option<AssistantMessage> {
     match assistant.stop_reason {
-        StopReason::Error if assistant.content.is_empty() => None,
+        StopReason::Error | StopReason::Aborted if assistant.content.is_empty() => None,
         StopReason::Error | StopReason::Aborted => {
             let mut repaired = assistant.clone();
             repaired.stop_reason = StopReason::Stop;
@@ -321,24 +332,81 @@ pub(crate) fn interrupted_results_for(messages: &[AgentMessage]) -> Vec<AgentMes
 }
 
 /// Enforce the invariant over a whole History sequence: rewrite or drop
-/// terminal assistant messages, then give every remaining dangling tool
-/// call its synthetic interrupted result. Runs after replay on load — the
-/// crash-truncated tail never reaches the model as-is.
+/// terminal assistant messages, and give every dangling tool call its
+/// synthetic interrupted result — placed with the results of the message
+/// that made the call, where providers require it, not at the tail. Runs
+/// after replay on load — the crash-truncated tail never reaches the
+/// model as-is.
 pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     let mut repaired = Vec::with_capacity(messages.len());
+    // Calls of the most recent assistant message still awaiting results.
+    let mut open: Vec<(String, String)> = Vec::new();
+    let flush = |open: &mut Vec<(String, String)>, repaired: &mut Vec<AgentMessage>| {
+        for (id, name) in open.drain(..) {
+            repaired.push(interrupted_tool_result(&id, &name));
+        }
+    };
     for message in messages {
         match message {
-            AgentMessage::Assistant(assistant) => match history_assistant(assistant) {
-                Some(repaired_message) => {
-                    repaired.push(AgentMessage::Assistant(Box::new(repaired_message)))
-                }
-                None => continue,
-            },
-            other => repaired.push(other.clone()),
+            AgentMessage::ToolResult(result) => {
+                open.retain(|(id, _)| *id != result.tool_call_id);
+                repaired.push(message.clone());
+            }
+            AgentMessage::Assistant(assistant) => {
+                flush(&mut open, &mut repaired);
+                let Some(repaired_message) = history_assistant(assistant) else {
+                    continue;
+                };
+                open = repaired_message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        AssistantContent::ToolCall(call) => {
+                            Some((call.id.clone(), call.name.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                repaired.push(AgentMessage::Assistant(Box::new(repaired_message)));
+            }
+            other => {
+                flush(&mut open, &mut repaired);
+                repaired.push(other.clone());
+            }
         }
     }
-    repaired.extend(interrupted_results_for(messages));
+    flush(&mut open, &mut repaired);
     repaired
+}
+
+/// Replay and repair a chat's History, persisting the synthetic results
+/// the repair added so the file and the in-memory sequence agree on the
+/// next load (a load-time repair that stayed in memory would be re-derived
+/// after later Turns, at the tail, away from the call it answers). The
+/// record stays append-only: the additions go at the end of the file,
+/// which is where a crash-truncated tail's dangling calls are.
+pub(crate) fn load_repaired(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, String> {
+    let replayed = load(data_dir, chat_id)?;
+    let repaired = repair_history(&replayed);
+    let answered: Vec<&str> = replayed
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::ToolResult(result) => Some(result.tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    for message in &repaired {
+        let AgentMessage::ToolResult(result) = message else {
+            continue;
+        };
+        if answered.contains(&result.tool_call_id.as_str()) {
+            continue;
+        }
+        if let Err(error) = append_message(data_dir, chat_id, message) {
+            tracing::warn!(target: "holt::history", %error, "could not persist a load-time repair");
+        }
+    }
+    Ok(repaired)
 }
 
 #[cfg(test)]
@@ -487,18 +555,41 @@ mod tests {
     }
 
     #[test]
-    fn an_aborted_message_with_no_content_is_kept_as_a_normal_end() {
+    fn an_aborted_message_with_no_content_is_dropped() {
         let messages = vec![
             user("hello"),
             terminal_assistant(StopReason::Aborted, vec![]),
         ];
+        assert_eq!(repair_history(&messages), vec![user("hello")]);
+    }
+
+    #[test]
+    fn synthetic_results_sit_with_the_call_not_at_the_tail() {
+        // The interrupted-mid-batch shape: call-1 got its aborted result,
+        // the loop then emitted an empty aborted assistant, and the chat
+        // went on. call-2's synthetic result must follow call-1's, not
+        // trail the later messages.
+        let messages = vec![
+            user("do two things"),
+            AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![
+                    tool_call_block("call-1", "bash"),
+                    tool_call_block("call-2", "read"),
+                ],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+            tool_result("call-1"),
+            terminal_assistant(StopReason::Aborted, vec![]),
+            user("never mind"),
+            assistant("ok"),
+        ];
         let repaired = repair_history(&messages);
-        assert_eq!(repaired.len(), 2);
-        let AgentMessage::Assistant(assistant) = &repaired[1] else {
-            panic!("expected the assistant message");
-        };
-        assert_eq!(assistant.stop_reason, StopReason::Stop);
-        assert_eq!(assistant.error_message, None);
+        assert_eq!(result_ids(&repaired), ["call-1", "call-2"]);
+        assert!(matches!(&repaired[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
+        assert!(matches!(&repaired[3], AgentMessage::ToolResult(r) if r.tool_call_id == "call-2"));
+        assert_eq!(repaired[4], user("never mind"));
+        assert_eq!(repaired.len(), 6);
     }
 
     #[test]
@@ -544,9 +635,50 @@ mod tests {
         .unwrap();
         let replayed = load(&dir, "chat-1").unwrap();
         assert_eq!(replayed.len(), 2);
-        let repaired = repair_history(&replayed);
+        let repaired = load_repaired(&dir, "chat-1").unwrap();
         assert_eq!(result_ids(&repaired), ["call-1"]);
         assert_eq!(repaired.len(), 3);
+
+        // The repair is on disk too: a later Turn and another load keep the
+        // synthetic result next to its call instead of re-deriving it at
+        // the tail behind the newer messages.
+        append_message(&dir, "chat-1", &user("later")).unwrap();
+        append_message(&dir, "chat-1", &assistant("sure")).unwrap();
+        let reloaded = load_repaired(&dir, "chat-1").unwrap();
+        assert_eq!(reloaded.len(), 5);
+        assert!(matches!(&reloaded[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
+        assert_eq!(reloaded[3], user("later"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_file_gets_its_header_on_the_first_append() {
+        // The crash-between-create-and-header shape.
+        let dir = temp_dir();
+        std::fs::create_dir_all(dir.join("history")).unwrap();
+        std::fs::write(dir.join("history/chat-1.jsonl"), "").unwrap();
+        append_message(&dir, "chat-1", &user("hello")).unwrap();
+        assert_eq!(load(&dir, "chat-1").unwrap(), vec![user("hello")]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn quarantine_never_overwrites_an_earlier_quarantine() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(dir.join("history")).unwrap();
+        for _ in 0..2 {
+            std::fs::write(dir.join("history/chat-1.jsonl"), "garbage\n").unwrap();
+            quarantine(&dir, "chat-1");
+        }
+        let aside: Vec<_> = dir
+            .join("history")
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".corrupt"))
+            .collect();
+        assert_eq!(aside.len(), 2, "{aside:?}");
+        assert!(!dir.join("history/chat-1.jsonl").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

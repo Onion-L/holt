@@ -460,6 +460,8 @@ impl LocalEngine {
                         .history
                         .write()
                         .unwrap_or_else(|e| e.into_inner()) = outcome.messages;
+                    // A manual compaction pays the overflow debt too.
+                    runtime.take_compact_before_next_turn(&compacting_chat_id);
                 }
                 // Pre-checked at acceptance; losing the race just settles.
                 Ok(None) => {}

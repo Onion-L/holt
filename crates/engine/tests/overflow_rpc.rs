@@ -145,3 +145,45 @@ async fn a_silent_overflow_is_detected_the_same_way() {
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[1].tools, 0);
 }
+
+#[tokio::test]
+async fn a_failed_recovery_keeps_the_flag_for_the_turn_after() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::Failed(
+            "The input is too long: prompt is too long for the requested model".into(),
+        ),
+        ScriptedReply::Failed("summarizer broke".into()),
+        ScriptedReply::text("ran uncompacted"),
+        ScriptedReply::text("recovery summary"),
+        ScriptedReply::text("the recovered turn"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "push it over").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
+    assert!(compact_flag(&engine).await);
+
+    // The recovery's summary fails: the Turn proceeds uncompacted, and the
+    // debt is still owed.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "try once").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_transcript_text(&mut transcript, "Automatic compaction failed").await;
+    assert!(
+        compact_flag(&engine).await,
+        "the failed recovery spent the flag"
+    );
+
+    // The Turn after compacts unconditionally and clears it.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "try again").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[3].tools, 0,
+        "no summary round before the second try"
+    );
+    assert!(!compact_flag(&engine).await);
+}
