@@ -90,28 +90,61 @@ pub fn gspin_cell_phase(row: usize, col: usize) -> f32 {
     if max == 0.0 { 0.0 } else { d / (max + 1.0) }
 }
 
-/// The holt mark's pixels — `[x, y]` of each 100×100 cell on the 820×940
-/// canvas (holt's `logo.tsx` CELLS), shared by the static mark and the
-/// animated loader.
+/// The holt mark's pixel shapes — `[x, y]` of each 100×100 cell on the
+/// 820×940 canvas. Three variants (ghost, ring, signal); the new-chat
+/// canvas picks one at random per visit.
 #[rustfmt::skip]
-pub const MARK_CELLS: [(f32, f32); 34] = [
-    (0., 600.), (0., 720.), (240., 840.), (240., 720.), (120., 840.), (120., 600.), (240., 600.),
-    (0., 480.), (0., 360.), (480., 840.), (480., 720.), (120., 360.), (120., 240.), (240., 360.),
-    (600., 720.), (480., 600.), (360., 360.), (240., 240.), (600., 600.), (720., 600.), (720., 480.),
-    (240., 120.), (600., 380.), (720., 240.), (720., 0.), (480., 240.), (480., 0.), (120., 480.),
-    (240., 480.), (360., 840.), (360., 720.), (360., 600.), (360., 480.), (120., 720.),
+pub const MARK_GHOST_CELLS: [(f32, f32); 45] = [
+    (240., 0.), (360., 0.), (480., 0.),
+    (120., 120.), (240., 120.), (360., 120.), (480., 120.), (600., 120.),
+    (0., 240.), (120., 240.), (240., 240.), (360., 240.), (480., 240.), (600., 240.), (720., 240.),
+    (0., 360.), (120., 360.), (360., 360.), (600., 360.), (720., 360.),
+    (0., 480.), (120., 480.), (240., 480.), (360., 480.), (480., 480.), (600., 480.), (720., 480.),
+    (0., 600.), (120., 600.), (240., 600.), (360., 600.), (480., 600.), (600., 600.), (720., 600.),
+    (0., 720.), (120., 720.), (240., 720.), (360., 720.), (480., 720.), (600., 720.), (720., 720.),
+    (0., 840.), (240., 840.), (480., 840.), (720., 840.),
+];
+
+#[rustfmt::skip]
+pub const MARK_RING_CELLS: [(f32, f32); 22] = [
+    (240., 120.), (360., 120.), (480., 120.),
+    (120., 240.), (240., 240.), (480., 240.), (600., 240.),
+    (0., 360.), (120., 360.), (600., 360.), (720., 360.),
+    (0., 480.), (120., 480.), (600., 480.), (720., 480.),
+    (120., 600.), (240., 600.), (480., 600.), (600., 600.),
+    (240., 720.), (360., 720.), (480., 720.),
+];
+
+#[rustfmt::skip]
+pub const MARK_SIGNAL_CELLS: [(f32, f32); 32] = [
+    (720., 0.),
+    (720., 120.),
+    (480., 240.), (600., 240.), (720., 240.),
+    (480., 360.), (600., 360.), (720., 360.),
+    (240., 480.), (360., 480.), (480., 480.), (600., 480.), (720., 480.),
+    (240., 600.), (360., 600.), (480., 600.), (600., 600.), (720., 600.),
+    (0., 720.), (120., 720.), (240., 720.), (360., 720.), (480., 720.), (600., 720.), (720., 720.),
+    (0., 840.), (120., 840.), (240., 840.), (360., 840.), (480., 840.), (600., 840.), (720., 840.),
+];
+
+/// All mark variants, indexed by the shell's per-visit random pick.
+pub const MARK_SHAPES: [&[(f32, f32)]; 3] = [
+    &MARK_GHOST_CELLS,
+    &MARK_RING_CELLS,
+    &MARK_SIGNAL_CELLS,
 ];
 
 /// Fraction of the pulse cycle the mark's light sweep occupies.
 pub const MARK_SPREAD: f32 = 0.55;
 
-/// Per-cell stagger along the holt's flight axis. The stagger *adds* phase
-/// (the original uses a negative CSS delay, starting the cell mid-cycle), so a
-/// larger value means the cell is further along and therefore **leads**: the
-/// tail tip `(720, 0)` leads at `MARK_SPREAD`, the head `(0, 840)` trails at 0.
+/// Per-cell stagger along the sweep axis (bottom-left → top-right). The
+/// stagger *adds* phase (the original uses a negative CSS delay, starting the
+/// cell mid-cycle), so a larger value means the cell is further along and
+/// therefore **leads**: cells near `(0, 840)` lead at `MARK_SPREAD`, cells
+/// near `(720, 0)` trail at ≈0.
 pub fn mark_cell_stagger(x: f32, y: f32) -> f32 {
     let t = (820.0 - x + y) / 1660.0;
-    (1.0 - t) * MARK_SPREAD
+    t * MARK_SPREAD
 }
 
 /// A mark cell's phase at loader phase `delta`.
@@ -187,30 +220,31 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_sweeps_from_tail_to_head() {
-        // The stagger adds phase, so leading means a LARGER value: the tail tip
-        // is already mid-cycle while the head is still at zero.
-        let tail = mark_cell_stagger(720.0, 0.0);
-        let head = mark_cell_stagger(0.0, 840.0);
-        assert!(tail > head, "tail {tail} should lead head {head}");
-        close(head, 0.0, "the head anchors the sweep");
+    fn the_mark_sweeps_diagonally() {
+        // The stagger adds phase, so leading means a LARGER value: cells near
+        // the bottom-left corner are already mid-cycle while the top-right
+        // corner is still at zero.
+        let lead = mark_cell_stagger(0.0, 840.0);
+        let trail = mark_cell_stagger(720.0, 0.0);
+        assert!(lead > trail, "corner {lead} should lead {trail}");
+        close(lead, MARK_SPREAD, "the bottom-left corner anchors the sweep");
         close(
-            tail,
-            MARK_SPREAD * (1.0 - 100.0 / 1660.0),
-            "tail leads by the spread",
+            trail,
+            MARK_SPREAD * (100.0 / 1660.0),
+            "the top-right corner trails by the spread",
         );
-        // Every cell stays inside the unit interval once phased.
-        for (x, y) in MARK_CELLS {
-            let phase = mark_phase(0.3, x, y);
-            assert!((0.0..1.0).contains(&phase), "({x},{y}) -> {phase}");
-        }
-        // Every cell's stagger stays inside the sweep window.
-        for (x, y) in MARK_CELLS {
-            let stagger = mark_cell_stagger(x, y);
-            assert!(
-                (0.0..=MARK_SPREAD).contains(&stagger),
-                "({x},{y}) -> {stagger}"
-            );
+        // Every cell of every shape stays inside the unit interval once
+        // phased, and inside the sweep window before.
+        for cells in MARK_SHAPES {
+            for &(x, y) in cells {
+                let phase = mark_phase(0.3, x, y);
+                assert!((0.0..1.0).contains(&phase), "({x},{y}) -> {phase}");
+                let stagger = mark_cell_stagger(x, y);
+                assert!(
+                    (0.0..=MARK_SPREAD).contains(&stagger),
+                    "({x},{y}) -> {stagger}"
+                );
+            }
         }
     }
 

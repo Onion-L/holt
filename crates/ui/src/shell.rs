@@ -92,6 +92,16 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
     (viewport - sidebar - right).max(0.0)
 }
 
+/// Random index into `loaders::MARK_SHAPES` — time-seeded, display-only (no
+/// crypto need). Re-rolled per new-chat canvas visit.
+fn random_mark_index() -> usize {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0)
+        % loaders::MARK_SHAPES.len()
+}
+
 /// Open the session at `slot` (zero-based) of the sidebar's active list. One
 /// action carrying the slot, rather than nine near-identical action types.
 #[derive(Clone, PartialEq, Action)]
@@ -397,6 +407,10 @@ pub struct Shell {
     /// deactivation clears it, so a chip cannot stick after an app switch
     /// swallows the key-up.
     pub(super) jump_hints: bool,
+    /// Which `loaders::MARK_SHAPES` variant the new-chat canvas shows —
+    /// re-rolled at random each time a chat is selected, so the next visit
+    /// to the bare canvas gets a fresh shape.
+    new_chat_mark: usize,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
     /// Embedded terminal host for right-pane Terminal surfaces — a SEPARATE
@@ -663,6 +677,7 @@ impl Shell {
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,
+            new_chat_mark: random_mark_index(),
             terminal: None,
             right_terminal: None,
             right_plus: popover::Popup::default(),
@@ -2028,6 +2043,9 @@ impl Shell {
         // at all → the onboarding card. The composer sits below the first two
         // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
+            // Re-roll the new-chat mark while the canvas is hidden, so the
+            // next bare-canvas visit shows a fresh random shape.
+            self.new_chat_mark = random_mark_index();
             self.transcript.clone().into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders
@@ -2070,11 +2088,49 @@ impl Shell {
                 ))
                 .into_any_element()
         } else {
-            // New-chat canvas: intentionally bare (user request — no logo, no
-            // helper line). The project selectors live above the
-            // composer pill (composer.rs renders them via
+            // New-chat canvas: the holt mark (mona) over a prompt naming the
+            // selected project (user request). The project selectors live
+            // above the composer pill (composer.rs renders them via
             // `render_target_selectors`).
-            div().size_full().into_any_element()
+            let project = self
+                .state
+                .read(cx)
+                .selected_space_row()
+                .map(|space| space.display_name().to_string());
+            let prompt: SharedString = match project {
+                Some(name) => format!("What should we build in {name}?").into(),
+                None => "What should we build?".into(),
+            };
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(motion::fade_in(
+                    "new-chat-canvas",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(loaders::holt_mark_loader(
+                            "new-chat-mark",
+                            theme,
+                            56.0,
+                            loaders::MARK_SHAPES[self.new_chat_mark],
+                            cx.entity_id(),
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .mt(px(16.0))
+                                .text_size(crate::typography::ui_rems(16.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(prompt),
+                        ),
+                ))
+                .into_any_element()
         };
 
         let status = self.render_status_strip(cx);

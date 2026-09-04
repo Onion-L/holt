@@ -19,17 +19,19 @@ use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`holt_proto::motion`) so both animate the
 // same loaders from the same numbers.
-pub use holt_proto::motion::{HOLT_CELLS, MARK_CELLS, MARK_SPREAD, MATRIX_SIDE, mark_cell_stagger};
+pub use holt_proto::motion::{HOLT_CELLS, MARK_SHAPES, MARK_SPREAD, MATRIX_SIDE, mark_cell_stagger};
 
-/// The animated holt mark (holt-loader.tsx `HoltLoader`): the full logo
-/// pixel grid with a light wave sweeping tail→head. Each cell rests dim
-/// (opacity 0.08, scale 0.9) and flares to full as the crest passes; per-cell
-/// stagger follows the flight axis. `height_px` sets the mark's height (width
-/// follows the 820:940 canvas).
+/// The animated holt mark (holt-loader.tsx `HoltLoader`): a pixel-grid logo
+/// shape with a light wave sweeping bottom-left → top-right. Each cell rests
+/// dim (opacity 0.08, scale 0.9) and flares to full as the crest passes;
+/// per-cell stagger follows the sweep axis. `cells` is one of [`MARK_SHAPES`]
+/// (the shell picks one at random per new-chat canvas). `height_px` sets the
+/// mark's height (width follows the 820:940 canvas).
 pub fn holt_mark_loader(
     _id: &'static str,
     theme: &Theme,
     height_px: f32,
+    cells: &'static [(f32, f32)],
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -41,7 +43,7 @@ pub fn holt_mark_loader(
         .relative()
         .w(px(820.0 * scale))
         .h(px(height_px))
-        .children(MARK_CELLS.iter().map(move |&(x, y)| {
+        .children(cells.iter().map(move |&(x, y)| {
             let stagger = mark_cell_stagger(x, y);
             // Fixed slot; the animated cell breathes inside it (paint-local).
             div()
@@ -313,21 +315,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mark_stagger_follows_flight_axis() {
-        // Tail tip (720, 0) leads: near-maximal stagger (starts deepest into
-        // the cycle); head (0, 840) trails with stagger 0.
-        let tail = mark_cell_stagger(720.0, 0.0);
-        let head = mark_cell_stagger(0.0, 840.0);
-        assert!(tail > head, "tail {tail} should lead head {head}");
-        assert!((head - 0.0).abs() < 1e-6, "head stagger ≈ 0, got {head}");
-        assert!(tail <= MARK_SPREAD + 1e-6, "stagger capped at SPREAD");
-        // Every logo cell stays inside [0, SPREAD].
-        for &(x, y) in &MARK_CELLS {
-            let s = mark_cell_stagger(x, y);
-            assert!(
-                (0.0..=MARK_SPREAD + 1e-6).contains(&s),
-                "cell ({x},{y}) stagger {s}"
-            );
+    fn mark_stagger_follows_sweep_axis() {
+        // Bottom-left corner leads: maximal stagger (starts deepest into the
+        // cycle); top-right corner trails with stagger ≈ 0.
+        let lead = mark_cell_stagger(0.0, 840.0);
+        let trail = mark_cell_stagger(720.0, 0.0);
+        assert!(lead > trail, "corner {lead} should lead {trail}");
+        assert!((lead - MARK_SPREAD).abs() < 1e-6, "lead stagger = SPREAD, got {lead}");
+        assert!(trail >= 0.0, "trail stagger ≥ 0, got {trail}");
+        // Every cell of every shape stays inside [0, SPREAD].
+        for cells in MARK_SHAPES {
+            for &(x, y) in cells {
+                let s = mark_cell_stagger(x, y);
+                assert!(
+                    (0.0..=MARK_SPREAD + 1e-6).contains(&s),
+                    "cell ({x},{y}) stagger {s}"
+                );
+            }
         }
     }
 }
