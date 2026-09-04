@@ -83,6 +83,51 @@ pub struct ChatConfig {
     pub sandbox: SandboxLevel,
 }
 
+/// The built-in Title-task instruction (ADR-0012) — the single source the
+/// engine's defaulting and the settings UI's restore-default button share.
+/// The 60-character ceiling it names is enforced as `TITLE_CHAR_LIMIT` in
+/// `crates/engine` (a string here can't reference a const across crates).
+pub const DEFAULT_TITLE_INSTRUCTION: &str = "Write a short, scannable title (one line, at most 60 characters) for a chat that begins with this message. Reply with the title text only.";
+
+fn default_title_instruction() -> String {
+    DEFAULT_TITLE_INSTRUCTION.to_string()
+}
+
+/// Engine-owned title-task configuration (ADR-0012), persisted per device
+/// and read/written only through typed RPC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleSettings {
+    /// Provider-qualified model id (`"openai/gpt-5.4"`); `None` disables
+    /// automatic titles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// The fixed instruction sent alongside the first user prompt.
+    #[serde(default = "default_title_instruction")]
+    pub instruction: String,
+}
+
+impl Default for TitleSettings {
+    fn default() -> Self {
+        Self {
+            model_id: None,
+            instruction: default_title_instruction(),
+        }
+    }
+}
+
+/// Title settings plus the engine's live validation view of them — the
+/// reply shape of both the read and the save RPC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleSettingsState {
+    pub settings: TitleSettings,
+    /// A visible validation warning (missing provider credentials). A
+    /// warning never blocks normal chat Turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 /// Immutable-at-run-start repository context owned by one conversation.
 ///
 /// This is deliberately separate from the live checkout snapshot: another

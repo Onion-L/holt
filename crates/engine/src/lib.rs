@@ -36,6 +36,7 @@ pub mod providers;
 mod rpc;
 mod skills;
 mod store;
+mod title_settings;
 mod tools;
 
 use agent::AgentRuntime;
@@ -102,6 +103,8 @@ pub struct LocalEngine {
     /// The skills capability (ADR-0005/0006): root resolution and catalog
     /// assembly over the upstream loader.
     skills: skills::Skills,
+    /// Engine-owned title-task settings (ADR-0012).
+    title_settings: title_settings::TitleSettingsStore,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -139,6 +142,7 @@ impl LocalEngine {
         let providers = Arc::new(ProviderAdapter::new(credentials, provider_settings));
         let git = git::Git::new();
         let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
+        let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -159,6 +163,7 @@ impl LocalEngine {
             watch,
             turns: git::TurnBaselines::new(),
             skills,
+            title_settings,
             _instance_lock: lock,
         })
     }

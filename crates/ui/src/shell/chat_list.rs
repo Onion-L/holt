@@ -133,6 +133,7 @@ impl Shell {
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Skills => icons::WIDGET,
+            SettingsSection::Agent => icons::BOT,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };
         // Match the user's dragged sidebar width — the pane container clips to

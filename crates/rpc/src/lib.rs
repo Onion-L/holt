@@ -37,6 +37,12 @@ pub mod methods {
     /// catalog ids are not custom models — the engine no-ops on them.
     pub const REMOVE_PROVIDER_MODEL: &str = "RemoveProviderModel";
     pub const LIST_MODELS: &str = "ListModels";
+    /// Engine-owned title-task settings (ADR-0012). Read takes no params;
+    /// save params are `holt_proto::TitleSettings`; both reply with
+    /// `holt_proto::TitleSettingsState` (settings + live validation warning).
+    /// An empty model id disables automatic titles.
+    pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
+    pub const SAVE_TITLE_SETTINGS: &str = "SaveTitleSettings";
     pub const LIST_COMMANDS: &str = "ListCommands";
     /// The skills catalog (ADR-0005): one fresh scan of the chat's three
     /// skill roots. Params `{cwd?}` — the project root derives from it;

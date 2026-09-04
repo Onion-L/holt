@@ -203,15 +203,17 @@ pub enum SettingsSection {
     Appearance,
     Shortcuts,
     Skills,
+    Agent,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 5] = [
+    pub const ALL: [SettingsSection; 6] = [
         SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Shortcuts,
         SettingsSection::Skills,
+        SettingsSection::Agent,
         SettingsSection::Archived,
     ];
 
@@ -223,6 +225,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Skills => "Skills",
+            SettingsSection::Agent => "Agent",
             SettingsSection::Archived => "Archived sessions",
         }
     }
@@ -447,6 +450,7 @@ pub struct Shell {
     providers_page: Option<Entity<ProvidersPage>>,
     providers_sub: Option<Subscription>,
     skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
+    agent_page: Option<Entity<crate::settings::agent::AgentPage>>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -641,6 +645,7 @@ impl Shell {
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/skills") => Route::Settings(SettingsSection::Skills),
+            Some("settings/agent") => Route::Settings(SettingsSection::Agent),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -697,6 +702,7 @@ impl Shell {
             providers_page: None,
             providers_sub: None,
             skills_page: None,
+            agent_page: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1240,6 +1246,11 @@ impl Shell {
         if section == SettingsSection::Skills {
             self.skills_page = None;
         }
+        // Same for Agent: the title-settings read picks up provider key and
+        // model changes since the last visit.
+        if section == SettingsSection::Agent {
+            self.agent_page = None;
+        }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
@@ -1371,6 +1382,17 @@ impl Shell {
                         Some(cx.new(|cx| crate::settings::skills::SkillsPage::new(state, cx)));
                 }
                 match &self.skills_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Agent => {
+                if self.agent_page.is_none() {
+                    let state = self.state.clone();
+                    self.agent_page =
+                        Some(cx.new(|cx| crate::settings::agent::AgentPage::new(state, cx)));
+                }
+                match &self.agent_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }

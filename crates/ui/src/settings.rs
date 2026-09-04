@@ -14,6 +14,7 @@ use std::time::Duration;
 use gpui::{App, Global, Task};
 use serde::{Deserialize, Serialize};
 
+pub mod agent;
 pub mod appearance;
 pub mod archived;
 pub mod composer;

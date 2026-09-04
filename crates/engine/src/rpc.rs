@@ -7,7 +7,10 @@ use holt_doc::{
     MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry, TranscriptFrame,
     diff_transcript,
 };
-use holt_proto::{AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space, TitleSource};
+use holt_proto::{
+    AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space, TitleSettings,
+    TitleSettingsState, TitleSource,
+};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
 use serde::Deserialize;
@@ -20,6 +23,7 @@ use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
+use crate::title_settings::MAX_TITLE_INSTRUCTION_CHARS;
 
 /// The sidebar title ceiling shared by the first-line fallback, manual
 /// renames, and automatic titles.
@@ -730,6 +734,72 @@ impl LocalEngine {
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
+
+    /// The settings record plus its live validation view — the reply shape
+    /// of both title-settings RPCs.
+    async fn title_settings_state(&self) -> TitleSettingsState {
+        let settings = self.title_settings.get();
+        let warning = self.title_settings_warning(&settings).await;
+        TitleSettingsState { settings, warning }
+    }
+
+    /// Missing credentials are a visible warning, never an error: the title
+    /// task fails silently and normal chat Turns are unaffected.
+    async fn title_settings_warning(&self, settings: &TitleSettings) -> Option<String> {
+        let model_id = settings.model_id.as_deref()?;
+        let provider = model_id.split('/').next()?;
+        if self
+            .providers
+            .credentials
+            .reveal_key(provider)
+            .await
+            .is_some()
+        {
+            return None;
+        }
+        Some(format!(
+            "Provider {provider} has no saved credentials — automatic titles will keep the fallback until a key is configured."
+        ))
+    }
+
+    async fn save_title_settings(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let mut settings: TitleSettings = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        // An empty/whitespace model id is the disabled state, not an error.
+        settings.model_id = settings
+            .model_id
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        if let Some(model_id) = settings.model_id.as_deref() {
+            let Some((provider, _)) = model_id.split_once('/') else {
+                return Err(RpcError::BadParams(format!(
+                    "model must use provider/model syntax: {model_id}"
+                )));
+            };
+            if !ProviderAdapter::is_eligible(provider) {
+                return Err(RpcError::BadParams(format!(
+                    "unknown or unsupported provider: {provider}"
+                )));
+            }
+            self.providers
+                .resolve_model(provider, model_id)
+                .map_err(RpcError::BadParams)?;
+        }
+        let instruction = settings.instruction.trim();
+        if instruction.is_empty() {
+            return Err(RpcError::BadParams("instruction must not be empty".into()));
+        }
+        if instruction.chars().count() > MAX_TITLE_INSTRUCTION_CHARS {
+            return Err(RpcError::BadParams(format!(
+                "instruction must be at most {MAX_TITLE_INSTRUCTION_CHARS} characters"
+            )));
+        }
+        settings.instruction = instruction.to_string();
+        self.title_settings
+            .save(settings)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        RpcReply::value(&self.title_settings_state().await)
+    }
 }
 
 #[derive(Deserialize)]
@@ -908,6 +978,8 @@ impl RpcService for LocalEngine {
                 let provider = required_string(&params, "providerId")?;
                 RpcReply::value(&self.providers.models_for(provider))
             }
+            methods::GET_TITLE_SETTINGS => RpcReply::value(&self.title_settings_state().await),
+            methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,
             // The composer's slash menu (ADR-0011): the one command this
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
