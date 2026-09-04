@@ -82,10 +82,10 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     })
 }
 /// Slash-command completion state: like [`FileMentionState`] but the
-/// candidate list is a mixed-source model — catalog skills (`ListSkills`,
-/// fetched once per cwd, provider-agnostic) merged ahead of the provider's
-/// commands (`ListCommands`, cached per provider) — filtered locally per
-/// keystroke, no RPC/debounce/skeleton churn while typing.
+/// candidate list is a mixed-source model — the provider's commands
+/// (`ListCommands`, cached per provider) merged ahead of catalog skills
+/// (`ListSkills`, fetched once per cwd, provider-agnostic) — filtered
+/// locally per keystroke, no RPC/debounce/skeleton churn while typing.
 #[derive(Debug, Clone, Default)]
 pub(super) struct SlashState {
     pub(super) token: Option<MentionToken>,
@@ -665,11 +665,11 @@ impl Composer {
             .map(|candidate| candidate.filter_label())
             .collect();
         let mut ranked = crate::popover::filter_indices(&query, &labels);
-        // Section order: skills before commands (stable, so within-section
+        // Section order: commands before skills (stable, so within-section
         // match rank survives) — the menu renders contiguous groups under
         // their headers, and `filtered` stays the rendered row order.
         ranked
-            .sort_by_key(|&ix| matches!(self.slash.candidates[ix], SlashCandidate::Command { .. }));
+            .sort_by_key(|&ix| matches!(self.slash.candidates[ix], SlashCandidate::Skill { .. }));
         self.slash.filtered = ranked;
         self.slash.active = (!self.slash.filtered.is_empty()).then_some(0);
         // A fresh query/reopen restarts the row stack at the top.

@@ -47,7 +47,8 @@ pub(crate) enum SlashCandidate {
 
 impl SlashCandidate {
     /// What accepting fills into the composer: `/skill <name>` for a skill
-    /// — ready for extra instructions and submit — `/name` for a command.
+    /// — ready for extra instructions and submit — `/name` for a command
+    /// (`/compact` submits on accept; there is nothing to edit).
     pub(crate) fn title(&self) -> String {
         match self {
             SlashCandidate::Skill { name, .. } => format!("/skill {name}"),
@@ -114,26 +115,25 @@ impl SlashCandidate {
     }
 }
 
-/// Merge the popup's two sources: invocable skills first, the provider's
-/// commands after. The valid-entry filter rides the listing's shape — only
+/// Merge the popup's two sources: the provider's commands first, invocable
+/// skills after. The valid-entry filter rides the listing's shape — only
 /// `skills` entries are invocable; shadowed and invalid entries never
 /// enter the menu.
 pub(crate) fn popup_candidates(
     listing: &SkillListing,
     commands: &[SlashCommand],
 ) -> Vec<SlashCandidate> {
-    listing
-        .skills
+    commands
         .iter()
-        .map(|skill| SlashCandidate::Skill {
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            root: skill.root,
-        })
-        .chain(commands.iter().map(|command| SlashCandidate::Command {
+        .map(|command| SlashCandidate::Command {
             name: command.name.clone(),
             description: command.description.clone(),
             input_hint: command.input_hint.clone(),
+        })
+        .chain(listing.skills.iter().map(|skill| SlashCandidate::Skill {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            root: skill.root,
         }))
         .collect()
 }
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn popup_candidates_merge_skills_before_commands() {
+    fn popup_candidates_merge_commands_before_skills() {
         let listing = SkillListing {
             skills: vec![listing_entry("grill", "Grill a plan.")],
             ..SkillListing::default()
@@ -255,29 +255,29 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                SlashCandidate::Skill {
-                    name: "grill".into(),
-                    description: "Grill a plan.".into(),
-                    root: SkillRoot::Personal,
-                },
                 SlashCandidate::Command {
                     name: "compact".into(),
                     description: "Compact the session.".into(),
                     input_hint: None,
                 },
+                SlashCandidate::Skill {
+                    name: "grill".into(),
+                    description: "Grill a plan.".into(),
+                    root: SkillRoot::Personal,
+                },
             ]
         );
         // The fill text stays `/skill grill` — ready for extra instructions
         // and submit — while the ROW shows the bare name and its root tag.
-        assert_eq!(candidates[0].title(), "/skill grill");
-        assert_eq!(candidates[0].row_label(), "grill");
-        assert_eq!(candidates[0].root_tag(), Some("personal"));
-        assert_eq!(candidates[1].row_label(), "/compact");
-        assert_eq!(candidates[1].root_tag(), None);
+        assert_eq!(candidates[1].title(), "/skill grill");
+        assert_eq!(candidates[1].row_label(), "grill");
+        assert_eq!(candidates[1].root_tag(), Some("personal"));
+        assert_eq!(candidates[0].row_label(), "/compact");
+        assert_eq!(candidates[0].root_tag(), None);
         // Filtering matches name+description for skills, slash word for
         // commands.
-        assert!(candidates[0].filter_label().contains("Grill a plan."));
-        assert!(candidates[1].filter_label().starts_with("/compact"));
+        assert!(candidates[1].filter_label().contains("Grill a plan."));
+        assert!(candidates[0].filter_label().starts_with("/compact"));
     }
 
     #[test]
