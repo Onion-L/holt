@@ -52,6 +52,10 @@ use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
 use holt_syntax::LanguageId as Lang;
 
+mod model;
+mod rows;
+mod sync;
+
 // ---------------------------------------------------------------------------
 // Layout numbers (analytic — they drive the fold tween)
 // ---------------------------------------------------------------------------
