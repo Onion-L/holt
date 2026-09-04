@@ -96,6 +96,26 @@ async fn the_first_turn_keeps_the_capped_first_line_fallback_under_automatic_own
 }
 
 #[tokio::test]
+async fn the_fallback_skips_leading_empty_lines() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+
+    let mut chats = open_chats_watch(&engine).await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "\n\nhello").await;
+
+    let mut titled = None;
+    while titled.is_none() {
+        let frame = common::next_frame(&mut chats).await;
+        if frame[0]["title"].is_string() {
+            titled = Some(frame);
+        }
+    }
+    assert_eq!(titled.unwrap()[0]["title"], "hello");
+}
+
+#[tokio::test]
 async fn rename_chat_locks_the_title_publishes_the_watch_and_survives_a_restart() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]);
@@ -138,7 +158,7 @@ async fn a_rename_identical_to_the_fallback_still_locks_the_title() {
 }
 
 #[tokio::test]
-async fn a_manual_rename_is_trimmed_and_capped_at_sixty_characters() {
+async fn a_manual_rename_is_trimmed_without_truncating_user_text() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![]);
     let engine = fixture.engine(&provider);
@@ -149,7 +169,7 @@ async fn a_manual_rename_is_trimmed_and_capped_at_sixty_characters() {
         .unwrap();
 
     let frame = chats_snapshot(&engine).await;
-    assert_eq!(frame[0]["title"], "y".repeat(60).as_str());
+    assert_eq!(frame[0]["title"], "y".repeat(80).as_str());
     assert_eq!(frame[0]["titleSource"], "userManual");
 }
 

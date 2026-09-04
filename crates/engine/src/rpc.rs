@@ -272,9 +272,7 @@ impl LocalEngine {
         if title.is_empty() {
             return Err(RpcError::BadParams("title must not be empty".into()));
         }
-        // Same ceiling as the fallback and automatic titles, so the sidebar
-        // geometry assumption holds for manual names too.
-        let title: String = title.chars().take(TITLE_CHAR_LIMIT).collect();
+        let title = title.to_string();
         let mut chats = self
             .runtime
             .chats
@@ -345,6 +343,7 @@ impl LocalEngine {
                 message_id,
             } => {
                 let prompt = request.prompt.clone();
+                let title_prompt = Some(prompt.clone());
                 let parts = vec![MessagePart::Text {
                     id: "t0".into(),
                     text: prompt.clone(),
@@ -358,6 +357,7 @@ impl LocalEngine {
                     prompt.clone(),
                     prompt,
                     None,
+                    title_prompt,
                 )
                 .await?;
             }
@@ -412,6 +412,7 @@ impl LocalEngine {
                     preview,
                     prompt,
                     Some(invocation_seed),
+                    None,
                 )
                 .await?;
             }
@@ -557,6 +558,7 @@ impl LocalEngine {
         preview: String,
         prompt: String,
         invocation: Option<MessagePart>,
+        title_prompt: Option<String>,
     ) -> Result<(), RpcError> {
         // Turn baseline FIRST (ADR-0003): captured synchronously at
         // acceptance, before validation and before the run starts —
@@ -638,8 +640,10 @@ impl LocalEngine {
         // still be eligible, so later prompts never touch title settings.
         // Every failure here is silent — a missing or invalid title model
         // must never fail the Turn.
-        let mut title_spec = if self.title_may_be_eligible(chat_id) {
-            self.prepare_title_task(chat_id, &preview).await
+        let mut title_spec = if title_prompt.is_some() && self.title_may_be_eligible(chat_id, &chat)
+        {
+            self.prepare_title_task(chat_id, title_prompt.as_deref().unwrap_or_default())
+                .await
         } else {
             None
         };
@@ -684,7 +688,7 @@ impl LocalEngine {
                     row.title = Some(
                         preview
                             .lines()
-                            .next()
+                            .find(|line| !line.trim().is_empty())
                             .unwrap_or("New chat")
                             .chars()
                             .take(TITLE_CHAR_LIMIT)
@@ -802,7 +806,22 @@ impl LocalEngine {
     /// an untitled, automatically-owned chat whose one-shot task has not
     /// started. Only a first prompt can satisfy this — the fallback title
     /// is stamped in the same acceptance pass.
-    fn title_may_be_eligible(&self, chat_id: &str) -> bool {
+    fn title_may_be_eligible(&self, chat_id: &str, chat: &ChatRuntime) -> bool {
+        let has_user_prompt = chat
+            .transcript
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|entry| entry.role == MessageRole::User)
+            || chat
+                .history
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|message| message.role() == "user");
+        if has_user_prompt {
+            return false;
+        }
         let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
         chats.iter().any(|row| {
             row.id == chat_id

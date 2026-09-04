@@ -107,7 +107,7 @@ async fn the_first_prompt_falls_back_then_a_valid_title_replaces_and_persists() 
     save_title_model(&engine).await;
 
     let mut chats = open_chats_watch(&engine).await;
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    let (transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello world").await;
 
     let frame = wait_for_title(&mut chats, "chat-1", "A Better Title").await;
@@ -363,6 +363,65 @@ async fn a_started_task_is_not_retried_after_a_restart() {
     let frame = chats_snapshot(&engine).await;
     assert_eq!(frame[0]["title"], "hello");
     assert_eq!(frame[0]["titleTaskStarted"], true);
+}
+
+#[tokio::test]
+async fn an_existing_user_prompt_blocks_title_generation_after_reload() {
+    let fixture = common::Fixture::new();
+    let legacy_row = serde_json::json!({
+        "id": "chat-1",
+        "deviceId": "dev",
+        "title": null,
+        "titleSource": "automatic",
+        "titleTaskStarted": false,
+        "archived": false,
+        "cwd": null,
+        "branch": null,
+        "checkoutId": null,
+        "config": null,
+        "lastMessagePreview": null,
+        "lastMessageAt": null,
+        "createdAt": "2026-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        fixture.data_dir.path().join("chats.json"),
+        serde_json::to_vec(&serde_json::json!([legacy_row])).unwrap(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(fixture.data_dir.path().join("transcripts")).unwrap();
+    std::fs::write(
+        fixture.data_dir.path().join("transcripts/chat-1.json"),
+        serde_json::to_vec(&vec![serde_json::json!({
+            "id": "user-1",
+            "role": "user",
+            "parts": [{ "id": "t0", "kind": "text", "text": "old prompt" }],
+            "createdAt": 1,
+            "deviceId": "dev"
+        })])
+        .unwrap(),
+    )
+    .unwrap();
+
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
+        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("Should Not Appear")]);
+    let engine = LocalEngine::assemble(&EngineConfig {
+        data_dir: fixture.data_dir.path().to_path_buf(),
+        personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
+        stream_fn: Some(provider.stream_fn()),
+    })
+    .unwrap();
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "openai", "key": "not-a-real-key" }),
+        )
+        .await
+        .unwrap();
+    save_title_model(&engine).await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "new prompt").await;
+    common::wait_for_requests(&provider, 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(title_requests(&provider).is_empty());
 }
 
 #[tokio::test]

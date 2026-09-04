@@ -25,6 +25,10 @@
 - **Compaction**: replacing the older part of a chat's History with a model-written summary while keeping a recent tail verbatim. Triggered automatically when the History approaches the model's context window (before a Turn, between tool rounds, or unconditionally on the Turn after a context-overflow error), or manually with `/compact`. Marked in the Transcript by a divider whose summary can be expanded.
 - **Pinned** (a transcript): the state in which the viewport follows the tail as new rows stream in. Scrolling up releases the pin; scrolling back near the tail re-engages it.
 - **Saved viewport**: a chat's remembered scroll position, restored when the chat is reopened. A chat with no saved viewport opens at its latest content.
+- **Title source**: whether a chat title was supplied by the user or produced automatically; a user-supplied title is authoritative over later automatic suggestions.
+- **Automatic title**: a short, model-generated name derived from a chat's first user prompt, used only when the chat has no user-supplied title.
+- **Title settings**: the device-wide choice of model and instruction used for automatic titles; an empty model means automatic titles are disabled.
+- **Title task**: the one-shot background operation that asks the configured model for an automatic title after a chat receives its first user prompt; it is independent of the Turn lifecycle and never becomes chat History.
 _Avoid_: grep tool, agent search
 _Avoid_: agent diff, session diff
 _Avoid_: importing or registering a skill (placement in a skill root is the only way in)
