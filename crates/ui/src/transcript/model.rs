@@ -622,12 +622,19 @@ pub fn rows_for_entry(
                     item.gate.as_ref().map(|gate| &gate.state),
                     Some(ToolGateState::Pending)
                 ) {
-                    flush_group(
-                        &mut rows,
-                        &mut pending_group,
-                        &mut group_ix,
-                        group_last_part_ix,
-                    );
+                    // The splice steals the entry's TAIL part from the group
+                    // above: without the gate that group IS the live tail of
+                    // the still-streaming turn (a running bash call renders
+                    // expanded), and the pause waiting on a verdict is not
+                    // the group finishing. Flush with the tail's index so the
+                    // group keeps the auto_open it would have had gate-free;
+                    // a stale pending gate mid-entry flushes normally.
+                    let flush_tail_ix = if part_ix == last_part_ix {
+                        last_part_ix
+                    } else {
+                        group_last_part_ix
+                    };
+                    flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
                     let (label, detail) = tool_chip_content(&item.call);
                     let gate_id = item.gate.as_ref().map(|g| g.id.as_str()).unwrap_or("");
                     let version = fnv1a(

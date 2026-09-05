@@ -690,6 +690,62 @@ mod tests {
         }
     }
 
+    /// Fold state around the card: the group above a TAIL pending gate keeps
+    /// the live-tail `auto_open` it would have had without the gate — the
+    /// turn is paused, not finished, and a running tool's group renders
+    /// expanded. A stale pending gate mid-entry flushes the group normally.
+    #[test]
+    fn tail_pending_gate_keeps_the_group_above_live() {
+        use crate::markdown::parser::{BlockTree, parse_full};
+        use std::sync::Arc;
+
+        let streaming = |parts: Vec<MessagePart>| SessionMessageEntry {
+            status: Some(holt_doc::MessageStatus::Streaming),
+            ..entry("m1", parts)
+        };
+        let mut parse = |_: &str, text: &str| Arc::new(parse_full(text)) as Arc<BlockTree>;
+
+        // Tail gate: [group(p1), approval(p2)] — the group stays auto_open.
+        let rows = crate::transcript::rows_for_entry(
+            &streaming(vec![
+                tool_part("p1", None),
+                tool_part("p2", Some(pending_gate("g1"))),
+            ]),
+            false,
+            &mut parse,
+        );
+        assert_eq!(rows.len(), 2);
+        let RowKind::ToolGroup { auto_open, .. } = &rows[0].kind else {
+            panic!("expected the group row");
+        };
+        assert!(
+            *auto_open,
+            "the group above a tail pending gate stays the live tail"
+        );
+        assert!(matches!(rows[1].kind, RowKind::Approval { .. }));
+
+        // Mid-entry gate: the flush is ordinary — the group above collapses,
+        // the group after the gate owns the tail and opens instead.
+        let rows = crate::transcript::rows_for_entry(
+            &streaming(vec![
+                tool_part("p1", None),
+                tool_part("p2", Some(pending_gate("g1"))),
+                tool_part("p3", None),
+            ]),
+            false,
+            &mut parse,
+        );
+        assert_eq!(rows.len(), 3);
+        let RowKind::ToolGroup { auto_open, .. } = &rows[0].kind else {
+            panic!("expected the group row");
+        };
+        assert!(!*auto_open, "a mid-entry gate flushes the group normally");
+        let RowKind::ToolGroup { auto_open, .. } = &rows[2].kind else {
+            panic!("expected the trailing group row");
+        };
+        assert!(*auto_open, "the group owning the entry tail opens");
+    }
+
     /// Row model: a PENDING gate splices its own Approval row (never a
     /// foldable group); the settle replays the same part into the ordinary
     /// group, where the chip carries the verdict.
