@@ -7,7 +7,7 @@ use super::{Composer, ComposerEvent};
 use gpui::{App, Context, div, prelude::*, px};
 
 use holt_doc::{MessagePart, SessionCommandPayload, SessionMessageEntry};
-use holt_proto::{RunRequest, SandboxLevel};
+use holt_proto::RunRequest;
 use holt_rpc::methods;
 
 use crate::attachments::{self};
@@ -141,6 +141,15 @@ impl Composer {
             .read(cx)
             .selected_chat_row()
             .and_then(|c| c.cwd.clone());
+        // The chat's permission mode rides the Run request (ADR-0014): an
+        // existing chat carries its stored mode; a fresh row defaults to
+        // confirm-changes.
+        let permission_mode = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref().map(|config| config.permission_mode))
+            .unwrap_or_default();
         let space = self.state.read(cx).selected_space_row().cloned();
         let local_device_id = self.state.read(cx).local_device_id.clone();
         let device_id = if is_new {
@@ -560,7 +569,7 @@ impl Composer {
                                 reasoning: resolved.reasoning,
                                 model_options: resolved.model_options.clone(),
                                 cwd,
-                                sandbox: SandboxLevel::WorkspaceWrite,
+                                permission_mode,
                                 auto_approve: false,
                                 attachments: Vec::new(),
                                 worktree: run_worktree,
@@ -587,7 +596,7 @@ impl Composer {
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
-                            sandbox: SandboxLevel::WorkspaceWrite,
+                            permission_mode,
                             auto_approve: false,
                             attachments: Vec::new(),
                             worktree: run_worktree,
@@ -611,7 +620,7 @@ impl Composer {
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
                             cwd,
-                            sandbox: SandboxLevel::WorkspaceWrite,
+                            permission_mode,
                             auto_approve: false,
                             attachments: attachment_paths,
                             worktree: run_worktree,

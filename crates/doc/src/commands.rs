@@ -339,7 +339,7 @@ mod tests {
             reasoning: None,
             model_options: Default::default(),
             cwd: "/tmp".into(),
-            sandbox: holt_proto::SandboxLevel::WorkspaceWrite,
+            permission_mode: holt_proto::PermissionMode::default(),
             auto_approve: false,
             attachments: Vec::new(),
             worktree: None,

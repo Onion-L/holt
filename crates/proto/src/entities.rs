@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ProviderId, ReasoningLevel, SandboxLevel};
+use crate::{PermissionMode, ProviderId, ReasoningLevel};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,7 +80,11 @@ pub struct ChatConfig {
     pub reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
-    pub sandbox: SandboxLevel,
+    /// The chat's permission mode (ADR-0014). Configs stored by the sandbox
+    /// era carry this under the `sandbox` key — the alias keeps them
+    /// readable — and a config without the field defaults to confirm-changes.
+    #[serde(default, alias = "sandbox")]
+    pub permission_mode: PermissionMode,
 }
 
 /// The built-in Title-task instruction (ADR-0012) — the single source the

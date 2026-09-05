@@ -91,12 +91,47 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The chat's permission mode (ADR-0014): which gatekeeper each mutating
+/// tool call (write, edit, bash) meets before it executes. Reads and content
+/// search are never gated, and there is no read-only tier.
+///
+/// Stored values from the dormant sandbox era remap on read —
+/// `workspace-write`/`read-only` → `confirm-changes`,
+/// `danger-full-access` → `full-access` — and any other value falls back to
+/// `confirm-changes` (the first-launch default) rather than failing startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum SandboxLevel {
-    ReadOnly,
-    WorkspaceWrite,
-    DangerFullAccess,
+pub enum PermissionMode {
+    #[default]
+    ConfirmChanges,
+    AutoReview,
+    FullAccess,
+}
+
+impl<'de> Deserialize<'de> for PermissionMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = PermissionMode;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a permission mode")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<PermissionMode, E> {
+                Ok(match value {
+                    "confirm-changes" | "workspace-write" | "read-only" => {
+                        PermissionMode::ConfirmChanges
+                    }
+                    "auto-review" => PermissionMode::AutoReview,
+                    "full-access" | "danger-full-access" => PermissionMode::FullAccess,
+                    _ => PermissionMode::ConfirmChanges,
+                })
+            }
+        }
+        deserializer.deserialize_str(Visitor)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +193,14 @@ pub struct RunRequest {
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
-    pub sandbox: SandboxLevel,
+    /// The chat's permission mode (ADR-0014) riding the run request so the
+    /// engine records it on the chat's config. Legacy `sandbox` payloads
+    /// decode through the alias; absent payloads default to confirm-changes.
+    /// Unlike the additive fields below, a pre-permission-modes host cannot
+    /// decode a command from a new peer (its `sandbox` was required) — the
+    /// doc store's skip-not-fail command drain contains that case.
+    #[serde(default, alias = "sandbox")]
+    pub permission_mode: PermissionMode,
     #[serde(default)]
     pub auto_approve: bool,
     /// Absolute paths of image attachments already staged on the run device
@@ -551,6 +593,68 @@ mod tests {
             spawn(serde_json::json!({ "model": 5 })).subagent_model(),
             None
         );
+    }
+
+    #[test]
+    fn permission_mode_serializes_kebab_case_and_remaps_legacy_values() {
+        let round = |mode: PermissionMode| {
+            serde_json::to_value(mode)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(round(PermissionMode::ConfirmChanges), "confirm-changes");
+        assert_eq!(round(PermissionMode::AutoReview), "auto-review");
+        assert_eq!(round(PermissionMode::FullAccess), "full-access");
+        // Round-trip through JSON.
+        for mode in [
+            PermissionMode::ConfirmChanges,
+            PermissionMode::AutoReview,
+            PermissionMode::FullAccess,
+        ] {
+            let json = serde_json::to_value(mode).unwrap();
+            assert_eq!(
+                serde_json::from_value::<PermissionMode>(json).unwrap(),
+                mode
+            );
+        }
+        // Stored sandbox-era values remap on read (ADR-0014): everything
+        // except danger-full-access lands on confirm-changes.
+        let decode = |value: &str| {
+            serde_json::from_value::<PermissionMode>(serde_json::json!(value)).unwrap()
+        };
+        assert_eq!(decode("workspace-write"), PermissionMode::ConfirmChanges);
+        assert_eq!(decode("read-only"), PermissionMode::ConfirmChanges);
+        assert_eq!(decode("danger-full-access"), PermissionMode::FullAccess);
+        // Unknown values fall back to the first-launch default instead of
+        // failing startup.
+        assert_eq!(decode("bogus-tier"), PermissionMode::ConfirmChanges);
+        assert_eq!(decode(""), PermissionMode::ConfirmChanges);
+        // A non-string value is a decode error, not a fallback: old writers
+        // always serialized a string, and the lenient readers around stored
+        // configs (skip-not-fail) contain the rare stranger.
+        assert!(serde_json::from_value::<PermissionMode>(serde_json::Value::Null).is_err());
+    }
+
+    #[test]
+    fn run_request_reads_legacy_sandbox_field_and_new_key() {
+        let base = r#"{"prompt":"p","provider":"openai","model":"openai/gpt-5.4","reasoning":null,"cwd":".""#;
+        // The old key + old tier decodes through alias + remap…
+        let req: RunRequest =
+            serde_json::from_str(&format!(r#"{base},"sandbox":"danger-full-access"}}"#)).unwrap();
+        assert_eq!(req.permission_mode, PermissionMode::FullAccess);
+        // …the new key round-trips camelCased…
+        let req: RunRequest =
+            serde_json::from_str(&format!(r#"{base},"permissionMode":"auto-review"}}"#)).unwrap();
+        assert_eq!(req.permission_mode, PermissionMode::AutoReview);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["permissionMode"],
+            "auto-review"
+        );
+        // …and a payload without the field defaults to confirm-changes.
+        let req: RunRequest = serde_json::from_str(&format!("{base}}}")).unwrap();
+        assert_eq!(req.permission_mode, PermissionMode::ConfirmChanges);
     }
 
     #[test]

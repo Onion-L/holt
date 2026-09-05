@@ -4,7 +4,7 @@
 //! tested, not asserted.
 
 use super::*;
-use holt_proto::{ProviderId, SandboxLevel, SessionStatus, TitleSource};
+use holt_proto::{PermissionMode, ProviderId, SessionStatus, TitleSource};
 
 fn ts(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap_or(DateTime::UNIX_EPOCH)
@@ -265,7 +265,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
             model: "mock-1".into(),
             reasoning: None,
             model_options: Default::default(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: PermissionMode::default(),
         }),
         last_message_preview: None,
         last_message_at: None,

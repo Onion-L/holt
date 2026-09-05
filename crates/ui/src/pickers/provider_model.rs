@@ -176,7 +176,7 @@ impl Pickers {
             .selected_chat_row()
             .and_then(|c| c.config.as_ref())
         {
-            config.sandbox = existing.sandbox;
+            config.permission_mode = existing.permission_mode;
         }
         change(&mut config);
         // Reasoning must stay concrete for whatever model the row now names —

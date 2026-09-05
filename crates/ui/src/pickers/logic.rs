@@ -6,7 +6,7 @@
 //! every public name at `crate::pickers`.
 
 use holt_proto::{
-    ChatConfig, FolderListing, Model, Provider, ProviderId, ReasoningLevel, SandboxLevel,
+    ChatConfig, FolderListing, Model, PermissionMode, Provider, ProviderId, ReasoningLevel,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ impl ResolvedRunConfig {
             model: self.model.clone()?,
             reasoning: self.reasoning,
             model_options: self.model_options.clone(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            permission_mode: PermissionMode::default(),
         })
     }
 }
@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_config_carries_reasoning_options_and_workspace_sandbox() {
+    fn chat_config_carries_reasoning_options_and_default_permission_mode() {
         let mut resolved = ResolvedRunConfig {
             provider: Some(ProviderId("openai".into())),
             model: Some("openai/gpt-5.4".into()),
@@ -794,7 +794,7 @@ mod tests {
             config.model_options.get("speed"),
             Some(&serde_json::Value::String("fast".into()))
         );
-        assert_eq!(config.sandbox, SandboxLevel::WorkspaceWrite);
+        assert_eq!(config.permission_mode, PermissionMode::ConfirmChanges);
         // Model missing: nothing safe to record.
         resolved.model = None;
         assert!(resolved.chat_config().is_none());

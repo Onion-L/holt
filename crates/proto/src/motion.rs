@@ -128,11 +128,8 @@ pub const MARK_SIGNAL_CELLS: [(f32, f32); 32] = [
 ];
 
 /// All mark variants, indexed by the shell's per-visit random pick.
-pub const MARK_SHAPES: [&[(f32, f32)]; 3] = [
-    &MARK_GHOST_CELLS,
-    &MARK_RING_CELLS,
-    &MARK_SIGNAL_CELLS,
-];
+pub const MARK_SHAPES: [&[(f32, f32)]; 3] =
+    [&MARK_GHOST_CELLS, &MARK_RING_CELLS, &MARK_SIGNAL_CELLS];
 
 /// Fraction of the pulse cycle the mark's light sweep occupies.
 pub const MARK_SPREAD: f32 = 0.55;
@@ -227,7 +224,11 @@ mod tests {
         let lead = mark_cell_stagger(0.0, 840.0);
         let trail = mark_cell_stagger(720.0, 0.0);
         assert!(lead > trail, "corner {lead} should lead {trail}");
-        close(lead, MARK_SPREAD, "the bottom-left corner anchors the sweep");
+        close(
+            lead,
+            MARK_SPREAD,
+            "the bottom-left corner anchors the sweep",
+        );
         close(
             trail,
             MARK_SPREAD * (100.0 / 1660.0),

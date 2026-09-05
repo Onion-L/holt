@@ -680,7 +680,7 @@ impl LocalEngine {
                     model: request.model.clone(),
                     reasoning: request.reasoning,
                     model_options: request.model_options.clone(),
-                    sandbox: request.sandbox,
+                    permission_mode: request.permission_mode,
                 });
                 row.last_message_preview = Some(preview.chars().take(120).collect());
                 row.last_message_at = Some(now);

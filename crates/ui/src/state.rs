@@ -1924,7 +1924,7 @@ mod tests {
             model: "claude-fable-5".into(),
             reasoning: Some(holt_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
-            sandbox: holt_proto::SandboxLevel::WorkspaceWrite,
+            permission_mode: holt_proto::PermissionMode::default(),
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -1948,7 +1948,7 @@ mod tests {
                 model: "openai/gpt-5.4".into(),
                 reasoning: None,
                 model_options: serde_json::Map::new(),
-                sandbox: holt_proto::SandboxLevel::WorkspaceWrite,
+                permission_mode: holt_proto::PermissionMode::default(),
             },
         );
     }
