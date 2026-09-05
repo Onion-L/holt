@@ -29,6 +29,13 @@
 - **Automatic title**: a short, model-generated name derived from a chat's first user prompt, used only when the chat has no user-supplied title.
 - **Title settings**: the device-wide choice of model and instruction used for automatic titles; an empty model means automatic titles are disabled.
 - **Title task**: the one-shot background operation that asks the configured model for an automatic title after a chat receives its first user prompt; it is independent of the Turn lifecycle and never becomes chat History.
+- **Permission mode**: the per-chat standing policy that stands between a Turn's mutating tool calls and execution — which gatekeeper judges each one: the user (confirm changes), a model review pass (auto-review), or none (full access). Reads are never gated. New chats inherit the last mode used on the device.
+- **Approval**: a mutating tool call paused for the user's verdict in confirm-changes mode — allow once, always-allow, deny, or deny with a written note (the note becomes the reason the model sees). Rendered as an approval chip in the Transcript that settles to its verdict.
+- **Auto-review**: the model pass that judges each mutating tool call before execution in auto-review mode — same model as the chat; a rejection blocks the call and returns the reason to the agent. Rendered as review chips in the Transcript.
+- **Always-allow**: a chat-scoped, in-memory grant that passes matching mutating calls through the gate for the rest of the app session — bash matches by command prefix, write/edit by exact file path. Checked before the gatekeeper, so it holds across mode switches; cleared on restart and never persisted.
+_Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
+_Avoid_: permission prompt, confirm dialog (for Approval)
+_Avoid_: auto-approve (Auto-review can reject)
 _Avoid_: grep tool, agent search
 _Avoid_: agent diff, session diff
 _Avoid_: importing or registering a skill (placement in a skill root is the only way in)
