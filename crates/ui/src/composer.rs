@@ -111,6 +111,13 @@ pub struct Composer {
     failure_key: Option<String>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
+    /// Inline editor for one pending queue message (queue.rs). Never touches
+    /// `drafts` — the composer's own text is unrelated text being composed.
+    queue_edit: Option<queue::QueueEdit>,
+    /// Queue edit/delete RPC slot — a dropped in-flight save would strand
+    /// `queue_busy` and freeze the row actions.
+    queue_task: Option<Task<()>>,
+    queue_busy: bool,
     /// Requests already answered locally (suppresses the panel until the doc
     /// frame marks them resolved).
     answered_requests: HashSet<String>,
@@ -257,6 +264,9 @@ impl Composer {
             failure: None,
             wizard: None,
             wizard_focus: cx.focus_handle(),
+            queue_edit: None,
+            queue_task: None,
+            queue_busy: false,
             answered_requests: HashSet::new(),
             failure_key: None,
             action_task: None,
@@ -352,6 +362,7 @@ impl Composer {
             // so switching away and back must not erase the one visible
             // trace of a failed send.
             self.wizard = None;
+            self.queue_edit = None;
             // Attachments stay stashed under their chat key (the map swap IS
             // the navigation); only the transient chrome resets.
             self.preview = None;
@@ -581,7 +592,7 @@ impl Render for Composer {
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
-            .child(self.render_message_queue(cx))
+            .child(self.render_message_queue(window, cx))
             // Raw Escape (no popup/dialog consumed it) = interrupt the
             // running Turn while an Approval gates it (ADR-0014).
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {

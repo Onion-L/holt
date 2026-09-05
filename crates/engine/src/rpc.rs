@@ -629,11 +629,11 @@ impl EngineService {
         chat: Arc<ChatRuntime>,
         request: RunRequest,
         message_id: String,
-        parts: Vec<MessagePart>,
-        preview: String,
-        prompt: String,
+        mut parts: Vec<MessagePart>,
+        mut preview: String,
+        mut prompt: String,
         invocation: Option<MessagePart>,
-        title_prompt: Option<String>,
+        mut title_prompt: Option<String>,
         cancel: CancellationToken,
         queued: bool,
     ) -> Result<AgentRun, RpcError> {
@@ -662,6 +662,44 @@ impl EngineService {
             .providers
             .resolve_model(request.provider.as_str(), &request.model)
             .map_err(RpcError::BadParams)?;
+        let now = Utc::now();
+        let timestamp = now.timestamp_millis().max(
+            chat.transcript
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .find(|entry| entry.role == MessageRole::User)
+                .map_or(0, |entry| entry.created_at.saturating_add(1)),
+        );
+        if cancel.is_cancelled() || chat.is_removed() {
+            return Err(RpcError::Failed("Turn interrupted before execution".into()));
+        }
+        // The queued admission checkpoint: persist the pending-to-started
+        // transition before anything Turn-shaped is built. The admitted item
+        // comes back so an edit that landed between the queue pick and this
+        // checkpoint wins — the Turn is built from the body the queue holds
+        // now, not from the pick-time snapshot.
+        if queued {
+            let admitted = {
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if cancel.is_cancelled() || chat.is_removed() {
+                    return Err(RpcError::Failed("Turn interrupted before execution".into()));
+                }
+                queue.start(&message_id, timestamp)?
+            };
+            let current = admitted.message.request.prompt;
+            if current != prompt {
+                prompt = current.clone();
+                preview = current.clone();
+                // The queued entry's transcript shape is exactly one text part.
+                parts = vec![MessagePart::Text {
+                    id: "t0".into(),
+                    text: current.clone(),
+                }];
+                title_prompt = Some(current);
+            }
+        }
         let baseline = self.git.turn_baseline(&request.cwd).await.ok();
         // Resolve live checkout identity only when this message reaches
         // admission. A pending message does not own a Turn baseline.
@@ -686,19 +724,6 @@ impl EngineService {
             .persistence
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let now = Utc::now();
-        let timestamp = now.timestamp_millis().max(
-            chat.transcript
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .rev()
-                .find(|entry| entry.role == MessageRole::User)
-                .map_or(0, |entry| entry.created_at.saturating_add(1)),
-        );
-        if cancel.is_cancelled() || chat.is_removed() {
-            return Err(RpcError::Failed("Turn interrupted before execution".into()));
-        }
         let mut title_spawn = None;
         // The Turn's mode snapshot (ADR-0014): the stored mode, or the
         // sticky default for a row without a config yet. Taken at
@@ -766,13 +791,6 @@ impl EngineService {
             &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
         )
         .map_err(|error| RpcError::Failed(error.to_string()))?;
-        if queued {
-            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-            if cancel.is_cancelled() || chat.is_removed() {
-                return Err(RpcError::Failed("Turn interrupted before execution".into()));
-            }
-            queue.start(&message_id, timestamp)?;
-        }
         if let Some(baseline) = baseline {
             self.turns.insert(chat_id, baseline);
         }
@@ -1197,6 +1215,41 @@ impl RpcService for EngineService {
                     queue.snapshot()
                 };
                 self.kick_queue(chat);
+                RpcReply::value(&snapshot)
+            }
+            methods::EDIT_QUEUED_MESSAGE => {
+                let chat_id = required_string(&params, "chatId")?;
+                let message_id = required_string(&params, "messageId")?;
+                let prompt = required_string(&params, "prompt")?;
+                if !crate::store::chat_id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let snapshot = {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.edit(message_id, prompt.to_string())?;
+                    queue.snapshot()
+                };
+                RpcReply::value(&snapshot)
+            }
+            methods::DELETE_QUEUED_MESSAGE => {
+                let chat_id = required_string(&params, "chatId")?;
+                let message_id = required_string(&params, "messageId")?;
+                if !crate::store::chat_id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let snapshot = {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.delete(message_id)?;
+                    queue.snapshot()
+                };
                 RpcReply::value(&snapshot)
             }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),

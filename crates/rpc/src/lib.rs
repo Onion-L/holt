@@ -55,6 +55,16 @@ pub mod methods {
     /// Resume automatic queue execution after Stop, failure, or restart.
     /// Params `{chatId}`; replies with the accepted `MessageQueue` snapshot.
     pub const CONTINUE_MESSAGE_QUEUE: &str = "ContinueMessageQueue";
+    /// Edit a pending ordinary message's body: params `{chatId, messageId,
+    /// prompt}`; replies with the accepted `MessageQueue` snapshot. Identity,
+    /// position, command kind, and the captured model/reasoning are the
+    /// queue's — an item that already started fails without mutating it.
+    pub const EDIT_QUEUED_MESSAGE: &str = "EditQueuedMessage";
+    /// Remove a pending ordinary message from the queue: params
+    /// `{chatId, messageId}`; replies with the accepted `MessageQueue`
+    /// snapshot. Remaining items keep their order; a started item fails
+    /// instead of touching the active Turn.
+    pub const DELETE_QUEUED_MESSAGE: &str = "DeleteQueuedMessage";
     /// Resolve a pending confirm-changes Approval (ADR-0014): params
     /// `{approvalId, verdict}` where verdict is
     /// `holt_proto::ApprovalVerdict` (`{"kind":"allow"}`,

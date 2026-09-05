@@ -171,6 +171,53 @@ impl Queue {
         self.commit(next)
     }
 
+    /// How edit/delete must answer for an id that is not waiting in the
+    /// queue: a started item has already become a Turn, anything else was
+    /// never (or is no longer) pending.
+    fn mutation_refusal(&self, message_id: &str) -> RpcError {
+        let started = self
+            .record
+            .started
+            .as_ref()
+            .is_some_and(|s| s.message.message_id == message_id);
+        RpcError::Failed(if started {
+            "Message is already executing".into()
+        } else {
+            "Message is no longer pending".into()
+        })
+    }
+
+    /// Change a pending ordinary message's body. Identity, position, and the
+    /// captured model settings are the queue's — an item that already started
+    /// is no longer editable.
+    pub fn edit(&mut self, message_id: &str, prompt: String) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        let Some(item) = next
+            .pending
+            .iter_mut()
+            .find(|item| item.message_id == message_id)
+        else {
+            return Err(self.mutation_refusal(message_id));
+        };
+        item.request.prompt = prompt;
+        self.commit(next)
+    }
+
+    /// Remove a pending item. The others keep their relative order; a started
+    /// item is execution's property now and is never removed here.
+    pub fn delete(&mut self, message_id: &str) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        let Some(index) = next
+            .pending
+            .iter()
+            .position(|item| item.message_id == message_id)
+        else {
+            return Err(self.mutation_refusal(message_id));
+        };
+        next.pending.remove(index);
+        self.commit(next)
+    }
+
     pub fn pause(&mut self, paused: bool) -> Result<(), RpcError> {
         let mut next = self.record.clone();
         next.paused = paused;
@@ -188,7 +235,12 @@ impl Queue {
             .flatten()
     }
 
-    pub fn start(&mut self, message_id: &str, timestamp: i64) -> Result<(), RpcError> {
+    /// The admission checkpoint: atomically move the head from pending to
+    /// started and persist it before any model or tool work. Returns the
+    /// admitted item, so the caller builds its Turn from the body the queue
+    /// holds NOW — an edit that landed between the queue pick and this
+    /// checkpoint wins.
+    pub fn start(&mut self, message_id: &str, timestamp: i64) -> Result<StartedMessage, RpcError> {
         if self.record.paused {
             return Err(RpcError::Failed("Message queue is paused".into()));
         }
@@ -200,10 +252,11 @@ impl Queue {
         {
             return Err(RpcError::Failed("Message is no longer pending".into()));
         }
-        next.started = Some(StartedMessage {
+        let started = StartedMessage {
             message: next.pending.remove(0),
             timestamp,
-        });
+        };
+        next.started = Some(started.clone());
         let result = self.commit(next);
         if result.is_err() && self.record.started.is_some() {
             // The rename landed but its directory sync did not. Recovery
@@ -213,7 +266,7 @@ impl Queue {
             self.error = Some("Turn admission could not be confirmed. Restore storage and reopen Holt to recover the checkpoint.".into());
             self.publish();
         }
-        result
+        result.map(|()| started)
     }
 
     fn finish(&mut self, success: bool, error: Option<String>) {
@@ -245,7 +298,7 @@ impl EngineService {
         let task = tokio::spawn(async move {
             loop {
                 let _execution = worker_chat.execution.lock().await;
-                let (message, cancel) = {
+                let (message, cancel, picked_id) = {
                     let queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                     let head = if worker_chat.is_removed() {
                         None
@@ -259,7 +312,8 @@ impl EngineService {
                     let cancel = CancellationToken::new();
                     *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(cancel.clone());
-                    (message, cancel)
+                    let picked_id = message.message_id.clone();
+                    (message, cancel, picked_id)
                 };
                 let prompt = message.request.prompt.clone();
                 let prepared = service
@@ -298,7 +352,17 @@ impl EngineService {
                     .clone();
                 let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                if !worker_chat.is_removed() && !queue.unreadable {
+                // The iteration settles the queue only if the picked head
+                // reached its admission checkpoint. A delete that removed it
+                // mid-prep leaves no run to finish: keep the winning
+                // mutation's state and consider the next head directly.
+                let vanished = !started
+                    && queue
+                        .record
+                        .pending
+                        .iter()
+                        .all(|m| m.message_id != picked_id);
+                if !vanished && !worker_chat.is_removed() && !queue.unreadable {
                     // Stop already changed the pause state. A subsequent
                     // Continue must survive the canceled Turn's cleanup.
                     queue.finish(
@@ -319,5 +383,126 @@ impl EngineService {
             }
         });
         chat.track_task(&task);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(prompt: &str, model: &str) -> RunRequest {
+        serde_json::from_value(serde_json::json!({
+            "prompt": prompt,
+            "provider": "openai",
+            "model": model,
+            "reasoning": "high",
+            "cwd": "/tmp/project",
+        }))
+        .expect("run request")
+    }
+
+    fn queue_with_pending() -> (Queue, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut queue = Queue::load(dir.path(), "chat-1");
+        queue
+            .enqueue(request("B", "openai/gpt-5.4"), "m-b".into())
+            .expect("enqueue B");
+        queue
+            .enqueue(request("C", "openai/gpt-5.4-mini"), "m-c".into())
+            .expect("enqueue C");
+        (queue, dir)
+    }
+
+    #[test]
+    fn edit_changes_only_the_body() {
+        let (mut queue, _dir) = queue_with_pending();
+        let before = queue.record.pending[0].clone();
+        queue.edit("m-b", "B edited".into()).expect("edit");
+        let after = queue.record.pending[0].clone();
+        assert_eq!(after.request.prompt, "B edited");
+        assert_eq!(after.message_id, before.message_id);
+        assert_eq!(after.submitted_at, before.submitted_at);
+        assert_eq!(after.request.model, before.request.model);
+        assert_eq!(after.request.provider, before.request.provider);
+        assert_eq!(after.request.reasoning, before.request.reasoning);
+        assert_eq!(after.request.model_options, before.request.model_options);
+        assert_eq!(queue.record.pending.len(), 2);
+        assert_eq!(queue.record.pending[1].request.prompt, "C");
+    }
+
+    #[test]
+    fn delete_removes_only_the_named_item_and_keeps_order() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.delete("m-b").expect("delete");
+        assert_eq!(
+            queue
+                .record
+                .pending
+                .iter()
+                .map(|m| m.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["m-c"]
+        );
+        // Deleting the tail works the same way.
+        queue
+            .enqueue(request("D", "openai/gpt-5.4"), "m-d".into())
+            .expect("enqueue D");
+        queue.delete("m-c").expect("delete tail");
+        assert_eq!(
+            queue
+                .record
+                .pending
+                .iter()
+                .map(|m| m.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["m-d"]
+        );
+    }
+
+    #[test]
+    fn start_hands_back_the_currently_stored_body() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.edit("m-b", "B edited".into()).expect("edit");
+        let started = queue.start("m-b", 42).expect("start");
+        assert_eq!(started.message.request.prompt, "B edited");
+        assert_eq!(started.timestamp, 42);
+        assert_eq!(started.message.message_id, "m-b");
+        assert!(
+            queue
+                .record
+                .pending
+                .first()
+                .is_some_and(|m| m.message_id == "m-c")
+        );
+    }
+
+    #[test]
+    fn mutations_answer_for_started_and_unknown_ids() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.start("m-b", 1).expect("start");
+        let error = queue.edit("m-b", "nope".into()).unwrap_err();
+        assert!(error.to_string().contains("already executing"), "{error}");
+        let error = queue.delete("m-b").unwrap_err();
+        assert!(error.to_string().contains("already executing"), "{error}");
+        let error = queue.edit("m-zz", "nope".into()).unwrap_err();
+        assert!(error.to_string().contains("no longer pending"), "{error}");
+        let error = queue.delete("m-zz").unwrap_err();
+        assert!(error.to_string().contains("no longer pending"), "{error}");
+    }
+
+    #[test]
+    fn edits_and_deletions_survive_a_reload() {
+        let (mut queue, dir) = queue_with_pending();
+        queue.edit("m-c", "C edited".into()).expect("edit");
+        queue.delete("m-b").expect("delete");
+        let reloaded = Queue::load(dir.path(), "chat-1");
+        assert_eq!(reloaded.record.pending.len(), 1);
+        assert_eq!(reloaded.record.pending[0].message_id, "m-c");
+        assert_eq!(reloaded.record.pending[0].request.prompt, "C edited");
+        assert_eq!(
+            reloaded.record.pending[0].request.model,
+            "openai/gpt-5.4-mini"
+        );
+        assert!(reloaded.record.paused, "a non-empty queue restores paused");
     }
 }

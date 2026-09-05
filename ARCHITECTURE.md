@@ -77,7 +77,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
   `QueueCommand run` acknowledges durable acceptance by `messageId`;
   the same identity is deduplicated across pending, started, and completed
-  work, including after restart. Admission errors arrive through the Watch.
+  work, including after restart. `EditQueuedMessage` (`{chatId, messageId,
+  prompt}`) rewrites only a pending message's body — identity, position, and
+  the captured model settings are the queue's — and `DeleteQueuedMessage`
+  (`{chatId, messageId}`) removes one, preserving the order of the rest.
+  Both acknowledge only after the queue file is durably replaced and reply
+  with the accepted snapshot; a started item refuses both instead of
+  touching the active Turn. Admission errors arrive through the Watch.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
@@ -175,8 +181,20 @@ pending messages are absent from Transcript and History. Model and reasoning
 are captured on submission. Permission mode and live checkout identity are
 read at Turn admission, when the latest-Turn diff baseline is refreshed.
 The queue is consumed by the engine even when its chat is not selected.
+The composer offers edit and delete on each pending message: the editor is
+its own card (the composer's draft text is unrelated), Escape cancels, and
+a failed save keeps the unsaved text with the error.
 
-Queue editing/deletion, Steer, and queued slash commands remain subsequent
+Queue mutations serialize with execution admission on the queue lock. The
+admission checkpoint (pending-to-started) re-reads the item from the queue,
+so an edit that lands between the consumer's pick and the checkpoint wins;
+a delete that lands there removes the item and the consumer simply moves
+on — the refused admission never pauses the queue or stamps an error on a
+different item. After the checkpoint the item is execution's property:
+mutations fail with an already-executing error and the run proceeds exactly
+once.
+
+Steer and queued slash commands remain subsequent
 slices. `/skill` and `/compact` still use direct commands and reject an
 occupied execution channel; `/compact` remains outside the Turn model.
 Terminals, worktrees, change requests, and uploads remain unserved.

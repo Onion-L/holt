@@ -1,10 +1,27 @@
 //! Presentation and commands for the selected chat's engine-owned queue.
 
-use gpui::{Context, KeyDownEvent, Render, Window, div, prelude::*, px};
+use gpui::{
+    Context, Entity, Focusable, KeyDownEvent, Render, Subscription, Window, div, prelude::*, px,
+};
 use holt_rpc::methods;
 
-use super::Composer;
+use super::{Composer, ComposerInput, ComposerInputEvent};
 use crate::theme::Theme;
+
+/// Inline editor state for one pending queue message. The editor renders as
+/// its own card beside the list — a fixed-height uniform_list row cannot host
+/// a real input — and never touches the per-chat drafts the composer input
+/// holds. `original` is the body the editor opened with: an item that left
+/// the pending list (started, deleted elsewhere) dismisses an untouched
+/// editor but keeps one holding unsaved text, so Save can surface the
+/// engine's "already executing" refusal instead of silently dropping it.
+pub(super) struct QueueEdit {
+    pub(super) message_id: String,
+    pub(super) original: String,
+    pub(super) input: Entity<ComposerInput>,
+    pub(super) focus_pending: bool,
+    _events: Subscription,
+}
 
 impl Composer {
     pub(super) fn retry_submission(&mut self, cx: &mut Context<Self>) {
@@ -60,17 +77,171 @@ impl Composer {
         }));
     }
 
-    pub(super) fn render_message_queue(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let state = self.state.read(cx);
-        let Some(queue) = state.message_queue.as_ref() else {
+    /// Start editing a pending message's body. The captured model, the kind,
+    /// and the position belong to the queue and are not offered here.
+    pub(super) fn open_queue_edit(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        let prompt = {
+            let state = self.state.read(cx);
+            let Some(item) = state.message_queue.as_ref().and_then(|queue| {
+                queue
+                    .pending
+                    .iter()
+                    .find(|item| item.message_id == message_id)
+            }) else {
+                return;
+            };
+            item.request.prompt.clone()
+        };
+        let input = cx.new(|cx| ComposerInput::new("Edit the queued message", cx));
+        input.update(cx, |input, cx| input.set_text(prompt.clone(), cx));
+        let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.save_queue_edit(cx);
+            }
+        });
+        self.queue_edit = Some(QueueEdit {
+            message_id: message_id.into(),
+            original: prompt,
+            input,
+            focus_pending: true,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Save the edit through the typed RPC boundary. The acknowledgement
+    /// means the queue file was persisted; a failure keeps the editor open
+    /// with the unsaved text.
+    pub(super) fn save_queue_edit(&mut self, cx: &mut Context<Self>) {
+        if self.queue_busy {
+            return;
+        }
+        let Some(edit) = self.queue_edit.as_ref() else {
+            return;
+        };
+        let message_id = edit.message_id.clone();
+        let prompt = edit.input.read(cx).text().trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        let chat_id = self.current_key.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.queue_busy = true;
+        cx.notify();
+        self.queue_task = Some(cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                methods::EDIT_QUEUED_MESSAGE,
+                serde_json::json!({"chatId": chat_id, "messageId": message_id, "prompt": prompt}),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                this.queue_busy = false;
+                match result {
+                    Ok(_) => {
+                        // Only close the editor that saved; a stale one was
+                        // already dismissed when its message left the queue.
+                        if this
+                            .queue_edit
+                            .as_ref()
+                            .is_some_and(|edit| edit.message_id == message_id)
+                        {
+                            this.queue_edit = None;
+                        }
+                    }
+                    Err(error) => {
+                        this.failure = Some(format!("Could not save the edit: {error}").into());
+                        this.failure_key = Some(chat_id);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    pub(super) fn cancel_queue_edit(&mut self, cx: &mut Context<Self>) {
+        if self.queue_edit.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Remove a pending message. A stale action (the item already started)
+    /// surfaces the engine's refusal instead of touching the active Turn.
+    pub(super) fn delete_queued_message(&mut self, message_id: String, cx: &mut Context<Self>) {
+        if self.queue_busy {
+            return;
+        }
+        let chat_id = self.current_key.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.queue_busy = true;
+        cx.notify();
+        self.queue_task = Some(cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                methods::DELETE_QUEUED_MESSAGE,
+                serde_json::json!({"chatId": chat_id, "messageId": message_id}),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                this.queue_busy = false;
+                if let Err(error) = result {
+                    this.failure = Some(format!("Could not delete the message: {error}").into());
+                    this.failure_key = Some(chat_id);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    pub(super) fn render_message_queue(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(queue) = self.state.read(cx).message_queue.clone() else {
             return div().into_any_element();
         };
+        // A stale editor (its message started or was removed elsewhere) is
+        // dismissed only when it holds no unsaved text; an edited one stays
+        // open so Save surfaces the engine's "already executing" refusal
+        // instead of the edit being silently dropped.
+        if let Some(edit) = self.queue_edit.as_ref() {
+            let still_pending = queue
+                .pending
+                .iter()
+                .any(|item| item.message_id == edit.message_id);
+            let untouched = edit.input.read(cx).text() == edit.original;
+            if !still_pending && untouched {
+                self.queue_edit = None;
+            }
+        }
         if queue.pending.is_empty() && !queue.paused && queue.error.is_none() {
             return div().into_any_element();
+        }
+        if let Some(edit) = self.queue_edit.as_mut()
+            && std::mem::take(&mut edit.focus_pending)
+        {
+            let handle = edit.input.focus_handle(cx);
+            window.focus(&handle, cx);
         }
         let theme = Theme::of(cx);
         let pending = queue.pending.clone();
         let count = pending.len();
+        let editing_id = self.queue_edit.as_ref().map(|edit| edit.message_id.clone());
+        // uniform_list's item closure sees only `&mut App`, so row handlers
+        // dispatch through the composer's weak handle instead of a listener.
+        let composer = cx.weak_entity();
+        let editor = self.render_queue_edit_card(theme, cx);
         let error = queue
             .error
             .clone()
@@ -136,21 +307,83 @@ impl Composer {
                                     .w_full()
                                     .min_w_0()
                                     .flex()
-                                    .flex_col()
-                                    .justify_center()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
                                     .border_b_1()
                                     .border_color(theme.border)
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_color(theme.text)
-                                            .child(item.request.prompt.clone()),
+                                    .when(
+                                        editing_id.as_deref() == Some(item.message_id.as_str()),
+                                        |el| el.bg(theme.glass_hover()),
                                     )
                                     .child(
                                         div()
-                                            .truncate()
-                                            .text_color(theme.text_faint)
-                                            .child(item.request.model.clone()),
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_color(theme.text)
+                                                    .child(item.request.prompt.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_color(theme.text_faint)
+                                                    .child(item.request.model.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(2.0))
+                                            .child(queue_row_action(
+                                                format!("queue-edit-{}", item.message_id),
+                                                "Edit queued message",
+                                                crate::icons::PEN,
+                                                theme.glass_hover(),
+                                                theme.text_muted,
+                                                {
+                                                    let composer = composer.clone();
+                                                    let message_id = item.message_id.clone();
+                                                    move |_, _, cx| {
+                                                        composer
+                                                            .update(cx, |this, cx| {
+                                                                this.open_queue_edit(
+                                                                    &message_id,
+                                                                    cx,
+                                                                )
+                                                            })
+                                                            .ok();
+                                                    }
+                                                },
+                                            ))
+                                            .child(queue_row_action(
+                                                format!("queue-delete-{}", item.message_id),
+                                                "Delete queued message",
+                                                crate::icons::TRASH_BIN_MINIMALISTIC,
+                                                theme.glass_hover(),
+                                                theme.text_muted,
+                                                {
+                                                    let composer = composer.clone();
+                                                    let message_id = item.message_id.clone();
+                                                    move |_, _, cx| {
+                                                        composer
+                                                            .update(cx, |this, cx| {
+                                                                this.delete_queued_message(
+                                                                    message_id.clone(),
+                                                                    cx,
+                                                                )
+                                                            })
+                                                            .ok();
+                                                    }
+                                                },
+                                            )),
                                     )
                             })
                             .collect::<Vec<_>>()
@@ -161,10 +394,103 @@ impl Composer {
                     .occlude(),
                 )
             })
+            .children(editor)
             .when_some(error, |el, error| {
                 el.child(div().min_w_0().text_color(theme.danger).child(error))
             })
             .into_any_element()
+    }
+
+    /// The edit card under the list: body input, Escape cancels, Enter saves.
+    fn render_queue_edit_card(
+        &self,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let edit = self.queue_edit.as_ref()?;
+        let input = edit.input.clone();
+        let can_save = !input.read(cx).text().trim().is_empty() && !self.queue_busy;
+        let card = div()
+            .id("queue-edit-card")
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .border_1()
+            .border_color(theme.border)
+            .px(px(10.0))
+            .py(px(8.0))
+            // Escape never interrupts the running Turn from the editor.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.cancel_queue_edit(cx);
+                }
+            }))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_faint)
+                    .child("Edit queued message — Enter saves, Shift-Enter adds a line"),
+            )
+            .child(div().w_full().min_w_0().child(input))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .id("queue-edit-cancel")
+                            .role(gpui::Role::Button)
+                            .aria_label("Cancel editing the queued message")
+                            .focusable()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_color(theme.text)
+                            .hover(|el| el.bg(theme.glass_hover()))
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_queue_edit(cx)))
+                            .child("Cancel"),
+                    )
+                    .child(
+                        div()
+                            .id("queue-edit-save")
+                            .role(gpui::Role::Button)
+                            .aria_label("Save the queued message edit")
+                            .focusable()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(if can_save {
+                                theme.border_strong
+                            } else {
+                                theme.border
+                            })
+                            .text_color(if can_save {
+                                theme.text
+                            } else {
+                                theme.text_faint
+                            })
+                            .when(can_save, |el| {
+                                el.hover(|el| el.bg(theme.glass_hover()))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.save_queue_edit(cx);
+                                    }))
+                            })
+                            .child("Save"),
+                    ),
+            )
+            .into_any_element();
+        Some(card)
     }
 
     fn continue_queue(&mut self, cx: &mut Context<Self>) {
@@ -192,6 +518,36 @@ impl Composer {
         })
         .detach();
     }
+}
+
+/// One 26px icon button in a pending row (edit / delete). `on_click` runs
+/// with `&mut App`; row handlers dispatch through the composer's weak handle.
+fn queue_row_action(
+    id: String,
+    label: &'static str,
+    icon_path: &'static str,
+    hover_bg: gpui::Hsla,
+    icon_color: gpui::Hsla,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(gpui::SharedString::from(id))
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .focusable()
+        .size(px(26.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(Theme::CONTROL_RADIUS))
+        .cursor_pointer()
+        .hover(move |el| el.bg(hover_bg))
+        .on_click(on_click)
+        .child(
+            crate::icons::icon(icon_path)
+                .size(px(14.0))
+                .text_color(icon_color),
+        )
 }
 
 pub(super) struct ActionTooltip(pub &'static str);
