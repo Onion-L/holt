@@ -1,8 +1,9 @@
 //! The permission-mode control (ADR-0014, prototype 1-B): the composer
 //! footer's persistent shield chip + tier menu — one control, identical in
-//! empty and populated chats. The control speaks in the app's neutral chip
-//! idiom (no per-tier tint — user call: one color, same as the rest of the
-//! app).
+//! empty and populated chats. The menu rows carry fixed per-tier tints
+//! (Auto-review blue, Full access orange — semantic signposts, deliberately
+//! NOT the selectable accent); the footer chip itself stays in the app's
+//! neutral chip idiom.
 //!
 //! A tier pick on an existing chat goes through `Mutate
 //! setChatPermissionMode` (the WatchChats republish recolors the chip; the
@@ -55,6 +56,22 @@ pub fn mode_icon(mode: PermissionMode) -> &'static str {
         PermissionMode::ConfirmChanges => crate::icons::SHIELD,
         PermissionMode::AutoReview => crate::icons::EYE,
         PermissionMode::FullAccess => crate::icons::LOCK_OPEN,
+    }
+}
+
+/// The tier's fixed menu tint: Auto-review reads informational blue, Full
+/// access warning orange; Confirm changes — the safe default — stays
+/// neutral. Fixed hues, NOT the selectable accent: the tiers are semantic
+/// signposts and must read the same under every accent choice.
+pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Option<gpui::Hsla> {
+    match mode {
+        PermissionMode::ConfirmChanges => None,
+        PermissionMode::AutoReview => {
+            Some(crate::theme::AccentColor::Blue.primary(theme.appearance))
+        }
+        PermissionMode::FullAccess => {
+            Some(crate::theme::AccentColor::Orange.primary(theme.appearance))
+        }
     }
 }
 
@@ -172,6 +189,7 @@ impl Pickers {
             .gap(px(2.0))
             .children(MODE_TIERS.into_iter().enumerate().map(|(ix, mode)| {
                 let selected = mode == current;
+                let tint = mode_tint(mode, &theme);
                 popover::menu_row_nav(&theme, false, ix == active, format!("mode-row-{ix}"))
                     .id(("mode-row", ix))
                     .items_start()
@@ -182,7 +200,7 @@ impl Pickers {
                         crate::icons::icon(mode_icon(mode))
                             .size(px(14.0))
                             .mt(px(2.0))
-                            .text_color(theme.text_muted),
+                            .text_color(tint.unwrap_or(theme.text_muted)),
                     )
                     .child(
                         div()
@@ -200,6 +218,7 @@ impl Pickers {
                                     .child(
                                         div()
                                             .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(tint.unwrap_or(theme.text))
                                             .child(SharedString::from(mode_label(mode))),
                                     )
                                     .child(
@@ -294,6 +313,26 @@ mod tests {
         );
         assert_eq!(mode_label(PermissionMode::AutoReview), "Auto-review");
         assert_eq!(mode_label(PermissionMode::FullAccess), "Full access");
+    }
+
+    #[test]
+    fn tier_tints_are_fixed_blue_and_orange_not_the_accent() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert_eq!(mode_tint(PermissionMode::ConfirmChanges, &theme), None);
+            let blue = mode_tint(PermissionMode::AutoReview, &theme).expect("blue tint");
+            let orange = mode_tint(PermissionMode::FullAccess, &theme).expect("orange tint");
+            assert_eq!(
+                blue,
+                crate::theme::AccentColor::Blue.primary(theme.appearance)
+            );
+            assert_eq!(
+                orange,
+                crate::theme::AccentColor::Orange.primary(theme.appearance)
+            );
+            // The signposts must not collapse into each other or follow the
+            // (differently-hued) default accent.
+            assert_ne!(blue, orange);
+        }
     }
 
     /// The control's states through the real entity (gpui render-entity

@@ -84,6 +84,13 @@ impl AccentColor {
         }
     }
 
+    /// The preset's primary color for an appearance — for one-off fixed-hue
+    /// tints that must NOT follow the user's selectable accent (the
+    /// permission tiers: Auto-review blue, Full-access orange).
+    pub fn primary(self, appearance: Appearance) -> Hsla {
+        self.tokens(appearance).primary
+    }
+
     fn tokens(self, appearance: Appearance) -> AccentTokens {
         // These are deliberately authored pairs. Runtime contrast correction
         // used to gamut-clip OKLCH into sRGB and then mutate HSL lightness,
