@@ -135,13 +135,11 @@ impl ShortcutsPage {
     /// One shortcut row: label + description left, Reset when customized, and
     /// the click-to-record combo chip (recording inverts it to
     /// white-on-black). `ix` is the id's position in [`ShortcutId::ALL`]
-    /// (unique element ids across the group cards); `gx` is the row's place
-    /// in its own card (separator rule).
+    /// (unique element ids across the groups).
     fn render_row(
         &self,
         id: ShortcutId,
         ix: usize,
-        gx: usize,
         recording: Option<ShortcutId>,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -158,7 +156,6 @@ impl ShortcutsPage {
             .flex_row()
             .items_center()
             .gap(px(20.0))
-            .when(gx > 0, |el| el.border_t_1().border_color(theme.border))
             .child(
                 div()
                     .flex_1()
@@ -343,9 +340,9 @@ impl Render for ShortcutsPage {
         for name in GROUP_ORDER {
             let mut rows = div().flex().flex_col();
             let ids = ShortcutId::ALL.into_iter().filter(|&id| group(id) == name);
-            for (gx, id) in ids.enumerate() {
+            for id in ids {
                 let ix = ShortcutId::ALL.iter().position(|&a| a == id).unwrap_or(0);
-                rows = rows.child(self.render_row(id, ix, gx, recording, &theme, cx));
+                rows = rows.child(self.render_row(id, ix, recording, &theme, cx));
             }
             groups.push(
                 div()
