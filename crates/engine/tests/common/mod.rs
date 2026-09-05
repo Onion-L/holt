@@ -438,6 +438,25 @@ pub async fn setup_chat(engine: &LocalEngine, chat_id: &str) {
         .unwrap();
 }
 
+/// `setup_chat` plus a full-access switch — for tests whose scripted Turns
+/// run mutating tools (bash/write/edit) while testing something other than
+/// the permission gate (ADR-0014): a confirm-changes chat would pause
+/// those calls behind an approval nothing resolves.
+pub async fn setup_ungated_chat(engine: &LocalEngine, chat_id: &str) {
+    setup_chat(engine, chat_id).await;
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "setChatPermissionMode",
+                "chatId": chat_id,
+                "mode": "full-access",
+            }),
+        )
+        .await
+        .unwrap();
+}
+
 /// Queue a run command exactly as the composer serializes it.
 pub async fn run_prompt(engine: &LocalEngine, chat_id: &str, cwd: &str, prompt: &str) {
     engine

@@ -107,6 +107,10 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// The permission gate's record on a tool chip (ADR-0014, additive):
+    /// pending → settled verdicts. Absent on ungated chips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gate: Option<serde_json::Value>,
     /// Skill name for `kind: "skill"` chips (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -165,6 +169,7 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             subagent_ref,
             subagent_status,
             subagent_tail,
+            gate,
         } => DocPartJson {
             id: id.clone(),
             kind: "tool".into(),
@@ -178,6 +183,7 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             output_bytes: *output_bytes,
             diff_ref: diff_ref.clone(),
             diff_stats: diff_stats.as_ref().map(serde_json::to_value).transpose()?,
+            gate: gate.as_ref().map(serde_json::to_value).transpose()?,
             subagent_ref: subagent_ref.clone(),
             subagent_status: subagent_status.map(|s| {
                 match s {
@@ -277,6 +283,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     _ => None,
                 }),
                 subagent_tail: p.subagent_tail,
+                gate: p.gate.and_then(|g| serde_json::from_value(g).ok()),
             },
             None => MessagePart::Text {
                 id: p.id,
@@ -935,6 +942,7 @@ fn salvage_part(part: &serde_json::Value, entry_id: &str, ix: usize) -> Option<M
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            gate: None,
         });
     }
     if let Some(message) = obj.get("message").and_then(|x| x.as_str()) {
@@ -1306,6 +1314,7 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            gate: None,
         };
         w.sync(std::slice::from_ref(&part)).unwrap();
         if let MessagePart::Tool {
@@ -1358,6 +1367,7 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            gate: None,
         };
         let parts = vec![
             tool(
@@ -1688,6 +1698,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                gate: None,
             }],
             created_at: 1,
             device_id: "dev-a".into(),

@@ -47,10 +47,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —
   the stored mode is authoritative; a Turn snapshots it at start, so a
-  switch lands from the next Turn (gate enforcement is the gate slice; until
-  it lands every tier executes unchecked) — and records the device's sticky
+  switch lands from the next Turn — and records the device's sticky
   default for new chats (`permission-mode-default.json`, the title-settings
-  pattern; first launch defaults to confirm-changes).
+  pattern; first launch defaults to confirm-changes). In confirm-changes
+  every mutating call (write/edit/bash) pauses the Turn behind a pending
+  Approval — a gate chip on the call's Tool part in the transcript watch —
+  until `ResolveApproval` (`{approvalId, verdict}`: allow / deny with a
+  note) answers or interrupt cancels it; denials settle as error tool
+  results the model reads while the Turn continues, and interrupted or
+  restarted-mid-approval gates settle as aborted. Reads, grep, and
+  full-access never gate. The gate rides the agent loop's
+  `before_tool_call` hook (no upstream changes); the Title task and
+  Compaction mount no tools and never see it.
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

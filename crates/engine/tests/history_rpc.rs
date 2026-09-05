@@ -203,7 +203,7 @@ async fn an_interrupted_turn_leaves_an_honest_record() {
         ScriptedReply::text("steered elsewhere"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "please tidy up").await;
@@ -322,7 +322,7 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
         ScriptedReply::text("after the second restart"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let _ = common::subscribe(&engine, "chat-1").await;
     // The tool-call message lands; the run hangs on the next request —
     // kill it there, then cut the tool result off the file so the record

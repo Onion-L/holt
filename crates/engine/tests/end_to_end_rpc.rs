@@ -111,7 +111,7 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         ScriptedReply::text("the recovered reply"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     let cwd = fixture.cwd();
 

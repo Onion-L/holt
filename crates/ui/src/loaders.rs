@@ -19,7 +19,9 @@ use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`holt_proto::motion`) so both animate the
 // same loaders from the same numbers.
-pub use holt_proto::motion::{HOLT_CELLS, MARK_SHAPES, MARK_SPREAD, MATRIX_SIDE, mark_cell_stagger};
+pub use holt_proto::motion::{
+    HOLT_CELLS, MARK_SHAPES, MARK_SPREAD, MATRIX_SIDE, mark_cell_stagger,
+};
 
 /// The animated holt mark (holt-loader.tsx `HoltLoader`): a pixel-grid logo
 /// shape with a light wave sweeping bottom-left → top-right. Each cell rests
@@ -321,7 +323,10 @@ mod tests {
         let lead = mark_cell_stagger(0.0, 840.0);
         let trail = mark_cell_stagger(720.0, 0.0);
         assert!(lead > trail, "corner {lead} should lead {trail}");
-        assert!((lead - MARK_SPREAD).abs() < 1e-6, "lead stagger = SPREAD, got {lead}");
+        assert!(
+            (lead - MARK_SPREAD).abs() < 1e-6,
+            "lead stagger = SPREAD, got {lead}"
+        );
         assert!(trail >= 0.0, "trail stagger ≥ 0, got {trail}");
         // Every cell of every shape stays inside [0, SPREAD].
         for cells in MARK_SHAPES {

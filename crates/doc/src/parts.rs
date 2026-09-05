@@ -128,6 +128,46 @@ pub enum CompactionTrigger {
     AfterOverflow,
 }
 
+/// The permission gate's record on a mutating tool call (ADR-0014). Only
+/// gated calls carry one: pending while a confirm-changes Approval awaits
+/// the user's verdict, then settled in place to the verdict. Reads, content
+/// search, and full-access runs leave the chip bare.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolGate {
+    /// Opaque id a `ResolveApproval` verdict addresses; unique per opening.
+    pub id: String,
+    pub state: ToolGateState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ToolGateState {
+    /// confirm-changes: the Turn is paused waiting for the user.
+    Pending,
+    /// The verdict that resolved the gate.
+    #[serde(rename_all = "camelCase")]
+    Settled { verdict: GateVerdict },
+}
+
+/// How a gate resolved. A denial's note (when the user wrote one) is the
+/// reason the model received as the call's error tool result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GateVerdict {
+    /// Allowed for this call only.
+    Allowed,
+    /// Denied — with the user's note when there was one.
+    #[serde(rename_all = "camelCase")]
+    Denied {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// The Turn was interrupted while the gate was open; the call settled
+    /// as aborted.
+    Aborted,
+}
+
 /// One rendered part of an assistant message.
 // Box-free by design: the doc type is cloned in folds, never hot, and
 // boxing would churn the serialized shape for no runtime win.
@@ -196,6 +236,10 @@ pub enum MessagePart {
         /// its tagged text deltas (capped; display-only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_tail: Option<String>,
+        /// The permission gate's record (ADR-0014): absent unless this call
+        /// was gated. Additive — old docs and ungated chips decode bare.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gate: Option<ToolGate>,
     },
     #[serde(rename_all = "camelCase")]
     Input {
@@ -368,6 +412,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     subagent_ref: None,
                     subagent_status: None,
                     subagent_tail: None,
+                    gate: None,
                 });
             }
         }
@@ -965,6 +1010,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                gate: None,
             },
         ];
         let chunks = split_parts(&parts);

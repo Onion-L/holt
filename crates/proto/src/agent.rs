@@ -143,6 +143,20 @@ pub enum SteeringMode {
     TurnBoundary,
 }
 
+/// A user verdict on a pending Approval (ADR-0014), submitted through the
+/// `ResolveApproval` RPC: allow this call, or deny it — optionally with a
+/// written note whose text becomes the denial reason the model reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ApprovalVerdict {
+    Allow,
+    #[serde(rename_all = "camelCase")]
+    Deny {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {

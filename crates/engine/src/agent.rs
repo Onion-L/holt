@@ -10,7 +10,9 @@ use std::{
 
 use chrono::Utc;
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
-use holt_proto::{Chat, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall};
+use holt_proto::{
+    Chat, PermissionMode, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall,
+};
 use pi_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
 use pi_core::{
     agent::{
@@ -75,6 +77,10 @@ pub(crate) struct ChatRuntime {
     /// runtimes tests build directly.
     pub(crate) data_dir: PathBuf,
     pub(crate) chat_id: String,
+    /// Set by `remove_chat`: the chat is deleted, so the settle pass of a
+    /// run that was still alive (an open approval, a cancelled Turn) must
+    /// write nothing back to disk — no resurrected transcript or History.
+    pub(crate) removed: std::sync::atomic::AtomicBool,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -95,6 +101,7 @@ impl ChatRuntime {
             title_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
             chat_id: String::new(),
+            removed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -163,6 +170,10 @@ impl ChatRuntime {
             // the record the moment the chat opens.
             let _ = persist_transcript(data_dir, chat_id, &transcript);
         }
+        // An approval still pending on load belongs to a Turn the restart
+        // ended (ADR-0014): settle it as aborted so the replayed chip never
+        // poses as answerable.
+        crate::gate::settle_pending_gates_on_load(&mut transcript);
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
@@ -175,6 +186,7 @@ impl ChatRuntime {
             title_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
             chat_id: chat_id.to_string(),
+            removed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -184,10 +196,15 @@ impl ChatRuntime {
             .send_replace(Arc::new(transcript.clone()));
         // Best-effort snapshot: the in-memory watch stays authoritative, and
         // a failed write surfaces again on the next publish instead of
-        // failing the run that triggered it.
-        if !self.chat_id.is_empty() {
+        // failing the run that triggered it. A removed chat writes nothing —
+        // a deleted transcript must not be resurrected by a settle pass.
+        if !self.chat_id.is_empty() && !self.is_removed() {
             let _ = persist_transcript(&self.data_dir, &self.chat_id, &transcript);
         }
+    }
+
+    fn is_removed(&self) -> bool {
+        self.removed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Append one completed message to the persisted History (ADR-0010):
@@ -196,7 +213,7 @@ impl ChatRuntime {
     /// Best-effort like the transcript snapshot — an unreadable tail is
     /// absorbed on load.
     pub(crate) fn append_history(&self, message: AgentMessage) {
-        if self.chat_id.is_empty() {
+        if self.chat_id.is_empty() || self.is_removed() {
             return;
         }
         if let Err(error) = crate::history::append_message(&self.data_dir, &self.chat_id, &message)
@@ -214,6 +231,10 @@ pub(crate) struct AgentRuntime {
     sessions: RwLock<Vec<Session>>,
     pub(crate) sessions_tx: watch::Sender<serde_json::Value>,
     chat_runtime: Mutex<HashMap<String, Arc<ChatRuntime>>>,
+    /// Open confirm-changes approvals across all chats (ADR-0014), keyed
+    /// by approval id — the registry the `ResolveApproval` RPC addresses.
+    /// Entries live only while their gate is open.
+    pub(crate) approvals: Arc<crate::gate::ApprovalRegistry>,
     /// Test-injected provider transport (`EngineConfig::stream_fn`): every
     /// run's requests go through it instead of the built-in transport.
     /// Production leaves it unset.
@@ -238,6 +259,7 @@ impl AgentRuntime {
             sessions: RwLock::new(Vec::new()),
             sessions_tx,
             chat_runtime: Mutex::new(HashMap::new()),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
             stream_fn,
         }
     }
@@ -253,24 +275,38 @@ impl AgentRuntime {
     }
 
     /// Drop a chat's runtime slot and its persisted records. An in-flight
-    /// run keeps its `Arc` and runs to completion, but nothing ever reads the
-    /// transcript again: the chat row is gone from the watches. A pending
-    /// Title task is actively cancelled (ADR-0012): a late result must
-    /// never resurrect or mutate a deleted chat.
+    /// run is actively stopped (ADR-0014): a run paused behind an open
+    /// approval would otherwise wait forever — and a late verdict could
+    /// still execute a mutating tool for a chat the user deleted. The
+    /// runtime is flagged removed first, so the aborted run's settle pass
+    /// can neither resurrect the transcript file nor re-append History; a
+    /// pending Title task is cancelled for the same reason (ADR-0012).
     pub(crate) fn remove_chat(&self, chat_id: &str) {
         let runtime = self
             .chat_runtime
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
-        if let Some(runtime) = runtime
-            && let Some(token) = runtime
+        if let Some(runtime) = runtime {
+            runtime
+                .removed
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(token) = runtime
+                .cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                token.cancel();
+            }
+            if let Some(token) = runtime
                 .title_cancel
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
-        {
-            token.cancel();
+            {
+                token.cancel();
+            }
         }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
@@ -333,7 +369,22 @@ impl AgentRuntime {
     pub(crate) fn set_session(&self, chat_id: &str, status: SessionStatus) {
         let now = Utc::now();
         let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = sessions
+        // A chat deleted mid-run (ADR-0014: an open approval's run is
+        // actively cancelled) must not regain a session row from its own
+        // settle pass — drop the row instead.
+        let chat_exists = self
+            .chats
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|row| row.id == chat_id);
+        if !chat_exists {
+            let before = sessions.len();
+            sessions.retain(|session| session.chat_id != chat_id);
+            if sessions.len() == before {
+                return;
+            }
+        } else if let Some(session) = sessions
             .iter_mut()
             .find(|session| session.chat_id == chat_id)
         {
@@ -684,6 +735,7 @@ fn assistant_parts(
                         subagent_ref: None,
                         subagent_status: None,
                         subagent_tail: None,
+                        gate: None,
                     });
                 }
             }
@@ -773,6 +825,9 @@ pub(crate) struct AgentRun {
     /// received), seeded as the FIRST part of the run's entry — the agent
     /// reply opens with the invocation, ahead of any thinking.
     pub(crate) invocation: Option<MessagePart>,
+    /// The Turn's permission-mode snapshot (ADR-0014), taken at acceptance:
+    /// switches mid-Turn leave the running Turn under its original mode.
+    pub(crate) permission_mode: PermissionMode,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -791,6 +846,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         cancel,
         skills,
         invocation,
+        permission_mode,
         stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
@@ -1102,6 +1158,16 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         },
     );
     let overflow_model = model.clone();
+    // The permission gate (ADR-0014): the before-tool-call hook that pauses
+    // every mutating call behind the Turn's snapshotted mode. The title
+    // task and compaction mount no tools and never pass through here.
+    let gate = crate::gate::before_tool_call_hook(
+        permission_mode,
+        chat.clone(),
+        Arc::clone(&base_parts),
+        Arc::clone(&runtime.approvals),
+        cancel.clone(),
+    );
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -1119,7 +1185,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         get_steering_messages: None,
         get_follow_up_messages: None,
         tool_execution: None,
-        before_tool_call: None,
+        before_tool_call: Some(gate),
         after_tool_call: None,
     };
     let result = run_agent_loop(
@@ -1426,6 +1492,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                gate: None,
             }]
         );
     }
@@ -1526,6 +1593,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                gate: None,
             }]
         );
         // An empty catalog (the file stopped being a skill) renders the
@@ -1653,6 +1721,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                gate: None,
             }],
             created_at: 0,
             device_id: "device".into(),

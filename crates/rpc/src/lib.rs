@@ -50,6 +50,12 @@ pub mod methods {
     /// entries, load diagnostics).
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
+    /// Resolve a pending confirm-changes Approval (ADR-0014): params
+    /// `{approvalId, verdict}` where verdict is
+    /// `holt_proto::ApprovalVerdict` (`{"kind":"allow"}` or
+    /// `{"kind":"deny","note?":"…"}`). The verdict releases the gate the
+    /// run is blocked in; unknown ids fail — an approval resolves once.
+    pub const RESOLVE_APPROVAL: &str = "ResolveApproval";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`.

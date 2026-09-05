@@ -185,7 +185,7 @@ async fn the_retained_tail_keeps_tool_results_with_their_calls() {
         ScriptedReply::text("reply after compaction"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     // One tool round with huge results, closed by a small reply that
@@ -374,7 +374,7 @@ async fn compaction_stamps_nothing_and_keeps_the_turns_diff_baseline() {
         ScriptedReply::text("edited"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first prompt").await;
@@ -420,7 +420,7 @@ async fn a_summary_request_happens_between_tool_rounds() {
     ])
     .with_usage(overflowing_usage());
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do two rounds").await;
@@ -508,7 +508,7 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     ])
     .with_usage(overflowing_usage());
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let _ = common::subscribe(&engine, "chat-1").await;
 
     // Round one, the mid-Turn compaction, then the round-two request that
@@ -550,7 +550,7 @@ async fn a_mid_turn_summary_failure_continues_the_turn_with_a_notice() {
     ])
     .with_usage(overflowing_usage());
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do two rounds").await;
@@ -597,7 +597,7 @@ async fn a_long_turn_compacts_as_often_as_its_rounds_need() {
         ScriptedReply::text("final reply text"),
     ]);
     let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do three rounds").await;

@@ -672,6 +672,11 @@ impl LocalEngine {
         chat.publish();
 
         let mut title_spawn = None;
+        // The Turn's mode snapshot (ADR-0014): the stored mode, or the
+        // sticky default for a row without a config yet. Taken at
+        // acceptance — a switch after this point affects only the next
+        // Turn.
+        let mut mode = self.mode_default.get();
         {
             let mut chats = self
                 .runtime
@@ -687,11 +692,11 @@ impl LocalEngine {
                 // take effect from the next Turn — and a row without a
                 // config yet inherits the sticky default, exactly like a
                 // newly created chat.
-                let mode = row
+                mode = row
                     .config
                     .as_ref()
                     .map(|config| config.permission_mode)
-                    .unwrap_or_else(|| self.mode_default.get());
+                    .unwrap_or(mode);
                 row.config = Some(ChatConfig {
                     provider: request.provider.clone(),
                     model: request.model.clone(),
@@ -761,6 +766,7 @@ impl LocalEngine {
             cancel,
             skills: self.skills.clone(),
             invocation,
+            permission_mode: mode,
             stream_fn: self.runtime.stream_fn.clone(),
         }));
         Ok(())
@@ -852,6 +858,39 @@ impl LocalEngine {
             tracing::warn!(target: "holt::agent", %error, "could not persist the permission-mode default");
         }
         RpcReply::value(&serde_json::json!({ "mode": mode }))
+    }
+
+    /// Resolve a pending confirm-changes Approval (ADR-0014): the verdict
+    /// releases the gate the run is blocked in — allow executes the call,
+    /// deny blocks it with the note (or the standard denial) as the reason
+    /// the model reads, and the Turn continues either way.
+    fn resolve_approval(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let approval_id = required_string(&params, "approvalId")?;
+        let verdict: holt_proto::ApprovalVerdict = serde_json::from_value(
+            params
+                .get("verdict")
+                .cloned()
+                .ok_or_else(|| RpcError::BadParams("verdict is required".into()))?,
+        )
+        .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        let pending = self
+            .runtime
+            .approvals
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(approval_id);
+        let Some(pending) = pending else {
+            return Err(RpcError::Failed(
+                "unknown or already-resolved approval".into(),
+            ));
+        };
+        // A dropped receiver means the Turn ended between the registry hit
+        // and the send (interrupt raced the verdict) — the call already
+        // settled as aborted.
+        pending
+            .send(verdict)
+            .map_err(|_| RpcError::Failed("the approval's Turn already ended".into()))?;
+        RpcReply::value(&serde_json::json!({}))
     }
 
     /// The settings record plus its live validation view — the reply shape
@@ -1442,6 +1481,10 @@ impl RpcService for LocalEngine {
                 self.rename_chat(params)
             }
             methods::QUEUE_COMMAND => self.queue_command(params).await,
+            // Confirm-changes verdicts (ADR-0014): params
+            // `{approvalId, verdict}` with `holt_proto::ApprovalVerdict`
+            // as the verdict.
+            methods::RESOLVE_APPROVAL => self.resolve_approval(params),
 
             // Everything this backend has no data for — mutations, terminals,
             // repos, uploads — reports as an unknown method: that is the

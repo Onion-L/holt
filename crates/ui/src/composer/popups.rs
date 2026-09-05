@@ -673,8 +673,7 @@ impl Composer {
         // Section order: commands before skills (stable, so within-section
         // match rank survives) — the menu renders contiguous groups under
         // their headers, and `filtered` stays the rendered row order.
-        ranked
-            .sort_by_key(|&ix| matches!(self.slash.candidates[ix], SlashCandidate::Skill { .. }));
+        ranked.sort_by_key(|&ix| matches!(self.slash.candidates[ix], SlashCandidate::Skill { .. }));
         self.slash.filtered = ranked;
         self.slash.active = (!self.slash.filtered.is_empty()).then_some(0);
         // A fresh query/reopen restarts the row stack at the top.
