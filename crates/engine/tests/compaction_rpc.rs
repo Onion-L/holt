@@ -522,6 +522,13 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     let engine = fixture.engine(&provider);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
+    engine
+        .handle(
+            holt_rpc::methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();

@@ -220,6 +220,8 @@ pub struct AppState {
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
     pub transcript_replayed: bool,
+    pub message_queue: Option<holt_proto::MessageQueue>,
+    message_queue_task: Option<Task<()>>,
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
     /// the same message id arrives (client-minted ids make dedup exact).
     echoes: HashMap<String, Vec<SessionMessageEntry>>,
@@ -278,6 +280,8 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             transcript_replayed: false,
+            message_queue: None,
+            message_queue_task: None,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
             upload_progress: None,
@@ -359,6 +363,8 @@ impl AppState {
             self.transcript.clear();
             self.transcript_replayed = false;
             self.transcript_task = None;
+            self.message_queue = None;
+            self.message_queue_task = None;
         }
     }
 
@@ -849,6 +855,8 @@ impl AppState {
         self.engine = None;
         self.watch_tasks.clear();
         self.transcript_task = None;
+        self.message_queue = None;
+        self.message_queue_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
@@ -958,6 +966,12 @@ impl AppState {
         self.connection = ConnectionStatus::Ready;
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
         if let Some(chat_id) = self.selected_chat.clone() {
+            self.message_queue = None;
+            self.message_queue_task = Some(spawn_message_queue_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
             self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
         }
         cx.notify();
@@ -1054,6 +1068,8 @@ impl AppState {
         self.transcript.clear();
         self.transcript_replayed = false;
         self.transcript_task = None;
+        self.message_queue = None;
+        self.message_queue_task = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its project (or the lack of one); `select_chat(None)`
             // (the new-session canvas) keeps the current project pick.
@@ -1071,6 +1087,11 @@ impl AppState {
             self.mark_chat_seen(id, cx);
         }
         if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
+            self.message_queue_task = Some(spawn_message_queue_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
             self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
         }
         cx.notify();
@@ -1326,6 +1347,57 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
             }
             tracing::debug!(method, "watch stream ended; resubscribing");
             if this.update(cx, |_, _| {}).is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
+        }
+    })
+}
+
+fn spawn_message_queue_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    chat_id: String,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        loop {
+            if let Ok(mut rx) = handle
+                .client()
+                .subscribe(
+                    methods::WATCH_MESSAGE_QUEUE,
+                    serde_json::json!({"chatId": chat_id}),
+                )
+                .await
+            {
+                while let Some(value) = rx.recv().await {
+                    let Ok(queue) = WatchCoordinator::decode::<holt_proto::MessageQueue>(value)
+                    else {
+                        break;
+                    };
+                    if this
+                        .update(cx, |state, cx| {
+                            if state.selected_chat.as_deref() == Some(&chat_id) {
+                                state.message_queue = Some(queue);
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            if this
+                .update(cx, |state, cx| {
+                    if state.selected_chat.as_deref() == Some(&chat_id) {
+                        state.message_queue = None;
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
                 return;
             }
             cx.background_executor()

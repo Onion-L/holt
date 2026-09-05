@@ -237,6 +237,26 @@ pub struct RunRequest {
     pub worktree: Option<WorktreeSpec>,
 }
 
+/// An accepted ordinary message waiting to start its own Turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMessage {
+    pub message_id: String,
+    pub request: RunRequest,
+    pub submitted_at: i64,
+    pub error: Option<String>,
+}
+
+/// Authoritative per-chat queue snapshot, independent of the Transcript.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageQueue {
+    pub pending: Vec<PendingMessage>,
+    pub paused: bool,
+    pub active_message_id: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
 /// by the HOST while draining the queued Run — not by the sender over a
 /// blocking CreateWorktree RPC — so the send path stays durable: a lost relay

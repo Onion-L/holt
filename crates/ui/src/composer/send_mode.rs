@@ -1,4 +1,4 @@
-//! Send-button semantics (Send / Steer / Stop) and pending-input detection
+//! Send-button semantics (Send / Queue / Stop) and pending-input detection
 //! over the transcript.
 
 use holt_doc::{MessagePart, MessageRole, SessionMessageEntry};
@@ -9,15 +9,15 @@ use holt_proto::UserInputQuestion;
 pub enum SendButtonMode {
     /// No live run: plain send.
     Send,
-    /// Live steerable run with text typed: "Send (steers the current run)".
-    Steer,
+    /// Live run with content: enqueue a separate Turn.
+    Queue,
     /// Live run, nothing typed: red stop square.
     Stop,
 }
 
 /// What the composer holds that a send could carry. A staged image or diff
 /// comment counts: both synthesize their own prompt body, so either alone is
-/// a legal send — and during a live run has to read as Steer, not Stop.
+/// a legal send, including while a Turn is running.
 pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> bool {
     !text.trim().is_empty() || attachments > 0 || comments > 0
 }
@@ -25,7 +25,7 @@ pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> 
 pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     match (run_live, has_text) {
         (false, _) => SendButtonMode::Send,
-        (true, true) => SendButtonMode::Steer,
+        (true, true) => SendButtonMode::Queue,
         (true, false) => SendButtonMode::Stop,
     }
 }
@@ -92,13 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn a_comment_only_stage_steers_a_live_run_instead_of_stopping_it() {
+    fn a_comment_only_stage_queues_during_a_live_run() {
         let live = true;
         let comment_only = composer_has_content("", 0, 2);
         assert_eq!(
             send_button_mode(live, comment_only),
-            SendButtonMode::Steer,
-            "comment-only submit must steer, not interrupt the run"
+            SendButtonMode::Queue,
+            "comment-only submit must enqueue a message"
         );
         // Nothing staged at all is still the stop square.
         assert_eq!(
@@ -111,7 +111,7 @@ mod tests {
     fn send_button_morph() {
         assert_eq!(send_button_mode(false, false), SendButtonMode::Send);
         assert_eq!(send_button_mode(false, true), SendButtonMode::Send);
-        assert_eq!(send_button_mode(true, true), SendButtonMode::Steer);
+        assert_eq!(send_button_mode(true, true), SendButtonMode::Queue);
         assert_eq!(send_button_mode(true, false), SendButtonMode::Stop);
     }
     use crate::composer::wizard::question;

@@ -62,6 +62,11 @@ pub enum ScriptedReply {
     /// stand-in: nothing arrives and the Turn hangs, so the test can drop
     /// the engine with the run in flight.
     Silent,
+    /// A transport that observes cancellation but delays its terminal event.
+    Cancelling {
+        observed: Arc<tokio::sync::Notify>,
+        finish: Arc<tokio::sync::Notify>,
+    },
     /// A text reply held back until the test releases the gate — the
     /// deterministic "resolve AFTER some other RPC has landed" primitive
     /// (rename/delete racing a Title-task result).
@@ -211,8 +216,12 @@ impl ScriptedProvider {
         let script = Arc::clone(&self.script);
         let title = self.title.clone();
         let usage = self.usage.clone();
-        Arc::new(move |model: &Model, context: &Context, _options| {
+        Arc::new(move |model: &Model, context: &Context, options| {
             requests.lock().unwrap().push(RecordedRequest {
+                model: model.id.clone(),
+                reasoning: options
+                    .and_then(|options| options.reasoning)
+                    .map(|reasoning| format!("{reasoning:?}")),
                 messages: context.messages.clone(),
                 system_prompt: context.system_prompt.clone(),
                 tools: context.tools.as_ref().map_or(0, Vec::len),
@@ -229,7 +238,13 @@ impl ScriptedProvider {
                 ScriptedReply::Failed("scripted provider ran out of replies".into())
             });
             let stream = pi_core::ai::utils::event_stream::create_assistant_message_event_stream();
-            push_reply(&stream, reply, model, &usage);
+            push_reply(
+                &stream,
+                reply,
+                model,
+                &usage,
+                options.and_then(|options| options.base.base.signal.clone()),
+            );
             Ok(stream)
         })
     }
@@ -244,6 +259,8 @@ impl ScriptedProvider {
 /// One recorded provider request.
 #[derive(Clone)]
 pub struct RecordedRequest {
+    pub model: String,
+    pub reasoning: Option<String>,
     pub messages: Vec<Message>,
     pub system_prompt: Option<String>,
     /// How many tools the request advertised (0 = a bare completion).
@@ -258,6 +275,7 @@ fn push_reply(
     reply: ScriptedReply,
     model: &Model,
     usage: &Usage,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 ) {
     let mut message = AssistantMessage {
         api: model.api.clone(),
@@ -342,6 +360,30 @@ fn push_reply(
         }
         // Nothing is pushed: `next` never resolves, the Turn never ends.
         ScriptedReply::Silent => {}
+        ScriptedReply::Cancelling { observed, finish } => {
+            message.content = vec![AssistantContent::Text(TextContent {
+                text: "partial A".into(),
+                ..Default::default()
+            })];
+            stream.push(AssistantMessageEvent::Start {
+                partial: message.clone(),
+            });
+            let stream = stream.clone();
+            tokio::spawn(async move {
+                cancel
+                    .expect("transport cancellation token")
+                    .cancelled()
+                    .await;
+                observed.notify_one();
+                finish.notified().await;
+                message.stop_reason = StopReason::Aborted;
+                message.error_message = Some("Request was aborted".into());
+                stream.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
+                    error: message,
+                });
+            });
+        }
         ScriptedReply::Gated { gate, text } => {
             // Push the terminal event only after the test releases the gate.
             let stream = stream.clone();

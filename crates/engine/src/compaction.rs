@@ -74,11 +74,12 @@ pub(crate) async fn compact(
     stream_fn: &StreamFn,
     api_key: &str,
     trigger: holt_doc::parts::CompactionTrigger,
+    signal: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<Option<CompactionOutcome>, String> {
     if !needed(history, model) {
         return Ok(None);
     }
-    compact_now(history, model, stream_fn, api_key, trigger, None).await
+    compact_now(history, model, stream_fn, api_key, trigger, signal).await
 }
 
 /// Compact `history` unconditionally (the manual `/compact` path — the

@@ -1,5 +1,5 @@
 //! The composer: a hand-rolled multiline text input ([`input`]), the
-//! compact↔expanded flip ([`layout`], [`morph`]), the Send/Steer/Stop morph
+//! compact↔expanded flip ([`layout`], [`morph`]), the Send/Queue/Stop morph
 //! ([`send_mode`]), optimistic send with failure recovery ([`send`]), per-chat
 //! drafts and staged attachments ([`staging`]), the completion popups
 //! ([`popups`]), file-mention chips ([`mentions`]), and the question wizard
@@ -15,6 +15,7 @@ mod layout;
 mod mentions;
 mod morph;
 mod popups;
+mod queue;
 mod send;
 mod send_mode;
 mod slash;
@@ -101,6 +102,7 @@ pub struct Composer {
     popup_bar: crate::popover::MenuScrollbarState,
     current_key: String,
     sending: bool,
+    failed_submissions: std::collections::HashMap<String, (String, serde_json::Value)>,
     failure: Option<SharedString>,
     /// The chat key `failure` belongs to (`None` = global, e.g. "Engine not
     /// connected"). Chat-scoped failures survive navigation and render only
@@ -251,6 +253,7 @@ impl Composer {
             popup_bar: crate::popover::MenuScrollbarState::default(),
             current_key,
             sending: false,
+            failed_submissions: std::collections::HashMap::new(),
             failure: None,
             wizard: None,
             wizard_focus: cx.focus_handle(),
@@ -535,11 +538,18 @@ impl Render for Composer {
 
         // Chat-scoped failures render only under their own chat; a global
         // failure (no key) renders everywhere.
-        let failure = self.failure.clone().filter(|_| {
-            self.failure_key
-                .as_ref()
-                .is_none_or(|key| *key == self.current_key)
-        });
+        let failure = self
+            .failure
+            .clone()
+            .filter(|_| {
+                self.failure_key
+                    .as_ref()
+                    .is_none_or(|key| *key == self.current_key)
+            })
+            .or_else(|| {
+                (!self.sending && self.failed_submissions.contains_key(&self.current_key))
+                    .then(|| "Message delivery was not confirmed.".into())
+            });
         // Composer honesty: when the delivery path is degraded, say UP FRONT
         // that a send will queue (a durable local write delivered on
         // reconnect) instead of letting the button imply instant delivery.
@@ -571,6 +581,7 @@ impl Render for Composer {
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
+            .child(self.render_message_queue(cx))
             // Raw Escape (no popup/dialog consumed it) = interrupt the
             // running Turn while an Approval gates it (ADR-0014).
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -620,6 +631,9 @@ impl Render for Composer {
                         .text_color(text_c)
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
+                            if this.failed_submissions.contains_key(&this.current_key) {
+                                return;
+                            }
                             this.failure = None;
                             this.failure_key = None;
                             cx.notify();
@@ -630,7 +644,38 @@ impl Render for Composer {
                                 .mt(px(2.0))
                                 .text_color(text_c),
                         )
-                        .child(div().min_w_0().child(message)),
+                        .child(div().min_w_0().flex_1().child(message))
+                        .when(
+                            self.failed_submissions.contains_key(&self.current_key),
+                            |el| {
+                                el.child(
+                                    div()
+                                        .id("retry-message")
+                                        .role(gpui::Role::Button)
+                                        .aria_label("Retry message")
+                                        .focusable()
+                                        .px_2()
+                                        .cursor_pointer()
+                                        .hover(|el| el.bg(theme.glass_hover()))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.retry_submission(cx);
+                                        }))
+                                        .on_key_down(cx.listener(
+                                            |this, event: &gpui::KeyDownEvent, _, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                ) {
+                                                    cx.stop_propagation();
+                                                    this.retry_submission(cx);
+                                                }
+                                            },
+                                        ))
+                                        .child("Retry"),
+                                )
+                            },
+                        ),
                 )
             })
             .when_some(queue_notice, |el, (notice, offline)| {
@@ -659,26 +704,6 @@ impl Render for Composer {
                         .child(div().min_w_0().truncate().child(notice)),
                 ))
             });
-
-        // Turn-boundary steering notice: for agents without mid-turn
-        // injection (Grok over ACP today), a "steer" is queued and applies
-        // when the current turn finishes. Without this hint the queue read
-        // as a dropped steer (user report: "my steer didn't apply until
-        // grok already finished").
-        let steer_queues = mode == SendButtonMode::Steer
-            && self.pickers.read(cx).resolved_steering_mode(cx)
-                == Some(holt_proto::SteeringMode::TurnBoundary);
-        let container = container.when(steer_queues, |el| {
-            el.child(
-                div()
-                    .mt(px(6.0))
-                    .px(px(12.0))
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .line_height(px(15.0))
-                    .text_color(theme.text_muted.opacity(0.8))
-                    .child("This agent can't be steered mid-turn — your message will be queued and sent when the current turn finishes."),
-            )
-        });
 
         if wizard_active {
             let wizard = self.render_wizard(cx);
@@ -719,7 +744,14 @@ impl Render for Composer {
         }
         self.last_rendered_height = pill_height;
 
-        let send_button = self.render_send_button(mode, cx);
+        let send_button = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(self.run_live(cx) && mode != SendButtonMode::Stop, |el| {
+                el.child(self.render_send_button(SendButtonMode::Stop, cx))
+            })
+            .child(self.render_send_button(mode, cx));
         // Attach button — opens the native image picker (the original's hidden
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. The parent action cluster owns the spacing: adding a

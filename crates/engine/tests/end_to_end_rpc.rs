@@ -146,6 +146,13 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
     common::wait_for_transcript_text(&mut transcript, "Request was aborted").await;
     common::run_prompt(&engine, "chat-1", &cwd, "don't do that").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     let steered = &requests[6];
@@ -245,6 +252,13 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         "the overflow flag did not survive the restart"
     );
     common::run_prompt(&engine, "chat-1", &cwd, "and recover").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(

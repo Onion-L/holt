@@ -35,6 +35,7 @@ mod local_fs;
 mod mode_default;
 pub mod provider_settings;
 pub mod providers;
+mod queue;
 mod rpc;
 mod skills;
 mod store;
@@ -90,6 +91,14 @@ impl std::fmt::Debug for EngineConfig {
 /// The local backend. Serves the RPC method surface over the in-process
 /// transport, including the agent loop, git capability, and skills catalog.
 pub struct LocalEngine {
+    service: EngineService,
+    _instance_lock: InstanceLock,
+}
+
+/// Share execution services with queue workers without extending the public
+/// engine's lifetime. Dropping LocalEngine stops workers before releasing its lock.
+#[derive(Clone)]
+struct EngineService {
     engine_info: EngineInfo,
     data_dir: PathBuf,
     spaces: Arc<RwLock<Vec<Space>>>,
@@ -102,7 +111,7 @@ pub struct LocalEngine {
     watch: Arc<git_watch::WatchHub>,
     /// Latest Turn baseline per chat (ADR-0003): in-memory, dropped on
     /// restart.
-    turns: git::TurnBaselines,
+    turns: Arc<git::TurnBaselines>,
     /// The skills capability (ADR-0005/0006): root resolution and catalog
     /// assembly over the upstream loader.
     skills: skills::Skills,
@@ -111,8 +120,6 @@ pub struct LocalEngine {
     /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
-    /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
-    _instance_lock: InstanceLock,
 }
 
 impl LocalEngine {
@@ -157,27 +164,35 @@ impl LocalEngine {
             spaces_tx.subscribe(),
         ));
         Ok(Self {
-            engine_info: EngineInfo {
-                device_id,
-                workspace_scope: WorkspaceScope::Local,
+            service: EngineService {
+                engine_info: EngineInfo {
+                    device_id,
+                    workspace_scope: WorkspaceScope::Local,
+                },
+                data_dir: config.data_dir.clone(),
+                spaces,
+                spaces_tx,
+                runtime,
+                providers,
+                git,
+                watch,
+                turns: Arc::new(git::TurnBaselines::new()),
+                skills,
+                title_settings,
+                mode_default,
             },
-            data_dir: config.data_dir.clone(),
-            spaces,
-            spaces_tx,
-            runtime,
-            providers,
-            git,
-            watch,
-            turns: git::TurnBaselines::new(),
-            skills,
-            title_settings,
-            mode_default,
             _instance_lock: lock,
         })
     }
 
     pub fn engine_info(&self) -> &EngineInfo {
-        &self.engine_info
+        &self.service.engine_info
+    }
+}
+
+impl Drop for LocalEngine {
+    fn drop(&mut self) {
+        self.service.runtime.shutdown();
     }
 }
 
@@ -329,6 +344,7 @@ mod tests {
         }));
         assert_eq!(
             engine
+                .service
                 .providers
                 .resolve_model("openai", custom_id)
                 .unwrap()
@@ -340,6 +356,7 @@ mod tests {
         let restored = LocalEngine::assemble(&config).unwrap();
         assert!(
             restored
+                .service
                 .providers
                 .models_for("openai")
                 .iter()
@@ -495,7 +512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_against_unconfigured_variant_is_rejected() {
+    async fn run_against_unconfigured_variant_remains_pending() {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().into(),
@@ -530,11 +547,28 @@ mod tests {
             })
         };
         // Sibling variant configured; the international one has no key.
-        let error = match engine.handle(methods::QUEUE_COMMAND, run("minimax")).await {
-            Err(error) => error,
-            Ok(_) => panic!("unconfigured variant accepted a run"),
-        };
-        assert!(error.to_string().contains("not configured"));
+        engine
+            .handle(methods::QUEUE_COMMAND, run("minimax"))
+            .await
+            .unwrap();
+        let chat = engine.service.runtime.chat("chat-1");
+        let mut watch = chat.queue.lock().unwrap().tx.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if watch.borrow()["paused"] == true {
+                    break;
+                }
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            watch.borrow()["pending"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("not configured")
+        );
 
         engine
             .handle(
@@ -545,6 +579,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             engine
+                .service
                 .providers
                 .credentials
                 .reveal_key("minimax")
@@ -558,6 +593,7 @@ mod tests {
         let restored = LocalEngine::assemble(&config).unwrap();
         assert_eq!(
             restored
+                .service
                 .providers
                 .credentials
                 .reveal_key("minimax-cn")
@@ -611,13 +647,14 @@ mod tests {
 
         let engine = LocalEngine::assemble(&config).unwrap();
         {
-            let chats = engine.runtime.chats.read().unwrap();
+            let chats = engine.service.runtime.chats.read().unwrap();
             let selection = chats[0].config.as_ref().unwrap();
             assert_eq!(selection.provider.as_str(), "openai");
             assert_eq!(selection.model, "openai/gpt-5.4");
         }
         assert!(
             engine
+                .service
                 .providers
                 .credentials
                 .reveal_key("openai")
@@ -792,8 +829,8 @@ mod tests {
 
         // The Done-badge precondition: a message newer than the (absent)
         // seen marker.
-        engine.runtime.chats.write().unwrap()[0].last_message_at = Some(chrono::Utc::now());
-        engine.runtime.publish_chats();
+        engine.service.runtime.chats.write().unwrap()[0].last_message_at = Some(chrono::Utc::now());
+        engine.service.runtime.publish_chats();
         let frame = chats.next().await.unwrap();
         assert_eq!(frame[0]["lastSeenAt"], serde_json::Value::Null);
 
@@ -815,7 +852,7 @@ mod tests {
         );
 
         // Re-marking a seen chat neither moves the marker nor republishes.
-        let probe = engine.runtime.chats_tx.subscribe();
+        let probe = engine.service.runtime.chats_tx.subscribe();
         engine
             .handle(
                 methods::MUTATE,
@@ -838,7 +875,7 @@ mod tests {
 
         // The marker persists: a fresh engine serves the chat as seen.
         let engine = LocalEngine::assemble(&config).unwrap();
-        let chats = engine.runtime.chats.read().unwrap();
+        let chats = engine.service.runtime.chats.read().unwrap();
         assert!(chats[0].last_seen_at.is_some());
     }
 
@@ -920,7 +957,7 @@ mod tests {
 
         // The deletion persists: a fresh engine only knows chat-2.
         let engine = LocalEngine::assemble(&config).unwrap();
-        let chats = engine.runtime.chats.read().unwrap();
+        let chats = engine.service.runtime.chats.read().unwrap();
         let ids: Vec<&str> = chats.iter().map(|chat| chat.id.as_str()).collect();
         assert_eq!(ids, ["chat-2"]);
     }

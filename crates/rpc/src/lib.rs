@@ -50,6 +50,11 @@ pub mod methods {
     /// entries, load diagnostics).
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
+    /// Per-chat `holt_proto::MessageQueue` snapshots. Params `{chatId}`.
+    pub const WATCH_MESSAGE_QUEUE: &str = "WatchMessageQueue";
+    /// Resume automatic queue execution after Stop, failure, or restart.
+    /// Params `{chatId}`; replies with the accepted `MessageQueue` snapshot.
+    pub const CONTINUE_MESSAGE_QUEUE: &str = "ContinueMessageQueue";
     /// Resolve a pending confirm-changes Approval (ADR-0014): params
     /// `{approvalId, verdict}` where verdict is
     /// `holt_proto::ApprovalVerdict` (`{"kind":"allow"}`,

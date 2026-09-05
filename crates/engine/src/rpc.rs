@@ -18,18 +18,18 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::LocalEngine;
 use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
 use crate::title_settings::MAX_TITLE_INSTRUCTION_CHARS;
+use crate::{EngineService, LocalEngine};
 
 /// The sidebar title ceiling shared by the first-line fallback, manual
 /// renames, and automatic titles.
 pub(crate) const TITLE_CHAR_LIMIT: usize = 60;
 
-impl LocalEngine {
+impl EngineService {
     fn watch_spaces(&self) -> RpcReply {
         let receiver = self.spaces_tx.subscribe();
         let stream =
@@ -333,9 +333,17 @@ impl LocalEngine {
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: QueueCommandParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if !crate::store::chat_id_is_path_safe(&params.chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
         let chat = self.runtime.chat(&params.chat_id);
         match params.command {
             SessionCommandPayload::Interrupt {} => {
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                let paused = queue.pause(true);
                 if let Some(cancel) = chat
                     .cancel
                     .lock()
@@ -344,29 +352,25 @@ impl LocalEngine {
                 {
                     cancel.cancel();
                 }
+                paused?;
             }
             SessionCommandPayload::Run {
                 request,
                 message_id,
             } => {
-                let prompt = request.prompt.clone();
-                let title_prompt = Some(prompt.clone());
-                let parts = vec![MessagePart::Text {
-                    id: "t0".into(),
-                    text: prompt.clone(),
-                }];
-                self.start_turn(
-                    &params.chat_id,
-                    chat,
-                    request,
-                    message_id,
-                    parts,
-                    prompt.clone(),
-                    prompt,
-                    None,
-                    title_prompt,
-                )
-                .await?;
+                if message_id.trim().is_empty() || request.prompt.trim().is_empty() {
+                    return Err(RpcError::BadParams(
+                        "messageId and prompt must not be empty".into(),
+                    ));
+                }
+                {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.enqueue(request, message_id)?;
+                }
+                self.kick_queue(chat);
             }
             SessionCommandPayload::InvokeSkill {
                 request,
@@ -374,10 +378,18 @@ impl LocalEngine {
                 extra_instructions,
                 message_id,
             } => {
+                let execution = chat
+                    .execution
+                    .clone()
+                    .try_lock_owned()
+                    .map_err(|_| RpcError::Failed("this chat is already running".into()))?;
+                let cancel = CancellationToken::new();
+                *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
                 // Resolve against a fresh catalog FIRST: an unknown (or
                 // shadowed/invalid) name fails at submit time with no run
                 // and no transcript entry (ADR-0006).
                 let Some(skill) = self.skills.resolve(Some(&request.cwd), &name).await else {
+                    *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     return Err(RpcError::Failed(format!("unknown skill: {name}")));
                 };
                 let block = crate::skills::invocation_prompt(&skill, None);
@@ -410,18 +422,51 @@ impl LocalEngine {
                     file: skill.file_path.clone(),
                     content: Some(block),
                 };
-                self.start_turn(
-                    &params.chat_id,
-                    chat,
-                    request,
-                    message_id,
-                    parts,
-                    preview,
-                    prompt,
-                    Some(invocation_seed),
-                    None,
-                )
-                .await?;
+                let run = self
+                    .start_turn(
+                        &params.chat_id,
+                        chat.clone(),
+                        request,
+                        message_id,
+                        parts,
+                        preview,
+                        prompt,
+                        Some(invocation_seed),
+                        None,
+                        cancel,
+                        false,
+                    )
+                    .await;
+                let run = match run {
+                    Ok(run) => run,
+                    Err(error) => {
+                        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        return Err(error);
+                    }
+                };
+                let running_chat = chat.clone();
+                let runtime = self.runtime.clone();
+                let task = tokio::spawn(async move {
+                    let _execution = execution;
+                    let interrupted = run.cancel.clone();
+                    let success = run_agent_command(run).await;
+                    if !success && !interrupted.is_cancelled() {
+                        let mut queue =
+                            running_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        if !running_chat.is_removed() {
+                            let _ = queue.pause(true);
+                        }
+                    }
+                    runtime.set_session(
+                        &running_chat.chat_id,
+                        if success || interrupted.is_cancelled() {
+                            SessionStatus::Idle
+                        } else {
+                            SessionStatus::Errored
+                        },
+                    );
+                });
+                chat.track_task(&task);
             }
             SessionCommandPayload::Steer { .. } => {
                 return Err(RpcError::Failed("steering is not available yet".into()));
@@ -443,14 +488,19 @@ impl LocalEngine {
     /// `Compacting` (same interrupt affordance as a run) and returns to
     /// idle on completion, failure, or interruption.
     async fn compact(&self, chat: Arc<ChatRuntime>, request: RunRequest) -> Result<(), RpcError> {
-        // Refused while a Turn runs, with the same message as a second
-        // prompt — queueing belongs to the future message queue.
+        let execution = chat
+            .execution
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| RpcError::Failed("this chat is already running".into()))?;
+        // Slash commands remain direct until ticket 04; they share the
+        // ordinary queue's execution boundary.
         if chat
             .cancel
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .is_some_and(|token| !token.is_cancelled())
+            .is_some()
         {
             return Err(RpcError::Failed("this chat is already running".into()));
         }
@@ -464,28 +514,35 @@ impl LocalEngine {
         if !crate::compaction::has_compactable_content(&history) {
             return Err(RpcError::Failed("There is nothing to compact".into()));
         }
+        let model = self
+            .providers
+            .resolve_model(request.provider.as_str(), &request.model)
+            .map_err(RpcError::BadParams)?;
+        let cancel = CancellationToken::new();
+        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
         let Some(api_key) = self
             .providers
             .credentials
             .reveal_key(request.provider.as_str())
             .await
         else {
+            *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return Err(RpcError::Failed(format!(
                 "provider {} is not configured",
                 request.provider
             )));
         };
-        let model = self
-            .providers
-            .resolve_model(request.provider.as_str(), &request.model)
-            .map_err(RpcError::BadParams)?;
+        if cancel.is_cancelled() || chat.is_removed() {
+            *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            return Err(RpcError::Failed(
+                "Compaction interrupted before execution".into(),
+            ));
+        }
         let stream_fn = self
             .runtime
             .stream_fn
             .clone()
             .unwrap_or_else(crate::agent::default_stream_fn);
-        let cancel = CancellationToken::new();
-        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
         self.runtime
             .set_session(&chat.chat_id, SessionStatus::Compacting);
 
@@ -493,7 +550,8 @@ impl LocalEngine {
         let device_id = self.engine_info.device_id.clone();
         let compacting_chat = chat.clone();
         let compacting_chat_id = chat.chat_id.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
+            let _execution = execution;
             let outcome = crate::compaction::compact_now(
                 &history,
                 &model,
@@ -524,6 +582,15 @@ impl LocalEngine {
                     // quietly. A real failure surfaces on the Transcript;
                     // the History is untouched either way.
                     if !cancel.is_cancelled() {
+                        {
+                            let mut queue = compacting_chat
+                                .queue
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if !compacting_chat.is_removed() {
+                                let _ = queue.pause(true);
+                            }
+                        }
                         tracing::warn!(target: "holt::compaction", %reason, "manual compaction failed");
                         crate::agent::push_system_part(
                             &compacting_chat,
@@ -546,6 +613,7 @@ impl LocalEngine {
                 .unwrap_or_else(|e| e.into_inner()) = None;
             runtime.set_session(&compacting_chat_id, SessionStatus::Idle);
         });
+        chat.track_task(&task);
         Ok(())
     }
 
@@ -555,7 +623,7 @@ impl LocalEngine {
     /// model-visible text, and `invocation` the chip seeded at the head of
     /// the run's own entry (skill invocations only).
     #[allow(clippy::too_many_arguments)]
-    async fn start_turn(
+    pub(crate) async fn start_turn(
         &self,
         chat_id: &str,
         chat: Arc<ChatRuntime>,
@@ -566,58 +634,18 @@ impl LocalEngine {
         prompt: String,
         invocation: Option<MessagePart>,
         title_prompt: Option<String>,
-    ) -> Result<(), RpcError> {
-        // Turn baseline FIRST (ADR-0003): captured synchronously at
-        // acceptance, before validation and before the run starts —
-        // even a run rejected for a bogus provider records the
-        // turn's starting point.
-        if let Ok(baseline) = self.git.turn_baseline(&request.cwd).await {
-            self.turns.insert(chat_id, baseline);
-        }
-        // Turn identity (ADR-0007): beside the baseline, restamp the chat
-        // row's cwd from the request and stamp its branch + source context
-        // from the working directory's live HEAD — synchronously at
-        // acceptance, so a run rejected further down still records where its
-        // Turn would run. Non-git folders stamp only the cwd. A chat whose
-        // Turn is still live does NOT restamp (a mid-run send fails loudly
-        // and must not move the label off the running Turn's branch); the
-        // atomic running check further down still guards the spawn itself.
-        let chat_running = chat
-            .cancel
+        cancel: CancellationToken,
+        queued: bool,
+    ) -> Result<AgentRun, RpcError> {
+        if let Some(error) = chat
+            .persistence_error
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .is_some_and(|token| !token.is_cancelled());
-        let stamped = if chat_running {
-            false
-        } else {
-            let source = self
-                .git
-                .turn_source_context(&request.cwd, &self.engine_info.device_id)
-                .await;
-            let mut chats = self
-                .runtime
-                .chats
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            let mut stamped = false;
-            if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
-                row.cwd = Some(request.cwd.clone());
-                if let Some(source) = source.as_ref() {
-                    row.branch = Some(source.branch.clone());
-                    row.source_context = Some(source.clone());
-                }
-                stamped = true;
-            }
-            stamped
-        };
-        if stamped {
-            persist_chats(
-                &self.data_dir,
-                &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-            )
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
-            self.runtime.publish_chats();
+        {
+            return Err(RpcError::Failed(format!(
+                "Conversation could not be saved ({error}). Restore storage and reopen Holt before continuing."
+            )));
         }
         let Some(api_key) = self
             .providers
@@ -634,15 +662,13 @@ impl LocalEngine {
             .providers
             .resolve_model(request.provider.as_str(), &request.model)
             .map_err(RpcError::BadParams)?;
-        let cancel = CancellationToken::new();
-        {
-            let mut active = chat.cancel.lock().unwrap_or_else(|e| e.into_inner());
-            if active.as_ref().is_some_and(|token| !token.is_cancelled()) {
-                return Err(RpcError::Failed("this chat is already running".into()));
-            }
-            *active = Some(cancel.clone());
-        }
-
+        let baseline = self.git.turn_baseline(&request.cwd).await.ok();
+        // Resolve live checkout identity only when this message reaches
+        // admission. A pending message does not own a Turn baseline.
+        let source = self
+            .git
+            .turn_source_context(&request.cwd, &self.engine_info.device_id)
+            .await;
         // Title task (ADR-0012): resolve its inputs only when the row could
         // still be eligible, so later prompts never touch title settings.
         // Every failure here is silent — a missing or invalid title model
@@ -655,22 +681,24 @@ impl LocalEngine {
             None
         };
 
+        let persistence = self
+            .runtime
+            .persistence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let now = Utc::now();
-        let timestamp = now.timestamp_millis();
-        chat.transcript
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SessionMessageEntry {
-                id: message_id,
-                role: MessageRole::User,
-                parts,
-                created_at: timestamp,
-                device_id: self.engine_info.device_id.clone(),
-                status: None,
-                continuation_of: None,
-            });
-        chat.publish();
-
+        let timestamp = now.timestamp_millis().max(
+            chat.transcript
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .find(|entry| entry.role == MessageRole::User)
+                .map_or(0, |entry| entry.created_at.saturating_add(1)),
+        );
+        if cancel.is_cancelled() || chat.is_removed() {
+            return Err(RpcError::Failed("Turn interrupted before execution".into()));
+        }
         let mut title_spawn = None;
         // The Turn's mode snapshot (ADR-0014): the stored mode, or the
         // sticky default for a row without a config yet. Taken at
@@ -684,9 +712,12 @@ impl LocalEngine {
                 .write()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
-                // cwd + branch + source context already restamped at
-                // acceptance, above — this pass records the run's config
-                // and sidebar bookkeeping. The permission mode is NOT the
+                row.cwd = Some(request.cwd.clone());
+                if let Some(source) = source {
+                    row.branch = Some(source.branch.clone());
+                    row.source_context = Some(source);
+                }
+                // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
                 // take effect from the next Turn — and a row without a
@@ -735,6 +766,28 @@ impl LocalEngine {
             &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
         )
         .map_err(|error| RpcError::Failed(error.to_string()))?;
+        if queued {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if cancel.is_cancelled() || chat.is_removed() {
+                return Err(RpcError::Failed("Turn interrupted before execution".into()));
+            }
+            queue.start(&message_id, timestamp)?;
+        }
+        if let Some(baseline) = baseline {
+            self.turns.insert(chat_id, baseline);
+        }
+        chat.transcript
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(SessionMessageEntry {
+                id: message_id,
+                role: MessageRole::User,
+                parts,
+                created_at: timestamp,
+                device_id: self.engine_info.device_id.clone(),
+                status: None,
+                continuation_of: None,
+            });
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
 
@@ -750,10 +803,12 @@ impl LocalEngine {
                 token,
             ));
         }
+        drop(persistence);
+        chat.publish();
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();
-        tokio::spawn(run_agent_command(AgentRun {
+        Ok(AgentRun {
             runtime,
             chat_id,
             chat,
@@ -768,8 +823,7 @@ impl LocalEngine {
             invocation,
             permission_mode: mode,
             stream_fn: self.runtime.stream_fn.clone(),
-        }));
-        Ok(())
+        })
     }
 
     fn set_chat_config(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -1106,7 +1160,45 @@ fn pending_stream() -> RpcReply {
 #[async_trait]
 impl RpcService for LocalEngine {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        self.service.handle(method, params).await
+    }
+}
+
+#[async_trait]
+impl RpcService for EngineService {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         match method {
+            methods::WATCH_MESSAGE_QUEUE => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::chat_id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let receiver = chat
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tx
+                    .subscribe();
+                Ok(Self::watch_value(receiver))
+            }
+            methods::CONTINUE_MESSAGE_QUEUE => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::chat_id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let snapshot = {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.pause(false)?;
+                    queue.snapshot()
+                };
+                self.kick_queue(chat);
+                RpcReply::value(&snapshot)
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LOCAL_DEVICE => RpcReply::value(&serde_json::json!({

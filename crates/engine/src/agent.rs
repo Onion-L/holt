@@ -65,6 +65,12 @@ async fn run_system_prompt(
 }
 
 pub(crate) struct ChatRuntime {
+    pub(crate) persistence: Arc<Mutex<()>>,
+    pub(crate) queue: Mutex<crate::queue::Queue>,
+    pub(crate) execution: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) driver_running: std::sync::atomic::AtomicBool,
+    pub(crate) tasks: Mutex<Vec<tokio::task::AbortHandle>>,
+    pub(crate) persistence_error: Mutex<Option<String>>,
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
@@ -93,10 +99,25 @@ pub(crate) struct ChatRuntime {
 const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(120);
 
 impl ChatRuntime {
+    pub(crate) fn track_task(&self, task: &tokio::task::JoinHandle<()>) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task.abort_handle());
+        if self.is_removed() {
+            task.abort();
+        }
+    }
+
     #[cfg(test)]
     fn new() -> Self {
         let (transcript_tx, _) = watch::channel(Arc::new(Vec::new()));
         Self {
+            persistence: Arc::new(Mutex::new(())),
+            queue: Mutex::new(crate::queue::Queue::load(Path::new(""), "")),
+            execution: Arc::new(tokio::sync::Mutex::new(())),
+            driver_running: std::sync::atomic::AtomicBool::new(false),
+            tasks: Mutex::new(Vec::new()),
+            persistence_error: Mutex::new(None),
             transcript: RwLock::new(Vec::new()),
             history: RwLock::new(Vec::new()),
             transcript_tx,
@@ -119,10 +140,10 @@ impl ChatRuntime {
     /// an empty History and one persisted Transcript notice saying where
     /// the model's memory begins — written once, never rebuilt from the
     /// Transcript.
-    fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
+    fn load(data_dir: &Path, chat_id: &str, device_id: &str, persistence: Arc<Mutex<()>>) -> Self {
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
         let replayed = crate::history::load_repaired(data_dir, chat_id);
-        let (history, mut notice) = match replayed {
+        let (mut history, mut notice) = match replayed {
             Ok(repaired) => (repaired, None),
             Err(reason) => {
                 // A damaged record never blocks the chat (ADR-0010): the
@@ -178,11 +199,69 @@ impl ChatRuntime {
         // ended (ADR-0014): settle it as aborted so the replayed chip never
         // poses as answerable.
         crate::gate::settle_pending_gates_on_load(&mut transcript);
+        for entry in &mut transcript {
+            if entry.status == Some(MessageStatus::Streaming) {
+                entry.status = Some(MessageStatus::Aborted);
+            }
+        }
+        let mut queue = crate::queue::Queue::load(data_dir, chat_id);
+        if let Some(started) = queue.recover_started() {
+            let mut recovery_error = None;
+            if !transcript
+                .iter()
+                .any(|entry| entry.id == started.message.message_id)
+            {
+                transcript.push(SessionMessageEntry {
+                    id: started.message.message_id.clone(),
+                    role: MessageRole::User,
+                    parts: vec![MessagePart::Text {
+                        id: "t0".into(),
+                        text: started.message.request.prompt.clone(),
+                    }],
+                    created_at: started.timestamp,
+                    device_id: device_id.into(),
+                    status: None,
+                    continuation_of: None,
+                });
+            }
+            if !history.iter().any(|message| matches!(message, AgentMessage::User(user) if user.timestamp == started.timestamp)) {
+                let prompt = user_agent_message(started.message.request.prompt, started.timestamp);
+                if let Err(error) = crate::history::append_message(data_dir, chat_id, &prompt) {
+                    recovery_error = Some(error.to_string());
+                }
+                history.push(prompt);
+            }
+            let id = format!("interrupted-{}", started.message.message_id);
+            if !transcript.iter().any(|entry| entry.id == id) {
+                transcript.push(SessionMessageEntry {
+                    id,
+                    role: MessageRole::Assistant,
+                    parts: vec![MessagePart::Notice {
+                        id: "n0".into(),
+                        message: "Turn interrupted by restart".into(),
+                    }],
+                    created_at: started.timestamp,
+                    device_id: device_id.into(),
+                    status: Some(MessageStatus::Aborted),
+                    continuation_of: None,
+                });
+            }
+            if let Err(error) = persist_transcript(data_dir, chat_id, &transcript) {
+                recovery_error = Some(error.to_string());
+            }
+            queue.recovered(recovery_error);
+        }
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
         let (transcript_tx, _) = watch::channel(Arc::new(transcript.clone()));
         Self {
+            persistence,
+            queue: Mutex::new(queue),
+            execution: Arc::new(tokio::sync::Mutex::new(())),
+            driver_running: std::sync::atomic::AtomicBool::new(false),
+            tasks: Mutex::new(Vec::new()),
+            persistence_error: Mutex::new(None),
             transcript: RwLock::new(transcript),
             history: RwLock::new(history),
             transcript_tx,
@@ -196,19 +275,24 @@ impl ChatRuntime {
     }
 
     pub(crate) fn publish(&self) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
         self.transcript_tx
             .send_replace(Arc::new(transcript.clone()));
-        // Best-effort snapshot: the in-memory watch stays authoritative, and
-        // a failed write surfaces again on the next publish instead of
-        // failing the run that triggered it. A removed chat writes nothing —
-        // a deleted transcript must not be resurrected by a settle pass.
-        if !self.chat_id.is_empty() && !self.is_removed() {
-            let _ = persist_transcript(&self.data_dir, &self.chat_id, &transcript);
+        // A failed snapshot stops subsequent admission; the live Turn still
+        // settles. Removed chats must not recreate their persisted records.
+        if !self.chat_id.is_empty()
+            && !self.is_removed()
+            && let Err(error) = persist_transcript(&self.data_dir, &self.chat_id, &transcript)
+        {
+            *self
+                .persistence_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
         }
     }
 
-    fn is_removed(&self) -> bool {
+    pub(crate) fn is_removed(&self) -> bool {
         self.removed.load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -218,17 +302,38 @@ impl ChatRuntime {
     /// Best-effort like the transcript snapshot — an unreadable tail is
     /// absorbed on load.
     pub(crate) fn append_history(&self, message: AgentMessage) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         if self.chat_id.is_empty() || self.is_removed() {
             return;
         }
         if let Err(error) = crate::history::append_message(&self.data_dir, &self.chat_id, &message)
         {
             tracing::warn!(target: "holt::history", %error, "history append failed");
+            *self
+                .persistence_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+        }
+    }
+
+    fn append_compaction(&self, record: &CompactionRecord) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_removed() {
+            return;
+        }
+        if let Err(error) = crate::history::append_compaction(&self.data_dir, &self.chat_id, record)
+        {
+            *self
+                .persistence_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
         }
     }
 }
 
 pub(crate) struct AgentRuntime {
+    pub(crate) persistence: Arc<Mutex<()>>,
+    pub(crate) stopping: std::sync::atomic::AtomicBool,
     device_id: String,
     data_dir: PathBuf,
     pub(crate) chats: RwLock<Vec<Chat>>,
@@ -247,6 +352,45 @@ pub(crate) struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    pub(crate) fn shutdown(&self) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        for chat in self
+            .chat_runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            let _queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            chat.removed
+                .store(true, std::sync::atomic::Ordering::Release);
+            for task in chat
+                .tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..)
+            {
+                task.abort();
+            }
+            if let Some(cancel) = chat
+                .cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                cancel.cancel();
+            }
+            if let Some(cancel) = chat
+                .title_cancel
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                cancel.cancel();
+            }
+        }
+    }
     pub(crate) fn new(
         device_id: String,
         data_dir: PathBuf,
@@ -257,6 +401,8 @@ impl AgentRuntime {
         let (chats_tx, _) = watch::channel(chats_value);
         let (sessions_tx, _) = watch::channel(serde_json::json!([]));
         Self {
+            persistence: Arc::new(Mutex::new(())),
+            stopping: std::sync::atomic::AtomicBool::new(false),
             device_id,
             data_dir,
             chats: RwLock::new(chats),
@@ -274,7 +420,12 @@ impl AgentRuntime {
         chats
             .entry(chat_id.to_string())
             .or_insert_with(|| {
-                Arc::new(ChatRuntime::load(&self.data_dir, chat_id, &self.device_id))
+                Arc::new(ChatRuntime::load(
+                    &self.data_dir,
+                    chat_id,
+                    &self.device_id,
+                    self.persistence.clone(),
+                ))
             })
             .clone()
     }
@@ -287,12 +438,14 @@ impl AgentRuntime {
     /// can neither resurrect the transcript file nor re-append History; a
     /// pending Title task is cancelled for the same reason (ADR-0012).
     pub(crate) fn remove_chat(&self, chat_id: &str) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let runtime = self
             .chat_runtime
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
         if let Some(runtime) = runtime {
+            let _queue = runtime.queue.lock().unwrap_or_else(|e| e.into_inner());
             runtime
                 .removed
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -315,6 +468,10 @@ impl AgentRuntime {
         }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
+        if crate::store::chat_id_is_path_safe(chat_id) {
+            let _ =
+                std::fs::remove_file(self.data_dir.join("queues").join(format!("{chat_id}.json")));
+        }
     }
 
     pub(crate) fn publish_chats(&self) {
@@ -328,6 +485,10 @@ impl AgentRuntime {
     /// (the overflow fallback, ADR-0011): the last Turn ended on a context
     /// overflow, so the next Turn compacts unconditionally first.
     pub(crate) fn set_compact_before_next_turn(&self, chat_id: &str) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         let mut chats = self.chats.write().unwrap_or_else(|e| e.into_inner());
         if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
             row.compact_before_next_turn = true;
@@ -347,6 +508,10 @@ impl AgentRuntime {
     /// Read and clear the flag, persisting — consumed exactly once, by the
     /// Turn that acts on it.
     pub(crate) fn take_compact_before_next_turn(&self, chat_id: &str) -> bool {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
         let mut chats = self.chats.write().unwrap_or_else(|e| e.into_inner());
         let flagged = chats
             .iter_mut()
@@ -594,9 +759,10 @@ pub(crate) fn record_turn_start_compaction(
     device_id: &str,
     record: &CompactionRecord,
 ) {
-    if let Err(error) = crate::history::append_compaction(&chat.data_dir, &chat.chat_id, record) {
-        tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
+    if chat.is_removed() {
+        return;
     }
+    chat.append_compaction(record);
     push_system_part(
         chat,
         device_id,
@@ -616,9 +782,10 @@ fn record_mid_turn_compaction(
     record: &CompactionRecord,
     run_base_parts: &Arc<Mutex<Vec<MessagePart>>>,
 ) {
-    if let Err(error) = crate::history::append_compaction(&chat.data_dir, &chat.chat_id, record) {
-        tracing::warn!(target: "holt::history", %error, "compaction entry append failed");
+    if chat.is_removed() {
+        return;
     }
+    chat.append_compaction(record);
     let MessagePart::CompactionDivider {
         summary,
         tokens_before,
@@ -837,7 +1004,7 @@ pub(crate) struct AgentRun {
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
 
-pub(crate) async fn run_agent_command(run: AgentRun) {
+pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
     let AgentRun {
         runtime,
         chat_id,
@@ -1004,6 +1171,13 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     });
 
     let stream_fn = stream_fn.unwrap_or_else(default_stream_fn);
+    let stream_cancel = cancel.clone();
+    let stream_fn: pi_core::agent::types::StreamFn = Arc::new(move |model, context, options| {
+        if stream_cancel.is_cancelled() {
+            return Err("Turn interrupted".into());
+        }
+        stream_fn(model, context, options)
+    });
     let mut history = chat
         .history
         .read()
@@ -1026,7 +1200,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             &stream_fn,
             &api_key,
             holt_doc::parts::CompactionTrigger::AfterOverflow,
-            None,
+            Some(&cancel),
         )
         .await
     } else {
@@ -1036,6 +1210,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             &stream_fn,
             &api_key,
             holt_doc::parts::CompactionTrigger::Automatic,
+            Some(&cancel),
         )
         .await
     };
@@ -1046,6 +1221,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             history = outcome.messages;
         }
         Ok(None) => {}
+        Err(_) if cancel.is_cancelled() => {
+            if overflow_recovery {
+                runtime.set_compact_before_next_turn(&chat_id);
+            }
+        }
         Err(reason) => {
             // A failed automatic compaction never blocks the Turn: proceed
             // uncompacted, with a visible notice (overflow, if it follows,
@@ -1101,6 +1281,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let hook_api_key = api_key.clone();
     let hook_base = Arc::clone(&run_base);
     let hook_base_parts = Arc::clone(&base_parts);
+    let hook_cancel = cancel.clone();
     let prepare_next_turn: pi_core::agent::types::PrepareNextTurnFn = Arc::new(
         move |last_turn: pi_core::agent::types::PrepareNextTurnContext| {
             let chat = hook_chat.clone();
@@ -1110,6 +1291,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             let base = Arc::clone(&hook_base);
             let base_parts = Arc::clone(&hook_base_parts);
             let device_id = hook_device_id.clone();
+            let cancel = hook_cancel.clone();
             Box::pin(async move {
                 let pre_run_len = base.lock().unwrap_or_else(|e| e.into_inner()).history.len();
                 if !crate::compaction::needed(&last_turn.context.messages, &model) {
@@ -1121,11 +1303,13 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                     &stream_fn,
                     &api_key,
                     holt_doc::parts::CompactionTrigger::Automatic,
+                    Some(&cancel),
                 )
                 .await
                 {
                     Ok(Some(outcome)) => outcome,
                     Ok(None) => return None,
+                    Err(_) if cancel.is_cancelled() => return None,
                     Err(reason) => {
                         // Same rule as the Turn-start failure: the Turn
                         // continues uncompacted, visibly.
@@ -1295,6 +1479,15 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             errored
         }
         Err(error) => {
+            {
+                let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
+                if !chat.is_removed()
+                    && let Ok(repaired) =
+                        crate::history::load_repaired(&chat.data_dir, &chat.chat_id)
+                {
+                    *chat.history.write().unwrap_or_else(|e| e.into_inner()) = repaired;
+                }
+            }
             let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = transcript.iter_mut().find(|e| e.id == entry_id) {
                 // The loop died mid-reply: surface the error on the live entry
@@ -1320,7 +1513,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
                     parts,
                     created_at: Utc::now().timestamp_millis(),
                     device_id: runtime.device_id.clone(),
-                    status: Some(MessageStatus::Complete),
+                    status: Some(MessageStatus::Aborted),
                     continuation_of: None,
                 });
             }
@@ -1331,14 +1524,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     };
     settle_unresolved_tools(&chat);
     *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    runtime.set_session(
-        &chat_id,
-        if errored {
-            SessionStatus::Errored
-        } else {
-            SessionStatus::Idle
-        },
-    );
+    !errored && !cancel.is_cancelled()
 }
 
 #[cfg(test)]

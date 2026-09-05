@@ -73,6 +73,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root, shadowed entries, and load diagnostics).
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
+- Ordinary-message queue: `WatchMessageQueue` (`MessageQueue` snapshots
+  per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
+  `QueueCommand run` acknowledges durable acceptance by `messageId`;
+  the same identity is deduplicated across pending, started, and completed
+  work, including after restart. Admission errors arrive through the Watch.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
@@ -146,8 +151,35 @@ slash command (a typed command — the `Compacting` session status is
 interruptible like a run), and unconditionally on the Turn after a context
 overflow. The Transcript never shrinks — dividers (expandable, with
 before/after token counts and the trigger) and notices mark what happened.
-Terminals, worktrees, change requests, uploads, and steering remain outside
-this slice.
+Ordinary messages persist in `queues/<chatId>.json`, independently of
+Transcript and History. Each chat has one FIFO consumer and one execution
+lock held through preparation, execution, History repair, Transcript
+settlement, and queue completion. An interrupt requests cancellation and
+pauses the queue; the channel stays occupied until cleanup completes.
+Approval waits and automatic/manual Compaction share that boundary.
+Successful Turns advance automatically. Execution failures pause remaining
+work; admission failures retain the head with an error without creating a
+Turn. New submissions preserve pause state; only Continue resumes it.
+
+The pending-to-started checkpoint is atomically replaced and synced before
+any model or tool work. Restart repairs a started message as interrupted,
+never requeues it, and restores unstarted work paused. The queue keeps
+accepted message identities to make delivery retries idempotent. A failed
+conversation write pauses consumption and requires storage repair and an
+app reopen before further admission; an unreadable queue is retained and
+blocked instead of overwritten. A completion status is published only
+after queue completion is recorded or its persistence failure is surfaced.
+
+The composer watches only its selected chat's queue, above the input;
+pending messages are absent from Transcript and History. Model and reasoning
+are captured on submission. Permission mode and live checkout identity are
+read at Turn admission, when the latest-Turn diff baseline is refreshed.
+The queue is consumed by the engine even when its chat is not selected.
+
+Queue editing/deletion, Steer, and queued slash commands remain subsequent
+slices. `/skill` and `/compact` still use direct commands and reject an
+occupied execution channel; `/compact` remains outside the Turn model.
+Terminals, worktrees, change requests, and uploads remain unserved.
 
 The engine's integration tests drive whole Turns through `RpcService::handle`
 against a scripted provider injected via `EngineConfig::stream_fn` (set only

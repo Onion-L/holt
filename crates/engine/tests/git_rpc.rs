@@ -4,6 +4,8 @@
 //! The fixture repos have no remotes unless a test adds one — branch listing
 //! and switching must work fully offline.
 
+mod common;
+
 use futures::StreamExt as _;
 use git2::Repository;
 use holt_engine::{EngineConfig, LocalEngine};
@@ -84,7 +86,14 @@ impl Fixture {
         LocalEngine::assemble(&EngineConfig {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: None,
-            stream_fn: None,
+            stream_fn: Some(
+                common::ScriptedProvider::new(
+                    (0..8)
+                        .map(|_| common::ScriptedReply::text("done"))
+                        .collect(),
+                )
+                .stream_fn(),
+            ),
         })
         .unwrap()
     }
@@ -1683,9 +1692,16 @@ async fn fetch_all_surfaces_errors_verbatim() {
 
 // ---- latest turn: net-change diffs (git-capability issue 06) ----
 
-/// Queue a run against a bogus provider: the command is rejected, but the
-/// turn baseline is still captured deterministically (ADR-0003).
-async fn queue_bogus_run(engine: &LocalEngine, chat_id: &str, cwd: &str) {
+/// A real admitted Turn establishes the baseline; pending or invalid
+/// requests cannot change the previous Turn's diff.
+async fn complete_turn(engine: &LocalEngine, chat_id: &str, cwd: &str) {
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({"providerId":"openai","key":"test-only"}),
+        )
+        .await
+        .unwrap();
     let result = engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -1693,11 +1709,11 @@ async fn queue_bogus_run(engine: &LocalEngine, chat_id: &str, cwd: &str) {
                 "chatId": chat_id,
                 "command": {
                     "kind": "run",
-                    "messageId": "m-1",
+                    "messageId": uuid::Uuid::new_v4().to_string(),
                     "request": {
                         "prompt": "do the thing",
-                        "provider": "bogus-provider",
-                        "model": "bogus-provider/none",
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
                         "reasoning": null,
                         "modelOptions": {},
                         "cwd": cwd,
@@ -1707,10 +1723,24 @@ async fn queue_bogus_run(engine: &LocalEngine, chat_id: &str, cwd: &str) {
             }),
         )
         .await;
-    assert!(
-        matches!(result, Err(RpcError::Failed(ref message)) if message.contains("not configured")),
-        "bogus provider must reject the run"
-    );
+    result.unwrap();
+    let RpcReply::Stream(mut queue) = engine
+        .handle(
+            methods::WATCH_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":chat_id}),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("queue watch")
+    };
+    loop {
+        let state = common::next_frame(&mut queue).await;
+        assert_ne!(state["paused"], true, "Turn failed: {state}");
+        if state["pending"] == serde_json::json!([]) && state["activeMessageId"].is_null() {
+            break;
+        }
+    }
 }
 
 async fn turn_diff(
@@ -1752,17 +1782,84 @@ async fn turn_without_a_baseline_is_an_explicit_error_not_an_empty_diff() {
 }
 
 #[tokio::test]
-async fn queued_command_records_a_turn_baseline_even_when_rejected() {
+async fn an_admitted_turn_records_a_baseline() {
     let fixture = Fixture::new();
     let engine = fixture.engine();
     register_space(&engine, &fixture, "space-1").await;
 
-    // Rejected for the bogus provider — but the baseline landed.
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    // The scripted Turn starts and establishes the baseline.
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
     let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
         .await
-        .expect("baseline recorded despite the rejection");
+        .expect("baseline recorded at admission");
     assert!(diff.patch.trim().is_empty(), "clean tree at turn start");
+}
+
+#[tokio::test]
+async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts() {
+    use std::sync::Arc;
+    let fixture = Fixture::new();
+    let first = Arc::new(tokio::sync::Notify::new());
+    let second = Arc::new(tokio::sync::Notify::new());
+    let provider = common::ScriptedProvider::new(vec![
+        common::ScriptedReply::gated(first.clone(), "A done"),
+        common::ScriptedReply::gated(second.clone(), "B done"),
+    ]);
+    let engine = LocalEngine::assemble(&EngineConfig {
+        data_dir: fixture.data_dir.path().into(),
+        personal_skills_dir: None,
+        stream_fn: Some(provider.stream_fn()),
+    })
+    .unwrap();
+    register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({"providerId":"openai","key":"test-only"}),
+        )
+        .await
+        .unwrap();
+    common::run_prompt(&engine, "chat-1", &fixture.repo_path(), "A").await;
+    common::wait_for_requests(&provider, 1).await;
+    common::run_prompt(&engine, "chat-1", &fixture.repo_path(), "B").await;
+    engine
+        .handle(
+            methods::SWITCH_REF,
+            serde_json::json!({"repoPath":fixture.repo_path(),"refName":"feature"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        chat_row(&engine, "chat-1").await.branch.as_deref(),
+        Some("main")
+    );
+    std::fs::write(
+        fixture.repo_dir.path().join("README.md"),
+        "change before B\n",
+    )
+    .unwrap();
+    assert!(
+        turn_diff(&engine, &fixture.repo_path(), "chat-1")
+            .await
+            .unwrap()
+            .patch
+            .contains("change before B")
+    );
+    first.notify_one();
+    common::wait_for_requests(&provider, 2).await;
+    assert_eq!(
+        chat_row(&engine, "chat-1").await.branch.as_deref(),
+        Some("feature")
+    );
+    assert!(
+        turn_diff(&engine, &fixture.repo_path(), "chat-1")
+            .await
+            .unwrap()
+            .patch
+            .is_empty()
+    );
+    second.notify_one();
 }
 
 #[tokio::test]
@@ -1770,7 +1867,7 @@ async fn turn_diff_on_a_clean_start_shows_changes_since_the_turn_began() {
     let fixture = Fixture::new();
     let engine = fixture.engine();
     register_space(&engine, &fixture, "space-1").await;
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
     std::fs::write(
         fixture.repo_dir.path().join("README.md"),
@@ -1812,7 +1909,7 @@ async fn turn_diff_filters_net_changes_on_a_dirty_start() {
         "revert base\n",
     )
     .unwrap();
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
     // Agent-like edits: touch `edited`, wiggle `reverted` back to its
     // turn-start bytes, create a new file, rename a tracked one.
@@ -1869,7 +1966,7 @@ async fn turn_baseline_dies_with_the_engine() {
     let fixture = Fixture::new();
     let engine = fixture.engine();
     register_space(&engine, &fixture, "space-1").await;
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
     drop(engine);
 
     // A fresh engine on the same data dir: in-memory baselines are gone.
@@ -1893,7 +1990,7 @@ async fn turn_file_text_reads_turn_start_content_and_the_workdir() {
         "dirty at start\n",
     )
     .unwrap();
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
     std::fs::write(
         fixture.repo_dir.path().join("README.md"),
         "dirty at start\nagent added\n",
@@ -1946,7 +2043,7 @@ async fn turn_baseline_patch_rides_the_three_mib_cap() {
     // and the turn scope still answers.
     let huge = "x".repeat(6 * 1024 * 1024);
     std::fs::write(fixture.repo_dir.path().join("huge.txt"), &huge).unwrap();
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
     std::fs::write(
         fixture.repo_dir.path().join("README.md"),
@@ -2029,9 +2126,9 @@ async fn accepted_run_stamps_branch_and_source_context_from_head() {
     register_space(&engine, &fixture, "space-1").await;
     create_chat(&engine, "chat-1", "space-1").await;
 
-    // A bogus provider still lands the identity stamps: they happen
+    // An admitted Turn lands the identity stamps: they happen
     // synchronously at command acceptance, before validation.
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
     let chat = chat_row(&engine, "chat-1").await;
     assert_eq!(chat.branch.as_deref(), Some("main"));
@@ -2076,7 +2173,7 @@ async fn a_run_restamps_the_chat_row_cwd_from_the_request() {
         "precondition: creation stamps the passed cwd"
     );
 
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
     let chat = chat_row(&engine, "chat-1").await;
     assert_eq!(
@@ -2093,7 +2190,7 @@ async fn a_switch_between_runs_restamps_branch_and_source_context() {
     register_space(&engine, &fixture, "space-1").await;
     create_chat(&engine, "chat-1", "space-1").await;
 
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
     let first = chat_row(&engine, "chat-1").await;
     let first = first.source_context.expect("first stamp landed");
 
@@ -2108,7 +2205,7 @@ async fn a_switch_between_runs_restamps_branch_and_source_context() {
         .await
         .unwrap();
 
-    queue_bogus_run(&engine, "chat-1", &fixture.repo_path()).await;
+    complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
     let chat = chat_row(&engine, "chat-1").await;
     assert_eq!(chat.branch.as_deref(), Some("feature"));
     let second = chat.source_context.expect("second stamp landed");
@@ -2131,9 +2228,8 @@ async fn a_run_on_a_non_git_folder_leaves_the_identity_unstamped() {
     register_space_at(&engine, "space-plain", &plain_path).await;
     create_chat(&engine, "chat-1", "space-plain").await;
 
-    // The bogus-provider rejection here is the same as ever — the non-git
-    // folder must not turn it into a different failure.
-    queue_bogus_run(&engine, "chat-1", &plain_path).await;
+    // A non-git folder still admits ordinary Turns.
+    complete_turn(&engine, "chat-1", &plain_path).await;
 
     let chat = chat_row(&engine, "chat-1").await;
     assert_eq!(chat.branch, None, "no branch to stamp on a plain folder");

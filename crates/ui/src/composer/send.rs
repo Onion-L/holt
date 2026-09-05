@@ -1,5 +1,5 @@
-//! The send path: submit resolution (Send/Steer/Stop), the optimistic echo,
-//! the queued Run/Steer command with failure hand-back, and Stop/interrupt.
+//! The send path: ordinary-message enqueue, direct slash commands,
+//! durable-delivery retries, and Stop/interrupt.
 
 use super::send_mode::{SendButtonMode, composer_has_content, send_button_mode};
 use super::{Composer, ComposerEvent};
@@ -19,7 +19,7 @@ fn failure_restore_text(parsed: &super::slash::Parsed, typed: String) -> Option<
 }
 
 impl Composer {
-    fn run_live(&self, cx: &App) -> bool {
+    pub(super) fn run_live(&self, cx: &App) -> bool {
         let s = self.state.read(cx);
         let Some(chat_id) = s.selected_chat.as_deref() else {
             return false;
@@ -35,12 +35,15 @@ impl Composer {
     /// project-less `~`-cwd sessions are no longer mintable from the canvas.
     /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
+        if self.failed_submissions.contains_key(&self.current_key) {
+            return true;
+        }
         let state = self.state.read(cx);
         if state.selected_chat.is_some() {
-            return !self.pickers.read(cx).can_send(cx);
+            return self.sending || !self.pickers.read(cx).can_send(cx);
         }
         // New-chat canvas: needs a project and a configured provider/model.
-        state.selected_space_row().is_none() || !self.pickers.read(cx).can_send(cx)
+        self.sending || state.selected_space_row().is_none() || !self.pickers.read(cx).can_send(cx)
     }
 
     pub(super) fn button_mode(&self, cx: &App) -> SendButtonMode {
@@ -70,6 +73,17 @@ impl Composer {
     /// input. Keeping this separate lets commands such as `/compact` dispatch
     /// without briefly filling the composer first.
     pub(super) fn submit_text(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.sending {
+            return;
+        }
+        if self
+            .failed_submissions
+            .get(&self.current_key)
+            .is_some_and(|(original, _)| original == &text)
+        {
+            self.retry_submission(cx);
+            return;
+        }
         // Slash commands are handled by the composer itself (ADR-0006):
         // a recognized-but-nameless `/skill` never reaches the prompt
         // path — surface the usage instead. Same for `/compact` with
@@ -108,15 +122,14 @@ impl Composer {
             SendButtonMode::Stop => self.interrupt(cx),
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
-            SendButtonMode::Send => self.send(text, false, cx),
-            SendButtonMode::Steer => self.send(text, true, cx),
+            SendButtonMode::Send | SendButtonMode::Queue => self.send(text, cx),
         }
     }
-    /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
+    /// Durably enqueue an ordinary message. New chats
     /// thread the picked config in: worktree creation (when the isolated toggle
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
-    fn send(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+    fn send(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None; // global — meaningful on every chat
@@ -209,6 +222,12 @@ impl Composer {
             })
         };
         let typed = text.clone();
+        let retry = self
+            .failed_submissions
+            .get(&chat_id)
+            .filter(|(previous, _)| previous == &typed)
+            .map(|(_, params)| params.clone());
+        let submission_text = typed.clone();
         let text = if comments.is_empty() {
             text
         } else {
@@ -313,7 +332,7 @@ impl Composer {
             }
             // `/compact` has no user entry to echo — the Compacting status
             // is the whole UI story until the divider lands (ADR-0011).
-            if !matches!(slash, super::slash::Parsed::Compact) {
+            if matches!(slash, super::slash::Parsed::Skill { .. }) {
                 s.push_echo(&chat_id, echo);
                 // Working overlay until the engine executes the queued
                 // command — without it a send flashed Completed (and could
@@ -327,13 +346,14 @@ impl Composer {
         self.drafts.remove(&self.current_key);
         self.failure = None;
         self.sending = true;
-        cx.emit(ComposerEvent::Sent {
-            chat_id: chat_id.clone(),
-            message_id: message_id.clone(),
-        });
+        if matches!(slash, super::slash::Parsed::Skill { .. }) {
+            cx.emit(ComposerEvent::Sent {
+                chat_id: chat_id.clone(),
+                message_id: message_id.clone(),
+            });
+        }
         cx.notify();
 
-        let steer_cmd = steer && !is_new;
         let restore_text = failure_restore_text(&slash, typed);
         let err_chat_id = chat_id.clone();
         let err_message_id = message_id.clone();
@@ -626,11 +646,6 @@ impl Composer {
                             worktree: run_worktree,
                         },
                     },
-                    _
-                        if steer_cmd => SessionCommandPayload::Steer {
-                            prompt: content.clone(),
-                            message_id: Some(message_id.clone()),
-                        },
                     _ => SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: content.clone(),
@@ -658,6 +673,14 @@ impl Composer {
                 if !transfers.is_empty() {
                     params["transfers"] = serde_json::Value::Array(transfers);
                 }
+                if matches!(slash, super::slash::Parsed::Skill { .. } | super::slash::Parsed::Compact) {
+                    // These direct commands gain queue identities in ticket 04.
+                } else {
+                    if let Some(retry) = retry { params = retry; }
+                    this.update(cx, |composer, _| {
+                        composer.failed_submissions.insert(chat_id.clone(), (submission_text.clone(), params.clone()));
+                    }).ok();
+                }
                 // Deadline-bounded: QueueCommand is a local write, but a
                 // parked backend handle can stall forever —
                 // the send task must never grind silently (2026-08-19).
@@ -673,69 +696,37 @@ impl Composer {
                 Ok(())
             }
             .await;
-            if result.is_err() && is_new {
-                // A failed new-chat send must not strand a just-minted empty
-                // chat in the sidebar (v0.2.12 "empty transcript" report).
-                // Staging now runs before CreateChat, so usually nothing was
-                // created — but a post-mutate failure (QueueCommand) still
-                // leaves a row. Best-effort delete; a no-op if the chat was
-                // never materialized.
-                let _ = attachments::call_with_timeout(
-                    &engine,
-                    cx.background_executor(),
-                    methods::MUTATE,
-                    serde_json::json!({ "op": "deleteChat", "chatId": err_chat_id }),
-                    std::time::Duration::from_secs(5),
-                )
-                .await;
-            }
             this.update(cx, |composer, cx| {
                 composer.sending = false;
+                if result.is_ok() { composer.failed_submissions.remove(&err_chat_id); }
                 composer
                     .state
                     .update(cx, |s, _| s.end_upload_progress());
                 if let Err(message) = result {
-                    // Failure: red banner, echo removed, prompt back in the
-                    // draft, staged files back in the stash. A failed NEW
-                    // chat restores to the CANVAS (key "") and navigates back
-                    // there — the minted chat is gone (deleted above), so
-                    // nothing may restore under its key.
-                    let restore_key = if is_new {
-                        String::new()
-                    } else {
-                        err_chat_id.clone()
-                    };
+                    // A lost acknowledgement may follow a durable enqueue.
+                    // Preserve the chat and retry the original message ID.
+                    let restore_key = err_chat_id.clone();
                     composer.failure = Some(message.into());
                     composer.failure_key = Some(restore_key.clone());
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
                         s.end_pending_send(&err_chat_id, &err_message_id);
-                        if is_new && s.selected_chat.as_deref() == Some(err_chat_id.as_str()) {
-                            // Back to the canvas; the navigation draft-swap
-                            // loads the restored draft below.
-                            s.select_chat(None, cx);
-                        }
-                        for comment in &comments {
-                            s.add_diff_comment(&restore_key, comment.clone());
+                        if !composer.failed_submissions.contains_key(&restore_key) {
+                            for comment in &comments { s.add_diff_comment(&restore_key, comment.clone()); }
                         }
                         cx.notify();
                     });
                     if let Some(restore_text) = restore_text {
-                        if is_new && composer.current_key != restore_key {
-                            // A re-key swap to the canvas is pending (the
-                            // select_chat(None) above); it loads this draft into
-                            // the input on flush — setting the input directly
-                            // here would be clobbered by that same swap.
-                            composer.drafts.insert(restore_key.clone(), restore_text);
+                        if composer.current_key != restore_key {
+                            composer.drafts.entry(restore_key.clone()).or_insert(restore_text);
                         } else {
-                            // Already keyed to the restore target (either an
-                            // existing chat, or the deleted row's watch event
-                            // re-keyed to the canvas before this handler ran —
-                            // no further swap will fire). Set the input directly.
-                            composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
+                            let fresh = composer.input.read(cx).text().to_string();
+                            if fresh.is_empty() {
+                                composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
+                            }
                         }
                     }
-                    if !staged.is_empty() {
+                    if !staged.is_empty() && !composer.failed_submissions.contains_key(&restore_key) {
                         // Merge by id (stashAttachments): files the user staged
                         // while the send was in flight survive the hand-back —
                         // draining the minted chat's slot too when the restore
@@ -796,7 +787,7 @@ impl Composer {
         self.interrupt(cx);
     }
 
-    fn interrupt(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn interrupt(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -808,9 +799,9 @@ impl Composer {
             "chatId": chat_id,
             "command": { "kind": "interrupt" },
         });
-        // `action_task`, NOT `send_task`: a Stop pressed while a send is in
-        // flight must not drop the send future on the floor.
-        self.action_task = Some(cx.spawn(async move |this, cx| {
+        // Keep each control request alive through delivery, including when
+        // Continue follows Stop before its response arrives.
+        cx.spawn(async move |this, cx| {
             let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
@@ -820,7 +811,8 @@ impl Composer {
                 })
                 .ok();
             }
-        }));
+        })
+        .detach();
     }
     pub(super) fn render_send_button(
         &mut self,
@@ -829,10 +821,17 @@ impl Composer {
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
         // Holt composer-actions.tsx: a size-7 filled circle — up-arrow to
-        // send/steer, a dark rounded square on the same light circle to stop.
+        // send/queue, a dark rounded square on the same light circle to stop.
         match mode {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
+                .role(gpui::Role::Button)
+                .aria_label("Stop and pause message queue")
+                .focusable()
+                .tooltip(|_, cx| {
+                    cx.new(|_| super::queue::ActionTooltip("Stop and pause queue"))
+                        .into()
+                })
                 .size(px(28.0))
                 .flex_none()
                 .rounded_full()
@@ -842,10 +841,17 @@ impl Composer {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.85))
+                .focus(|s| s.border_2().border_color(theme.border_strong))
                 .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.interrupt(cx);
+                    }
+                }))
                 .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
-            SendButtonMode::Send | SendButtonMode::Steer => {
+            SendButtonMode::Send | SendButtonMode::Queue => {
                 // Dimmed and inert while no project is picked or no agent is
                 // runnable (`send_blocked` also gates `on_submit`, so Enter
                 // is a no-op too).

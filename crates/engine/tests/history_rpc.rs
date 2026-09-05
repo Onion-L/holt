@@ -110,6 +110,13 @@ async fn a_crash_mid_turn_loses_no_completed_tool_result() {
     let engine = fixture.engine(&provider);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
@@ -149,7 +156,7 @@ async fn deleting_a_chat_removes_its_history_file() {
 }
 
 #[tokio::test]
-async fn a_path_hostile_chat_id_runs_without_a_history_file() {
+async fn a_path_hostile_chat_id_cannot_be_durably_enqueued() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]);
     let engine = fixture.engine(&provider);
@@ -167,11 +174,11 @@ async fn a_path_hostile_chat_id_runs_without_a_history_file() {
         )
         .await
         .unwrap();
-    let (_, mut sessions) = common::subscribe(&engine, "../escape").await;
-
-    // The Turn runs and replies — the id disables the file, not the chat.
-    common::run_prompt(&engine, "../escape", &fixture.cwd(), "hello").await;
-    common::wait_for_session_status(&mut sessions, "../escape", "idle").await;
+    let error = engine.handle(methods::QUEUE_COMMAND, serde_json::json!({"chatId":"../escape","command":{
+        "kind":"run","messageId":"m","request":{"prompt":"hello","provider":"openai","model":"openai/gpt-5.4","cwd":fixture.cwd()}
+    }})).await.err().expect("unsafe path must fail admission");
+    assert!(error.to_string().contains("invalid chatId"));
+    assert!(provider.requests().is_empty());
 
     // No History (and no transcript) escaped the data dir, matching the
     // Transcript's behavior for hostile ids.
@@ -216,6 +223,13 @@ async fn an_interrupted_turn_leaves_an_honest_record() {
     // (as a NORMAL end — no aborted stop reason) and holt's synthetic
     // interrupted result, not upstream's "No result provided".
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "actually, don't").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     let next = &requests[1].messages;
@@ -259,6 +273,13 @@ async fn an_errored_turn_keeps_the_prompt_and_drops_the_failed_answer() {
     // "try again" without retyping: the prompt is still in the model's
     // memory; the failed answer is not.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "try again").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(
@@ -342,6 +363,13 @@ async fn a_load_time_repair_stays_next_to_its_call_across_a_second_restart() {
     let engine = fixture.engine(&provider);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first restart").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     drop(engine);
 

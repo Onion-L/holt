@@ -57,6 +57,13 @@ async fn an_overflow_error_flags_the_chat_and_the_next_turn_recovers() {
     // The next Turn compacts FIRST — unconditionally, below the threshold
     // — then runs on the compacted History.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "continue").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
@@ -96,6 +103,13 @@ async fn the_overflow_flag_survives_a_restart() {
     assert!(compact_flag(&engine).await);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "continue").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
@@ -169,6 +183,13 @@ async fn a_failed_recovery_keeps_the_flag_for_the_turn_after() {
     // The recovery's summary fails: the Turn proceeds uncompacted, and the
     // debt is still owed.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "try once").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     common::wait_for_transcript_text(&mut transcript, "Automatic compaction failed").await;
     assert!(

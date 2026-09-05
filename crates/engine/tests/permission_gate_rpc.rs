@@ -265,6 +265,13 @@ async fn interrupt_cancels_a_pending_approval() {
     let engine = fixture.engine(&follow_up);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "again").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let request = &follow_up.requests()[0];
     let summarized = common::summarize(&request.messages);
@@ -383,6 +390,13 @@ async fn a_restart_mid_approval_settles_the_gate_on_load() {
     // synthetic error result.
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "again").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert!(
         common::summarize(&provider2.requests()[0].messages)

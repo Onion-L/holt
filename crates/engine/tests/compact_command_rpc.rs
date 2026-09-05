@@ -197,6 +197,13 @@ async fn a_failed_manual_compaction_leaves_the_history_untouched() {
     // The failure surfaces, and the next Turn carries the UNCOMPACTED
     // History — nothing was replaced.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "continue").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     let run = requests.last().unwrap();
@@ -251,6 +258,13 @@ async fn interrupting_a_manual_compaction_settles_idle_with_history_intact() {
     // The History is unchanged — the next request is the full,
     // uncompacted conversation.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the interrupt").await;
+    engine
+        .handle(
+            methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     let run = requests.last().unwrap();

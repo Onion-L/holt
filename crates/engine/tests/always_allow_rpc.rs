@@ -170,6 +170,13 @@ async fn grants_hold_across_mode_switches_and_die_on_restart() {
     common::setup_chat(&engine, "chat-1").await;
     let _ = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "again").await;
+    engine
+        .handle(
+            holt_rpc::methods::CONTINUE_MESSAGE_QUEUE,
+            serde_json::json!({"chatId":"chat-1"}),
+        )
+        .await
+        .unwrap();
     let third = common::wait_for_gate(&engine, "chat-1", "call-3", "pending").await;
     common::resolve_approval(&engine, &third, serde_json::json!({ "kind": "deny" })).await;
     common::wait_for_gate(&engine, "chat-1", "call-3", "settled:denied").await;

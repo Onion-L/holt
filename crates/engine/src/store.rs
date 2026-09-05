@@ -29,7 +29,7 @@ pub(crate) fn load_chats(data_dir: &Path) -> Result<Vec<Chat>, EngineError> {
 
 pub(crate) fn persist_chats(data_dir: &Path, chats: &[Chat]) -> Result<(), EngineError> {
     let path = chats_path(data_dir);
-    let temp_path = data_dir.join("chats.json.tmp");
+    let temp_path = data_dir.join(format!("chats.{}.tmp", uuid::Uuid::new_v4()));
     let bytes =
         serde_json::to_vec_pretty(chats).map_err(|error| EngineError::Other(error.to_string()))?;
     std::fs::write(&temp_path, bytes)?;

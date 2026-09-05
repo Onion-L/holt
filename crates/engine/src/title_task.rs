@@ -54,6 +54,13 @@ pub(crate) async fn run_title_task(
     // instance (delete + recreate under the same id fails the generation
     // check), and still be automatically titled — a manual rename, even to
     // identical text, flips the source and always wins.
+    let _persistence = runtime
+        .persistence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if runtime.stopping.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
     let mut chats = runtime.chats.write().unwrap_or_else(|e| e.into_inner());
     let Some(row) = chats.iter_mut().find(|row| row.id == spec.chat_id) else {
         return;
