@@ -26,21 +26,25 @@ pub const MODE_TIERS: [PermissionMode; 3] = [
     PermissionMode::FullAccess,
 ];
 
-/// The tier's display name (the prototypes' settled Chinese labels).
+/// The tier's display name.
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ConfirmChanges => "变更前确认",
-        PermissionMode::AutoReview => "自动审核",
-        PermissionMode::FullAccess => "完全访问",
+        PermissionMode::ConfirmChanges => "Confirm changes",
+        PermissionMode::AutoReview => "Auto-review",
+        PermissionMode::FullAccess => "Full access",
     }
 }
 
 /// The tier's one-line description in the menu (prototype 1-B).
 pub fn mode_description(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ConfirmChanges => "每次写文件 / 改文件 / 跑命令前，先弹出审批卡等你点头",
-        PermissionMode::AutoReview => "每步变更先由模型自审一遍，驳回会带理由；不打扰你",
-        PermissionMode::FullAccess => "全部直接执行，不再询问 — 只用于你完全信任的任务",
+        PermissionMode::ConfirmChanges => "Asks before every write, edit, or command",
+        PermissionMode::AutoReview => {
+            "The model reviews each change first; rejections come with a reason"
+        }
+        PermissionMode::FullAccess => {
+            "Everything runs without asking — only for tasks you fully trust"
+        }
     }
 }
 
@@ -276,7 +280,7 @@ impl Pickers {
                     .line_height(px(15.0))
                     .text_color(theme.text_faint)
                     .child(SharedString::from(
-                        "新对话将沿用这里的选择 · 本对话立即生效于下一个 Turn",
+                        "New chats inherit this choice · applies from the next Turn",
                     )),
             )
             .into_any_element()
@@ -337,9 +341,12 @@ mod tests {
                 PermissionMode::FullAccess,
             ]
         );
-        assert_eq!(mode_label(PermissionMode::ConfirmChanges), "变更前确认");
-        assert_eq!(mode_label(PermissionMode::AutoReview), "自动审核");
-        assert_eq!(mode_label(PermissionMode::FullAccess), "完全访问");
+        assert_eq!(
+            mode_label(PermissionMode::ConfirmChanges),
+            "Confirm changes"
+        );
+        assert_eq!(mode_label(PermissionMode::AutoReview), "Auto-review");
+        assert_eq!(mode_label(PermissionMode::FullAccess), "Full access");
     }
 
     /// The control's states through the real entity (gpui render-entity

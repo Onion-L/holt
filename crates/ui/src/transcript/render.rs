@@ -805,7 +805,6 @@ impl Transcript {
                             .items_center()
                             .gap(px(3.0))
                             .text_color(theme.text_faint)
-                            .child("按")
                             .child(
                                 div()
                                     .px(px(3.0))
@@ -817,7 +816,7 @@ impl Transcript {
                                     .line_height(px(14.0))
                                     .child("Esc"),
                             )
-                            .child("中断"),
+                            .child(" to interrupt"),
                     )
                 })
                 .into_any_element(),
@@ -2474,7 +2473,7 @@ fn chip_header_row(
         })
         .when_some(
             // The settled verdict (ADR-0014): a small tinted marker after the
-            // detail — "✓ 已批准", "⊘ 已拒绝 · "note"", "⚡ 前缀豁免", …
+            // detail — "✓ Approved", "⊘ Denied · "note"", "⚡ Prefix exempt", …
             tool.gate.as_ref().and_then(|gate| match &gate.state {
                 ToolGateState::Settled { verdict } => Some(super::verdict_chip(verdict)),
                 ToolGateState::Pending => None,

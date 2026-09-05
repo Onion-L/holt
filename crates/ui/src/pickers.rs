@@ -931,9 +931,11 @@ impl Pickers {
             (space, session, change_request)
         };
         let row = || {
-            // Symmetric: the container's 8px gap sits above the toolbar;
-            // bleeding 8 of the container's 16px bottom padding (mb -8)
-            // leaves 8 below — equal air on both sides of the row.
+            // Bottom air: the container's 8px gap sits above the toolbar;
+            // bleeding 2 of the container's 16px bottom padding (mb -2)
+            // leaves 14 below — the prototype's `padding: 0 16px 14px`
+            // composer-wrap rhythm (more air below than above: the window
+            // edge needs more room than the pill does).
             // `w_full` is load-bearing: without it the canvas layout sizes
             // the row to CONTENT, and the left cluster's flex_1 (basis 0)
             // collapsed to zero width — both clusters painted from the same
@@ -946,7 +948,7 @@ impl Pickers {
                 .justify_between()
                 .gap(px(8.0))
                 .px(px(10.0))
-                .mb(px(-8.0))
+                .mb(px(-2.0))
         };
 
         if let Some(chat) = &session {

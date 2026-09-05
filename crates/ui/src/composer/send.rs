@@ -760,7 +760,7 @@ impl Composer {
     }
 
     /// Raw Escape on the composer: interrupt the Turn while a confirm-changes
-    /// Approval gates it (ADR-0014, prototype 3-A's "按 Esc 中断"). Surfaces
+    /// Approval gates it (ADR-0014, prototype 3-A's "Esc to interrupt"). Surfaces
     /// that own their Escape first — the attachment lightbox, the question
     /// wizard, an open picker popover or switch dialog (which also stops
     /// propagation), and an approval note editor (handled in the transcript)

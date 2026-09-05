@@ -311,8 +311,8 @@ pub struct Transcript {
     _observe: Subscription,
 }
 
-/// One approval's expanding note editor (prototype 3-A's 附言…): the input
-/// plus its event subscription (Submitted = 以此附言拒绝, Edited = repaint).
+/// One approval's expanding note editor (prototype 3-A's Note…): the input
+/// plus its event subscription (Submitted = Deny with note, Edited = repaint).
 pub struct ApprovalNote {
     pub input: Entity<crate::composer::ComposerInput>,
     _events: Subscription,

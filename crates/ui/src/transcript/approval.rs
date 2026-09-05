@@ -2,9 +2,9 @@
 //! confirm-changes gate renders as a card in the transcript flow — pulsing
 //! header, the gated command/path in a mono block with a danger (bash) or
 //! warning (write/edit) left edge, the working directory as metadata, and
-//! the four verdict affordances (允许一次 / 始终允许 · 本会话 / 拒绝 / 附言…).
-//! Settled gates render their verdict as a small marker on the ordinary
-//! tool chip ([`verdict_chip`]).
+//! the four verdict affordances (Allow once / Always allow · this session /
+//! Deny / Note…). Settled gates render their verdict as a small marker on
+//! the ordinary tool chip ([`verdict_chip`]).
 //!
 //! Interactive state (the note editor) lives on the `Transcript` entity
 //! keyed by approval id — never in `RowKind`, so a row re-splice can't
@@ -42,7 +42,7 @@ pub fn pending_approval_gate(transcript: &[SessionMessageEntry]) -> Option<ToolG
         })
 }
 
-/// The card header's tool noun (prototype 3-A: "等待批准 · bash").
+/// The card header's tool noun (prototype 3-A: "Waiting for approval · bash").
 pub fn approval_tool_name(call: &ToolCall) -> &'static str {
     match call {
         ToolCall::Exec { .. } => "bash",
@@ -80,25 +80,28 @@ pub enum VerdictTint {
 /// — that text is the reason the model received, so the transcript shows it.
 pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
     match verdict {
-        GateVerdict::Allowed => ("✓ 已批准".to_string(), VerdictTint::Success),
-        GateVerdict::AlwaysAllowed => ("✓ 始终允许".to_string(), VerdictTint::Success),
-        GateVerdict::Exempted => ("⚡ 前缀豁免 · 自动放行".to_string(), VerdictTint::Warning),
-        GateVerdict::ReviewPassed => ("👁 自动审核 · 通过".to_string(), VerdictTint::Success),
+        GateVerdict::Allowed => ("✓ Approved".to_string(), VerdictTint::Success),
+        GateVerdict::AlwaysAllowed => ("✓ Always allowed".to_string(), VerdictTint::Success),
+        GateVerdict::Exempted => (
+            "⚡ Prefix exempt · auto-passed".to_string(),
+            VerdictTint::Warning,
+        ),
+        GateVerdict::ReviewPassed => ("👁 Auto-review · passed".to_string(), VerdictTint::Success),
         GateVerdict::ReviewRejected { reason } => {
             let text = match reason {
-                Some(reason) => format!("👁 自动审核 · 驳回 · \"{reason}\""),
-                None => "👁 自动审核 · 驳回".to_string(),
+                Some(reason) => format!("👁 Auto-review · rejected · \"{reason}\""),
+                None => "👁 Auto-review · rejected".to_string(),
             };
             (text, VerdictTint::Danger)
         }
         GateVerdict::Denied { note } => {
             let text = match note {
-                Some(note) => format!("⊘ 已拒绝 · \"{note}\""),
-                None => "⊘ 已拒绝".to_string(),
+                Some(note) => format!("⊘ Denied · \"{note}\""),
+                None => "⊘ Denied".to_string(),
             };
             (text, VerdictTint::Danger)
         }
-        GateVerdict::Aborted => ("⊘ 已中断".to_string(), VerdictTint::Danger),
+        GateVerdict::Aborted => ("⊘ Interrupted".to_string(), VerdictTint::Danger),
     }
 }
 
@@ -147,10 +150,10 @@ impl Transcript {
         };
         let meta = match cwd {
             Some(cwd) => format!(
-                "cwd: {} · 变更前确认档：命令执行前需要你批准",
+                "cwd: {} · Confirm changes: commands run only after you approve",
                 skill_file_display(&cwd)
             ),
-            None => "变更前确认档：命令执行前需要你批准".to_string(),
+            None => "Confirm changes: commands run only after you approve".to_string(),
         };
         let note_input = self
             .approval_notes
@@ -178,7 +181,7 @@ impl Transcript {
                     .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
-                    // Header: pulsing dot + "等待批准 · {tool}".
+                    // Header: pulsing dot + "Waiting for approval · {tool}".
                     .child(
                         div()
                             .flex()
@@ -197,7 +200,9 @@ impl Transcript {
                                 div()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(theme.warning_muted)
-                                    .child(SharedString::from(format!("等待批准 · {tool_name}"))),
+                                    .child(SharedString::from(format!(
+                                        "Waiting for approval · {tool_name}"
+                                    ))),
                             ),
                     )
                     // The gated target: mono block, left edge red for bash
@@ -240,8 +245,8 @@ impl Transcript {
                             .flex_row()
                             .flex_wrap()
                             .gap(px(8.0))
-                            // 允许一次 — the primary action (house style: ink
-                            // fill, on_solid label).
+                            // Allow once — the primary action (house style:
+                            // ink fill, on_solid label).
                             .child(
                                 div()
                                     .id(format!("approval-once-{id_once}"))
@@ -261,10 +266,10 @@ impl Transcript {
                                             cx,
                                         );
                                     }))
-                                    .child("允许一次"),
+                                    .child("Allow once"),
                             )
-                            // 始终允许 · 本会话 — amber outline (a grant, not
-                            // a one-off).
+                            // Always allow · this session — amber outline (a
+                            // grant, not a one-off).
                             .child(
                                 div()
                                     .id(format!("approval-always-{id_always}"))
@@ -284,9 +289,9 @@ impl Transcript {
                                             cx,
                                         );
                                     }))
-                                    .child("始终允许 · 本会话"),
+                                    .child("Always allow · this session"),
                             )
-                            // 拒绝 — red outline.
+                            // Deny — red outline.
                             .child(
                                 div()
                                     .id(format!("approval-deny-{id_deny}"))
@@ -306,9 +311,9 @@ impl Transcript {
                                             cx,
                                         );
                                     }))
-                                    .child("拒绝"),
+                                    .child("Deny"),
                             )
-                            // 附言… — dashed ghost; opens the note editor.
+                            // Note… — dashed ghost; opens the note editor.
                             .child(
                                 div()
                                     .id(format!("approval-note-{id_note}"))
@@ -325,11 +330,7 @@ impl Transcript {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.toggle_approval_note(id_note.clone(), window, cx);
                                     }))
-                                    .child(if note_open {
-                                        "收起附言"
-                                    } else {
-                                        "附言…"
-                                    }),
+                                    .child(if note_open { "Hide note" } else { "Note…" }),
                             ),
                     )
                     .when_some(note_input, |card, input| {
@@ -347,7 +348,7 @@ impl Transcript {
 
     /// The expanding note editor under the card's actions (prototype 3-A):
     /// the denial reason goes back to the model as the call's error result.
-    /// Enter submits (= 以此附言拒绝), Escape cancels the editor WITHOUT
+    /// Enter submits (= Deny with note), Escape cancels the editor WITHOUT
     /// reaching the composer's Esc-interrupt.
     fn render_approval_note(
         &mut self,
@@ -403,7 +404,7 @@ impl Transcript {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.submit_approval_note(&id_for_submit, cx);
                         }))
-                        .child("以此附言拒绝"),
+                        .child("Deny with note"),
                 ),
             )
             .into_any_element()
@@ -423,7 +424,7 @@ impl Transcript {
         }
         let input = cx.new(|cx| {
             ComposerInput::new(
-                "拒绝的原因会作为理由回给模型，例如：先别跑全量，只跑 -p holt-proto",
+                "Why denied — sent back to the model, e.g. use pnpm, not npm",
                 cx,
             )
         });
@@ -445,7 +446,7 @@ impl Transcript {
         cx.notify();
     }
 
-    /// Enter in the note editor = 以此附言拒绝: a blank note degrades to a
+    /// Enter in the note editor = Deny with note: a blank note degrades to a
     /// plain deny.
     fn submit_approval_note(&mut self, approval_id: &str, cx: &mut Context<Self>) {
         let note = self
@@ -636,47 +637,47 @@ mod tests {
     #[test]
     fn verdict_chips_cover_every_flavor() {
         let cases: [(GateVerdict, &str, VerdictTint); 9] = [
-            (GateVerdict::Allowed, "✓ 已批准", VerdictTint::Success),
+            (GateVerdict::Allowed, "✓ Approved", VerdictTint::Success),
             (
                 GateVerdict::AlwaysAllowed,
-                "✓ 始终允许",
+                "✓ Always allowed",
                 VerdictTint::Success,
             ),
             (
                 GateVerdict::Exempted,
-                "⚡ 前缀豁免 · 自动放行",
+                "⚡ Prefix exempt · auto-passed",
                 VerdictTint::Warning,
             ),
             (
                 GateVerdict::ReviewPassed,
-                "👁 自动审核 · 通过",
+                "👁 Auto-review · passed",
                 VerdictTint::Success,
             ),
             (
                 GateVerdict::ReviewRejected { reason: None },
-                "👁 自动审核 · 驳回",
+                "👁 Auto-review · rejected",
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::ReviewRejected {
                     reason: Some("no tests".into()),
                 },
-                "👁 自动审核 · 驳回 · \"no tests\"",
+                "👁 Auto-review · rejected · \"no tests\"",
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::Denied { note: None },
-                "⊘ 已拒绝",
+                "⊘ Denied",
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::Denied {
-                    note: Some("先别跑".into()),
+                    note: Some("not now".into()),
                 },
-                "⊘ 已拒绝 · \"先别跑\"",
+                "⊘ Denied · \"not now\"",
                 VerdictTint::Danger,
             ),
-            (GateVerdict::Aborted, "⊘ 已中断", VerdictTint::Danger),
+            (GateVerdict::Aborted, "⊘ Interrupted", VerdictTint::Danger),
         ];
         for (verdict, text, tint) in cases {
             assert_eq!(verdict_chip(&verdict), (text.to_string(), tint));
@@ -733,7 +734,7 @@ mod tests {
                     "p2",
                     ToolGateState::Settled {
                         verdict: GateVerdict::Denied {
-                            note: Some("先别跑".into()),
+                            note: Some("not now".into()),
                         },
                     },
                 ),
@@ -782,7 +783,7 @@ mod tests {
             |_, _| transcript.clone().into_any_element(),
         );
 
-        // 附言… opens the editor; toggling closes it.
+        // Note… opens the editor; toggling closes it.
         cx.update(|window, cx| {
             transcript.update(cx, |this, cx| {
                 this.toggle_approval_note("g1".into(), window, cx);
