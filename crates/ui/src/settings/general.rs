@@ -1,13 +1,14 @@
-//! The Agent settings page (automatic-chat-titles ticket 02): the dedicated
-//! Agent/Session section for the engine-owned title-task settings. The user
-//! picks an optional provider-qualified model (empty = automatic titles
-//! disabled) and edits the fixed instruction, both read and saved only
-//! through typed RPC — the engine owns `title-settings.json`, validation,
-//! and the missing-credentials warning.
+//! The General settings page (automatic-chat-titles ticket 02): everyday
+//! preferences that aren't tied to a provider or the agent runtime, starting
+//! with the engine-owned title-task settings. The user picks an optional
+//! provider-qualified model (empty = automatic titles disabled) and edits the
+//! fixed instruction, both read and saved only through typed RPC — the engine
+//! owns `title-settings.json`, validation, and the missing-credentials
+//! warning.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Task,
-    Window,
+    Context, Entity, IntoElement, MouseButton, Render, SharedString, Task, Window, div, prelude::*,
+    px,
 };
 use holt_proto::{Model, TitleSettingsState};
 use holt_rpc::methods;
@@ -85,7 +86,7 @@ fn configured_providers(providers: &[holt_proto::Provider]) -> Vec<holt_proto::P
         .collect()
 }
 
-pub struct AgentPage {
+pub struct GeneralPage {
     state: Entity<AppState>,
     settings: Loadable<TitleSettingsState>,
     models: Loadable<Vec<Model>>,
@@ -97,7 +98,7 @@ pub struct AgentPage {
     task: Option<Task<()>>,
 }
 
-impl AgentPage {
+impl GeneralPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let mut page = Self {
             state,
@@ -253,12 +254,12 @@ async fn load_model_catalog(engine: &crate::state::EngineHandle) -> Loadable<Vec
     Loadable::Ready(models)
 }
 
-impl Render for AgentPage {
+impl Render for GeneralPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let body = match (&self.settings, &self.models) {
             (Loadable::Idle, _) | (Loadable::Loading, _) => {
-                popover::skeleton_rows("agent-skeleton", &theme, 4, cx.entity_id(), cx)
+                popover::skeleton_rows("general-skeleton", &theme, 4, cx.entity_id(), cx)
                     .into_any_element()
             }
             (Loadable::Error(error), _) => {
@@ -324,14 +325,13 @@ impl Render for AgentPage {
                     .into_any_element();
                 let selected_row = rows.iter().find(|row| row.selected).unwrap_or(&rows[0]);
                 let selected_label = SharedString::from(selected_row.title.clone());
-                let selected_detail = SharedString::from(selected_row.detail.clone());
                 let model_trigger = div()
                     .id("title-model-dropdown")
                     .relative()
-                    .w(px(360.0))
-                    .h(px(38.0))
-                    .px(px(11.0))
-                    .rounded(px(9.0))
+                    .w(px(220.0))
+                    .h(px(30.0))
+                    .px(px(10.0))
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(if self.model_menu.is_open() {
                         theme.border_strong
@@ -349,24 +349,7 @@ impl Render for AgentPage {
                         cx.listener(|page, _, _, _| page.model_menu.note_trigger_press()),
                     )
                     .on_click(cx.listener(|page, _, _, cx| page.toggle_model_menu(cx)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(1.0))
-                            .child(div().truncate().child(selected_label))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(crate::typography::ui_rems(
-                                        widgets::ROW_DESCRIPTION_SIZE,
-                                    ))
-                                    .text_color(theme.text_muted)
-                                    .child(selected_detail),
-                            ),
-                    )
+                    .child(div().flex_1().min_w_0().truncate().child(selected_label))
                     .child(
                         crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
                             .size(px(14.0))
@@ -381,7 +364,7 @@ impl Render for AgentPage {
                         ))
                     });
 
-                let model_card = widgets::section_card(&theme).child(
+                let model_card = div().mt(px(24.0)).child(
                     widgets::card_row(&theme, true)
                         .child(
                             div()
@@ -474,10 +457,6 @@ impl Render for AgentPage {
                             .child(self.instruction.clone()),
                     );
                 }
-                column = column.child(widgets::row_description(
-                    &theme,
-                    "Sent with only the first prompt of a new chat. Failures keep the fallback silently.",
-                ));
 
                 let save_theme = theme.clone();
                 column = column.child(
@@ -498,16 +477,15 @@ impl Render for AgentPage {
             }
         };
         div()
-            .id("agent-page")
+            .id("general-page")
             .size_full()
             .overflow_y_scroll()
             .child(
                 widgets::page_column()
-                    .child(widgets::page_header(&theme, "Agent", None))
+                    .child(widgets::page_header(&theme, "General", None))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "How Holt behaves while it works for you — starting with how new \
-                         chats are named.",
+                        "Everyday preferences — starting with how new chats are named.",
                     ))
                     .child(
                         div()

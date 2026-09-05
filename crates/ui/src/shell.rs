@@ -199,21 +199,21 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 /// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
+    General,
     Providers,
     Appearance,
     Shortcuts,
     Skills,
-    Agent,
     Archived,
 }
 
 impl SettingsSection {
     pub const ALL: [SettingsSection; 6] = [
+        SettingsSection::General,
         SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Shortcuts,
         SettingsSection::Skills,
-        SettingsSection::Agent,
         SettingsSection::Archived,
     ];
 
@@ -225,7 +225,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Skills => "Skills",
-            SettingsSection::Agent => "Agent",
+            SettingsSection::General => "General",
             SettingsSection::Archived => "Archived sessions",
         }
     }
@@ -450,7 +450,7 @@ pub struct Shell {
     providers_page: Option<Entity<ProvidersPage>>,
     providers_sub: Option<Subscription>,
     skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
-    agent_page: Option<Entity<crate::settings::agent::AgentPage>>,
+    general_page: Option<Entity<crate::settings::general::GeneralPage>>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -639,13 +639,13 @@ impl Shell {
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
         let route = match std::env::var("HOLT_OPEN_ROUTE").ok().as_deref() {
-            Some("settings") | Some("settings/providers") => {
-                Route::Settings(SettingsSection::Providers)
+            Some("settings") | Some("settings/general") => {
+                Route::Settings(SettingsSection::General)
             }
+            Some("settings/providers") => Route::Settings(SettingsSection::Providers),
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/skills") => Route::Settings(SettingsSection::Skills),
-            Some("settings/agent") => Route::Settings(SettingsSection::Agent),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -702,7 +702,7 @@ impl Shell {
             providers_page: None,
             providers_sub: None,
             skills_page: None,
-            agent_page: None,
+            general_page: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1246,10 +1246,10 @@ impl Shell {
         if section == SettingsSection::Skills {
             self.skills_page = None;
         }
-        // Same for Agent: the title-settings read picks up provider key and
+        // Same for General: the title-settings read picks up provider key and
         // model changes since the last visit.
-        if section == SettingsSection::Agent {
-            self.agent_page = None;
+        if section == SettingsSection::General {
+            self.general_page = None;
         }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
@@ -1386,13 +1386,13 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
-            SettingsSection::Agent => {
-                if self.agent_page.is_none() {
+            SettingsSection::General => {
+                if self.general_page.is_none() {
                     let state = self.state.clone();
-                    self.agent_page =
-                        Some(cx.new(|cx| crate::settings::agent::AgentPage::new(state, cx)));
+                    self.general_page =
+                        Some(cx.new(|cx| crate::settings::general::GeneralPage::new(state, cx)));
                 }
-                match &self.agent_page {
+                match &self.general_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -2684,7 +2684,7 @@ impl Render for Shell {
             // Native Settings menu item and the platform convention (Cmd+, on
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                this.open_settings(SettingsSection::Providers, cx)
+                this.open_settings(SettingsSection::General, cx)
             }))
             // Chat-scoped, unlike new-session — `cycle_session` holds the guard
             // and says why.

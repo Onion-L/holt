@@ -133,7 +133,7 @@ impl Shell {
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Skills => icons::WIDGET,
-            SettingsSection::Agent => icons::BOT,
+            SettingsSection::General => icons::SETTINGS_MINIMALISTIC,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };
         // Match the user's dragged sidebar width — the pane container clips to
@@ -862,7 +862,7 @@ impl Shell {
             .cursor_pointer()
             .hover(|style| style.bg(theme.glass_hover()).text_color(theme.text))
             .on_click(
-                cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::Providers, cx)),
+                cx.listener(|this, _, _, cx| this.open_settings(SettingsSection::General, cx)),
             )
             .child(
                 icon(icons::SETTINGS_MINIMALISTIC)
