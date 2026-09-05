@@ -1,7 +1,8 @@
 //! The permission-mode control (ADR-0014, prototype 1-B): the composer
 //! footer's persistent shield chip + tier menu — one control, identical in
-//! empty and populated chats. Tier color language: amber confirm-changes,
-//! blue auto-review, green full-access.
+//! empty and populated chats. The control speaks in the app's neutral chip
+//! idiom (no per-tier tint — user call: one color, same as the rest of the
+//! app).
 //!
 //! A tier pick on an existing chat goes through `Mutate
 //! setChatPermissionMode` (the WatchChats republish recolors the chip; the
@@ -9,7 +10,7 @@
 //! stays draft-local ([`DraftConfig::permission_mode`]) and rides the first
 //! send — see `composer/send.rs`.
 
-use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 
 use holt_proto::PermissionMode;
 use holt_rpc::methods;
@@ -54,16 +55,6 @@ pub fn mode_icon(mode: PermissionMode) -> &'static str {
         PermissionMode::ConfirmChanges => crate::icons::SHIELD,
         PermissionMode::AutoReview => crate::icons::EYE,
         PermissionMode::FullAccess => crate::icons::LOCK_OPEN,
-    }
-}
-
-/// Tier color language, shared by the chip and the menu rows: amber
-/// confirm-changes, blue auto-review, green full-access.
-pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Hsla {
-    match mode {
-        PermissionMode::ConfirmChanges => theme.warning,
-        PermissionMode::AutoReview => theme.accent,
-        PermissionMode::FullAccess => theme.success,
     }
 }
 
@@ -150,65 +141,22 @@ impl Pickers {
     }
 
     /// The persistent footer trigger (prototype 1-B): tier icon + current
-    /// tier name + a small chevron, icon and label tinted per tier. Same
-    /// geometry as the neighboring footer chips.
+    /// tier name + a small chevron. Colors are the shared [`Pickers::footer_chip`]
+    /// idiom (muted icon/label brightening on hover) — no per-tier tint.
     pub(super) fn mode_chip(
         &self,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let mode = self.effective_permission_mode(cx);
-        let tint = mode_tint(mode, theme);
-        let open = self.open_kind() == Some(PickerKind::Mode);
-        div()
-            .id("picker-mode")
-            .h(px(20.0))
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(8.0))
-            .rounded(px(6.0))
-            .text_size(crate::typography::ui_rems(12.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .bg(if open {
-                theme.element_hover
-            } else {
-                crate::motion::hover_blend(
-                    "picker-mode",
-                    gpui::transparent_black(),
-                    theme.element_hover,
-                )
-            })
-            .on_hover(crate::motion::hover_listener("picker-mode"))
-            .cursor_pointer()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |this, _, _, _| {
-                    this.open
-                        .note_trigger_press_matching(|open| *open == PickerKind::Mode)
-                }),
-            )
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.toggle(PickerKind::Mode, window, cx)),
-            )
-            .child(
-                crate::icons::icon(mode_icon(mode))
-                    .size(px(12.0))
-                    .text_color(tint),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_color(tint)
-                    .child(SharedString::from(mode_label(mode))),
-            )
-            .child(
-                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                    .size(px(12.0))
-                    .text_color(theme.text_muted.opacity(0.5)),
-            )
+        self.footer_chip(
+            PickerKind::Mode,
+            "picker-mode",
+            mode_icon(mode),
+            SharedString::from(mode_label(mode)),
+            theme,
+            cx,
+        )
     }
 
     /// The tier menu (prototype 1-B): one row per tier — icon, name, one-line
@@ -223,7 +171,6 @@ impl Pickers {
             .flex_col()
             .gap(px(2.0))
             .children(MODE_TIERS.into_iter().enumerate().map(|(ix, mode)| {
-                let tint = mode_tint(mode, &theme);
                 let selected = mode == current;
                 popover::menu_row_nav(&theme, false, ix == active, format!("mode-row-{ix}"))
                     .id(("mode-row", ix))
@@ -235,7 +182,7 @@ impl Pickers {
                         crate::icons::icon(mode_icon(mode))
                             .size(px(14.0))
                             .mt(px(2.0))
-                            .text_color(tint),
+                            .text_color(theme.text_muted),
                     )
                     .child(
                         div()
@@ -420,7 +367,7 @@ mod tests {
 
     /// The drawing half of the mode-control coverage (the spec asks for gpui
     /// RENDER tests, not only entity state): per tier, the footer chip draws
-    /// with that tier's icon/label/tint, and the open tier menu draws all
+    /// with that tier's icon/label, and the open tier menu draws all
     /// three rows with the keyboard highlight anchored on the current tier.
     #[gpui::test]
     fn mode_control_draws_each_tier(cx: &mut gpui::TestAppContext) {

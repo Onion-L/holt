@@ -63,7 +63,7 @@ pub use logic::{
     default_reasoning, offered_providers, parent_path, reasoning_label, segment_target,
     traits_customized, traits_summary, typed_path_target,
 };
-pub use mode::{MODE_TIERS, mode_description, mode_icon, mode_index, mode_label, mode_tint};
+pub use mode::{MODE_TIERS, mode_description, mode_icon, mode_index, mode_label};
 pub(crate) use mode::{resolve_permission_mode, set_chat_permission_mode};
 pub(crate) use provider_model::provider_brand_icon;
 use provider_model::{ModelRail, ModelRowData, ModelRowsKey};

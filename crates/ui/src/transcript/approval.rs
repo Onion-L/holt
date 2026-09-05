@@ -1,10 +1,11 @@
 //! The permission Approval surface (ADR-0014, prototype 3-A): a pending
 //! confirm-changes gate renders as a card in the transcript flow — pulsing
-//! header, the gated command/path in a mono block with a danger (bash) or
-//! warning (write/edit) left edge, the working directory as metadata, and
-//! the four verdict affordances (Allow once / Always allow · this session /
-//! Deny / Note…). Settled gates render their verdict as a small marker on
-//! the ordinary tool chip ([`verdict_chip`]).
+//! header, the gated command/path in a mono block with an accent left edge,
+//! the working directory as metadata, and the four verdict affordances
+//! (Allow once / Always allow · this session / Deny / Note…). Settled gates
+//! render their verdict as a small marker on the ordinary tool chip
+//! ([`verdict_chip`]). One color language: the app accent for the pending
+//! surface, `danger` only for denials (the card's error case).
 //!
 //! Interactive state (the note editor) lives on the `Transcript` entity
 //! keyed by approval id — never in `RowKind`, so a row re-splice can't
@@ -52,26 +53,24 @@ pub fn approval_tool_name(call: &ToolCall) -> &'static str {
     }
 }
 
-/// The gated target rendered in the mono block, plus whether it carries the
-/// DANGER left edge (execution risk — bash) vs the warning edge (file
-/// writes). Bash commands get the shell's `$ ` prefix.
-pub fn approval_target(call: &ToolCall) -> (String, bool) {
+/// The gated target rendered in the mono block. Bash commands get the
+/// shell's `$ ` prefix.
+pub fn approval_target(call: &ToolCall) -> String {
     match call {
-        ToolCall::Exec { command } => (format!("$ {command}"), true),
-        ToolCall::WriteFile { path, .. } | ToolCall::EditFile { path, .. } => (path.clone(), false),
-        ToolCall::ApplyPatch { path } => {
-            (path.clone().unwrap_or_else(|| "workspace".into()), false)
-        }
-        _ => (tool_chip_content(call).1, false),
+        ToolCall::Exec { command } => format!("$ {command}"),
+        ToolCall::WriteFile { path, .. } | ToolCall::EditFile { path, .. } => path.clone(),
+        ToolCall::ApplyPatch { path } => path.clone().unwrap_or_else(|| "workspace".into()),
+        _ => tool_chip_content(call).1,
     }
 }
 
-/// Marker color language for a settled verdict: green for passes, amber for
-/// the automatic exemption, red for every form of rejection.
+/// Marker color language for a settled verdict: neutral for every pass or
+/// automatic exemption (a completed tool chip speaks in muted tones too),
+/// `danger` for every form of rejection — denial is the chip's error case,
+/// consistent with failed-tool chips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerdictTint {
-    Success,
-    Warning,
+    Neutral,
     Danger,
 }
 
@@ -80,13 +79,13 @@ pub enum VerdictTint {
 /// — that text is the reason the model received, so the transcript shows it.
 pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
     match verdict {
-        GateVerdict::Allowed => ("✓ Approved".to_string(), VerdictTint::Success),
-        GateVerdict::AlwaysAllowed => ("✓ Always allowed".to_string(), VerdictTint::Success),
+        GateVerdict::Allowed => ("✓ Approved".to_string(), VerdictTint::Neutral),
+        GateVerdict::AlwaysAllowed => ("✓ Always allowed".to_string(), VerdictTint::Neutral),
         GateVerdict::Exempted => (
             "⚡ Prefix exempt · auto-passed".to_string(),
-            VerdictTint::Warning,
+            VerdictTint::Neutral,
         ),
-        GateVerdict::ReviewPassed => ("👁 Auto-review · passed".to_string(), VerdictTint::Success),
+        GateVerdict::ReviewPassed => ("👁 Auto-review · passed".to_string(), VerdictTint::Neutral),
         GateVerdict::ReviewRejected { reason } => {
             let text = match reason {
                 Some(reason) => format!("👁 Auto-review · rejected · \"{reason}\""),
@@ -107,10 +106,8 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
 
 pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
     match tint {
-        VerdictTint::Success => theme.success_muted,
-        VerdictTint::Warning => theme.warning_muted,
-        // Danger stays the full tone: the tool chip's own failed state speaks
-        // in `theme.danger` too, and a denial IS the chip's error case.
+        // The neutral tone of an ordinary completed chip's label.
+        VerdictTint::Neutral => theme.text_muted,
         VerdictTint::Danger => theme.danger,
     }
 }
@@ -133,12 +130,7 @@ impl Transcript {
         };
         let approval_id = gate.id;
         let tool_name = approval_tool_name(&tool.call);
-        let (target, danger_edge) = approval_target(&tool.call);
-        let edge = if danger_edge {
-            theme.danger
-        } else {
-            theme.warning
-        };
+        let target = approval_target(&tool.call);
         let pulse =
             motion::pulse_wave(motion::pulse_delta(&motion::HOLT_PULSE, cx.entity_id(), cx));
         // cwd metadata comes from the chat row; an override (subagent) doc
@@ -179,8 +171,8 @@ impl Transcript {
                     .overflow_hidden()
                     .rounded(px(10.0))
                     .border_1()
-                    .border_color(theme.warning.opacity(0.16))
-                    .bg(theme.warning.opacity(0.03))
+                    .border_color(theme.accent.opacity(0.16))
+                    .bg(theme.accent.opacity(0.03))
                     .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
@@ -196,13 +188,13 @@ impl Transcript {
                                     .size(px(7.0))
                                     .flex_none()
                                     .rounded_full()
-                                    .bg(theme.warning_muted)
+                                    .bg(theme.accent)
                                     .opacity(0.25 + 0.75 * pulse),
                             )
                             .child(
                                 div()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.warning_muted)
+                                    .text_color(theme.accent)
                                     .child(SharedString::from(format!(
                                         "Waiting for approval · {tool_name}"
                                     ))),
@@ -210,8 +202,8 @@ impl Transcript {
                     )
                     // The gated target: mono block framed like the
                     // transcript's own code blocks (neutral hairline + faint
-                    // ink wash); the color lives only on the 3px left edge —
-                    // red for bash (execution risk), amber for file targets.
+                    // ink wash) with a 3px accent left edge — one color for
+                    // bash and file targets alike.
                     .child(
                         div()
                             .w_full()
@@ -222,7 +214,7 @@ impl Transcript {
                             .border_1()
                             .border_color(theme.hairline(0.1))
                             .bg(theme.ink(0.045))
-                            .child(div().w(px(3.0)).flex_none().bg(edge.opacity(0.7)))
+                            .child(div().w(px(3.0)).flex_none().bg(theme.accent.opacity(0.7)))
                             .child(
                                 div()
                                     .min_w_0()
@@ -277,8 +269,8 @@ impl Transcript {
                                     }))
                                     .child("Allow once"),
                             )
-                            // Always allow · this session — restrained amber
-                            // accent (a grant, not a one-off).
+                            // Always allow · this session — accent outline
+                            // (a grant, not a one-off).
                             .child(
                                 div()
                                     .id(format!("approval-always-{id_always}"))
@@ -287,10 +279,10 @@ impl Transcript {
                                     .py(px(6.0))
                                     .rounded(px(8.0))
                                     .border_1()
-                                    .border_color(theme.warning.opacity(0.3))
-                                    .text_color(theme.warning_muted)
+                                    .border_color(theme.accent.opacity(0.3))
+                                    .text_color(theme.accent)
                                     .cursor_pointer()
-                                    .hover(|el| el.bg(theme.warning.opacity(0.06)))
+                                    .hover(|el| el.bg(theme.accent.opacity(0.06)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.resolve_approval(
                                             id_always.clone(),
@@ -623,44 +615,44 @@ mod tests {
     }
 
     #[test]
-    fn targets_carry_the_danger_edge_only_for_bash() {
+    fn targets_render_with_a_shell_prefix_only_for_bash() {
         assert_eq!(
             approval_target(&ToolCall::Exec {
                 command: "cargo test".into()
             }),
-            ("$ cargo test".to_string(), true)
+            "$ cargo test".to_string()
         );
         assert_eq!(
             approval_target(&ToolCall::WriteFile {
                 path: "src/main.rs".into(),
                 content: None,
             }),
-            ("src/main.rs".to_string(), false)
+            "src/main.rs".to_string()
         );
         assert_eq!(
             approval_target(&ToolCall::ApplyPatch { path: None }),
-            ("workspace".to_string(), false)
+            "workspace".to_string()
         );
     }
 
     #[test]
     fn verdict_chips_cover_every_flavor() {
         let cases: [(GateVerdict, &str, VerdictTint); 9] = [
-            (GateVerdict::Allowed, "✓ Approved", VerdictTint::Success),
+            (GateVerdict::Allowed, "✓ Approved", VerdictTint::Neutral),
             (
                 GateVerdict::AlwaysAllowed,
                 "✓ Always allowed",
-                VerdictTint::Success,
+                VerdictTint::Neutral,
             ),
             (
                 GateVerdict::Exempted,
                 "⚡ Prefix exempt · auto-passed",
-                VerdictTint::Warning,
+                VerdictTint::Neutral,
             ),
             (
                 GateVerdict::ReviewPassed,
                 "👁 Auto-review · passed",
-                VerdictTint::Success,
+                VerdictTint::Neutral,
             ),
             (
                 GateVerdict::ReviewRejected { reason: None },
