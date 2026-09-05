@@ -1,11 +1,11 @@
 //! The permission Approval surface (ADR-0014, prototype 3-A): a pending
 //! confirm-changes gate renders as a card in the transcript flow — pulsing
-//! header, the gated command/path in a mono block with an accent left edge,
+//! header, the gated command/path in a mono block with a neutral left edge,
 //! the working directory as metadata, and the four verdict affordances
 //! (Allow once / Always allow · this session / Deny / Note…). Settled gates
 //! render their verdict as a small marker on the ordinary tool chip
-//! ([`verdict_chip`]). One color language: the app accent for the pending
-//! surface, `danger` only for denials (the card's error case).
+//! ([`verdict_chip`]). The card speaks in the composer input's neutral
+//! scheme (user call: no accent, no amber) — `danger` only for denials.
 //!
 //! Interactive state (the note editor) lives on the `Transcript` entity
 //! keyed by approval id — never in `RowKind`, so a row re-splice can't
@@ -113,10 +113,9 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
 }
 
 impl Transcript {
-    /// The pending-approval card (prototype 3-A). Styled after the
-    /// transcript's error chip: a hairline-strength tinted border over a
-    /// barely-there wash — a quiet tinted row, never a shadow behind
-    /// translucency nor a saturated banner.
+    /// The pending-approval card (prototype 3-A). Styled after the composer
+    /// input pill: the neutral input surface fill under a neutral hairline —
+    /// a quiet row, never a tinted banner nor a shadow behind translucency.
     pub(super) fn render_approval_card(
         &mut self,
         row_id: &SharedString,
@@ -171,8 +170,8 @@ impl Transcript {
                     .overflow_hidden()
                     .rounded(px(10.0))
                     .border_1()
-                    .border_color(theme.accent.opacity(0.16))
-                    .bg(theme.accent.opacity(0.03))
+                    .border_color(theme.border)
+                    .bg(theme.input_glass_bg())
                     .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
@@ -188,13 +187,13 @@ impl Transcript {
                                     .size(px(7.0))
                                     .flex_none()
                                     .rounded_full()
-                                    .bg(theme.accent)
+                                    .bg(theme.text_muted)
                                     .opacity(0.25 + 0.75 * pulse),
                             )
                             .child(
                                 div()
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.accent)
+                                    .text_color(theme.text_muted)
                                     .child(SharedString::from(format!(
                                         "Waiting for approval · {tool_name}"
                                     ))),
@@ -202,8 +201,7 @@ impl Transcript {
                     )
                     // The gated target: mono block framed like the
                     // transcript's own code blocks (neutral hairline + faint
-                    // ink wash) with a 3px accent left edge — one color for
-                    // bash and file targets alike.
+                    // ink wash) with a quiet neutral 3px left edge.
                     .child(
                         div()
                             .w_full()
@@ -214,7 +212,12 @@ impl Transcript {
                             .border_1()
                             .border_color(theme.hairline(0.1))
                             .bg(theme.ink(0.045))
-                            .child(div().w(px(3.0)).flex_none().bg(theme.accent.opacity(0.7)))
+                            .child(
+                                div()
+                                    .w(px(3.0))
+                                    .flex_none()
+                                    .bg(theme.text_muted.opacity(0.5)),
+                            )
                             .child(
                                 div()
                                     .min_w_0()
@@ -269,8 +272,9 @@ impl Transcript {
                                     }))
                                     .child("Allow once"),
                             )
-                            // Always allow · this session — accent outline
-                            // (a grant, not a one-off).
+                            // Always allow · this session — a neutral ghost
+                            // like Note…, but a solid hairline so the four
+                            // buttons read as one family.
                             .child(
                                 div()
                                     .id(format!("approval-always-{id_always}"))
@@ -279,10 +283,10 @@ impl Transcript {
                                     .py(px(6.0))
                                     .rounded(px(8.0))
                                     .border_1()
-                                    .border_color(theme.accent.opacity(0.3))
-                                    .text_color(theme.accent)
+                                    .border_color(theme.hairline(0.14))
+                                    .text_color(theme.text_muted)
                                     .cursor_pointer()
-                                    .hover(|el| el.bg(theme.accent.opacity(0.06)))
+                                    .hover(|el| el.bg(theme.ink(0.05)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.resolve_approval(
                                             id_always.clone(),
@@ -292,7 +296,8 @@ impl Transcript {
                                     }))
                                     .child("Always allow · this session"),
                             )
-                            // Deny — restrained danger accent.
+                            // Deny — restrained danger (the card's only hue:
+                            // the app's error language).
                             .child(
                                 div()
                                     .id(format!("approval-deny-{id_deny}"))
