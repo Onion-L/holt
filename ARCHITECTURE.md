@@ -58,10 +58,15 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   interrupted or restarted-mid-approval gates settle as aborted. An
   always-allow records a chat-scoped, in-memory session grant (bash by
   command prefix, write/edit by exact resolved path) checked before the
-  gatekeeper — it holds across mode switches and never persists. Reads, grep, and
-  full-access never gate. The gate rides the agent loop's
-  `before_tool_call` hook (no upstream changes); the Title task and
-  Compaction mount no tools and never see it.
+  gatekeeper — it holds across mode switches and never persists. In
+  auto-review each mutating call is first judged by one extra model pass
+  through the same transport the run uses (the chat's own model, no
+  separately-configured reviewer): a pass executes, a rejection blocks
+  with the reviewer's reason, an unclear or failed review rejects
+  closed, and no Approval is created. Reads, grep, and full-access
+  never gate. The gate rides the agent loop's `before_tool_call` hook
+  (no upstream changes); the Title task and Compaction mount no tools
+  and never see it.
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

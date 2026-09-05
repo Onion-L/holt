@@ -1098,6 +1098,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
     let hook_device_id = runtime.device_id.clone();
     let hook_model = model.clone();
     let hook_stream_fn = stream_fn.clone();
+    let hook_api_key = api_key.clone();
     let hook_base = Arc::clone(&run_base);
     let hook_base_parts = Arc::clone(&base_parts);
     let prepare_next_turn: pi_core::agent::types::PrepareNextTurnFn = Arc::new(
@@ -1105,7 +1106,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
             let chat = hook_chat.clone();
             let model = hook_model.clone();
             let stream_fn = hook_stream_fn.clone();
-            let api_key = api_key.clone();
+            let api_key = hook_api_key.clone();
             let base = Arc::clone(&hook_base);
             let base_parts = Arc::clone(&hook_base_parts);
             let device_id = hook_device_id.clone();
@@ -1172,6 +1173,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         Arc::clone(&base_parts),
         Arc::clone(&runtime.approvals),
         cwd.clone(),
+        crate::gate::ReviewTransport {
+            model: model.clone(),
+            api_key: api_key.clone(),
+            stream_fn: stream_fn.clone(),
+        },
         cancel.clone(),
     );
     let config = AgentLoopConfig {

@@ -163,6 +163,16 @@ pub enum GateVerdict {
     /// An always-allow grant matched this call — auto-passed without
     /// asking.
     Exempted,
+    /// Auto-review passed the call (ADR-0014): the chat's own model judged
+    /// it safe before execution.
+    ReviewPassed,
+    /// Auto-review rejected the call with the reviewer's reason — the
+    /// reason is the error tool result the agent received.
+    #[serde(rename_all = "camelCase")]
+    ReviewRejected {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Denied — with the user's note when there was one.
     #[serde(rename_all = "camelCase")]
     Denied {

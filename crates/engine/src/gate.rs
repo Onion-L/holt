@@ -4,7 +4,8 @@
 //! UI resolves over the `ResolveApproval` RPC; denials settle as error
 //! tool results the model reads, and interrupt cancels the wait. Reads
 //! and content search are never gated, and full-access never reaches this
-//! module. Auto-review (its tier) slots in beside the approval path later.
+//! module. Auto-review rides the same hook: one model pass per mutating
+//! call, settled straight to its verdict.
 
 use std::{
     collections::HashMap,
@@ -148,6 +149,142 @@ pub(crate) fn stamp_gate(
     }
 }
 
+/// What the run needs to make one review pass (ADR-0014): the chat's own
+/// model through the same provider transport the run uses — no
+/// separately-configured reviewer.
+#[derive(Clone)]
+pub(crate) struct ReviewTransport {
+    pub(crate) model: pi_core::ai::types::Model,
+    pub(crate) api_key: String,
+    pub(crate) stream_fn: pi_core::agent::types::StreamFn,
+}
+
+/// The system prompt every review pass rides on. The cwd anchors the
+/// reviewer; the reply protocol is exact because [`parse_review_reply`]
+/// is strict.
+fn review_system_prompt(cwd: &str) -> String {
+    format!(
+        "You are the permission reviewer for a coding agent working in {cwd}. \
+Decide whether the tool call below is safe to execute exactly as written. \
+Reply with exactly one line and nothing else:\n\
+APPROVE — the call is safe to run.\n\
+REJECT: <one-line reason> — it is not."
+    )
+}
+
+/// A review pass's outcome.
+pub(crate) enum ReviewOutcome {
+    Approve,
+    Reject {
+        reason: String,
+    },
+    /// The Turn was cancelled mid-review — no verdict, no stamp.
+    Cancelled,
+}
+
+/// The standard reason when the reviewer rejects without stating one, and
+/// when its reply is not a clear verdict at all (fail closed: a permission
+/// gate must never open on a garbled answer).
+pub(crate) const REVIEW_UNCLEAR: &str = "The permission reviewer did not give a clear verdict.";
+
+/// Parse the reviewer's reply: `APPROVE` passes; `REJECT: reason` rejects
+/// with the stated reason (a bare `REJECT` uses the standard one);
+/// anything else rejects as unclear. Pure — unit-tested.
+pub(crate) fn parse_review_reply(reply: &str) -> ReviewOutcome {
+    let first = reply.trim().lines().next().unwrap_or_default().trim();
+    if first.starts_with("APPROVE") {
+        return ReviewOutcome::Approve;
+    }
+    if let Some(reason) = first.strip_prefix("REJECT") {
+        let reason = reason.trim().trim_start_matches(':').trim();
+        return ReviewOutcome::Reject {
+            reason: if reason.is_empty() {
+                REVIEW_UNCLEAR.to_string()
+            } else {
+                reason.to_string()
+            },
+        };
+    }
+    ReviewOutcome::Reject {
+        reason: REVIEW_UNCLEAR.to_string(),
+    }
+}
+
+/// One review pass: a single completion through the run's own model and
+/// transport, no tools, cancellation-aware (the same race the compaction
+/// requests use). Provider failures reject — fail closed, visibly.
+async fn run_review_pass(
+    review: &ReviewTransport,
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    cwd: &str,
+    cancel: &CancellationToken,
+) -> ReviewOutcome {
+    let prompt = format!(
+        "Tool: {tool_name}\nArguments: {arguments}",
+        arguments = serde_json::to_string(arguments).unwrap_or_default()
+    );
+    let mut options = pi_core::ai::types::SimpleStreamOptions::default();
+    // The protocol is one line; a small cap bounds a rambling reviewer (the
+    // parser reads the first line regardless).
+    options.base.max_tokens = Some(256);
+    options.base.base.api_key = Some(review.api_key.clone());
+    options.base.base.signal = Some(cancel.clone());
+    let context = pi_core::ai::types::Context {
+        system_prompt: Some(review_system_prompt(cwd)),
+        messages: vec![pi_core::ai::types::Message::User(
+            pi_core::ai::types::UserMessage {
+                role: pi_core::ai::types::RoleUser,
+                content: pi_core::ai::types::UserContent::Text(prompt),
+                timestamp: 0,
+            },
+        )],
+        tools: None,
+    };
+    let stream = match (review.stream_fn)(&review.model, &context, Some(&options)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return ReviewOutcome::Reject {
+                reason: format!("the review pass failed: {error}"),
+            };
+        }
+    };
+    let consume = async {
+        while let Some(event) = stream.next().await {
+            if event.is_terminal() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = consume => {}
+        _ = cancel.cancelled() => return ReviewOutcome::Cancelled,
+    }
+    let response = stream.result().await;
+    match response.stop_reason {
+        // Aborted with the token live is the cancellation path (no verdict,
+        // no stamp). An abort the gate did not ask for is a garbled
+        // outcome — fail closed like every other unclear one.
+        pi_core::ai::types::StopReason::Aborted if cancel.is_cancelled() => {
+            ReviewOutcome::Cancelled
+        }
+        pi_core::ai::types::StopReason::Aborted | pi_core::ai::types::StopReason::Error => {
+            ReviewOutcome::Reject {
+                reason: format!(
+                    "the review pass failed: {}",
+                    response
+                        .error_message
+                        .unwrap_or_else(|| "unknown error".into())
+                ),
+            }
+        }
+        _ => parse_review_reply(&pi_core::ai::utils::text::content_text(
+            &response.content,
+            "\n",
+        )),
+    }
+}
+
 /// Build the gate's before-tool-call hook for one run. `mode` is the
 /// Turn's snapshot (ADR-0014): switches mid-Turn leave the running Turn
 /// under its original mode. The hook blocks in the verdict wait and races
@@ -158,6 +295,7 @@ pub(crate) fn before_tool_call_hook(
     base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
     approvals: Arc<ApprovalRegistry>,
     cwd: String,
+    review: ReviewTransport,
     cancel: CancellationToken,
 ) -> BeforeToolCallFn {
     Arc::new(
@@ -166,6 +304,7 @@ pub(crate) fn before_tool_call_hook(
             let base_parts = base_parts.clone();
             let approvals = approvals.clone();
             let cwd = cwd.clone();
+            let review = review.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
@@ -176,7 +315,6 @@ pub(crate) fn before_tool_call_hook(
                 // Grants are checked BEFORE the gatekeeper (ADR-0014), so
                 // they hold across mode switches; only a mode with no
                 // gatekeeper (full-access) records no artifacts at all.
-                // Auto-review slots in beside the approval path later.
                 let arguments = ctx
                     .args
                     .lock()
@@ -201,6 +339,57 @@ pub(crate) fn before_tool_call_hook(
                         },
                     );
                     return None;
+                }
+                if mode == PermissionMode::AutoReview {
+                    // No human, no Approval: the chat's own model judges,
+                    // and the chip settles straight to its verdict.
+                    return match run_review_pass(
+                        &review,
+                        &ctx.tool_call.name,
+                        &arguments,
+                        &cwd,
+                        &cancel,
+                    )
+                    .await
+                    {
+                        ReviewOutcome::Approve => {
+                            stamp_gate(
+                                &chat,
+                                &base_parts,
+                                &ctx.tool_call.id,
+                                ToolGate {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    state: ToolGateState::Settled {
+                                        verdict: GateVerdict::ReviewPassed,
+                                    },
+                                },
+                            );
+                            None
+                        }
+                        ReviewOutcome::Reject { reason } => {
+                            stamp_gate(
+                                &chat,
+                                &base_parts,
+                                &ctx.tool_call.id,
+                                ToolGate {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    state: ToolGateState::Settled {
+                                        verdict: GateVerdict::ReviewRejected {
+                                            reason: Some(reason.clone()),
+                                        },
+                                    },
+                                },
+                            );
+                            Some(BeforeToolCallResult {
+                                block: Some(true),
+                                reason: Some(reason),
+                                terminate: None,
+                            })
+                        }
+                        // Interrupted mid-review: no verdict to record —
+                        // the loop's cancellation check settles the call.
+                        ReviewOutcome::Cancelled => None,
+                    };
                 }
                 if mode != PermissionMode::ConfirmChanges {
                     return None;
@@ -428,6 +617,37 @@ mod tests {
         } = grants;
         assert_eq!(bash_prefixes, ["cargo test"]);
         assert_eq!(file_paths, ["/repo/src/a.rs"]);
+    }
+
+    #[test]
+    fn review_replies_parse_strictly_and_fail_closed() {
+        // The exact protocol passes.
+        assert!(matches!(
+            parse_review_reply("APPROVE"),
+            ReviewOutcome::Approve
+        ));
+        assert!(matches!(
+            parse_review_reply("  APPROVE  \nand nothing else"),
+            ReviewOutcome::Approve
+        ));
+        // A rejection keeps its stated reason.
+        match parse_review_reply("REJECT: use pnpm, not npm") {
+            ReviewOutcome::Reject { reason } => assert_eq!(reason, "use pnpm, not npm"),
+            _ => panic!("expected a rejection"),
+        }
+        // A bare rejection and an unclear reply both fall to the standard
+        // reason — the gate never opens on a garbled answer.
+        for reply in [
+            "REJECT",
+            "reject: lowercase",
+            "I am not sure about this one",
+            "",
+        ] {
+            match parse_review_reply(reply) {
+                ReviewOutcome::Reject { reason } => assert_eq!(reason, REVIEW_UNCLEAR),
+                _ => panic!("expected a fail-closed rejection for {reply:?}"),
+            }
+        }
     }
 
     #[test]
