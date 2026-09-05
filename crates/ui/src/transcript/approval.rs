@@ -107,16 +107,19 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
 
 pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
     match tint {
-        VerdictTint::Success => theme.success,
-        VerdictTint::Warning => theme.warning,
+        VerdictTint::Success => theme.success_muted,
+        VerdictTint::Warning => theme.warning_muted,
+        // Danger stays the full tone: the tool chip's own failed state speaks
+        // in `theme.danger` too, and a denial IS the chip's error case.
         VerdictTint::Danger => theme.danger,
     }
 }
 
 impl Transcript {
     /// The pending-approval card (prototype 3-A). Styled after the
-    /// transcript's error chip: a translucent tinted fill with a soft border
-    /// — never a shadow behind translucency.
+    /// transcript's error chip: a hairline-strength tinted border over a
+    /// barely-there wash — a quiet tinted row, never a shadow behind
+    /// translucency nor a saturated banner.
     pub(super) fn render_approval_card(
         &mut self,
         row_id: &SharedString,
@@ -174,10 +177,10 @@ impl Transcript {
                     .flex_col()
                     .gap(px(10.0))
                     .overflow_hidden()
-                    .rounded(px(12.0))
+                    .rounded(px(10.0))
                     .border_1()
-                    .border_color(theme.warning.opacity(0.35))
-                    .bg(theme.warning.opacity(0.05))
+                    .border_color(theme.warning.opacity(0.16))
+                    .bg(theme.warning.opacity(0.03))
                     .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
@@ -193,20 +196,22 @@ impl Transcript {
                                     .size(px(7.0))
                                     .flex_none()
                                     .rounded_full()
-                                    .bg(theme.warning)
+                                    .bg(theme.warning_muted)
                                     .opacity(0.25 + 0.75 * pulse),
                             )
                             .child(
                                 div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(theme.warning_muted)
                                     .child(SharedString::from(format!(
                                         "Waiting for approval · {tool_name}"
                                     ))),
                             ),
                     )
-                    // The gated target: mono block, left edge red for bash
-                    // (execution risk), amber for file targets.
+                    // The gated target: mono block framed like the
+                    // transcript's own code blocks (neutral hairline + faint
+                    // ink wash); the color lives only on the 3px left edge —
+                    // red for bash (execution risk), amber for file targets.
                     .child(
                         div()
                             .w_full()
@@ -215,7 +220,7 @@ impl Transcript {
                             .overflow_hidden()
                             .rounded(px(8.0))
                             .border_1()
-                            .border_color(edge.opacity(0.3))
+                            .border_color(theme.hairline(0.1))
                             .bg(theme.ink(0.045))
                             .child(div().w(px(3.0)).flex_none().bg(edge.opacity(0.7)))
                             .child(
@@ -245,20 +250,24 @@ impl Transcript {
                             .flex_row()
                             .flex_wrap()
                             .gap(px(8.0))
-                            // Allow once — the primary action (house style:
-                            // ink fill, on_solid label).
+                            // Allow once — the primary action in the app's
+                            // subtle-raised idiom (wizard picked-option
+                            // language: faint ink plate + hairline), not the
+                            // dialogs' solid plate.
                             .child(
                                 div()
                                     .id(format!("approval-once-{id_once}"))
                                     .flex_none()
                                     .px(px(12.0))
                                     .py(px(6.0))
-                                    .rounded(px(7.0))
-                                    .bg(theme.text)
+                                    .rounded(px(8.0))
+                                    .border_1()
+                                    .border_color(theme.hairline(0.14))
+                                    .bg(theme.ink(0.09))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.on_solid)
+                                    .text_color(theme.text)
                                     .cursor_pointer()
-                                    .hover(|el| el.opacity(0.9))
+                                    .hover(|el| el.bg(theme.ink(0.14)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.resolve_approval(
                                             id_once.clone(),
@@ -268,20 +277,20 @@ impl Transcript {
                                     }))
                                     .child("Allow once"),
                             )
-                            // Always allow · this session — amber outline (a
-                            // grant, not a one-off).
+                            // Always allow · this session — restrained amber
+                            // accent (a grant, not a one-off).
                             .child(
                                 div()
                                     .id(format!("approval-always-{id_always}"))
                                     .flex_none()
                                     .px(px(12.0))
                                     .py(px(6.0))
-                                    .rounded(px(7.0))
+                                    .rounded(px(8.0))
                                     .border_1()
-                                    .border_color(theme.warning.opacity(0.5))
-                                    .text_color(theme.warning)
+                                    .border_color(theme.warning.opacity(0.3))
+                                    .text_color(theme.warning_muted)
                                     .cursor_pointer()
-                                    .hover(|el| el.bg(theme.warning.opacity(0.08)))
+                                    .hover(|el| el.bg(theme.warning.opacity(0.06)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.resolve_approval(
                                             id_always.clone(),
@@ -291,19 +300,19 @@ impl Transcript {
                                     }))
                                     .child("Always allow · this session"),
                             )
-                            // Deny — red outline.
+                            // Deny — restrained danger accent.
                             .child(
                                 div()
                                     .id(format!("approval-deny-{id_deny}"))
                                     .flex_none()
                                     .px(px(12.0))
                                     .py(px(6.0))
-                                    .rounded(px(7.0))
+                                    .rounded(px(8.0))
                                     .border_1()
-                                    .border_color(theme.danger.opacity(0.4))
-                                    .text_color(theme.danger)
+                                    .border_color(theme.danger.opacity(0.3))
+                                    .text_color(theme.danger_muted)
                                     .cursor_pointer()
-                                    .hover(|el| el.bg(theme.danger.opacity(0.08)))
+                                    .hover(|el| el.bg(theme.danger.opacity(0.06)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.resolve_approval(
                                             id_deny.clone(),
@@ -320,10 +329,10 @@ impl Transcript {
                                     .flex_none()
                                     .px(px(12.0))
                                     .py(px(6.0))
-                                    .rounded(px(7.0))
+                                    .rounded(px(8.0))
                                     .border_1()
                                     .border_dashed()
-                                    .border_color(theme.hairline(0.2))
+                                    .border_color(theme.hairline(0.14))
                                     .text_color(theme.text_muted)
                                     .cursor_pointer()
                                     .hover(|el| el.bg(theme.ink(0.05)))
@@ -394,13 +403,13 @@ impl Transcript {
                         .flex_none()
                         .px(px(12.0))
                         .py(px(6.0))
-                        .rounded(px(7.0))
+                        .rounded(px(8.0))
                         .border_1()
-                        .border_color(theme.danger.opacity(0.4))
+                        .border_color(theme.danger.opacity(0.3))
                         .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.danger)
+                        .text_color(theme.danger_muted)
                         .cursor_pointer()
-                        .hover(|el| el.bg(theme.danger.opacity(0.08)))
+                        .hover(|el| el.bg(theme.danger.opacity(0.06)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.submit_approval_note(&id_for_submit, cx);
                         }))
