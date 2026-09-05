@@ -172,6 +172,13 @@ impl LocalEngine {
         if chats.iter().any(|chat| chat.id == params.chat_id) {
             return RpcReply::value(&serde_json::json!({}));
         }
+        // New chats inherit the last mode used on the device (ADR-0014):
+        // the sticky default overrides whatever mode the creating client
+        // sent — inheritance is engine-owned, read here at creation.
+        let config = params.config.map(|mut config| {
+            config.permission_mode = self.mode_default.get();
+            config
+        });
         chats.push(Chat {
             id: params.chat_id.clone(),
             device_id: params
@@ -188,7 +195,7 @@ impl LocalEngine {
             branch: params.branch,
             checkout_id: space.as_ref().and_then(|space| space.checkout_id.clone()),
             source_context: None,
-            config: params.config,
+            config,
             last_message_preview: None,
             last_message_at: None,
             created_at: Utc::now(),
@@ -674,13 +681,23 @@ impl LocalEngine {
             if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
                 // cwd + branch + source context already restamped at
                 // acceptance, above — this pass records the run's config
-                // and sidebar bookkeeping.
+                // and sidebar bookkeeping. The permission mode is NOT the
+                // request's to move (ADR-0014): the stored mode is
+                // authoritative — switches land through the mode RPC and
+                // take effect from the next Turn — and a row without a
+                // config yet inherits the sticky default, exactly like a
+                // newly created chat.
+                let mode = row
+                    .config
+                    .as_ref()
+                    .map(|config| config.permission_mode)
+                    .unwrap_or_else(|| self.mode_default.get());
                 row.config = Some(ChatConfig {
                     provider: request.provider.clone(),
                     model: request.model.clone(),
                     reasoning: request.reasoning,
                     model_options: request.model_options.clone(),
-                    permission_mode: request.permission_mode,
+                    permission_mode: mode,
                 });
                 row.last_message_preview = Some(preview.chars().take(120).collect());
                 row.last_message_at = Some(now);
@@ -751,7 +768,7 @@ impl LocalEngine {
 
     fn set_chat_config(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
-        let config: ChatConfig = serde_json::from_value(
+        let mut config: ChatConfig = serde_json::from_value(
             params
                 .get("config")
                 .cloned()
@@ -767,12 +784,74 @@ impl LocalEngine {
             .iter_mut()
             .find(|chat| chat.id == chat_id)
             .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+        // Same rule as the run-acceptance write: the permission mode is not
+        // this payload's to move (ADR-0014) — the stored mode survives
+        // whole-config rewrites, and a config-less row inherits the sticky
+        // default instead of whatever tier the writer defaulted.
+        config.permission_mode = chat
+            .config
+            .as_ref()
+            .map(|stored| stored.permission_mode)
+            .unwrap_or_else(|| self.mode_default.get());
         chat.config = Some(config);
         persist_chats(&self.data_dir, &chats)
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         drop(chats);
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Switch a chat's permission mode (ADR-0014): the stored mode is the
+    /// single source of truth a Turn snapshots at start, so the switch
+    /// takes effect from the next Turn. The choice also becomes the
+    /// device's sticky default for new chats. A chat without a config yet
+    /// only moves the sticky default — its first run seeds the config from
+    /// that default.
+    fn set_chat_permission_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        // Strict at the RPC boundary, unlike the lenient stored-value
+        // decode: a typo'd tier must fail loudly here, not silently become
+        // the confirm-changes default (and the sticky record with it).
+        let raw_mode = required_string(&params, "mode")?;
+        let mode: holt_proto::PermissionMode = serde_json::from_value(serde_json::json!(raw_mode))
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if !matches!(
+            raw_mode,
+            "confirm-changes"
+                | "auto-review"
+                | "full-access"
+                | "workspace-write"
+                | "read-only"
+                | "danger-full-access"
+        ) {
+            return Err(RpcError::BadParams(format!(
+                "unknown permission mode: {raw_mode}"
+            )));
+        }
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            if let Some(config) = chat.config.as_mut() {
+                config.permission_mode = mode;
+            }
+            persist_chats(&self.data_dir, &chats)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
+        self.runtime.publish_chats();
+        // The sticky default is best-effort after the chat's own mode
+        // landed: a failed write costs only future chats' inheritance, not
+        // this switch — same philosophy as the transcript snapshot.
+        if let Err(error) = self.mode_default.save(mode) {
+            tracing::warn!(target: "holt::agent", %error, "could not persist the permission-mode default");
+        }
+        RpcReply::value(&serde_json::json!({ "mode": mode }))
     }
 
     /// The settings record plus its live validation view — the reply shape
@@ -1336,6 +1415,11 @@ impl RpcService for LocalEngine {
                 if params.get("op").and_then(|op| op.as_str()) == Some("setChatConfig") =>
             {
                 self.set_chat_config(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("setChatPermissionMode") =>
+            {
+                self.set_chat_permission_mode(params)
             }
             methods::MUTATE
                 if params.get("op").and_then(|op| op.as_str()) == Some("setChatArchived") =>

@@ -31,6 +31,7 @@ mod git_watch;
 mod history;
 pub mod instance_lock;
 mod local_fs;
+mod mode_default;
 pub mod provider_settings;
 pub mod providers;
 mod rpc;
@@ -106,6 +107,9 @@ pub struct LocalEngine {
     skills: skills::Skills,
     /// Engine-owned title-task settings (ADR-0012).
     title_settings: title_settings::TitleSettingsStore,
+    /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
+    /// chats inherit; first launch defaults to confirm-changes.
+    mode_default: mode_default::ModeDefaultStore,
     /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
     _instance_lock: InstanceLock,
 }
@@ -144,6 +148,7 @@ impl LocalEngine {
         let git = git::Git::new();
         let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
+        let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -165,6 +170,7 @@ impl LocalEngine {
             turns: git::TurnBaselines::new(),
             skills,
             title_settings,
+            mode_default,
             _instance_lock: lock,
         })
     }

@@ -193,12 +193,13 @@ pub struct RunRequest {
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
-    /// The chat's permission mode (ADR-0014) riding the run request so the
-    /// engine records it on the chat's config. Legacy `sandbox` payloads
-    /// decode through the alias; absent payloads default to confirm-changes.
-    /// Unlike the additive fields below, a pre-permission-modes host cannot
-    /// decode a command from a new peer (its `sandbox` was required) — the
-    /// doc store's skip-not-fail command drain contains that case.
+    /// Advisory/vestigial (ADR-0014): the engine preserves the chat's STORED
+    /// mode — a switch lands through the mode RPC and takes effect from the
+    /// next Turn — so this field no longer moves a chat's mode. It stays on
+    /// the wire for queued and legacy commands, decoding through the
+    /// `sandbox` alias (a pre-permission-modes host required that key, so a
+    /// command from a new peer is skipped by the doc store's skip-not-fail
+    /// drain); absent payloads default to confirm-changes.
     #[serde(default, alias = "sandbox")]
     pub permission_mode: PermissionMode,
     #[serde(default)]

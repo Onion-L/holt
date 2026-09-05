@@ -43,6 +43,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Saving rejects unresolvable provider-qualified models and empty or
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
+- Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
+  (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
+  read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —
+  the stored mode is authoritative; a Turn snapshots it at start, so a
+  switch lands from the next Turn (gate enforcement is the gate slice; until
+  it lands every tier executes unchecked) — and records the device's sticky
+  default for new chats (`permission-mode-default.json`, the title-settings
+  pattern; first launch defaults to confirm-changes).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal
