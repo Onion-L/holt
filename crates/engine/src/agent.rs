@@ -81,6 +81,9 @@ pub(crate) struct ChatRuntime {
     /// run that was still alive (an open approval, a cancelled Turn) must
     /// write nothing back to disk — no resurrected transcript or History.
     pub(crate) removed: std::sync::atomic::AtomicBool,
+    /// This chat's always-allow grants (ADR-0014): in-memory and
+    /// session-scoped — a restart starts with none.
+    pub(crate) grants: Mutex<crate::gate::GateGrants>,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -102,6 +105,7 @@ impl ChatRuntime {
             data_dir: PathBuf::new(),
             chat_id: String::new(),
             removed: std::sync::atomic::AtomicBool::new(false),
+            grants: Mutex::new(crate::gate::GateGrants::default()),
         }
     }
 
@@ -187,6 +191,7 @@ impl ChatRuntime {
             data_dir: data_dir.to_path_buf(),
             chat_id: chat_id.to_string(),
             removed: std::sync::atomic::AtomicBool::new(false),
+            grants: Mutex::new(crate::gate::GateGrants::default()),
         }
     }
 
@@ -1166,6 +1171,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) {
         chat.clone(),
         Arc::clone(&base_parts),
         Arc::clone(&runtime.approvals),
+        cwd.clone(),
         cancel.clone(),
     );
     let config = AgentLoopConfig {

@@ -11,53 +11,8 @@ use std::time::Duration;
 
 mod common;
 
-/// Wait until `tool_call_id`'s chip gate is in `want` state ("pending",
-/// "settled:allowed", …), returning its approval id. Keyed by tool-call
-/// id — a verdict's settle stamp lands shortly AFTER the resolve RPC
-/// replies, so polling for "any pending gate" can hand back an id that is
-/// already spent.
-async fn wait_for_gate(
-    engine: &holt_engine::LocalEngine,
-    chat_id: &str,
-    tool_call_id: &str,
-    want: &str,
-) -> String {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let snapshot = common::transcript_snapshot(engine, chat_id).await;
-        for entry in snapshot
-            .get("reset")
-            .and_then(|v| v.as_array())
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            for part in entry["parts"].as_array().unwrap_or(&vec![]) {
-                let gate = &part["gate"];
-                if part["id"] == tool_call_id && !gate.is_null() {
-                    let state = match gate["state"]["kind"].as_str() {
-                        Some("settled") => format!(
-                            "settled:{}",
-                            gate["state"]["verdict"]["kind"].as_str().unwrap_or("?")
-                        ),
-                        Some(kind) => kind.to_string(),
-                        None => String::new(),
-                    };
-                    if state == want {
-                        return gate["id"].as_str().unwrap().to_string();
-                    }
-                }
-            }
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "gate {tool_call_id} never reached {want}; transcript: {snapshot}"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-/// A chat's whole transcript gate map: tool_call_id → (state json, verdict
-/// kind). Read off a fresh watch snapshot.
+/// A chat's whole transcript gate map: tool_call_id → state string, read
+/// off a fresh watch snapshot.
 async fn gates(engine: &holt_engine::LocalEngine, chat_id: &str) -> Vec<(String, String)> {
     let snapshot = common::transcript_snapshot(engine, chat_id).await;
     let mut out = Vec::new();
@@ -65,29 +20,14 @@ async fn gates(engine: &holt_engine::LocalEngine, chat_id: &str) -> Vec<(String,
         for part in entry["parts"].as_array().unwrap_or(&vec![]) {
             let gate = &part["gate"];
             if !gate.is_null() {
-                let state = match gate["state"]["kind"].as_str() {
-                    Some("settled") => format!(
-                        "settled:{}",
-                        gate["state"]["verdict"]["kind"].as_str().unwrap_or("?")
-                    ),
-                    Some(kind) => kind.to_string(),
-                    None => String::new(),
-                };
-                out.push((part["id"].as_str().unwrap_or("?").to_string(), state));
+                out.push((
+                    part["id"].as_str().unwrap_or("?").to_string(),
+                    common::gate_state_raw(gate),
+                ));
             }
         }
     }
     out
-}
-
-async fn resolve(engine: &holt_engine::LocalEngine, approval_id: &str, verdict: serde_json::Value) {
-    engine
-        .handle(
-            methods::RESOLVE_APPROVAL,
-            serde_json::json!({ "approvalId": approval_id, "verdict": verdict }),
-        )
-        .await
-        .unwrap();
 }
 
 /// A confirm-changes bash call pauses behind a pending Approval; allow-once
@@ -110,7 +50,7 @@ async fn allow_once_releases_the_gate_and_executes() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "read it").await;
 
     // The gate opens before execution: no second provider request yet.
-    let approval_id = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let approval_id = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
     assert_eq!(
         provider.requests().len(),
         1,
@@ -120,7 +60,7 @@ async fn allow_once_releases_the_gate_and_executes() {
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(snapshot.to_string().contains("cat gate.txt"));
 
-    resolve(
+    common::resolve_approval(
         &engine,
         &approval_id,
         serde_json::json!({ "kind": "allow" }),
@@ -168,12 +108,12 @@ async fn deny_and_deny_with_note_block_with_a_model_visible_reason() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "do things").await;
 
     // Plain deny: the standard denial is the reason.
-    let first = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
-    resolve(&engine, &first, serde_json::json!({ "kind": "deny" })).await;
+    let first = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    common::resolve_approval(&engine, &first, serde_json::json!({ "kind": "deny" })).await;
     // The Turn continues after a denial: the model is asked again.
     common::wait_for_requests(&provider, 2).await;
     let requests = provider.requests();
-    let second = wait_for_gate(&engine, "chat-1", "call-2", "pending").await;
+    let second = common::wait_for_gate(&engine, "chat-1", "call-2", "pending").await;
     assert!(
         common::summarize(&requests[1].messages)
             .iter()
@@ -183,7 +123,7 @@ async fn deny_and_deny_with_note_block_with_a_model_visible_reason() {
     );
 
     // Deny with a note: the note is the reason the model reads.
-    resolve(
+    common::resolve_approval(
         &engine,
         &second,
         serde_json::json!({ "kind": "deny", "note": "use pnpm, not npm" }),
@@ -286,7 +226,7 @@ async fn interrupt_cancels_a_pending_approval() {
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
 
-    let approval_id = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let approval_id = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
     engine
         .handle(
             methods::QUEUE_COMMAND,
@@ -363,7 +303,7 @@ async fn a_mode_switch_mid_turn_leaves_the_running_turn_gated() {
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
 
-    let first = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let first = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
     // Mid-Turn switch to full-access…
     engine
         .handle(
@@ -376,11 +316,11 @@ async fn a_mode_switch_mid_turn_leaves_the_running_turn_gated() {
         )
         .await
         .unwrap();
-    resolve(&engine, &first, serde_json::json!({ "kind": "allow" })).await;
+    common::resolve_approval(&engine, &first, serde_json::json!({ "kind": "allow" })).await;
 
     // …the SAME Turn's second call still pauses under its snapshot.
-    let second = wait_for_gate(&engine, "chat-1", "call-2", "pending").await;
-    resolve(&engine, &second, serde_json::json!({ "kind": "deny" })).await;
+    let second = common::wait_for_gate(&engine, "chat-1", "call-2", "pending").await;
+    common::resolve_approval(&engine, &second, serde_json::json!({ "kind": "deny" })).await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert_eq!(
         gates(&engine, "chat-1").await,
@@ -428,7 +368,7 @@ async fn a_restart_mid_approval_settles_the_gate_on_load() {
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
-    wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
 
     // The app dies mid-approval. The reloaded transcript settles aborted…
     drop(engine);
@@ -479,7 +419,7 @@ async fn the_title_task_is_unaffected_by_an_open_gate() {
 
     // The gate is open and the Turn paused — the title task still runs on
     // its own request and lands on the chat row.
-    let _approval = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let _approval = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let RpcReply::Stream(mut chats) = engine
@@ -527,17 +467,17 @@ async fn two_mutating_calls_in_one_message_gate_independently() {
     // pi-core prepares a batch's calls one at a time even in the parallel
     // path, so the gates open sequentially: deny the bash with a note, and
     // only then does the write's gate open — allow it.
-    let a = wait_for_gate(&engine, "chat-1", "call-a", "pending").await;
-    resolve(
+    let a = common::wait_for_gate(&engine, "chat-1", "call-a", "pending").await;
+    common::resolve_approval(
         &engine,
         &a,
         serde_json::json!({ "kind": "deny", "note": "not a" }),
     )
     .await;
-    let b = wait_for_gate(&engine, "chat-1", "call-b", "pending").await;
+    let b = common::wait_for_gate(&engine, "chat-1", "call-b", "pending").await;
     assert_ne!(a, b, "each opening has its own approval id");
-    resolve(&engine, &b, serde_json::json!({ "kind": "allow" })).await;
-    wait_for_gate(&engine, "chat-1", "call-b", "settled:allowed").await;
+    common::resolve_approval(&engine, &b, serde_json::json!({ "kind": "allow" })).await;
+    common::wait_for_gate(&engine, "chat-1", "call-b", "settled:allowed").await;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -593,7 +533,7 @@ async fn deleting_a_chat_with_an_open_gate_stops_the_run() {
     common::setup_chat(&engine, "chat-1").await;
     let _ = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
-    let approval = wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let approval = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
 
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     engine

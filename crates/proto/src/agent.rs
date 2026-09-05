@@ -144,12 +144,15 @@ pub enum SteeringMode {
 }
 
 /// A user verdict on a pending Approval (ADR-0014), submitted through the
-/// `ResolveApproval` RPC: allow this call, or deny it — optionally with a
-/// written note whose text becomes the denial reason the model reads.
+/// `ResolveApproval` RPC: allow this call, always-allow its kind for the
+/// rest of the app session (bash by command prefix, write/edit by exact
+/// path — chat-scoped, in-memory), or deny it — optionally with a written
+/// note whose text becomes the denial reason the model reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ApprovalVerdict {
     Allow,
+    AlwaysAllow,
     #[serde(rename_all = "camelCase")]
     Deny {
         #[serde(default, skip_serializing_if = "Option::is_none")]

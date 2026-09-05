@@ -862,8 +862,9 @@ impl LocalEngine {
 
     /// Resolve a pending confirm-changes Approval (ADR-0014): the verdict
     /// releases the gate the run is blocked in — allow executes the call,
-    /// deny blocks it with the note (or the standard denial) as the reason
-    /// the model reads, and the Turn continues either way.
+    /// always-allow executes it and records the session grant, deny blocks
+    /// it with the note (or the standard denial) as the reason the model
+    /// reads, and the Turn continues either way.
     fn resolve_approval(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let approval_id = required_string(&params, "approvalId")?;
         let verdict: holt_proto::ApprovalVerdict = serde_json::from_value(

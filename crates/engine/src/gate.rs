@@ -29,6 +29,80 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
 /// denial uses the note verbatim — it is addressed to the model.
 pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
 
+/// One chat's always-allow grants (ADR-0014): in-memory, session-scoped,
+/// never persisted — cleared on restart. Bash grants match by command
+/// prefix, write/edit grants by exact resolved file path. Checked BEFORE
+/// the gatekeeper, so they hold across mode switches.
+#[derive(Default)]
+pub(crate) struct GateGrants {
+    bash_prefixes: Vec<String>,
+    file_paths: Vec<String>,
+}
+
+impl GateGrants {
+    /// Record what an always-allow verdict granted: the command's text for
+    /// bash, the resolved absolute path for write/edit.
+    pub(crate) fn record(&mut self, tool: &str, arguments: &serde_json::Value, cwd: &str) {
+        match tool {
+            "bash" => {
+                if let Some(command) = arg_str(arguments, "command")
+                    && !self.bash_prefixes.iter().any(|p| p == &command)
+                {
+                    self.bash_prefixes.push(command);
+                }
+            }
+            "write" | "edit" => {
+                if let Some(path) =
+                    arg_str(arguments, "path").map(|p| crate::tools::to_absolute(cwd, &p))
+                    && !self.file_paths.contains(&path)
+                {
+                    self.file_paths.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Does a grant pass this call through without asking?
+    pub(crate) fn passes(&self, tool: &str, arguments: &serde_json::Value, cwd: &str) -> bool {
+        match tool {
+            "bash" => arg_str(arguments, "command").is_some_and(|command| {
+                self.bash_prefixes
+                    .iter()
+                    .any(|p| bash_prefix_matches(p, &command))
+            }),
+            "write" | "edit" => arg_str(arguments, "path")
+                .map(|path| crate::tools::to_absolute(cwd, &path))
+                .is_some_and(|resolved| {
+                    self.file_paths
+                        .iter()
+                        .any(|allowed| file_path_matches(allowed, &resolved))
+                }),
+            _ => false,
+        }
+    }
+}
+
+fn arg_str(arguments: &serde_json::Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
+}
+
+/// Pure: bash grants match by string prefix on the command — no shell
+/// parsing, deliberately (ADR-0014): allowing `cargo test` also covers
+/// `cargo test -- --nocapture`.
+pub(crate) fn bash_prefix_matches(prefix: &str, command: &str) -> bool {
+    command.starts_with(prefix)
+}
+
+/// Pure: write/edit grants match by exact path.
+pub(crate) fn file_path_matches(allowed: &str, path: &str) -> bool {
+    allowed == path
+}
+
 /// Engine-wide open approvals: approval id → the verdict channel the
 /// blocked run is waiting on. One live sender per opening — the entry's
 /// removal IS the single-use guarantee. The UI-facing approval payload
@@ -83,6 +157,7 @@ pub(crate) fn before_tool_call_hook(
     chat: Arc<ChatRuntime>,
     base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
     approvals: Arc<ApprovalRegistry>,
+    cwd: String,
     cancel: CancellationToken,
 ) -> BeforeToolCallFn {
     Arc::new(
@@ -90,14 +165,44 @@ pub(crate) fn before_tool_call_hook(
             let chat = chat.clone();
             let base_parts = base_parts.clone();
             let approvals = approvals.clone();
+            let cwd = cwd.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
             Box::pin(async move {
-                // Auto-review slots in here when its slice lands; until then
-                // only confirm-changes gates.
-                if mode != PermissionMode::ConfirmChanges || !is_mutating_tool(&ctx.tool_call.name)
+                if !is_mutating_tool(&ctx.tool_call.name) {
+                    return None;
+                }
+                // Grants are checked BEFORE the gatekeeper (ADR-0014), so
+                // they hold across mode switches; only a mode with no
+                // gatekeeper (full-access) records no artifacts at all.
+                // Auto-review slots in beside the approval path later.
+                let arguments = ctx
+                    .args
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                if mode != PermissionMode::FullAccess
+                    && chat
+                        .grants
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .passes(&ctx.tool_call.name, &arguments, &cwd)
                 {
+                    stamp_gate(
+                        &chat,
+                        &base_parts,
+                        &ctx.tool_call.id,
+                        ToolGate {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            state: ToolGateState::Settled {
+                                verdict: GateVerdict::Exempted,
+                            },
+                        },
+                    );
+                    return None;
+                }
+                if mode != PermissionMode::ConfirmChanges {
                     return None;
                 }
                 let approval_id = uuid::Uuid::new_v4().to_string();
@@ -143,7 +248,15 @@ pub(crate) fn before_tool_call_hook(
                     return None;
                 };
                 match verdict {
-                    ApprovalVerdict::Allow => {
+                    ApprovalVerdict::Allow | ApprovalVerdict::AlwaysAllow => {
+                        // An always-allow also records the session grant —
+                        // in-memory, chat-scoped, gone on restart.
+                        if matches!(verdict, ApprovalVerdict::AlwaysAllow) {
+                            chat.grants
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .record(&ctx.tool_call.name, &arguments, &cwd);
+                        }
                         stamp_gate(
                             &chat,
                             &base_parts,
@@ -151,7 +264,11 @@ pub(crate) fn before_tool_call_hook(
                             ToolGate {
                                 id: approval_id,
                                 state: ToolGateState::Settled {
-                                    verdict: GateVerdict::Allowed,
+                                    verdict: if matches!(verdict, ApprovalVerdict::AlwaysAllow) {
+                                        GateVerdict::AlwaysAllowed
+                                    } else {
+                                        GateVerdict::Allowed
+                                    },
                                 },
                             },
                         );
@@ -231,6 +348,86 @@ mod tests {
                 state,
             }),
         }
+    }
+
+    #[test]
+    fn bash_grants_match_by_string_prefix_only() {
+        // Allowing `cargo test` covers its longer invocations.
+        assert!(bash_prefix_matches("cargo test", "cargo test"));
+        assert!(bash_prefix_matches(
+            "cargo test",
+            "cargo test -- --nocapture"
+        ));
+        assert!(bash_prefix_matches("cargo test", "cargo tests"));
+        // A shorter command or a different command never matches — no
+        // shell parsing, plain string prefix. (An empty prefix would match
+        // everything, but empty commands are never recorded.)
+        assert!(!bash_prefix_matches("cargo test", "cargo"));
+        assert!(!bash_prefix_matches("cargo test", "cargo build"));
+    }
+
+    #[test]
+    fn file_grants_match_by_exact_path_only() {
+        assert!(file_path_matches("/repo/src/a.rs", "/repo/src/a.rs"));
+        assert!(!file_path_matches("/repo/src/a.rs", "/repo/src/b.rs"));
+        assert!(!file_path_matches("/repo/src/a.rs", "/repo/src/a.rs2"));
+        assert!(!file_path_matches("/repo/src", "/repo/src/a.rs"));
+    }
+
+    #[test]
+    fn grants_record_and_pass_calls_resolved_against_the_cwd() {
+        let mut grants = GateGrants::default();
+        grants.record(
+            "bash",
+            &serde_json::json!({ "command": "cargo test" }),
+            "/repo",
+        );
+        grants.record(
+            "write",
+            &serde_json::json!({ "path": "src/a.rs", "content": "x" }),
+            "/repo",
+        );
+        // Bash: the allowed prefix and its extensions pass; others don't.
+        assert!(grants.passes(
+            "bash",
+            &serde_json::json!({ "command": "cargo test -- --nocapture" }),
+            "/repo"
+        ));
+        assert!(!grants.passes(
+            "bash",
+            &serde_json::json!({ "command": "cargo build" }),
+            "/repo"
+        ));
+        // Write/edit: the exact resolved path — reached relative or
+        // absolute — passes; sibling paths don't.
+        assert!(grants.passes("write", &serde_json::json!({ "path": "src/a.rs" }), "/repo"));
+        assert!(grants.passes(
+            "write",
+            &serde_json::json!({ "path": "/repo/src/a.rs" }),
+            "/repo"
+        ));
+        assert!(!grants.passes("edit", &serde_json::json!({ "path": "src/b.rs" }), "/repo"));
+        // Reads are never granted.
+        assert!(!grants.passes("read", &serde_json::json!({ "path": "src/a.rs" }), "/repo"));
+        // A different cwd resolves the same relative path elsewhere.
+        assert!(!grants.passes(
+            "write",
+            &serde_json::json!({ "path": "src/a.rs" }),
+            "/other"
+        ));
+        // Recording twice keeps one grant of each kind.
+        grants.record(
+            "bash",
+            &serde_json::json!({ "command": "cargo test" }),
+            "/repo",
+        );
+        grants.record("write", &serde_json::json!({ "path": "src/a.rs" }), "/repo");
+        let GateGrants {
+            bash_prefixes,
+            file_paths,
+        } = grants;
+        assert_eq!(bash_prefixes, ["cargo test"]);
+        assert_eq!(file_paths, ["/repo/src/a.rs"]);
     }
 
     #[test]

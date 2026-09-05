@@ -52,10 +52,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   pattern; first launch defaults to confirm-changes). In confirm-changes
   every mutating call (write/edit/bash) pauses the Turn behind a pending
   Approval — a gate chip on the call's Tool part in the transcript watch —
-  until `ResolveApproval` (`{approvalId, verdict}`: allow / deny with a
-  note) answers or interrupt cancels it; denials settle as error tool
-  results the model reads while the Turn continues, and interrupted or
-  restarted-mid-approval gates settle as aborted. Reads, grep, and
+  until `ResolveApproval` (`{approvalId, verdict}`: allow / always-allow /
+  deny with a note) answers or interrupt cancels it; denials settle as
+  error tool results the model reads while the Turn continues, and
+  interrupted or restarted-mid-approval gates settle as aborted. An
+  always-allow records a chat-scoped, in-memory session grant (bash by
+  command prefix, write/edit by exact resolved path) checked before the
+  gatekeeper — it holds across mode switches and never persists. Reads, grep, and
   full-access never gate. The gate rides the agent loop's
   `before_tool_call` hook (no upstream changes); the Title task and
   Compaction mount no tools and never see it.

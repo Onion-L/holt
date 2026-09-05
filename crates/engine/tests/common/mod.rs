@@ -588,6 +588,96 @@ pub async fn transcript_snapshot(engine: &LocalEngine, chat_id: &str) -> serde_j
 }
 
 // ---------------------------------------------------------------------------
+// Permission-gate helpers (ADR-0014): polling over the transcript watch.
+// A verdict's settle stamp lands shortly AFTER the resolve RPC replies, so
+// polling keys on the tool-call id, never on "any pending gate".
+// ---------------------------------------------------------------------------
+
+/// Wait until `tool_call_id`'s chip gate is in `want` state ("pending",
+/// "settled:allowed", …), returning its approval id.
+pub async fn wait_for_gate(
+    engine: &LocalEngine,
+    chat_id: &str,
+    tool_call_id: &str,
+    want: &str,
+) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = transcript_snapshot(engine, chat_id).await;
+        for entry in snapshot["reset"].as_array().unwrap_or(&vec![]) {
+            for part in entry["parts"].as_array().unwrap_or(&vec![]) {
+                let gate = &part["gate"];
+                if part["id"] == tool_call_id && !gate.is_null() {
+                    let state = match gate["state"]["kind"].as_str() {
+                        Some("settled") => format!(
+                            "settled:{}",
+                            gate["state"]["verdict"]["kind"].as_str().unwrap_or("?")
+                        ),
+                        Some(kind) => kind.to_string(),
+                        None => String::new(),
+                    };
+                    if state == want {
+                        return gate["id"].as_str().unwrap().to_string();
+                    }
+                }
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gate {tool_call_id} never reached {want}; transcript: {snapshot}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Format a gate JSON value as the comparable state string.
+pub fn gate_state_raw(gate: &serde_json::Value) -> String {
+    match gate["state"]["kind"].as_str() {
+        Some("settled") => format!(
+            "settled:{}",
+            gate["state"]["verdict"]["kind"].as_str().unwrap_or("?")
+        ),
+        Some(kind) => kind.to_string(),
+        None => String::new(),
+    }
+}
+
+/// The gate state a chip carries ("none" when the part has no gate).
+pub async fn gate_state(engine: &LocalEngine, chat_id: &str, tool_call_id: &str) -> String {
+    let snapshot = transcript_snapshot(engine, chat_id).await;
+    for entry in snapshot["reset"].as_array().unwrap_or(&vec![]) {
+        for part in entry["parts"].as_array().unwrap_or(&vec![]) {
+            if part["id"] == tool_call_id {
+                let gate = &part["gate"];
+                if gate.is_null() {
+                    return "none".into();
+                }
+                return match gate["state"]["kind"].as_str() {
+                    Some("settled") => format!(
+                        "settled:{}",
+                        gate["state"]["verdict"]["kind"].as_str().unwrap_or("?")
+                    ),
+                    Some(kind) => kind.to_string(),
+                    None => String::new(),
+                };
+            }
+        }
+    }
+    panic!("tool {tool_call_id} not in transcript")
+}
+
+/// Submit one verdict on a pending approval.
+pub async fn resolve_approval(engine: &LocalEngine, approval_id: &str, verdict: serde_json::Value) {
+    engine
+        .handle(
+            methods::RESOLVE_APPROVAL,
+            serde_json::json!({ "approvalId": approval_id, "verdict": verdict }),
+        )
+        .await
+        .unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // Request-message summaries — the assertion vocabulary for "what the model
 // would receive"
 // ---------------------------------------------------------------------------

@@ -157,6 +157,12 @@ pub enum ToolGateState {
 pub enum GateVerdict {
     /// Allowed for this call only.
     Allowed,
+    /// Always-allow (ADR-0014): the call proceeded and a session-scoped
+    /// grant now passes its kind through the gate.
+    AlwaysAllowed,
+    /// An always-allow grant matched this call — auto-passed without
+    /// asking.
+    Exempted,
     /// Denied — with the user's note when there was one.
     #[serde(rename_all = "camelCase")]
     Denied {
