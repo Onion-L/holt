@@ -142,14 +142,22 @@ impl Composer {
             .selected_chat_row()
             .and_then(|c| c.cwd.clone());
         // The chat's permission mode rides the Run request (ADR-0014): an
-        // existing chat carries its stored mode; a fresh row defaults to
-        // confirm-changes.
-        let permission_mode = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.config.as_ref().map(|config| config.permission_mode))
-            .unwrap_or_default();
+        // existing chat carries its stored mode; a fresh row takes the draft
+        // pick when one was made, else defaults to confirm-changes. (The
+        // field is advisory — the engine preserves the STORED mode; the
+        // draft pick lands authoritatively via setChatPermissionMode below.)
+        let draft_mode = if is_new {
+            self.pickers.read(cx).draft().permission_mode
+        } else {
+            None
+        };
+        let permission_mode = crate::pickers::resolve_permission_mode(
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|c| c.config.as_ref().map(|config| config.permission_mode)),
+            draft_mode,
+        );
         let space = self.state.read(cx).selected_space_row().cloned();
         let local_device_id = self.state.read(cx).local_device_id.clone();
         let device_id = if is_new {
@@ -553,6 +561,22 @@ impl Composer {
                     }
                 }
 
+                // A permission mode picked on the canvas applies NOW — after
+                // createChat, before the first Run is queued — so the first
+                // Turn snapshots the chosen mode (the engine reads the mode at
+                // run acceptance) and the sticky default is saved (ADR-0014).
+                // Best-effort like createChat: a failure just means the chat
+                // keeps the inherited default.
+                if is_new && let Some(mode) = draft_mode {
+                    crate::pickers::set_chat_permission_mode(
+                        &engine,
+                        cx.background_executor(),
+                        &chat_id,
+                        mode,
+                    )
+                    .await;
+                }
+
                 let command = match &slash {
                     // The engine builds the model-visible prompt from the
                     // skill's content; `request.prompt` rides empty.
@@ -733,6 +757,43 @@ impl Composer {
             })
             .ok();
         }));
+    }
+
+    /// Raw Escape on the composer: interrupt the Turn while a confirm-changes
+    /// Approval gates it (ADR-0014, prototype 3-A's "按 Esc 中断"). Surfaces
+    /// that own their Escape first — the attachment lightbox, the question
+    /// wizard, an open picker popover or switch dialog (which also stops
+    /// propagation), and an approval note editor (handled in the transcript)
+    /// — so this fires only on a genuinely unclaimed key.
+    ///
+    /// SCOPE: the handler deliberately lives on the composer root, not the
+    /// shell root. A shell-wide hook was evaluated and rejected: bubble-phase
+    /// Esc leaks past several surfaces that close themselves without
+    /// `stop_propagation` (the rename dialog, the switch dialog) and would
+    /// reach inputs that have no Esc semantics of their own (changes-pane
+    /// comment drafts), so a global handler would need a growing guard list
+    /// to avoid interrupting a run as a side effect of dismissing something.
+    /// The composer scope covers the realistic case anyway: the shell lands
+    /// initial focus on the composer and re-routes focus there whenever it is
+    /// lost (shell.rs `on_focus_lost`), so during a pending approval focus is
+    /// in the composer subtree unless a surface that consumes Esc itself
+    /// (terminal, dialogs) owns it.
+    pub(super) fn on_escape(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        if event.keystroke.key != "escape" {
+            return;
+        }
+        if self.preview.is_some()
+            || self.wizard.is_some()
+            || self.pickers.read(cx).keyboard_overlay_open()
+        {
+            return;
+        }
+        let state = self.state.read(cx);
+        if crate::transcript::pending_approval_gate(&state.transcript).is_none() {
+            return;
+        }
+        cx.stop_propagation();
+        self.interrupt(cx);
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {

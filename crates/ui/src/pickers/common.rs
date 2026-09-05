@@ -34,6 +34,7 @@ impl Pickers {
             PickerKind::Branch => "picker-branch",
             PickerKind::Checkout => "picker-checkout",
             PickerKind::ProviderModel => "picker-model",
+            PickerKind::Mode => "picker-mode",
             PickerKind::Space => "picker-space",
         };
         let open = self.open_kind() == Some(kind);
@@ -291,6 +292,8 @@ impl Pickers {
                         }
                         // Projects load nothing; no retry surface exists.
                         PickerKind::Space => {}
+                        // The mode menu loads nothing; no retry surface exists.
+                        PickerKind::Mode => {}
                     }))
                     .child(SharedString::from("Retry")),
             )

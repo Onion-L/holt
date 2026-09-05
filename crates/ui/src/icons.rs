@@ -214,6 +214,11 @@ icon_assets![
     // marks the currently-visible state of a secret input's toggle.
     (EYE, "eye"),
     (EYE_SLASH, "eye-slash"),
+    // Hand-drawn shield + open-lock glyphs in the Solar Linear style (like
+    // the terminal/plus/return ports) — the embedded set has neither. The
+    // permission-mode tier marks (ADR-0014).
+    (SHIELD, "shield"),
+    (LOCK_OPEN, "lock-open"),
 ];
 
 /// An icon element for an embedded asset path. Size and colour are set by the

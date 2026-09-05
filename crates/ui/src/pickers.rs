@@ -51,6 +51,7 @@ mod catalog;
 mod checkout;
 mod common;
 mod logic;
+mod mode;
 mod provider_model;
 mod space;
 
@@ -62,6 +63,8 @@ pub use logic::{
     default_reasoning, offered_providers, parent_path, reasoning_label, segment_target,
     traits_customized, traits_summary, typed_path_target,
 };
+pub use mode::{MODE_TIERS, mode_description, mode_icon, mode_index, mode_label, mode_tint};
+pub(crate) use mode::{resolve_permission_mode, set_chat_permission_mode};
 pub(crate) use provider_model::provider_brand_icon;
 use provider_model::{ModelRail, ModelRowData, ModelRowsKey};
 
@@ -117,6 +120,9 @@ pub enum PickerKind {
     /// (reasoning ladder + model options) at the bottom — one trigger, one
     /// card (the separate Traits popover folded in here).
     ProviderModel,
+    /// The permission-mode tier menu (ADR-0014): the footer's persistent
+    /// shield control — same chip, same menu, in empty and populated chats.
+    Mode,
     /// New-session canvas only: which project the session mints into. A pick
     /// re-keys everything project-derived (refs) via the state observer.
     Space,
@@ -274,6 +280,7 @@ impl Pickers {
             Some("traits") => Some(PickerKind::ProviderModel),
             Some("branch") => Some(PickerKind::Branch),
             Some("checkout") => Some(PickerKind::Checkout),
+            Some("mode") => Some(PickerKind::Mode),
             Some("project") => Some(PickerKind::Space),
             _ => None,
         };
@@ -515,6 +522,13 @@ impl Pickers {
         self.open.as_open().is_some()
     }
 
+    /// Whether any surface that owns its own Escape is up — a picker popover
+    /// OR the switch-refusal dialog (whose Esc closes it WITHOUT stopping
+    /// propagation, so an ancestor's raw-Escape handler must stand down).
+    pub fn keyboard_overlay_open(&self) -> bool {
+        self.is_open() || self.switch_dialog.is_some()
+    }
+
     /// The picker to render: open or mid-exit.
     fn mounted_kind(&self) -> Option<PickerKind> {
         self.open.get().copied()
@@ -597,6 +611,8 @@ impl Pickers {
             },
             PickerKind::Branch => self.selected_ref_index(cx),
             PickerKind::ProviderModel => self.selected_model_index(cx),
+            // Pre-anchored on the current tier (the Checkout pattern).
+            PickerKind::Mode => mode_index(self.effective_permission_mode(cx)),
             PickerKind::Space => self.selected_space_index(cx),
         };
         if kind == PickerKind::ProviderModel {
@@ -647,6 +663,8 @@ impl Pickers {
             }
             // Projects are already synced state — nothing to load.
             PickerKind::Space => {}
+            // The mode menu renders from synced state — nothing to load.
+            PickerKind::Mode => {}
         }
         cx.notify();
     }
@@ -712,6 +730,9 @@ impl Pickers {
                 }
                 self.animate_close(cx);
                 cx.notify();
+                // The key is spent — an ancestor (the composer's Esc-interrupt)
+                // must not also see it.
+                cx.stop_propagation();
             }
             MenuKey::Up | MenuKey::Down => {
                 let delta = if key == MenuKey::Up { -1 } else { 1 };
@@ -722,6 +743,7 @@ impl Pickers {
                     // chips below (reasoning ladder, model options) are
                     // mouse-only.
                     Some(PickerKind::ProviderModel) => self.model_rows_len(cx),
+                    Some(PickerKind::Mode) => MODE_TIERS.len(),
                     Some(PickerKind::Space) => self.filtered_space_rows(cx).len(),
                     None => 0,
                 };
@@ -749,6 +771,9 @@ impl Pickers {
                         CheckoutKind::NewWorktree
                     };
                     self.pick_checkout(kind, cx);
+                } else if self.open_kind() == Some(PickerKind::Mode) {
+                    let mode = MODE_TIERS[self.active.min(MODE_TIERS.len() - 1)];
+                    self.pick_permission_mode(mode, cx);
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -878,13 +903,15 @@ impl Pickers {
             .into_any_element()
     }
 
-    /// The composer footer row: checkout-kind + branch chip, LEFT-aligned,
-    /// only when the picked (or session's) project has git. In a session the
-    /// branch chip is live (ADR-0007): it renders the working directory's
-    /// current branch and its picker switches the chat's own folder. The
-    /// project picker lives in the row above the pill
-    /// ([`Self::render_target_selectors`]); sessions name their target in
-    /// the titlebar.
+    /// The composer footer row: the persistent permission-mode shield
+    /// (ADR-0014) first, then the checkout-kind + branch chip when the picked
+    /// (or session's) project has git. In a session the branch chip is live
+    /// (ADR-0007): it renders the working directory's current branch and its
+    /// picker switches the chat's own folder. The project picker lives in the
+    /// row above the pill ([`Self::render_target_selectors`]); sessions name
+    /// their target in the titlebar. The mode control renders in BOTH empty
+    /// and populated chats, git or not — the row only goes away with the
+    /// composer itself.
     pub fn render_footer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
         // A selected chat whose workspace row hasn't synced yet (the moment
@@ -928,52 +955,36 @@ impl Pickers {
             // directory's live current branch, and a pick safe-switches the
             // chat's own folder immediately (mid-Turn included). The
             // checkout-kind label stays display-only here; its "New
-            // worktree" option is a draft-only affordance.
-            let space = space.as_ref().filter(|s| s.git_detected)?;
-            // One rule for the kind icon and its label (ADR-0007).
-            let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
-            let icon_path = if is_worktree {
-                crate::icons::FOLDER_WITH_FILES
-            } else {
-                crate::icons::FOLDER
-            };
-            let kind_label = logic::session_checkout_label(&space.path, chat.cwd.as_deref());
-            // Refs feed the live label — eager + idempotent, keyed to the
-            // chat's own working directory.
-            self.ensure_refs(false, cx);
-            let branch_label = logic::session_branch_label(
-                self.live_current_branch().as_deref(),
-                chat.branch.as_deref(),
-            );
+            // worktree" option is a draft-only affordance. Both are git-only;
+            // the mode chip leads the row either way.
             let closing = self.open.closing_since();
             let mut overlay: Option<(PickerKind, AnyElement)> = match self.mounted_kind() {
                 Some(PickerKind::Branch) => {
                     let content = self.render_branch_popover(cx);
                     Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
                 }
+                Some(PickerKind::Mode) => {
+                    let content = self.render_mode_popover(cx);
+                    Some((PickerKind::Mode, self.popover_frame(300.0, content, cx)))
+                }
                 _ => None,
             };
-            let ref_chip = self.footer_chip(
-                PickerKind::Branch,
-                "picker-branch-session",
-                crate::icons::GIT_BRANCH,
-                SharedString::from(branch_label),
-                &theme,
-                cx,
-            );
-            // Mirrors the draft chips: checkout hugs the left edge, ref the
-            // right.
-            let left = div()
+            let mode_chip = self.mode_chip(&theme, cx);
+            let mut left = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .min_w_0()
-                .child(Self::footer_label(
-                    icon_path,
-                    SharedString::from(kind_label),
-                    &theme,
+                .child(attach_overlay(
+                    mode_chip,
+                    &mut overlay,
+                    PickerKind::Mode,
+                    "mode-popover",
+                    closing,
                 ));
-            let right = div()
+            // Mirrors the draft chips: mode + checkout hug the left edge, ref
+            // the right.
+            let mut right = div()
                 .flex()
                 .flex_row()
                 .items_center()
@@ -986,87 +997,122 @@ impl Pickers {
                         crate::change_requests::ChangeRequestBadgeSurface::Composer,
                         &theme,
                     ))
-                })
-                .child(attach_overlay_end(
+                });
+            if let Some(space) = space.as_ref().filter(|s| s.git_detected) {
+                // One rule for the kind icon and its label (ADR-0007).
+                let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
+                let icon_path = if is_worktree {
+                    crate::icons::FOLDER_WITH_FILES
+                } else {
+                    crate::icons::FOLDER
+                };
+                let kind_label = logic::session_checkout_label(&space.path, chat.cwd.as_deref());
+                // Refs feed the live label — eager + idempotent, keyed to the
+                // chat's own working directory.
+                self.ensure_refs(false, cx);
+                let branch_label = logic::session_branch_label(
+                    self.live_current_branch().as_deref(),
+                    chat.branch.as_deref(),
+                );
+                let ref_chip = self.footer_chip(
+                    PickerKind::Branch,
+                    "picker-branch-session",
+                    crate::icons::GIT_BRANCH,
+                    SharedString::from(branch_label),
+                    &theme,
+                    cx,
+                );
+                left = left.child(Self::footer_label(
+                    icon_path,
+                    SharedString::from(kind_label),
+                    &theme,
+                ));
+                right = right.child(attach_overlay_end(
                     ref_chip,
                     &mut overlay,
                     PickerKind::Branch,
                     "branch-popover-session",
                     closing,
                 ));
+            }
             return Some(row().child(left).child(right).into_any_element());
         }
 
-        // New-session draft: checkout + ref only, LEFT-aligned (the project
-        // picker lives in the row above the pill now).
+        // New-session draft: the mode chip leads, then checkout + ref when the
+        // project has git (the project picker lives in the row above the pill).
+        // Non-git projects still get the row — the mode control is persistent.
         let git = space.as_ref().is_some_and(|s| s.git_detected);
-        if !git {
-            return None;
-        }
-        // Refs feed the draft labels — eager + idempotent.
-        self.ensure_refs(false, cx);
         let closing = self.open.closing_since();
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.mounted_kind() {
-            Some(PickerKind::Branch) => {
+            Some(PickerKind::Branch) if git => {
                 let content = self.render_branch_popover(cx);
                 Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
             }
-            Some(PickerKind::Checkout) => {
+            Some(PickerKind::Checkout) if git => {
                 let content = self.render_checkout_popover(cx);
                 Some((PickerKind::Checkout, self.popover_frame(224.0, content, cx)))
+            }
+            Some(PickerKind::Mode) => {
+                let content = self.render_mode_popover(cx);
+                Some((PickerKind::Mode, self.popover_frame(300.0, content, cx)))
             }
             // The Space popover mounts on the target row above the pill
             // (`render_target_selectors`), not here.
             _ => None,
         };
-
-        let ref_label = self.ref_label();
-        let ref_chip = self.footer_chip(
-            PickerKind::Branch,
-            "picker-branch",
-            crate::icons::GIT_BRANCH,
-            ref_label,
-            &theme,
-            cx,
-        );
-        let kind_icon = match self.config.checkout {
-            CheckoutKind::Local => crate::icons::FOLDER,
-            CheckoutKind::NewWorktree => crate::icons::FOLDER_WITH_FILES,
-        };
-        let kind_chip = self.footer_chip(
-            PickerKind::Checkout,
-            "picker-checkout",
-            kind_icon,
-            SharedString::from(self.checkout_label()),
-            &theme,
-            cx,
-        );
-        // Checkout on the left edge, ref on the right — the row's
-        // justify_between splits them (user request).
-        let left = div()
+        let mode_chip = self.mode_chip(&theme, cx);
+        let mut left = div()
             .flex()
             .flex_row()
             .items_center()
             .min_w_0()
             .child(attach_overlay(
+                mode_chip,
+                &mut overlay,
+                PickerKind::Mode,
+                "mode-popover",
+                closing,
+            ));
+        let mut right = div().flex().flex_row().items_center().min_w_0();
+        if git {
+            // Refs feed the draft labels — eager + idempotent.
+            self.ensure_refs(false, cx);
+            let ref_label = self.ref_label();
+            let ref_chip = self.footer_chip(
+                PickerKind::Branch,
+                "picker-branch",
+                crate::icons::GIT_BRANCH,
+                ref_label,
+                &theme,
+                cx,
+            );
+            let kind_icon = match self.config.checkout {
+                CheckoutKind::Local => crate::icons::FOLDER,
+                CheckoutKind::NewWorktree => crate::icons::FOLDER_WITH_FILES,
+            };
+            let kind_chip = self.footer_chip(
+                PickerKind::Checkout,
+                "picker-checkout",
+                kind_icon,
+                SharedString::from(self.checkout_label()),
+                &theme,
+                cx,
+            );
+            left = left.child(attach_overlay(
                 kind_chip,
                 &mut overlay,
                 PickerKind::Checkout,
                 "checkout-popover",
                 closing,
             ));
-        let right = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .min_w_0()
-            .child(attach_overlay_end(
+            right = right.child(attach_overlay_end(
                 ref_chip,
                 &mut overlay,
                 PickerKind::Branch,
                 "branch-popover",
                 closing,
             ));
+        }
         Some(row().child(left).child(right).into_any_element())
     }
 }
@@ -1182,7 +1228,10 @@ impl Render for Pickers {
         let closing = self.open.closing_since();
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.mounted_kind() {
             // Footer- and target-row pickers — their popovers mount there.
-            Some(PickerKind::Branch) | Some(PickerKind::Checkout) | Some(PickerKind::Space) => None,
+            Some(PickerKind::Branch)
+            | Some(PickerKind::Checkout)
+            | Some(PickerKind::Mode)
+            | Some(PickerKind::Space) => None,
             Some(PickerKind::ProviderModel) => {
                 let content = self.render_provider_model_popover(cx);
                 Some((

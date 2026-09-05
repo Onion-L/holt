@@ -35,8 +35,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Task,
-    Window, div, prelude::*, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 
 use holt_proto::{ProviderId, SlashCommand};
@@ -571,6 +571,11 @@ impl Render for Composer {
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
+            // Raw Escape (no popup/dialog consumed it) = interrupt the
+            // running Turn while an Approval gates it (ADR-0014).
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                this.on_escape(event, cx);
+            }))
             .when_some(failure, |el, message| {
                 // holt composer.tsx `Notice` (matches the transcript
                 // ErrorChip palette): `flex items-start gap-2 rounded-xl

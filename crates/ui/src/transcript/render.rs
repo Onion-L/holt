@@ -15,7 +15,7 @@ use gpui::{
     StyledImage as _, StyledText, Task, TextRun, Window, canvas, div, img, list, prelude::*, px,
     quad,
 };
-use holt_doc::{MessageRole, MessageStatus, SubagentStatus};
+use holt_doc::{MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
 use holt_proto::view::tool_chip_content;
 
@@ -753,6 +753,13 @@ impl Transcript {
             flavour_word(seed, elapsed_secs)
         };
         let theme = Theme::of(cx).clone();
+        // A pending Approval pauses the Turn; the trailer carries the
+        // Esc-interrupt hint (prototype 3-A) so the keyboard path is
+        // discoverable next to the running status.
+        let approval_pending = self
+            .rows
+            .iter()
+            .any(|row| matches!(row.kind, RowKind::Approval { .. }));
         Some(
             div()
                 .flex()
@@ -787,6 +794,30 @@ impl Transcript {
                         div()
                             .text_color(theme.text_faint)
                             .child(SharedString::from(format_elapsed(elapsed_secs))),
+                    )
+                })
+                .when(approval_pending, |el| {
+                    el.child(div().flex_1()).child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(3.0))
+                            .text_color(theme.text_faint)
+                            .child("按")
+                            .child(
+                                div()
+                                    .px(px(3.0))
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(theme.hairline(0.14))
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(10.0))
+                                    .line_height(px(14.0))
+                                    .child("Esc"),
+                            )
+                            .child("中断"),
                     )
                 })
                 .into_any_element(),
@@ -999,6 +1030,9 @@ impl Transcript {
             }
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
+            }
+            RowKind::Approval { tool } => {
+                self.render_approval_card(&row.id, tool, &theme, window, cx)
             }
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
@@ -2438,6 +2472,26 @@ fn chip_header_row(
                     .child(SharedString::from(model.to_owned())),
             )
         })
+        .when_some(
+            // The settled verdict (ADR-0014): a small tinted marker after the
+            // detail — "✓ 已批准", "⊘ 已拒绝 · "note"", "⚡ 前缀豁免", …
+            tool.gate.as_ref().and_then(|gate| match &gate.state {
+                ToolGateState::Settled { verdict } => Some(super::verdict_chip(verdict)),
+                ToolGateState::Pending => None,
+            }),
+            |row, (text, tint)| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .h(px(18.0))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.0))
+                        .text_color(super::verdict_tint_color(tint, theme))
+                        .child(SharedString::from(text)),
+                )
+            },
+        )
         .when(running, |row| {
             // The sidebar working-row spinner, in the chip's trailing slot —
             // paint-local (fixed footprint), so it never moves the layout.
@@ -2661,6 +2715,9 @@ impl Render for Transcript {
         // Release gpui-side decoded copies of any images the attachment LRU
         // evicted since the last frame (no-op when nothing was evicted).
         crate::attachments::flush_evicted(Some(window), cx);
+        // Drop note editors whose approval settled or scrolled away with a
+        // chat switch (a verdict also closes its own editor eagerly).
+        self.prune_approval_notes();
         // Own-turn driver: measurements are only authoritative after layout,
         // so reservation sizing, the send glide, and the outgrown-handoff
         // each advance at most once per requested frame. Scheduled on every

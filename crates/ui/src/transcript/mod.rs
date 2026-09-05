@@ -85,6 +85,10 @@ pub use tool::{
 mod markdown;
 mod model;
 
+mod approval;
+
+pub use approval::{VerdictTint, pending_approval_gate, verdict_chip, verdict_tint_color};
+
 pub use markdown::{ParseOutcome, parse_for_row};
 use model::entry_fingerprint;
 pub use model::{
@@ -299,7 +303,19 @@ pub struct Transcript {
     /// recently (click "Show full output" after a diff → see the output).
     blob_fetch_order: HashMap<SharedString, u64>,
     blob_fetch_counter: u64,
+    /// Open approval note editors, keyed by approval id (ADR-0014). Entity
+    /// state, not row state: a row re-splice (streaming, settle) must not
+    /// drop a half-written note. Pruned per render to approvals still
+    /// pending in `rows`.
+    approval_notes: HashMap<String, ApprovalNote>,
     _observe: Subscription,
+}
+
+/// One approval's expanding note editor (prototype 3-A's 附言…): the input
+/// plus its event subscription (Submitted = 以此附言拒绝, Edited = repaint).
+pub struct ApprovalNote {
+    pub input: Entity<crate::composer::ComposerInput>,
+    _events: Subscription,
 }
 
 /// One sidecar blob fetch's lifecycle.
@@ -443,6 +459,7 @@ impl Transcript {
             blob_details: HashMap::new(),
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
+            approval_notes: HashMap::new(),
             _observe: observe,
         };
         this.sync(cx);

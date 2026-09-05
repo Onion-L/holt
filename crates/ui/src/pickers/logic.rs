@@ -28,6 +28,10 @@ pub struct DraftConfig {
     pub branch: Option<String>,
     /// Where the new session runs.
     pub checkout: CheckoutKind,
+    /// The permission mode picked on the new-chat canvas (ADR-0014). `None`
+    /// = untouched — the chat then inherits the engine's sticky default, and
+    /// no `setChatPermissionMode` rides the first send.
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// Where a new session runs: the space's own folder, or a fresh worktree

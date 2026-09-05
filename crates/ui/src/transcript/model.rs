@@ -8,7 +8,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::SharedString;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
+use holt_doc::{
+    MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus, ToolGate,
+    ToolGateState,
+};
 use holt_proto::ToolCall;
 use holt_proto::view::{single_line, tool_chip_content};
 
@@ -62,6 +65,11 @@ pub struct ToolItem {
     /// text is the `detail`; `resolved == false` means it is still
     /// streaming (the chip then defaults open).
     pub is_thought: bool,
+    /// The permission gate's record (ADR-0014), when this call was gated.
+    /// `Pending` never reaches a group — it splices into its own
+    /// [`RowKind::Approval`] row first — so a gate seen here is always
+    /// settled, and the chip carries its verdict.
+    pub gate: Option<ToolGate>,
 }
 
 /// Subagent spawn chips — [`ToolCall::is_subagent_spawn`], the shared genus
@@ -138,6 +146,7 @@ fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
         subagent_status: None,
         subagent_tail: None,
         is_thought: true,
+        gate: None,
     }
 }
 
@@ -214,6 +223,17 @@ pub enum RowKind {
     ToolGroup {
         tools: Arc<Vec<ToolItem>>,
         auto_open: bool,
+    },
+    /// A confirm-changes Approval awaiting the user's verdict (ADR-0014,
+    /// prototype 3-A): a tool part whose gate is `Pending` renders as a card
+    /// in the transcript flow, never inside a fold. When the verdict lands
+    /// the same part flows back into an ordinary tool group — the card
+    /// settles to its chip in place. Interactive state (the note editor)
+    /// lives on the Transcript entity keyed by approval id, never here.
+    /// Boxed: a pending gate is rare (one per chat at a time), and an inline
+    /// ToolItem would triple RowKind's stride for every markdown row.
+    Approval {
+        tool: Box<ToolItem>,
     },
     InputChip {
         /// First question's header (chat-view.tsx `InputChip`: the resolved
@@ -307,6 +327,28 @@ pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// Hash a tool's gate into a row/entry fingerprint: the gate settles in
+/// place (Pending → Settled, or a persisted doc restamping a stale pending
+/// as Aborted) without touching resolved/is_error, so both cache keys must
+/// see it or the approval card never folds back into its verdict chip.
+/// Shared by [`tool_fingerprint`] and [`entry_fingerprint`] — drift between
+/// the two is a stale-cache bug.
+fn hash_gate(acc: &mut Vec<u8>, gate: Option<&ToolGate>) {
+    match gate {
+        None => acc.push(0),
+        Some(gate) => {
+            acc.extend_from_slice(gate.id.as_bytes());
+            match &gate.state {
+                ToolGateState::Pending => acc.push(1),
+                ToolGateState::Settled { verdict } => {
+                    acc.push(2);
+                    acc.extend_from_slice(format!("{verdict:?}").as_bytes());
+                }
+            }
+        }
+    }
+}
+
 fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
     let mut acc = Vec::with_capacity(tools.len() * 8 + 1);
     for t in tools {
@@ -398,6 +440,9 @@ fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
         if let Some(tail) = &t.subagent_tail {
             acc.extend_from_slice(tail.as_bytes());
         }
+        // The gate's verdict flips the chip's verdict marker in place —
+        // hashed via the shared helper (see `hash_gate`).
+        hash_gate(&mut acc, t.gate.as_ref());
     }
     acc.push(auto_open as u8);
     fnv1a(&acc)
@@ -537,6 +582,7 @@ pub fn rows_for_entry(
     for (part_ix, part) in entry.parts.iter().enumerate() {
         match part {
             MessagePart::Tool {
+                id: part_id,
                 call,
                 is_error,
                 resolved,
@@ -549,7 +595,7 @@ pub fn rows_for_entry(
                 subagent_ref,
                 subagent_status,
                 subagent_tail,
-                ..
+                gate,
             } => {
                 let item = ToolItem {
                     call: call.clone(),
@@ -565,7 +611,42 @@ pub fn rows_for_entry(
                     subagent_status: *subagent_status,
                     subagent_tail: subagent_tail.clone().map(SharedString::from),
                     is_thought: false,
+                    gate: gate.clone(),
                 };
+                // A PENDING gate is the approval card (ADR-0014): it must
+                // stay visible, so it never joins a foldable group — flush
+                // and splice its own row. The settle replays the same part
+                // through the ordinary path below, which lands it in a group
+                // as the verdict chip.
+                if matches!(
+                    item.gate.as_ref().map(|gate| &gate.state),
+                    Some(ToolGateState::Pending)
+                ) {
+                    flush_group(
+                        &mut rows,
+                        &mut pending_group,
+                        &mut group_ix,
+                        group_last_part_ix,
+                    );
+                    let (label, detail) = tool_chip_content(&item.call);
+                    let gate_id = item.gate.as_ref().map(|g| g.id.as_str()).unwrap_or("");
+                    let version = fnv1a(
+                        format!("{gate_id}\u{0}{label}\u{0}{detail}\u{0}{}", item.resolved)
+                            .as_bytes(),
+                    );
+                    rows.push(Row {
+                        id: format!("{}#{}", entry.id, part_id).into(),
+                        version,
+                        turn_start: false,
+                        kind: RowKind::Approval {
+                            tool: Box::new(item),
+                        },
+                        entry_id: entry.id.clone().into(),
+                        timestamp: None,
+                        copy_text: None,
+                    });
+                    continue;
+                }
                 // Agent chips don't share a fold with ordinary tools: flush
                 // whenever the genus flips so each group is uniform.
                 if pending_group
@@ -826,9 +907,15 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
     });
     if same_part_markdown {
         render::MD_BLOCK_GAP
-    } else if matches!(row.kind, RowKind::ToolGroup { .. })
-        || prev.is_some_and(|row| matches!(row.kind, RowKind::ToolGroup { .. }))
-    {
+    } else if matches!(
+        row.kind,
+        RowKind::ToolGroup { .. } | RowKind::Approval { .. }
+    ) || prev.is_some_and(|row| {
+        matches!(
+            row.kind,
+            RowKind::ToolGroup { .. } | RowKind::Approval { .. }
+        )
+    }) {
         Theme::SPACE_MD
     } else {
         Theme::SPACE_SM
@@ -874,6 +961,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             subagent_ref,
             subagent_status,
             subagent_tail,
+            gate,
             ..
         } = part
         {
@@ -894,6 +982,9 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             if let Some(tail) = subagent_tail {
                 acc.extend_from_slice(tail.as_bytes());
             }
+            // The gate settles in place without touching resolved/is_error —
+            // hashed via the shared helper (see `hash_gate`).
+            hash_gate(&mut acc, gate.as_ref());
         }
         if let MessagePart::Input { resolved, .. } = part {
             acc.push(0x10 | *resolved as u8);

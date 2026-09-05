@@ -506,6 +506,7 @@ mod tests {
             subagent_status: None,
             subagent_tail: None,
             is_thought: false,
+            gate: None,
         };
         let edit = |p: &str| ToolItem {
             call: ToolCall::EditFile {
@@ -524,6 +525,7 @@ mod tests {
             subagent_status: None,
             subagent_tail: None,
             is_thought: false,
+            gate: None,
         };
         let tools = vec![
             exec("ls"),
@@ -558,6 +560,7 @@ mod tests {
                 subagent_status: None,
                 subagent_tail: None,
                 is_thought: false,
+                gate: None,
             },
             ToolItem {
                 call: ToolCall::Glob {
@@ -574,6 +577,7 @@ mod tests {
                 subagent_status: None,
                 subagent_tail: None,
                 is_thought: false,
+                gate: None,
             },
             ToolItem {
                 call: ToolCall::WebSearch { query: "q".into() },
@@ -588,6 +592,7 @@ mod tests {
                 subagent_status: None,
                 subagent_tail: None,
                 is_thought: false,
+                gate: None,
             },
         ];
         assert_eq!(tool_group_summary(&tools), "Read 1 file · searched 2 times");
