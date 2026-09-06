@@ -21,7 +21,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -72,6 +72,15 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   skill roots — project `.agents/skills` at the cwd, personal
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root, shadowed entries, and load diagnostics).
+- Path search: `SearchFiles` (`{query, chatId|spaceId}`) fuzzy-matches files
+  and folders under the chat's cwd (or the space's path before a chat
+  exists) for the composer's `@` popup — hidden and ignored entries are
+  included, `.git` is excluded. This is deliberately broader than the
+  agent's content search, which keeps its ignore-respecting traversal.
+  Path references themselves are not an RPC surface: picker, drag, and `@`
+  selections travel as plain prompt text (an appended absolute-path list,
+  or inline quoted absolute paths for `@`) through the ordinary queue —
+  nothing is uploaded, copied, snapshotted, or eagerly read.
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
 - Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).

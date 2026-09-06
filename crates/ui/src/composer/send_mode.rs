@@ -15,11 +15,16 @@ pub enum SendButtonMode {
     Stop,
 }
 
-/// What the composer holds that a send could carry. A staged image or diff
-/// comment counts: both synthesize their own prompt body, so either alone is
-/// a legal send, including while a Turn is running.
-pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> bool {
-    !text.trim().is_empty() || attachments > 0 || comments > 0
+/// What the composer holds that a send could carry. A staged image, a path
+/// reference, or a diff comment counts: each synthesizes its own prompt body,
+/// so any one alone is a legal send, including while a Turn is running.
+pub fn composer_has_content(
+    text: &str,
+    attachments: usize,
+    references: usize,
+    comments: usize,
+) -> bool {
+    !text.trim().is_empty() || attachments > 0 || references > 0 || comments > 0
 }
 
 pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
@@ -85,16 +90,17 @@ mod tests {
 
     #[test]
     fn staged_comments_alone_are_content() {
-        assert!(!composer_has_content("   ", 0, 0));
-        assert!(composer_has_content("hi", 0, 0));
-        assert!(composer_has_content("", 1, 0));
-        assert!(composer_has_content("", 0, 1));
+        assert!(!composer_has_content("   ", 0, 0, 0));
+        assert!(composer_has_content("hi", 0, 0, 0));
+        assert!(composer_has_content("", 1, 0, 0));
+        assert!(composer_has_content("", 0, 1, 0));
+        assert!(composer_has_content("", 0, 0, 1));
     }
 
     #[test]
     fn a_comment_only_stage_queues_during_a_live_run() {
         let live = true;
-        let comment_only = composer_has_content("", 0, 2);
+        let comment_only = composer_has_content("", 0, 0, 2);
         assert_eq!(
             send_button_mode(live, comment_only),
             SendButtonMode::Queue,
@@ -102,7 +108,7 @@ mod tests {
         );
         // Nothing staged at all is still the stop square.
         assert_eq!(
-            send_button_mode(live, composer_has_content("", 0, 0)),
+            send_button_mode(live, composer_has_content("", 0, 0, 0)),
             SendButtonMode::Stop
         );
     }

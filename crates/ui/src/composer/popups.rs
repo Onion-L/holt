@@ -114,6 +114,11 @@ pub(super) struct FileMentionState {
     active: Option<usize>,
     request: u64,
     loading: bool,
+    /// The root the in-flight search ran against, snapshotted with the
+    /// request: results bind to their absolute target against THIS root even
+    /// if the selected Space changes before acceptance (spec: bind at
+    /// selection, never re-resolve against a new root).
+    root: Option<std::path::PathBuf>,
     /// Why the last search failed, for the popup. A failure MUST NOT render
     /// as "No matching files": searches fail for reasons the user can act on
     /// (an engine too old for `SearchFiles`, or unreachable), and the empty
@@ -278,6 +283,9 @@ impl Composer {
             cx.notify();
             return;
         }
+        // Snapshot the search root with the request — acceptance binds
+        // results against this root, not against whatever is selected later.
+        self.mention.root = self.mention_root(cx);
         let request = self.mention.request;
         self.mention_task = Some(cx.spawn(async move |this, cx| {
             // A short debounce prevents one full workspace walk per keystroke
@@ -365,11 +373,30 @@ impl Composer {
         else {
             return;
         };
+        // Bind the reference to its absolute target NOW (spec: an old mention
+        // must never re-resolve against a newly selected Space at send time).
+        // Search results are root-relative; the root is the one snapshotted
+        // with the request — the same root the engine searched.
+        let path = match self.mention.root.clone().or_else(|| self.mention_root(cx)) {
+            Some(root) => root.join(&path).to_string_lossy().into_owned(),
+            None => path,
+        };
         self.input.update(cx, |input, cx| {
             input.replace_mention(token.range, &path, is_dir, cx)
         });
         self.reset_mention(None, cx);
         cx.notify();
+    }
+
+    /// The root `@` search ran against, for binding results to absolute
+    /// targets: the selected chat's cwd, else the selected Space's path.
+    fn mention_root(&self, cx: &App) -> Option<std::path::PathBuf> {
+        let state = self.state.read(cx);
+        let root = state
+            .selected_chat_row()
+            .and_then(|chat| chat.cwd.clone())
+            .or_else(|| state.selected_space_row().map(|space| space.path.clone()))?;
+        Some(crate::path_refs::expand_home(&root))
     }
 
     pub(super) fn render_file_mention_popup(

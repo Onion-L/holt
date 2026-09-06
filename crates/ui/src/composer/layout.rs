@@ -214,6 +214,23 @@ pub fn comment_strip_height(count: usize) -> f32 {
     STRIP_PAD_TOP + crate::badges::BADGE_HEIGHT
 }
 
+/// Path-reference chip metrics: badge-height pills with a capped label, so the
+/// wrap arithmetic can size the strip without measuring text.
+pub const REF_CHIP_LABEL_MAX: f32 = 160.0;
+/// Widest a chip can grow (icon + capped label + remove button + padding/gaps).
+pub const REF_CHIP_WIDTH: f32 = 240.0;
+
+/// Height the path-reference chip strip adds to the pill (0 when empty).
+pub fn path_ref_strip_height(count: usize, inner_width: f32) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    let usable = (inner_width - 2.0 * STRIP_PAD_X).max(REF_CHIP_WIDTH);
+    let per_row = (((usable + STRIP_GAP) / (REF_CHIP_WIDTH + STRIP_GAP)).floor() as usize).max(1);
+    let rows = count.div_ceil(per_row);
+    STRIP_PAD_TOP + rows as f32 * crate::badges::BADGE_HEIGHT + (rows - 1) as f32 * STRIP_GAP
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

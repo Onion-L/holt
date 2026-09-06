@@ -79,8 +79,12 @@ pub(super) fn local_file_link(path: &str, is_dir: bool) -> String {
 }
 
 fn local_path_is_safe(path: &str) -> bool {
+    // Absolute paths are allowed: `@` search results bind to their absolute
+    // target at selection time (a Space switch must never re-resolve them).
+    // The remaining rules keep the scheme local-only and canonical: no
+    // backslashes, no control chars, no empty/`.`/`..` components.
+    let path = path.strip_prefix('/').unwrap_or(path);
     !path.is_empty()
-        && !path.starts_with('/')
         && !path.contains('\\')
         && !path.chars().any(char::is_control)
         && !path
@@ -432,6 +436,26 @@ pub struct SentMentionSpan {
     pub is_dir: bool,
 }
 
+/// Submission conversion: every mention link becomes its readable absolute
+/// path in place (quoted per the path-reference rules), preserving the
+/// sentence around it and every repeated occurrence. The `holt-file:` scheme
+/// never leaves the composer.
+pub(crate) fn resolve_mentions(text: &str) -> String {
+    let links = file_mention_links(text);
+    if links.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for link in links {
+        out.push_str(&text[at..link.range.start]);
+        out.push_str(&crate::path_refs::format_reference(&link.path, link.is_dir));
+        at = link.range.end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 /// Project a sent message's raw Markdown for transcript display: mention links
 /// collapse to the same chip labels the composer shows, everything else passes
 /// through untouched. `None` when the text has no valid mention — the
@@ -539,6 +563,48 @@ mod tests {
         assert!(file_mention_links("[a.rs](src/a.rs)").is_empty());
         assert!(file_mention_links("[a.rs](src%5Cfake%5Ca.rs)").is_empty());
         assert!(file_mention_links("[a.rs](src/a%0A.rs)").is_empty());
+        // Absolute but non-canonical or escaping forms stay rejected.
+        assert!(file_mention_links("[a.rs](/abs/../a.rs)").is_empty());
+        assert!(file_mention_links("[a.rs](//abs/a.rs)").is_empty());
+        assert!(file_mention_links("[a.rs](/abs//a.rs)").is_empty());
+    }
+
+    #[test]
+    fn absolute_mention_targets_round_trip() {
+        let raw = local_file_link("/abs/space/src/a file.rs", false);
+        let links = file_mention_links(&raw);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].path, "/abs/space/src/a file.rs");
+        assert_eq!(links[0].basename, "a file.rs");
+        let dir = local_file_link("/abs/space/src", true);
+        let links = file_mention_links(&dir);
+        assert_eq!(links[0].path, "/abs/space/src");
+        assert!(links[0].is_dir);
+    }
+
+    #[test]
+    fn submission_resolves_mentions_to_absolute_paths_in_place() {
+        let link = local_file_link("/abs/space/src/a file.rs", false);
+        let raw = format!("open {link} and then {link} again");
+        let resolved = resolve_mentions(&raw);
+        assert_eq!(
+            resolved,
+            "open \"/abs/space/src/a file.rs\" and then \"/abs/space/src/a file.rs\" again",
+            "repeated occurrences each resolve in place"
+        );
+        assert!(!resolved.contains(FILE_MENTION_SCHEME));
+    }
+
+    #[test]
+    fn submission_resolution_preserves_the_surrounding_sentence() {
+        let file = local_file_link("/abs/a.rs", false);
+        let dir = local_file_link("/abs/dir", true);
+        assert_eq!(
+            resolve_mentions(&format!("compare {file} against {dir}, please")),
+            "compare \"/abs/a.rs\" against \"/abs/dir/\", please"
+        );
+        // No mentions: the text is returned unchanged.
+        assert_eq!(resolve_mentions("plain prompt"), "plain prompt");
     }
 
     #[test]

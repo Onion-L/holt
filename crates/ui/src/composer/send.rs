@@ -50,6 +50,7 @@ impl Composer {
         let has_text = composer_has_content(
             self.input.read(cx).text(),
             self.staged().len(),
+            self.staged_refs().len(),
             self.staged_comments(cx).len(),
         );
         send_button_mode(self.run_live(cx), has_text)
@@ -116,8 +117,12 @@ impl Composer {
             }
             _ => {}
         }
-        let no_content =
-            !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
+        let no_content = !composer_has_content(
+            &text,
+            self.staged().len(),
+            self.staged_refs().len(),
+            self.staged_comments(cx).len(),
+        );
         match self.button_mode(cx) {
             SendButtonMode::Stop => self.interrupt(cx),
             _ if no_content => {}
@@ -189,8 +194,10 @@ impl Composer {
         let space_path = space.as_ref().map(|s| s.path.clone());
         // Slash interception (ADR-0006): a parsed `/skill` rides this send
         // as a typed invocation — the raw directive never becomes prompt
-        // text. A skill invocation travels alone: staged attachments and
-        // diff-comment folding stay put for the next ordinary message.
+        // text. Staged image attachments and diff-comment folding stay put
+        // for the next ordinary message; path references do NOT travel
+        // alone — a skill invocation consumes them into its extra
+        // instructions (spec: skills receive both reference forms).
         let slash = super::slash::parse(&text);
         // Both intercepted commands travel alone (ADR-0006/0011): staged
         // attachments and diff-comment folding stay put for the next
@@ -199,18 +206,36 @@ impl Composer {
             slash,
             super::slash::Parsed::Skill { .. } | super::slash::Parsed::Compact
         );
-        let staged = if travels_alone {
+        // `typed` keeps the user's own words for the failure hand-back below:
+        // restoring the folded prompt would paste the comment block into the
+        // input as literal text. Computed now because a retry of an uncertain
+        // acknowledgement must leave every stash untouched — the frozen
+        // payload already carries those references, and consuming the chips
+        // here would drop the newer staging without sending it.
+        let typed = text.clone();
+        let retry = self
+            .failed_submissions
+            .get(&chat_id)
+            .filter(|(previous, _)| previous == &typed)
+            .map(|(_, params)| params.clone());
+        let keeps_stash = travels_alone || retry.is_some();
+        let staged = if keeps_stash {
             Vec::new()
         } else {
             self.attachments
                 .remove(&self.current_key)
                 .unwrap_or_default()
         };
-        // `typed` keeps the user's own words for the failure hand-back below:
-        // restoring the folded prompt would paste the comment block into the
-        // input as literal text.
+        // `/compact` (and a retry, per above) leaves path references staged
+        // for a later message; ordinary messages and skill invocations
+        // consume the chips now.
+        let references = if keeps_stash {
+            Vec::new()
+        } else {
+            self.path_refs.remove(&self.current_key).unwrap_or_default()
+        };
         let key = self.current_key.clone();
-        let comments = if travels_alone {
+        let comments = if keeps_stash {
             Vec::new()
         } else {
             self.state.update(cx, |state, cx| {
@@ -221,13 +246,11 @@ impl Composer {
                 taken
             })
         };
-        let typed = text.clone();
-        let retry = self
-            .failed_submissions
-            .get(&chat_id)
-            .filter(|(previous, _)| previous == &typed)
-            .map(|(_, params)| params.clone());
         let submission_text = typed.clone();
+        // Inline `@` mention links become readable absolute paths in place
+        // BEFORE anything else folds in — the internal `holt-file:` scheme
+        // never reaches the queue, the Transcript, or the model.
+        let text = super::mentions::resolve_mentions(&text);
         let text = if comments.is_empty() {
             text
         } else {
@@ -554,8 +577,12 @@ impl Composer {
 
                 let command = match &slash {
                     // The engine builds the model-visible prompt from the
-                    // skill's content; `request.prompt` rides empty.
+                    // skill's content; `request.prompt` rides empty. Inline
+                    // `@` links in the extra instructions resolve in place
+                    // and the attachment-area path list appends to them, so
+                    // the skill-prompt construction carries the references.
                     super::slash::Parsed::Skill { name, extra } => {
+                        let extra = extra.as_deref().map(super::mentions::resolve_mentions);
                         SessionCommandPayload::InvokeSkill {
                             request: RunRequest {
                                 prompt: String::new(),
@@ -574,7 +601,10 @@ impl Composer {
                                 worktree: run_worktree,
                             },
                             name: name.clone(),
-                            extra_instructions: extra.clone(),
+                            extra_instructions: crate::path_refs::append_references_opt(
+                                extra.as_deref(),
+                                &references,
+                            ),
                             message_id: message_id.clone(),
                         }
                     }
@@ -604,7 +634,9 @@ impl Composer {
                     },
                     _ => SessionCommandPayload::Run {
                         request: RunRequest {
-                            prompt: content.clone(),
+                            // The attachment-area path list appends once, at
+                            // the very end of the prompt.
+                            prompt: crate::path_refs::append_references(&content, &references),
                             provider: resolved.provider.clone().ok_or_else(|| {
                                 "Configure a provider before sending".to_string()
                             })?,
@@ -680,6 +712,22 @@ impl Composer {
                                 composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
                             }
                         }
+                    }
+                    if !references.is_empty() && !composer.failed_submissions.contains_key(&restore_key) {
+                        // Same hand-back rule as staged attachments, deduped
+                        // by target path: references staged while the send was
+                        // in flight survive the restore.
+                        let mut merged = references.clone();
+                        for key in [err_chat_id.clone(), restore_key.clone()] {
+                            if let Some(slot) = composer.path_refs.get_mut(&key) {
+                                let fresh: Vec<_> = slot
+                                    .drain(..)
+                                    .filter(|e| !merged.iter().any(|f| f.path == e.path))
+                                    .collect();
+                                merged.extend(fresh);
+                            }
+                        }
+                        composer.path_refs.insert(restore_key.clone(), merged);
                     }
                     if !staged.is_empty() && !composer.failed_submissions.contains_key(&restore_key) {
                         // Merge by id (stashAttachments): files the user staged
@@ -784,7 +832,7 @@ impl Composer {
                 .aria_label("Stop and pause message queue")
                 .focusable()
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::queue::ActionTooltip("Stop and pause queue"))
+                    cx.new(|_| super::queue::ActionTooltip("Stop and pause queue".into()))
                         .into()
                 })
                 .size(px(28.0))

@@ -44,6 +44,7 @@ use holt_proto::{ProviderId, SlashCommand};
 
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
+use crate::path_refs::PathRef;
 use crate::pickers::Pickers;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -72,6 +73,10 @@ pub struct Composer {
     /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
     /// navigating away and back restores them; memory-only, like the original.
     attachments: HashMap<String, Vec<StagedAttachment>>,
+    /// Staged-but-unsent path references per chat key (picker/drag/paste
+    /// chips; path_refs.rs) — same memory-only, key-swapped lifecycle as
+    /// `attachments` and `drafts`.
+    path_refs: HashMap<String, Vec<PathRef>>,
     /// The staged attachment being viewed full-size (click a thumbnail).
     preview: Option<attachments::PreviewImage>,
     /// Focused while the lightbox is open so Escape reaches it; the input
@@ -246,6 +251,7 @@ impl Composer {
             pickers,
             drafts: HashMap::new(),
             attachments: HashMap::new(),
+            path_refs: HashMap::new(),
             preview: None,
             preview_focus: cx.focus_handle(),
             preview_focus_pending: false,
@@ -735,13 +741,14 @@ impl Render for Composer {
         let staged_count = self.staged().len();
         let strip_width_hint = if last_width > 0.0 { last_width } else { 720.0 };
         let strip_h = attachment_strip_height(staged_count, strip_width_hint);
+        let ref_strip_h = path_ref_strip_height(self.staged_refs().len(), strip_width_hint);
         let comment_strip_h = comment_strip_height(self.staged_comments(cx).len());
         let base_height = if expanded {
             composer_total_height(content_height)
         } else {
             COMPACT_TOTAL_HEIGHT
         };
-        let target_height = base_height + strip_h + comment_strip_h;
+        let target_height = base_height + strip_h + ref_strip_h + comment_strip_h;
         let (pill_height, morph_t, morphing) = match self.flip_morph {
             Some(m) if !m.done(now_ms) => {
                 (m.height(target_height, now_ms), m.progress(now_ms), true)
@@ -799,6 +806,7 @@ impl Render for Composer {
         // Staged-thumbnail strip (attachment-ui.tsx AttachmentStrip), above
         // the input inside the pill in both modes.
         let strip = self.render_attachment_strip(&theme, cx);
+        let ref_strip = self.render_path_ref_strip(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
         // The pill chrome (holt composer.tsx): `rounded-[26px] border
@@ -839,6 +847,7 @@ impl Render for Composer {
                 .flex_col()
                 .children(comments_chip)
                 .children(strip)
+                .children(ref_strip)
                 .child(
                     div()
                         .h(px(
@@ -901,6 +910,7 @@ impl Render for Composer {
                 .justify_end()
                 .children(comments_chip)
                 .children(strip)
+                .children(ref_strip)
                 .child(
                     div()
                         .h(px(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V))

@@ -29,6 +29,7 @@ pub mod links;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
+pub mod path_refs;
 pub mod pickers;
 pub mod popover;
 pub mod rail;

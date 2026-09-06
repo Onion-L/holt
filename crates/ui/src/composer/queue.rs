@@ -400,9 +400,7 @@ impl Composer {
                                     .gap_2()
                                     .pr(px(6.0))
                                     .text_size(crate::typography::ui_rems(12.5))
-                                    .when(!editing, |el| {
-                                        el.hover(|el| el.bg(theme.glass_hover()))
-                                    })
+                                    .when(!editing, |el| el.hover(|el| el.bg(theme.glass_hover())))
                                     .when(editing, |el| {
                                         el.bg(theme.glass_hover()).on_key_down({
                                             let composer = composer.clone();
@@ -433,9 +431,7 @@ impl Composer {
                                             // for a borderless inline input.
                                             .when(editing, |el| {
                                                 el.when_some(edit_input.clone(), |el, input| {
-                                                    el.child(
-                                                        div().w_full().min_w_0().child(input),
-                                                    )
+                                                    el.child(div().w_full().min_w_0().child(input))
                                                 })
                                             })
                                             .when(!editing, |el| {
@@ -622,7 +618,7 @@ fn queue_row_action(
         )
 }
 
-pub(super) struct ActionTooltip(pub &'static str);
+pub(super) struct ActionTooltip(pub gpui::SharedString);
 
 impl Render for ActionTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -633,6 +629,6 @@ impl Render for ActionTooltip {
             .bg(theme.bg)
             .text_color(theme.text)
             .text_size(crate::typography::ui_rems(12.0))
-            .child(self.0)
+            .child(self.0.clone())
     }
 }

@@ -2,7 +2,7 @@
 //! rendered inside the pill.
 
 use super::Composer;
-use super::layout::{STRIP_GAP, STRIP_PAD_TOP, STRIP_PAD_X, STRIP_THUMB};
+use super::layout::{REF_CHIP_LABEL_MAX, STRIP_GAP, STRIP_PAD_TOP, STRIP_PAD_X, STRIP_THUMB};
 
 use std::path::PathBuf;
 
@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use crate::attachments::{self, StagedAttachment};
+use crate::path_refs::{self, PathRef};
 use crate::theme::Theme;
 
 impl Composer {
@@ -36,25 +37,42 @@ impl Composer {
         cx.notify();
     }
 
-    /// Stage image files (picker / drop / pasted paths). Non-images are
-    /// skipped silently (matching the original's `image/*` filter); read
-    /// failures and oversize files surface in the failure notice.
+    /// Staged path references for the chat the composer is showing.
+    pub(super) fn staged_refs(&self) -> &[PathRef] {
+        self.path_refs
+            .get(&self.current_key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Stage path references (picker / drop / pasted paths): every file or
+    /// folder — images included — binds to its absolute target as a chip.
+    /// Nothing is uploaded or read; a path that fails to bind surfaces in the
+    /// failure notice while the rest of the selection still attaches.
     pub(crate) fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let mut staged = Vec::new();
         for path in &paths {
-            if attachments::format_by_extension(path).is_none() {
-                continue;
-            }
-            match attachments::stage_file(path) {
-                Ok(att) => staged.push(att),
+            match path_refs::bind(path) {
+                Ok(reference) => {
+                    let list = self.path_refs.entry(self.current_key.clone()).or_default();
+                    path_refs::push_unique(list, reference);
+                }
                 Err(message) => {
                     self.failure = Some(message.into());
                     self.failure_key = Some(self.current_key.clone());
-                    cx.notify();
                 }
             }
         }
-        self.add_staged(staged, cx);
+        cx.notify();
+    }
+
+    pub(super) fn remove_path_ref(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(list) = self.path_refs.get_mut(&self.current_key) {
+            list.retain(|r| r.id != id);
+            if list.is_empty() {
+                self.path_refs.remove(&self.current_key);
+            }
+        }
+        cx.notify();
     }
 
     fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -71,6 +89,7 @@ impl Composer {
     /// raw image bytes, and a deleted chat's stage could never be sent again.
     pub fn purge_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         self.attachments.remove(chat_id);
+        self.path_refs.remove(chat_id);
         self.state.update(cx, |state, _| {
             state.purge_diff_comments(chat_id);
         });
@@ -208,12 +227,85 @@ impl Composer {
         Some(strip)
     }
 
-    /// Paperclip: the native image picker (the original's hidden
-    /// `<input type=file accept=image/* multiple>`).
+    /// The path-reference chip strip: one badge-style chip per attached file
+    /// or folder — short name, full target on hover, remove on click.
+    pub(super) fn render_path_ref_strip(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let refs = self.staged_refs();
+        if refs.is_empty() {
+            return None;
+        }
+        let mut strip = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(STRIP_GAP))
+            .px(px(STRIP_PAD_X))
+            .pt(px(STRIP_PAD_TOP));
+        for (ix, reference) in refs.iter().enumerate() {
+            let full_path = reference.full_path();
+            let remove_id = reference.id.clone();
+            strip = strip.child(
+                div()
+                    .id(("composer-ref", ix))
+                    .h(px(crate::badges::BADGE_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(crate::theme::ink(0.06))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::queue::ActionTooltip(full_path.clone().into()))
+                            .into()
+                    })
+                    .child(
+                        crate::icons::icon(if reference.is_dir {
+                            crate::icons::FOLDER
+                        } else {
+                            crate::icons::DOCUMENT
+                        })
+                        .size(px(12.0))
+                        .text_color(theme.text_muted.opacity(0.7)),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(REF_CHIP_LABEL_MAX))
+                            .overflow_hidden()
+                            .truncate()
+                            .child(reference.name()),
+                    )
+                    .child(
+                        div()
+                            .id(("composer-ref-remove", ix))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_path_ref(&remove_id, cx);
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::CLOSE_CIRCLE)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted.opacity(0.7)),
+                            ),
+                    ),
+            );
+        }
+        Some(strip)
+    }
+
+    /// Paperclip: the native file/folder picker. Everything selected becomes
+    /// a path reference (images included — bytes stay on disk).
     pub(super) fn open_file_picker(&mut self, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: false,
+            directories: true,
             multiple: true,
             prompt: Some("Attach".into()),
         });
