@@ -68,7 +68,7 @@ Load the relevant reference file based on the task:
 | Events & subscriptions | [event.md](references/event.md) | `cx.emit`, `cx.subscribe`, `cx.observe` |
 | Focus & keyboard nav | [focus-handle.md](references/focus-handle.md) | `FocusHandle`, `track_focus`, Tab navigation |
 | Global state | [global.md](references/global.md) | `Global` trait, `cx.set_global`, app-wide config |
-| Layout & styling | [layout-style.md](references/layout-style.md) | `div()`, `h_flex()`, `v_flex()`, flexbox, overflow, positioning |
+| Layout & styling | [layout-style.md](references/layout-style.md) | `div()`, flexbox, overflow, positioning, SVG icon styling |
 | ElementId | [element-id.md](references/element-id.md) | `ElementId`, `.id()`, uniqueness rules, stateful elements |
 | Testing | [test.md](references/test.md) | `#[gpui::test]`, `TestAppContext`, `VisualTestContext` |
 | Debugging | [debugging.md](references/debugging.md) | stale UI, layout/input bugs, panics, async races, jank, regression tests |

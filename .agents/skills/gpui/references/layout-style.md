@@ -117,6 +117,25 @@ div()
 .border_color(rgb(0x000000)) // Border color
 ```
 
+### SVG Icons
+
+In Holt's vendored snapshot, set `.text_color(...)` on the SVG itself:
+
+```rust
+crate::icons::icon(crate::icons::CLOSE)
+    .size(px(18.0))
+    .text_color(theme.text)
+```
+
+Parent text color is not inherited by the SVG paint path. Without an explicit
+color, `Svg::paint` skips drawing entirely; see
+`vendor/gpui/crates/gpui/src/elements/svg.rs`.
+
+When changing icon styling, verify that the icons reach SVG painting as well
+as checking button interaction. The regression test
+`toolbar_icons_reach_the_svg_renderer` in `crates/ui/src/image_viewer.rs`
+renders the actual viewer with bundled assets and checks all toolbar icons.
+
 ### Borders
 
 ```rust

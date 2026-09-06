@@ -9,6 +9,7 @@ behavior from a newer GPUI release.
 | Symptom | First boundary to inspect | Usual correction |
 | --- | --- | --- |
 | State changed but pixels are stale | entity dependency and invalidation | mutate through `update`, call `cx.notify()` once, and ensure the view actually read that entity |
+| Button renders but its SVG icon is absent | SVG paint color | follow [SVG Icons](layout-style.md#svg-icons) and verify the renderer receives the icon |
 | `already being updated` / double-lease panic | nested `read`/`update` or deferred callback | use the direct `&mut` value inside the current lease; do not reacquire the same entity |
 | Shortcut does nothing | focus path, `key_context`, action binding | keep a live `FocusHandle`, render `.track_focus`, bind the action in the active context, and verify propagation |
 | Click/hover misses | stable `ElementId`, hitbox, paint order | give stateful elements a stable sibling-unique ID and register interaction in the correct phase |

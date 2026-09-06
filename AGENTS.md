@@ -36,12 +36,6 @@ path.
   place when needed; never resolve gpui from git, and don't guess its pre-1.0
   API from online docs — `docs/research/gpui.md` and the vendored sources are
   the API truth.
-- SVG icons require an explicit `.text_color(...)` on the `svg()` / `icons::icon()`
-  element itself. Parent text color is not inherited by this snapshot's SVG
-  paint path; an unset color skips drawing entirely (`elements/svg.rs`). When
-  changing icon styling, verify SVG painting as well as button interaction.
-  Regression: `toolbar_icons_reach_the_svg_renderer` in
-  `crates/ui/src/image_viewer.rs` exercises the actual viewer with bundled assets.
 - GPUI nested scroll containers do not contain wheel events automatically:
   `.overflow_y_scroll()` inside a `List` must use `.occlude()` or one wheel
   gesture can move both the child and the outer list. A bubble-phase
