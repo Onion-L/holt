@@ -11,8 +11,6 @@
 //! the close control, the empty backdrop, and Escape dismiss it, and the
 //! owner restores focus on the `Closed` event.
 
-use std::ops::Not as _;
-
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Pixels, Render,
     ScrollDelta, ScrollWheelEvent, SharedString, Size, Window, anchored, deferred, div, img, point,
@@ -287,7 +285,6 @@ impl ImageViewer {
         id: &'static str,
         tooltip: &'static str,
         child: impl IntoElement,
-        theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -295,136 +292,129 @@ impl ImageViewer {
             .role(gpui::Role::Button)
             .aria_label(tooltip)
             .focusable()
+            .occlude()
             .flex_none()
-            .px(px(9.0))
-            .h(px(28.0))
+            .size(px(36.0))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(8.0))
+            .rounded_full()
             .text_size(px(12.0))
-            .text_color(theme.text)
-            .bg(crate::theme::ink(0.05))
-            .hover(|el| el.bg(crate::theme::ink(0.12)))
+            .text_color(gpui::rgb(0xd4d4d4))
+            .bg(gpui::rgb(0x303030))
+            .hover(|el| el.bg(gpui::rgb(0x444444)))
             .cursor_pointer()
             .tooltip(move |_, cx| cx.new(|_| ViewerTooltip(tooltip.into())).into())
             .child(child)
     }
 
-    fn render_toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let multiple = self.targets.len() > 1;
-        let label: SharedString = format!(
-            "{}{}",
-            self.target().label,
-            if multiple {
-                format!("  ·  {} of {}", self.index + 1, self.targets.len())
-            } else {
-                String::new()
-            }
-        )
-        .into();
-        let muted = if multiple {
-            theme.text
-        } else {
-            theme.text_faint
-        };
+    fn render_toolbar(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> gpui::Div {
+        let zoom_label = format!("{:.0}%", self.scale(viewport) * 100.0);
+        let glyph = |name| crate::icons::icon(name).size(px(18.0));
         div()
             .absolute()
-            .left_0()
-            .right_0()
-            .bottom(px(VIEW_MARGIN))
-            .flex()
-            .justify_center()
-            .px(px(12.0))
+            .inset_0()
             .child(
                 div()
-                    .debug_selector(|| "viewer-toolbar".into())
-                    // The toolbar overlays the sibling backdrop, whose hitbox
-                    // must not receive toolbar clicks or start a pan.
-                    .occlude()
-                    .max_w_full()
+                    .absolute()
+                    .top(px(16.0))
+                    .right(px(16.0))
                     .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .px(px(6.0))
-                    .py(px(4.0))
-                    .rounded(px(8.0))
-                    .bg(theme.bg.opacity(0.95))
-                    .border_1()
-                    .border_color(crate::theme::hairline(0.14))
+                    .gap(px(8.0))
                     .child(
                         Self::toolbar_button(
-                            "viewer-prev",
-                            "Previous image (←)",
-                            crate::icons::icon(crate::icons::ALT_ARROW_LEFT)
-                                .size(px(14.0))
-                                .text_color(muted),
-                            theme,
+                            "viewer-fit",
+                            "Fit to window (0)",
+                            glyph(crate::icons::WINDOW_MAXIMIZE),
                         )
-                        .when(multiple, |el| {
-                            el.on_click(cx.listener(|this, _, _, cx| this.navigate(-1, cx)))
-                        })
-                        .when(multiple.not(), |el| el.opacity(0.4)),
+                        .on_click(cx.listener(|this, _, _, cx| this.zoom_fit(cx))),
                     )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .max_w(px(240.0))
-                            .flex_shrink(1.0)
-                            .px(px(6.0))
-                            .overflow_hidden()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(theme.text)
-                            .child(label),
-                    )
-                    .child(
-                        Self::toolbar_button(
-                            "viewer-next",
-                            "Next image (→)",
-                            crate::icons::icon(crate::icons::ALT_ARROW_RIGHT)
-                                .size(px(14.0))
-                                .text_color(muted),
-                            theme,
-                        )
-                        .when(multiple, |el| {
-                            el.on_click(cx.listener(|this, _, _, cx| this.navigate(1, cx)))
-                        })
-                        .when(multiple.not(), |el| el.opacity(0.4)),
-                    )
-                    .child(div().w(px(8.0)))
-                    .child(
-                        Self::toolbar_button("viewer-zoom-out", "Zoom out (−)", "−", theme)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.zoom_step(1.0 / ZOOM_STEP, window, cx);
-                            })),
-                    )
-                    .child(
-                        Self::toolbar_button("viewer-zoom-in", "Zoom in (+)", "+", theme).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.zoom_step(ZOOM_STEP, window, cx);
-                            }),
-                        ),
-                    )
-                    .child(
-                        Self::toolbar_button("viewer-fit", "Fit to window (0)", "Fit", theme)
-                            .on_click(cx.listener(|this, _, _, cx| this.zoom_fit(cx))),
-                    )
-                    .child(
-                        Self::toolbar_button("viewer-100", "Actual size (1)", "1:1", theme)
-                            .on_click(cx.listener(|this, _, window, cx| this.zoom_100(window, cx))),
-                    )
-                    .child(div().w(px(8.0)))
                     .child(
                         Self::toolbar_button(
                             "viewer-close",
                             "Close (Esc)",
-                            crate::icons::icon(crate::icons::CLOSE)
-                                .size(px(14.0))
-                                .text_color(theme.text),
-                            theme,
+                            glyph(crate::icons::CLOSE),
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                    ),
+            )
+            .when(self.targets.len() > 1, |el| {
+                el.child(
+                    Self::toolbar_button(
+                        "viewer-prev",
+                        "Previous image (←)",
+                        glyph(crate::icons::ALT_ARROW_LEFT),
+                    )
+                    .absolute()
+                    .left(px(16.0))
+                    .top(viewport.height / 2.0 - px(18.0))
+                    .when(self.index == 0, |el| el.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate(-1, cx))),
+                )
+                .child(
+                    Self::toolbar_button(
+                        "viewer-next",
+                        "Next image (→)",
+                        glyph(crate::icons::ALT_ARROW_RIGHT),
+                    )
+                    .absolute()
+                    .right(px(16.0))
+                    .top(viewport.height / 2.0 - px(18.0))
+                    .when(self.index + 1 == self.targets.len(), |el| el.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate(1, cx))),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(VIEW_MARGIN))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .debug_selector(|| "viewer-toolbar".into())
+                            // Keep the backdrop out of every toolbar gesture,
+                            // including clicks in the padding between controls.
+                            .occlude()
+                            .flex()
+                            .items_center()
+                            .p(px(4.0))
+                            .rounded_full()
+                            .bg(gpui::rgb(0x242424))
+                            .child(
+                                Self::toolbar_button(
+                                    "viewer-zoom-out",
+                                    "Zoom out (−)",
+                                    glyph(crate::icons::WINDOW_MINIMIZE),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.zoom_step(1.0 / ZOOM_STEP, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Self::toolbar_button("viewer-100", "Actual size (1)", zoom_label)
+                                    .w(px(60.0))
+                                    .bg(gpui::transparent_black())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.zoom_100(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Self::toolbar_button(
+                                    "viewer-zoom-in",
+                                    "Zoom in (+)",
+                                    glyph(crate::icons::PLUS),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.zoom_step(ZOOM_STEP, window, cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
     }
@@ -659,7 +649,7 @@ impl Render for ImageViewer {
                         }
                     }))
                     .child(surface)
-                    .child(self.render_toolbar(&theme, cx)),
+                    .child(self.render_toolbar(viewport, cx)),
             ),
         )
         .priority(3)
@@ -816,8 +806,8 @@ mod tests {
         viewer.read_with(cx, |viewer, _| assert!(viewer.drag.is_none()));
         cx.simulate_mouse_up(padding, MouseButton::Left, Default::default());
 
-        // Failed previews and disabled navigation have no image behind the
-        // toolbar to absorb a click; they need the same isolation.
+        // Failed previews need the same isolation; single-image navigation
+        // is hidden while the zoom and close controls remain available.
         viewer.update(cx, |viewer, cx| {
             viewer.targets.truncate(1);
             viewer.index = 0;
@@ -825,9 +815,9 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
+        assert!(cx.debug_bounds("viewer-prev").is_none());
+        assert!(cx.debug_bounds("viewer-next").is_none());
         for id in [
-            "viewer-prev",
-            "viewer-next",
             "viewer-zoom-out",
             "viewer-zoom-in",
             "viewer-fit",
