@@ -10,6 +10,7 @@
 //! - module map: `agent` (run loop + runtime state), `rpc` (dispatch +
 //!   handlers), `store` (JSON persistence), `history` (the per-chat
 //!   model-facing History record, ADR-0010), `local_fs` (folder browsing),
+//!   `path_search` (fuzzy workspace path search behind `SearchFiles`),
 //!   `git` (the git2-backed branch/diff capability — the only git2 user),
 //!   `skills` (the ADR-0005/0006 skill-root catalog), plus provider
 //!   discovery and Holt-owned credential storage behind the RPC seam.
@@ -33,6 +34,7 @@ mod history;
 pub mod instance_lock;
 mod local_fs;
 mod mode_default;
+mod path_search;
 pub mod provider_settings;
 pub mod providers;
 mod queue;

@@ -215,6 +215,52 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// The directory `SearchFiles` walks: the chat's own cwd when set,
+    /// otherwise its space's path; a space id resolves to the space path
+    /// directly. Unknown ids are backend faults, not param errors.
+    fn search_files_root(&self, params: &SearchFilesParams) -> Result<String, RpcError> {
+        let root = if let Some(chat_id) = params.chat_id.as_deref() {
+            let chats = self
+                .runtime
+                .chats
+                .read()
+                .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+            let chat = chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::Failed(format!("unknown chat {chat_id}")))?;
+            match chat.cwd.clone() {
+                Some(cwd) => cwd,
+                None => {
+                    let space_id = chat.space_id.clone().ok_or_else(|| {
+                        RpcError::Failed(format!("chat {chat_id} has no working directory"))
+                    })?;
+                    let spaces = self
+                        .spaces
+                        .read()
+                        .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+                    spaces
+                        .iter()
+                        .find(|space| space.id == space_id)
+                        .map(|space| space.path.clone())
+                        .ok_or_else(|| RpcError::Failed(format!("unknown space {space_id}")))?
+                }
+            }
+        } else {
+            let space_id = params.space_id.as_deref().expect("selector checked");
+            let spaces = self
+                .spaces
+                .read()
+                .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+            spaces
+                .iter()
+                .find(|space| space.id == space_id)
+                .map(|space| space.path.clone())
+                .ok_or_else(|| RpcError::Failed(format!("unknown space {space_id}")))?
+        };
+        Ok(crate::local_fs::expand_tilde(&root))
+    }
+
     fn set_chat_archived(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: SetChatArchivedParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
@@ -1036,6 +1082,16 @@ struct QueueCommandParams {
     command: SessionCommandPayload,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchFilesParams {
+    query: String,
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+}
+
 fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a str, RpcError> {
     params
         .get(field)
@@ -1257,6 +1313,27 @@ impl RpcService for EngineService {
                 Err(message) => Err(RpcError::Failed(message)),
             },
             methods::LIST_DRIVES => RpcReply::value(&list_drives()),
+
+            // Fuzzy path search for the composer's `@`-mention palette: the
+            // root comes from chat/space state, the walk+match runs off the
+            // async workers.
+            methods::SEARCH_FILES => {
+                let params: SearchFilesParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&params)?;
+                let query = params.query.clone();
+                let matches = tokio::task::spawn_blocking(move || {
+                    crate::path_search::search(std::path::Path::new(&root), &query)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("search task failed: {error}")))?;
+                RpcReply::value(&matches)
+            }
 
             // Git capability (ADR-0001): branch listing and safe switching
             // for space folders. Errors carry git's own message — the picker

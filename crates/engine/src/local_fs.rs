@@ -42,7 +42,7 @@ fn home_dir() -> Option<String> {
 
 /// The UI expands `~` itself; tolerate it here anyway so the method is
 /// callable without the shell's helpers.
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     if path == "~" {
         return home_dir().unwrap_or_else(|| path.to_string());
     }
