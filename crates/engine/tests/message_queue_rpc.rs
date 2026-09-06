@@ -756,6 +756,44 @@ async fn deleting_a_pending_item_never_creates_a_transcript_or_history_message()
 }
 
 #[tokio::test]
+async fn deleting_the_last_failed_item_allows_the_next_send_after_restart() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("hello")]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    engine
+        .handle(methods::REMOVE_PROVIDER_KEY, json!({"providerId":"openai"}))
+        .await
+        .unwrap();
+    queue_run(&engine, &fixture.cwd(), "m-failed", "discard me").await;
+    wait_for_queue(&engine, |q| q["paused"] == true).await;
+
+    let snapshot = delete_message(&engine, "m-failed").await.unwrap();
+    assert_eq!(snapshot["pending"], json!([]));
+    assert_eq!(snapshot["paused"], false);
+    assert!(snapshot["activeMessageId"].is_null());
+    assert!(snapshot["error"].is_null());
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    assert_eq!(queue_state(&engine).await["paused"], false);
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            json!({"providerId":"openai","key":"restored-test-key"}),
+        )
+        .await
+        .unwrap();
+    queue_run(&engine, &fixture.cwd(), "m-hi", "hi").await;
+    wait_for_queue(&engine, |q| {
+        q["pending"] == json!([]) && q["activeMessageId"].is_null()
+    })
+    .await;
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(user_text(&provider.requests()[0]), "hi");
+}
+
+#[tokio::test]
 async fn deleting_a_failed_head_lets_continue_admit_the_next_item() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("answer B")]);

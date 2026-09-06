@@ -212,9 +212,12 @@ async fn compact_queues_while_a_turn_runs_and_executes_after_it() {
 }
 
 #[tokio::test]
-async fn compact_on_a_short_chat_retains_the_head_with_nothing_to_compact() {
+async fn compact_on_a_short_chat_finishes_without_blocking_the_queue() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("a short reply")]);
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("a short reply"),
+        ScriptedReply::text("next reply"),
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -222,32 +225,34 @@ async fn compact_on_a_short_chat_retains_the_head_with_nothing_to_compact() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests_before = provider.requests().len();
 
-    // The submission is durably accepted; the admission check then retains
-    // the head with the feedback and pauses (spec rule 13).
     compact(&engine, &fixture.cwd()).await.unwrap();
-    let state = wait_for_queue(&engine, |q| q["paused"] == true).await;
-    assert_eq!(state["pending"][0]["kind"], "compact");
-    assert!(
-        state["pending"][0]["error"]
-            .as_str()
-            .unwrap()
-            .contains("nothing to compact"),
-        "{state}"
-    );
-    // No model request, no status change, no divider.
+    let state = wait_for_queue(&engine, |q| {
+        q["paused"] == true || (q["pending"] == json!([]) && q["activeMessageId"].is_null())
+    })
+    .await;
+    assert_eq!(state["pending"], json!([]), "{state}");
+    assert_eq!(state["paused"], false, "{state}");
+    assert!(state["error"].is_null(), "{state}");
     assert_eq!(provider.requests().len(), requests_before);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(snapshot.to_string().contains("There is nothing to compact"));
     assert!(!snapshot.to_string().contains("compactionDivider"));
+    assert!(!snapshot.to_string().contains("/compact"));
 
-    // Removing the pending command lets the queue proceed.
-    engine
-        .handle(
-            methods::DELETE_QUEUED_MESSAGE,
-            json!({"chatId":"chat-1","messageId":"compact-1"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(queue_state(&engine).await["pending"], json!([]));
+    // Re-delivery of the same command must not create a second notice.
+    compact(&engine, &fixture.cwd()).await.unwrap();
+    assert_eq!(
+        common::transcript_snapshot(&engine, "chat-1").await,
+        snapshot
+    );
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "next").await;
+    common::wait_for_requests(&provider, requests_before + 1).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(
+        !serde_json::to_string(&provider.requests().last().unwrap().messages)
+            .unwrap()
+            .contains("There is nothing to compact")
+    );
 }
 
 #[tokio::test]

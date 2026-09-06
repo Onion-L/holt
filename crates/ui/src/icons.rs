@@ -107,6 +107,8 @@ icon_assets![
     (SORT, "sort"),
     (SORT_VERTICAL, "sort-vertical"),
     (CLOCK_CIRCLE, "clock-circle"),
+    // Context checkpoint glyph in the same linear style.
+    (CONTEXT_COMPACT, "context-compact"),
     (CALENDAR, "calendar"),
     (LIST, "list"),
     (FOLDER_WITH_FILES, "folder-with-files"),

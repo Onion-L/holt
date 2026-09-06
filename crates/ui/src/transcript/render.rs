@@ -373,30 +373,48 @@ impl Transcript {
         column.into_any_element()
     }
 
-    /// The Compaction divider (ADR-0011): a quiet full-width row marking
-    /// where the model's verbatim memory begins — collapsed to one line
-    /// ("Compacted · 45,231 → 8,002 tokens · automatic"), expanding
-    /// thinking-style to the exact summary the model now carries. Neutral
-    /// ink like a notice (this is bookkeeping, not a failure), with the
-    /// same fold mechanics as the skill chip.
-    #[allow(clippy::too_many_arguments)]
+    fn compaction_label(
+        &self,
+        compacting: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let opacity = if compacting {
+            let phase = motion::pulse_delta(&motion::HOLT_PULSE, cx.entity_id(), cx);
+            motion::lerp(0.55, 1.0, motion::pulse_wave(phase))
+        } else {
+            1.0
+        };
+        div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text_muted)
+            .child(
+                crate::icons::icon(crate::icons::CONTEXT_COMPACT)
+                    .size_4()
+                    .flex_none()
+                    .opacity(opacity),
+            )
+            .child(if compacting {
+                "Compacting context"
+            } else {
+                "Context compacted"
+            })
+    }
+
+    /// A quiet completion row that expands to the summary the model carries.
     fn render_compaction_divider(
         &mut self,
         row_id: &SharedString,
         summary: &SharedString,
-        tokens_before: u64,
-        tokens_after: u64,
-        trigger: holt_doc::parts::CompactionTrigger,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let fold = self.folds.get(row_id).copied().unwrap_or_default();
         let open = fold.open.unwrap_or(false);
-        let trigger_label = match trigger {
-            holt_doc::parts::CompactionTrigger::Automatic => "automatic",
-            holt_doc::parts::CompactionTrigger::Manual => "manual",
-            holt_doc::parts::CompactionTrigger::AfterOverflow => "after overflow",
-        };
         let toggle_row_id = row_id.clone();
         let header =
             div()
@@ -421,27 +439,7 @@ impl Transcript {
                         .gap(px(8.0))
                         .text_size(px(12.0))
                         .line_height(px(18.0))
-                        .child(
-                            crate::icons::icon(crate::icons::CLOCK_CIRCLE)
-                                .size(px(13.0))
-                                .flex_none()
-                                .text_color(theme.text_muted.opacity(0.85)),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from("Compacted")),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.text_muted.opacity(0.65))
-                                .child(SharedString::from(format!(
-                                    "{tokens_before} → {tokens_after} tokens · {trigger_label}"
-                                ))),
-                        )
+                        .child(self.compaction_label(false, theme, cx))
                         .child(
                             div()
                                 .flex_none()
@@ -699,6 +697,20 @@ impl Transcript {
             (false, false, elapsed, flavour_seed(doc_id))
         } else {
             let chat_id = self.chat_id.clone()?;
+            if self
+                .state
+                .read(cx)
+                .session_for(&chat_id)
+                .is_some_and(|session| session.status == holt_proto::SessionStatus::Compacting)
+            {
+                let theme = Theme::of(cx).clone();
+                return Some(
+                    div()
+                        .pt(px(Theme::SPACE_LG))
+                        .child(self.compaction_label(true, &theme, cx))
+                        .into_any_element(),
+                );
+            }
             // Failed-send state first: past the grace window the trailer IS
             // the retry affordance, whatever the indicator fell back to.
             if self.state.read(cx).send_undelivered(&chat_id, now) {
@@ -1053,20 +1065,9 @@ impl Transcript {
             },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
-            RowKind::CompactionDivider {
-                summary,
-                tokens_before,
-                tokens_after,
-                trigger,
-            } => self.render_compaction_divider(
-                &row.id,
-                summary,
-                *tokens_before,
-                *tokens_after,
-                *trigger,
-                &theme,
-                cx,
-            ),
+            RowKind::CompactionDivider { summary } => {
+                self.render_compaction_divider(&row.id, summary, &theme, cx)
+            }
         };
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the

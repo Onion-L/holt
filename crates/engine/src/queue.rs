@@ -266,6 +266,11 @@ impl Queue {
             return Err(self.mutation_refusal(message_id));
         };
         next.pending.remove(index);
+        next.priority.retain(|id| id != message_id);
+        if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
+            next.paused = false;
+            next.priority_only = false;
+        }
         self.commit(next)
     }
 
@@ -384,11 +389,11 @@ impl Queue {
 }
 
 impl EngineService {
-    /// The queued manual Compaction (ADR-0011): never a Turn. The nothing-
-    /// to-compact, model, and credential checks run BEFORE the admission
-    /// checkpoint so a head that cannot start is retained with its feedback
-    /// (pause-under-admission-failure); the checkpoint itself guarantees a
-    /// restart never retries a Compaction that already began. Execution
+    /// The queued manual Compaction (ADR-0011): never a Turn. Model and
+    /// credential failures retain the head before admission. Nothing to
+    /// compact settles as a notice without a model request or queue pause.
+    /// The checkpoint guarantees a restart never retries a Compaction that
+    /// already began. Execution
     /// publishes `Compacting`, swaps the History only on success, and
     /// touches nothing Turn-scoped — no baseline, no transcript echo.
     async fn run_queued_compaction(
@@ -404,7 +409,28 @@ impl EngineService {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if !crate::compaction::has_compactable_content(&history) {
-            return (false, Some("There is nothing to compact".into()));
+            // Admit even a no-op so completion and delivery deduplication
+            // follow the same durable checkpoint as a real Compaction.
+            let admitted = {
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if cancel.is_cancelled() || chat.is_removed() {
+                    return (false, None);
+                }
+                queue.start(&message.message_id, chrono::Utc::now().timestamp_millis())
+            };
+            if let Err(error) = admitted {
+                return (false, (!cancel.is_cancelled()).then(|| error.to_string()));
+            }
+            crate::agent::push_system_part(
+                chat,
+                &self.engine_info.device_id,
+                format!("compaction-skipped-{}", message.message_id),
+                MessagePart::Notice {
+                    id: "n0".into(),
+                    message: "There is nothing to compact".into(),
+                },
+            );
+            return (true, None);
         }
         let model = match self
             .providers
@@ -710,6 +736,49 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["m-d"]
         );
+    }
+
+    #[test]
+    fn deleting_the_last_pending_item_clears_pause_and_priority() {
+        let (mut queue, dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        queue.delete("m-b").unwrap();
+        assert!(queue.snapshot().paused, "remaining work stays paused");
+        queue.promote("m-c").unwrap();
+        queue.delete("m-c").unwrap();
+        assert!(!queue.snapshot().paused);
+        assert!(queue.record.priority.is_empty());
+        assert!(!queue.record.priority_only);
+        assert!(!Queue::load(dir.path(), "chat-1").snapshot().paused);
+        enqueue_ordinary(&mut queue, "hi", "openai/gpt-5.4", "m-hi");
+        queue.start("m-hi", 1).unwrap();
+        queue.finish(true, None);
+        assert!(
+            !queue.snapshot().paused,
+            "a deleted priority item must not re-pause the queue"
+        );
+    }
+
+    #[test]
+    fn deleting_the_last_pending_item_preserves_pause_during_execution() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.start("m-b", 1).unwrap();
+        queue.pause(true).unwrap();
+        queue.delete("m-c").unwrap();
+        assert!(queue.snapshot().paused);
+        assert_eq!(queue.snapshot().active_message_id.as_deref(), Some("m-b"));
+        queue.finish(true, None);
+        assert!(queue.snapshot().paused);
+    }
+
+    #[test]
+    fn deleting_the_last_pending_item_preserves_pause_after_a_queue_error() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        queue.delete("m-b").unwrap();
+        queue.error = Some("Could not save the message queue".into());
+        queue.delete("m-c").unwrap();
+        assert!(queue.snapshot().paused);
     }
 
     #[test]

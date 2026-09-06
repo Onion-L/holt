@@ -281,7 +281,7 @@ impl Composer {
                 self.queue_edit = None;
             }
         }
-        if queue.pending.is_empty() && !queue.paused && queue.error.is_none() {
+        if queue.pending.is_empty() && queue.error.is_none() {
             return div().into_any_element();
         }
         if let Some(edit) = self.queue_edit.as_mut()
@@ -630,5 +630,79 @@ impl Render for ActionTooltip {
             .text_color(theme.text)
             .text_size(crate::typography::ui_rems(12.0))
             .child(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    #[gpui::test]
+    fn deleting_the_last_pending_item_hides_a_paused_queue(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        let queue: holt_proto::MessageQueue = serde_json::from_value(serde_json::json!({
+            "pending": [{
+                "messageId": "compact-1", "kind": "compact", "submittedAt": 0,
+                "request": {
+                    "prompt": "", "provider": "openai", "model": "openai/gpt-5.4",
+                    "cwd": "/tmp"
+                },
+                "error": "There is nothing to compact"
+            }],
+            "paused": true
+        }))
+        .unwrap();
+        state.update(cx, |state, _| state.message_queue = Some(queue));
+        let height = std::rc::Rc::new(std::cell::Cell::new(px(0.0)));
+        struct QueueView {
+            composer: Entity<Composer>,
+            height: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
+        }
+        impl Render for QueueView {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let height = self.height.clone();
+                div()
+                    .relative()
+                    .w(px(600.0))
+                    .child(
+                        self.composer
+                            .update(cx, |this, cx| this.render_message_queue(window, cx)),
+                    )
+                    .child(
+                        gpui::canvas(
+                            |_, _, _| (),
+                            move |bounds, _, _, _| height.set(bounds.size.height),
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+            }
+        }
+        let view = cx.new(|_| QueueView {
+            composer,
+            height: height.clone(),
+        });
+        let draw_height = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                gpui::point(px(0.0), px(0.0)),
+                gpui::size(px(600.0), px(400.0)),
+                |_, _| view.clone().into_any_element(),
+            );
+        };
+        draw_height(cx);
+        assert!(height.get() > px(0.0));
+        state.update(cx, |state, _| {
+            state.message_queue.as_mut().unwrap().pending.clear()
+        });
+        draw_height(cx);
+        assert_eq!(
+            height.get(),
+            px(0.0),
+            "empty paused queue still occupies space"
+        );
     }
 }

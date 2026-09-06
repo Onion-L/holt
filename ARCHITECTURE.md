@@ -181,9 +181,12 @@ cancellation and pauses the queue; the channel stays occupied until
 cleanup completes. Approval waits and automatic/manual Compaction share
 that boundary. Successful work advances automatically — a completed
 Compaction included. Execution failures pause remaining work; admission
-failures (missing credentials, an unresolved skill, nothing to compact)
-retain the head with an error without creating a Turn. New submissions
-preserve pause state; only Continue resumes it.
+failures (missing credentials or an unresolved skill) retain the head with
+an error without creating a Turn. Nothing to compact completes the command
+with a Transcript notice and advances the queue without a model request.
+New submissions preserve pause state; Continue resumes it. Deleting the last
+pending item also clears pause when no item is executing and there is no
+queue-level error, so the next submission runs normally.
 
 The pending-to-started checkpoint is atomically replaced and synced before
 any model or tool work. Restart repairs a started Turn as interrupted,
@@ -196,7 +199,8 @@ blocked instead of overwritten. A completion status is published only
 after queue completion is recorded or its persistence failure is surfaced.
 
 The composer watches only its selected chat's queue, above the input;
-pending items are absent from Transcript and History. Model and reasoning
+pending items are absent from Transcript and History. An empty paused queue
+is hidden unless it has a queue-level error. Model and reasoning
 are captured on submission. Permission mode and live checkout identity are
 read at Turn admission, when the latest-Turn diff baseline is refreshed.
 The queue is consumed by the engine even when its chat is not selected.

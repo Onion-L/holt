@@ -270,13 +270,9 @@ pub enum RowKind {
     },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
-    /// carries. The token counts and trigger are the only visible numbers
-    /// in the chrome (a usage indicator is deliberately out of scope).
+    /// carries.
     CompactionDivider {
         summary: SharedString,
-        tokens_before: u64,
-        tokens_after: u64,
-        trigger: holt_doc::parts::CompactionTrigger,
     },
 }
 
@@ -874,23 +870,14 @@ pub fn rows_for_entry(
                     MessagePart::CompactionDivider {
                         id: part_id,
                         summary,
-                        tokens_before,
-                        tokens_after,
-                        trigger,
                         ..
                     } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
-                            version: fnv1a(
-                                format!("{tokens_before}\u{0}{tokens_after}\u{0}{summary}")
-                                    .as_bytes(),
-                            ),
+                            version: fnv1a(summary.as_bytes()),
                             turn_start: false,
                             kind: RowKind::CompactionDivider {
                                 summary: summary.clone().into(),
-                                tokens_before: *tokens_before,
-                                tokens_after: *tokens_after,
-                                trigger: *trigger,
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -1677,7 +1664,7 @@ mod tests {
     }
 
     /// The Compaction divider (ADR-0011) renders as one quiet row carrying
-    /// the summary, token counts, and trigger — the expansion state is the
+    /// the summary — the expansion state is the
     /// view's, not the model's (collapsed is only the default).
     #[test]
     fn a_compaction_divider_part_renders_one_row_with_the_summary() {
@@ -1696,15 +1683,8 @@ mod tests {
         let rows = rows_for_entry(&entry, false, &mut parse);
         assert_eq!(rows.len(), 1);
         match &rows[0].kind {
-            RowKind::CompactionDivider {
-                summary,
-                tokens_before,
-                tokens_after,
-                trigger,
-            } => {
+            RowKind::CompactionDivider { summary } => {
                 assert!(summary.contains("ship the compaction slice"));
-                assert_eq!((*tokens_before, *tokens_after), (45231, 8002));
-                assert_eq!(*trigger, holt_doc::parts::CompactionTrigger::Automatic);
             }
             _other => panic!("expected a compaction divider row"),
         }

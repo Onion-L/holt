@@ -45,10 +45,11 @@ itself: a manual `/compact` puts the session in a `Compacting` status
   (message-queue ticket 04, superseding the earlier refusal of an occupied
   channel): it is durably queued in submission order and the driver admits
   it through the same complete-cleanup boundary as Turns — still without
-  becoming one. Nothing-to-compact is detected at admission: the pending
-  command is retained with that feedback and the queue pauses, making no
-  request, until the user removes it or adds history. Automatic and manual
-  Compaction share the execution lock and receive the current cancellation
+  becoming one. Nothing-to-compact is detected at admission: the command
+  completes with a Transcript notice, making no model request and allowing
+  the queue to advance. This supersedes retaining the command and pausing
+  the queue, which left an inapplicable command blocking later messages.
+  Automatic and manual Compaction share the execution lock and receive the current cancellation
   token. Stop pauses pending work; a manual Compaction failure also pauses
   it, and a restart never retries a started manual Compaction. A failed
   automatic compaction lets the Turn proceed uncompacted with a Transcript
