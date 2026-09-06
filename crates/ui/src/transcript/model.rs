@@ -498,7 +498,7 @@ pub fn rows_for_entry(
             .join("\n\n");
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
-        let parsed = crate::attachments::parse_user_message_images(&raw);
+        let mut parsed = crate::attachments::parse_user_message_images(&raw);
         // File mentions render as chips here too, not just in the composer.
         // The projection is pure over the text, so the raw-length row version
         // below stays a valid cache/diff key.
@@ -510,10 +510,21 @@ pub fn rows_for_entry(
         // attachment chip row above the bubble (one badge per target, full
         // path on hover), next to the comment badge.
         let (body, references) = crate::path_refs::split_sent_references(&body);
+        parsed.attachments.extend(
+            references
+                .iter()
+                .filter(|r| !r.is_dir && crate::images::is_image_path(&r.path))
+                .map(|r| crate::attachments::UserImageAttachment {
+                    id: r.path.clone(),
+                    path: r.path.clone(),
+                    name: r.label.clone(),
+                }),
+        );
         let mut badges = badges;
         badges.extend(
             references
                 .iter()
+                .filter(|r| r.is_dir || !crate::images::is_image_path(&r.path))
                 .map(|reference| crate::badges::MessageBadge {
                     icon: if reference.is_dir {
                         crate::icons::FOLDER

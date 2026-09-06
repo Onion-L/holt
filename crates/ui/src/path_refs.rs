@@ -14,6 +14,10 @@ pub struct PathRef {
     pub id: String,
     pub path: PathBuf,
     pub is_dir: bool,
+    /// True for a Managed image the engine saved from pasted bytes — the
+    /// only kind of reference whose file Holt may reclaim when the chip is
+    /// removed and no durable store still needs it.
+    pub managed: bool,
 }
 
 impl PathRef {
@@ -48,6 +52,7 @@ pub fn bind(path: &Path) -> Result<PathRef, String> {
         id: uuid::Uuid::new_v4().to_string(),
         path: canonical,
         is_dir,
+        managed: false,
     })
 }
 
@@ -334,6 +339,7 @@ mod tests {
             id: path.to_string(),
             path: PathBuf::from(path),
             is_dir,
+            managed: false,
         }
     }
 

@@ -23,3 +23,14 @@ API key in Settings → Providers before starting a model run.
 ## Layout
 
 See [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Images
+
+Attach local images or paste screenshots to preview, zoom, and pan in the
+composer or Transcript. Sending provides local paths; the agent receives
+pixels only when it calls `read`. PNG, JPEG, WebP, and first-frame GIF are
+supported within a 25 MiB / 32-megapixel limit; APNG is unsupported. Preview
+preserves source detail, while model input may be resized to 2048 pixels
+on its longest edge. Pasted images referenced by accepted messages survive
+restart. Custom model vision support stays marked unknown, and image
+requests are attempted without automatically switching models.

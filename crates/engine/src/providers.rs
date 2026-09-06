@@ -6,7 +6,7 @@ use holt_proto::{
 use pi_core::ai::{
     models::{CreateModelsOptions, Models, Provider as CoreProvider},
     providers::builtin::{builtin_models, builtin_providers},
-    types::Model as CoreModel,
+    types::{Model as CoreModel, ModelInput},
 };
 
 use crate::{credentials::HoltCredentialStore, provider_settings::ProviderSettingsStore};
@@ -147,6 +147,11 @@ impl ProviderAdapter {
             model.reasoning = false;
             model.thinking_level_map = None;
             model.cost = Default::default();
+            // Unknown custom ids may attempt image input. This is transport
+            // policy only; the catalog projection still reports Unknown.
+            if !model.input.contains(&ModelInput::Image) {
+                model.input.push(ModelInput::Image);
+            }
             models.push(model);
         }
         models
@@ -226,6 +231,13 @@ fn project_models(mut models: Vec<CoreModel>, custom_ids: &HashSet<String>) -> V
             reasoning_levels,
             options: Vec::new(),
             custom: custom_ids.contains(&model.id),
+            image_capability: if custom_ids.contains(&model.id) {
+                holt_proto::ImageCapability::Unknown
+            } else if model.input.contains(&ModelInput::Image) {
+                holt_proto::ImageCapability::Supported
+            } else {
+                holt_proto::ImageCapability::Unsupported
+            },
         });
     }
     projected

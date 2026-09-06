@@ -487,7 +487,7 @@ impl Transcript {
         text: &SharedString,
         mentions: &Arc<Vec<crate::composer::SentMentionSpan>>,
         theme: &Theme,
-        _cx: &mut Context<Self>,
+        image_open: ImageOpen,
     ) -> AnyElement {
         let open_url = (!skill.file.is_empty())
             .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
@@ -517,6 +517,7 @@ impl Transcript {
             Arc::new(mentions),
             Some(chip),
             theme,
+            Some(image_open),
         )
     }
 
@@ -525,149 +526,76 @@ impl Transcript {
         &mut self,
         row_id: &SharedString,
         atts: &[crate::attachments::UserImageAttachment],
+        targets: Vec<crate::image_viewer::ViewerTarget>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        use crate::attachments::AttachmentSnapshot;
-        let glyph = Theme::of(cx).glyph;
-        let device_ids = self.attachment_device_ids(cx);
+        use crate::images::Snapshot;
         let mut strip = div()
+            .id(SharedString::from(format!("{row_id}#attachments")))
             .w_full()
             .h(px(ATT_STRIP_H))
             .flex()
-            .flex_row()
-            .justify_end()
-            .items_start()
             .gap(px(8.0))
-            .overflow_hidden()
+            .overflow_x_scroll()
+            .occlude()
             .px(px(4.0))
-            .pt(px(4.0));
-        for (aix, att) in atts.iter().enumerate() {
-            let state = self.attachment_state(&device_ids, &att.path, cx);
-            // The in-flight send's progress belongs ON the thumbnail
-            // (2026-08-18 user request). Two ref shapes mean "still
-            // crossing": the queued flow's `pending://` (bytes ship
-            // engine-side after the send; the engine rewrites the ref to an
-            // absolute path once they land and the run starts) and the
-            // legacy echo's synthetic `pending/`. Percent sources, in order:
-            // this attachment's own post-send transfer (`WatchTransfers`, by
-            // the uploadId its ref names — the leg that actually takes time),
-            // else the send-wide staging/legacy upload percent. Neither → the
-            // indeterminate spinner (staged-but-waiting, retry backoff, or
-            // committed-awaiting-rewrite), so the ring never shows a number
-            // that isn't a real transfer position (2026-08-20 report: the
-            // staging-only percent blinked out in ~100ms and lied about the
-            // slow part).
-            let sending = att.path.starts_with("pending://") || att.path.starts_with("pending/");
-            let upload_id = att
-                .path
-                .strip_prefix("pending://")
-                .and_then(|rest| rest.split_once('/'))
-                .map(|(id, _)| id);
-            let uploading = upload_id
-                .and_then(|id| self.state.read(cx).transfer_percent(id))
-                .or_else(|| {
-                    sending
-                        .then(|| self.state.read(cx).upload_progress_percent())
-                        .flatten()
-                });
+            .pt(px(4.0))
+            .child(div().flex_1());
+        for (index, att) in atts.iter().enumerate() {
+            let snapshot = self.attachment_state(&att.path, cx);
+            let targets = targets.clone();
+            let selected = targets
+                .iter()
+                .position(|t| t.path.as_ref() == att.path)
+                .unwrap_or(index);
             let frame = div()
+                .id(SharedString::from(format!("{row_id}#att{index}")))
                 .flex_none()
                 .w(px(ATT_THUMB_W))
                 .h(px(ATT_THUMB_H))
                 .rounded(px(8.0))
-                .overflow_hidden();
-            let thumb: AnyElement = match state {
-                AttachmentSnapshot::Loaded(image) => {
-                    let preview = crate::attachments::PreviewImage {
-                        name: image.name.clone(),
-                        image: image.image.clone(),
-                    };
-                    frame
-                        .id(SharedString::from(format!("{row_id}#att{aix}")))
-                        .relative()
-                        .border_1()
-                        .border_color(crate::theme::hairline(0.11))
-                        .bg(crate::theme::ink(0.035))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.attachment_preview = Some(preview.clone());
-                            window.focus(&this.attachment_preview_focus, cx);
-                            cx.notify();
-                        }))
-                        .child(
-                            img(image.image.clone())
-                                // EXPLICIT dims, not size_full: img layout
-                                // honors the intrinsic aspect ratio over a
-                                // percent height (gpui f8d8a90 repoint), so
-                                // size_full let a tall photo grow past the
-                                // frame and the rectangular overflow clip
-                                // squared the bottom corners (2026-08-19).
-                                .w(px(ATT_THUMB_W - 2.0))
-                                .h(px(ATT_THUMB_H - 2.0))
-                                // The IMG needs its own radii: the frame's
-                                // rounding only clips rectangularly, so the
-                                // sprite must round its own corners (7 = the
-                                // frame's 8 minus its 1px border).
-                                .rounded(px(7.0))
-                                .object_fit(ObjectFit::Cover),
-                        )
-                        .when(sending, |el| {
-                            // The pulse read registers this entity for frames,
-                            // so the overlay stays live even once the trailer's
-                            // 30s pending-send bridge has lapsed.
-                            let pulse = motion::pulse_wave(motion::pulse_delta(
-                                &motion::HOLT_PULSE,
-                                cx.entity_id(),
-                                cx,
-                            ));
-                            let indicator: AnyElement = match uploading {
-                                Some(pct) => crate::loaders::upload_progress_ring(pct, 34.0),
-                                None => crate::loaders::mini_glyph_spinner(
-                                    format!("att-sending-{row_id}-{aix}"),
-                                    3.0,
-                                    glyph,
-                                    cx.entity_id(),
-                                    cx,
-                                )
-                                .into_any_element(),
-                            };
-                            el.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .rounded(px(7.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(gpui::hsla(0.0, 0.0, 0.0, 0.38 + 0.05 * pulse))
-                                    .child(indicator),
-                            )
-                        })
-                        .into_any_element()
-                }
-                // Errored/unavailable: the dashed "missing" thumb.
-                AttachmentSnapshot::Error { .. } => frame
-                    .border_1()
-                    .border_dashed()
-                    .border_color(crate::theme::hairline(0.14))
-                    .bg(crate::theme::ink(0.025))
-                    .into_any_element(),
-                // Loading: the pulsing skeleton (same wash as popover skeletons).
-                AttachmentSnapshot::Loading => frame
-                    .border_1()
-                    .border_color(crate::theme::hairline(0.08))
-                    .bg(crate::theme::ink(0.055))
-                    .opacity(
-                        0.35 + 0.4
-                            * motion::pulse_wave(motion::pulse_delta(
-                                &motion::HOLT_PULSE,
-                                cx.entity_id(),
-                                cx,
-                            )),
+                .overflow_hidden()
+                .border_1()
+                .border_color(crate::theme::hairline(0.14))
+                .bg(crate::theme::ink(0.055))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_image_viewer(targets.clone(), selected, window, cx)
+                }));
+            let frame = match snapshot {
+                Snapshot::Loaded(thumb) => frame
+                    .child(
+                        img(thumb.pixels)
+                            .w(px(ATT_THUMB_W - 2.0))
+                            .h(px(ATT_THUMB_H - 2.0))
+                            .rounded(px(7.0))
+                            .object_fit(ObjectFit::Cover),
                     )
                     .into_any_element(),
+                Snapshot::Loading => frame
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::loaders::mini_mono_spinner(
+                        format!("{row_id}-image-{index}"),
+                        3.0,
+                        Theme::of(cx).text_muted,
+                        cx.entity_id(),
+                        cx,
+                    ))
+                    .into_any_element(),
+                Snapshot::Error { cause, .. } => frame
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::image_viewer::ViewerTooltip(cause.clone()))
+                            .into()
+                    })
+                    .child(crate::icons::icon(crate::icons::DANGER_TRIANGLE).size(px(18.0)))
+                    .into_any_element(),
             };
-            strip = strip.child(thumb);
+            strip = strip.child(frame);
         }
         strip.into_any_element()
     }
@@ -893,12 +821,51 @@ impl Transcript {
                 let mentions = mentions.clone();
                 let skill = skill.clone();
                 let pending = *pending;
+                let mut targets: Vec<crate::image_viewer::ViewerTarget> = attachments
+                    .iter()
+                    .map(|a| crate::image_viewer::ViewerTarget {
+                        path: a.path.clone().into(),
+                        label: a.name.clone().into(),
+                    })
+                    .collect();
+                for mention in mentions
+                    .iter()
+                    .filter(|m| !m.is_dir && crate::images::is_image_path(&m.path))
+                {
+                    if !targets.iter().any(|t| t.path == mention.path) {
+                        targets.push(crate::image_viewer::ViewerTarget {
+                            path: mention.path.clone(),
+                            label: std::path::Path::new(mention.path.as_ref())
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                                .into(),
+                        });
+                    }
+                }
+                let weak = cx.weak_entity();
+                let inline_targets = targets.clone();
+                let image_open: ImageOpen = Rc::new(move |path, window, cx| {
+                    if let Some(index) = inline_targets.iter().position(|t| t.path.as_ref() == path)
+                    {
+                        weak.update(cx, |this, cx| {
+                            this.open_image_viewer(inline_targets.clone(), index, window, cx)
+                        })
+                        .ok();
+                    }
+                });
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
                 // HStack); image-only sends show no bubble at all.
                 let mut column = div().w_full().flex().flex_col();
                 if !attachments.is_empty() {
-                    column = column.child(self.render_user_attachments(&row.id, &attachments, cx));
+                    column = column.child(self.render_user_attachments(
+                        &row.id,
+                        &attachments,
+                        targets,
+                        cx,
+                    ));
                 }
                 if !badges.is_empty() {
                     column = column.child(
@@ -922,12 +889,23 @@ impl Transcript {
                 }
                 if !text.is_empty() || skill.is_some() {
                     let bubble_child = match skill {
-                        Some(skill) => {
-                            self.render_user_skill(&row.id, &skill, &text, &mentions, &theme, cx)
-                        }
-                        None => {
-                            user_bubble_text(&row.id, text, mentions, &theme).into_any_element()
-                        }
+                        Some(skill) => self.render_user_skill(
+                            &row.id,
+                            &skill,
+                            &text,
+                            &mentions,
+                            &theme,
+                            image_open.clone(),
+                        ),
+                        None => user_bubble_text_with_chip(
+                            &row.id,
+                            text,
+                            mentions,
+                            None,
+                            &theme,
+                            Some(image_open),
+                        )
+                        .into_any_element(),
                     };
 
                     // `min_w_0` is load-bearing: gpui text answers min/max-content
@@ -1831,13 +1809,14 @@ fn auto_flip_armed(pinned: Option<bool>, last_auto: Option<bool>, auto_now: bool
 /// run when there are none), with the same selection machinery as rendered
 /// markdown — the element registers into the frame's document-ordered
 /// registry, so drags select, span into adjacent rows, and Cmd+C copies.
+#[cfg(test)]
 fn user_bubble_text(
     row_id: &SharedString,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     theme: &Theme,
 ) -> AnyElement {
-    user_bubble_text_with_chip(row_id, text, mentions, None, theme)
+    user_bubble_text_with_chip(row_id, text, mentions, None, theme, None)
 }
 
 /// A leading skill chip inside the bubble text: `range` covers the label
@@ -1847,12 +1826,15 @@ struct SkillChipRun {
     open_url: Option<String>,
 }
 
+type ImageOpen = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
+
 fn user_bubble_text_with_chip(
     row_id: &SharedString,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     skill: Option<SkillChipRun>,
     theme: &Theme,
+    image_open: Option<ImageOpen>,
 ) -> AnyElement {
     // Split runs at chip boundaries (spans are in order): body text keeps the
     // sans font, mention chips read as inline code, the skill chip reads in
@@ -1904,13 +1886,36 @@ fn user_bubble_text_with_chip(
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
     let skill_range = skill.as_ref().map(|chip| chip.range.clone());
-    let text_el: AnyElement = match skill.and_then(|chip| Some((chip.range, chip.open_url?))) {
-        Some((range, url)) => {
-            gpui::InteractiveText::new(SharedString::from(format!("{row_id}#skill-file")), styled)
-                .on_click(vec![range], move |_, _, cx| cx.open_url(&url))
-                .into_any_element()
-        }
-        None => styled.into_any_element(),
+    let mut links = Vec::new();
+    if let Some(chip) = skill
+        && let Some(url) = chip.open_url
+    {
+        links.push((chip.range, url, false));
+    }
+    for mention in mentions
+        .iter()
+        .filter(|m| !m.is_dir && crate::images::is_image_path(&m.path))
+    {
+        links.push((mention.range.clone(), mention.path.to_string(), true));
+    }
+    let text_el = if links.is_empty() {
+        styled.into_any_element()
+    } else {
+        gpui::InteractiveText::new(SharedString::from(format!("{row_id}#links")), styled)
+            .on_click(
+                links.iter().map(|l| l.0.clone()).collect(),
+                move |index, window, cx| {
+                    let (_, path, image) = &links[index];
+                    if *image {
+                        if let Some(open) = &image_open {
+                            open(path, window, cx);
+                        }
+                    } else {
+                        cx.open_url(path);
+                    }
+                },
+            )
+            .into_any_element()
     };
     let wash = theme.code_wash;
     let skill_wash = theme.accent_wash;
@@ -2714,7 +2719,7 @@ impl Render for Transcript {
         }
         // Release gpui-side decoded copies of any images the attachment LRU
         // evicted since the last frame (no-op when nothing was evicted).
-        crate::attachments::flush_evicted(Some(window), cx);
+        crate::images::flush_evicted(Some(window), cx);
         // Drop note editors whose approval settled or scrolled away with a
         // chat switch (a verdict also closes its own editor eagerly).
         self.prune_approval_notes();
@@ -2831,22 +2836,8 @@ impl Render for Transcript {
             .child(crate::markdown::render::selection_frame_reset())
             .child(content)
             .child(rail);
-        // Full-size viewer for a clicked user-bubble thumbnail
-        // (AttachmentPreviewDialog: bare lightbox, click closes).
         if let Some(preview) = self.attachment_preview.clone() {
-            let weak = cx.weak_entity();
-            return root.child(crate::attachments::lightbox(
-                window.viewport_size(),
-                &preview,
-                &self.attachment_preview_focus,
-                move |_, cx| {
-                    weak.update(cx, |this, cx| {
-                        this.attachment_preview = None;
-                        cx.notify();
-                    })
-                    .ok();
-                },
-            ));
+            return root.child(preview);
         }
         root
     }

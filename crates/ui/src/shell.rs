@@ -795,26 +795,9 @@ impl Shell {
             self.debug_upload = None;
             if let Some((pct, img_path)) = spec.split_once(':')
                 && let Ok(pct) = pct.parse::<u64>()
-                && let Ok(att) = crate::attachments::stage_file(std::path::Path::new(img_path))
+                && std::path::Path::new(img_path).is_file()
             {
-                let pending_path = format!("pending/{}/{}", att.id, att.name);
-                let device_ids: Vec<String> = {
-                    let s = state.read(cx);
-                    s.selected_chat_row()
-                        .map(|c| c.device_id.clone())
-                        .into_iter()
-                        .chain(s.local_device_id.clone())
-                        .chain(Some("local".to_string()))
-                        .collect()
-                };
-                for device_id in &device_ids {
-                    crate::attachments::seed_attachment(
-                        device_id,
-                        &pending_path,
-                        &att.name,
-                        att.image.clone(),
-                    );
-                }
+                let pending_path = img_path.to_string();
                 let text = crate::attachments::with_attachments(
                     "Here is the screenshot of the bug.",
                     std::slice::from_ref(&pending_path),

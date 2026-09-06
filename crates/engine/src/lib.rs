@@ -31,6 +31,7 @@ mod gate;
 mod git;
 mod git_watch;
 mod history;
+pub mod images;
 pub mod instance_lock;
 mod local_fs;
 mod mode_default;
@@ -117,6 +118,9 @@ struct EngineService {
     /// The skills capability (ADR-0005/0006): root resolution and catalog
     /// assembly over the upstream loader.
     skills: skills::Skills,
+    /// Managed images (pasted screenshots) plus the bounded preview-read and
+    /// cleanup surface behind `ReadImage`/`StageImage`/`ReleaseImage`.
+    images: Arc<images::ImageStore>,
     /// Engine-owned title-task settings (ADR-0012).
     title_settings: title_settings::TitleSettingsStore,
     /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
@@ -180,6 +184,7 @@ impl LocalEngine {
                 watch,
                 turns: Arc::new(git::TurnBaselines::new()),
                 skills,
+                images: images::assemble(&config.data_dir),
                 title_settings,
                 mode_default,
             },

@@ -284,12 +284,11 @@ pub struct Transcript {
     copied_message: Option<SharedString>,
     copied_message_clear: Option<Task<()>>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
-    attachment_preview: Option<crate::attachments::PreviewImage>,
+    attachment_preview: Option<Entity<crate::image_viewer::ImageViewer>>,
     /// Focused while the lightbox is open so Escape reaches it.
-    attachment_preview_focus: gpui::FocusHandle,
+    viewer_close_sub: Option<gpui::Subscription>,
     /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
     /// source; results land in the global attachment cache.
-    attachment_loads: HashMap<(String, String), Task<()>>,
     /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
     attachment_retries: HashMap<(String, String), Task<()>>,
     /// Sidecar blob fetches keyed by doc ref (`chatId/partId[.diff]`,
@@ -345,6 +344,7 @@ impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
 
 impl Transcript {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        crate::images::observe(cx);
         Self::build(state, None, true, cx)
     }
 
@@ -453,8 +453,7 @@ impl Transcript {
             copied_message: None,
             copied_message_clear: None,
             attachment_preview: None,
-            attachment_preview_focus: cx.focus_handle(),
-            attachment_loads: HashMap::new(),
+            viewer_close_sub: None,
             attachment_retries: HashMap::new(),
             blob_details: HashMap::new(),
             blob_fetch_order: HashMap::new(),
@@ -1574,7 +1573,7 @@ impl Transcript {
         match diff_rows(&self.rows, &new_rows) {
             None => {
                 self.rows = new_rows;
-                self.refresh_protected_attachments(cx);
+
                 self.reconcile_own_turn_prompt();
                 // Replay readiness is independent of row content: an empty
                 // reset (or one identical to optimistic rows) still resolves
@@ -1611,7 +1610,7 @@ impl Transcript {
             }
         }
         self.rows = new_rows;
-        self.refresh_protected_attachments(cx);
+
         self.reconcile_own_turn_prompt();
         self.restore_pending_viewport(replay);
         if self.land_end_pending && !self.rows.is_empty() {
@@ -1763,120 +1762,60 @@ impl Transcript {
 
     // ---- attachment read-back (user-attachments.tsx + transcript cache) ----
 
-    /// Shield the open transcript's attachments from image-cache eviction —
-    /// rebuilt on every row sync so a chat switch swaps the set. Without it,
-    /// budget pressure evicted thumbnails still on screen (the list caches
-    /// rendered rows, so a visible image's LRU tick goes stale).
-    fn refresh_protected_attachments(&self, cx: &Context<Self>) {
-        // The protected set is GLOBAL and replaced wholesale — an override
-        // instance writing it would clobber the primary transcript's keys.
-        if self.doc_override.is_some() {
-            return;
-        }
-        let devices = self.attachment_device_ids(cx);
-        let mut keys = std::collections::HashSet::new();
-        for row in &self.rows {
-            if let RowKind::User { attachments, .. } = &row.kind {
-                for att in attachments.iter() {
-                    for dev in &devices {
-                        keys.insert((dev.clone(), att.path.clone()));
-                    }
-                }
-            }
-        }
-        crate::attachments::protect_attachments(keys);
-    }
-
-    /// Devices whose keys may hold a user message's attachment files: the
-    /// chat's device (uploads were committed under it) plus this device
-    /// (holt's `uniqueIds([attachmentDeviceId, m.device_id])`).
-    fn attachment_device_ids(&self, cx: &Context<Self>) -> Vec<String> {
-        // `selected_chat_row` belongs to the PRIMARY transcript's chat — an
-        // override instance has no chat row, so it claims no devices (its
-        // thumbnails degrade to placeholders instead of guessing).
-        if self.doc_override.is_some() {
-            return Vec::new();
-        }
-        let state = self.state.read(cx);
-        let mut ids = Vec::new();
-        if let Some(chat) = state.selected_chat_row() {
-            ids.push(chat.device_id.clone());
-        }
-        if let Some(local) = state.local_device_id.clone()
-            && !ids.contains(&local)
-        {
-            ids.push(local);
-        }
-        ids
-    }
-
-    /// Effective load state for one attachment across its candidate devices:
-    /// first Loaded source wins; otherwise loads are (re)claimed and the
-    /// snapshot degrades Loading → Error with a scheduled retry wake-up.
-    fn attachment_state(
+    fn open_image_viewer(
         &mut self,
-        device_ids: &[String],
-        path: &str,
+        targets: Vec<crate::image_viewer::ViewerTarget>,
+        index: usize,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> crate::attachments::AttachmentSnapshot {
-        use crate::attachments::{AttachmentSnapshot, attachment_snapshot, begin_load};
-        for dev in device_ids {
-            if let AttachmentSnapshot::Loaded(image) = attachment_snapshot(dev, path) {
-                return AttachmentSnapshot::Loaded(image);
-            }
-        }
-        let mut any_loading = false;
-        let mut min_retry: Option<Duration> = None;
-        for dev in device_ids {
-            if begin_load(dev, path) {
-                self.spawn_attachment_load(dev.clone(), path.to_string(), cx);
-            }
-            match attachment_snapshot(dev, path) {
-                AttachmentSnapshot::Loaded(image) => return AttachmentSnapshot::Loaded(image),
-                AttachmentSnapshot::Loading => any_loading = true,
-                AttachmentSnapshot::Error { retry_in } => {
-                    min_retry = Some(min_retry.map_or(retry_in, |m| m.min(retry_in)));
+    ) {
+        use gpui::{AppContext, Focusable};
+        let return_focus = window.focused(cx);
+        let state = self.state.clone();
+        let viewer = cx.new(|cx| crate::image_viewer::ImageViewer::open(state, targets, index, cx));
+        window.focus(&viewer.focus_handle(cx), cx);
+        self.viewer_close_sub = Some(cx.subscribe_in(
+            &viewer,
+            window,
+            move |this, _, _: &crate::image_viewer::ImageViewerEvent, window, cx| {
+                this.attachment_preview = None;
+                if let Some(focus) = &return_focus {
+                    window.focus(focus, cx);
                 }
-            }
-        }
-        if any_loading {
-            return AttachmentSnapshot::Loading;
-        }
-        match min_retry {
-            Some(retry_in) => {
-                if let Some(dev) = device_ids.first() {
-                    self.schedule_attachment_retry((dev.clone(), path.to_string()), retry_in, cx);
-                }
-                AttachmentSnapshot::Error { retry_in }
-            }
-            // No candidate devices at all — the "unavailable" thumb, no retry.
-            None => AttachmentSnapshot::Error {
-                retry_in: Duration::MAX,
+                cx.notify();
             },
-        }
+        ));
+        self.attachment_preview = Some(viewer);
+        cx.notify();
     }
 
-    fn spawn_attachment_load(&mut self, device_id: String, path: String, cx: &mut Context<Self>) {
-        use crate::attachments::{read_attachment_image, store_error, store_loaded};
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            store_error(&device_id, &path);
-            return;
-        };
-        let key = (device_id.clone(), path.clone());
-        let task = cx.spawn(async move |this, cx| {
-            match read_attachment_image(&engine, cx.background_executor(), &path).await {
-                Some(loaded) => store_loaded(&device_id, &path, loaded.name.into(), loaded.image),
-                None => store_error(&device_id, &path),
-            }
-            this.update(cx, |transcript, cx| {
-                transcript
-                    .attachment_loads
-                    .remove(&(device_id.clone(), path.clone()));
-                cx.notify();
-            })
-            .ok();
-        });
-        self.attachment_loads.insert(key, task);
+    fn attachment_state(&mut self, path: &str, cx: &mut Context<Self>) -> crate::images::Snapshot {
+        if crate::images::begin_load(path) {
+            let Some(engine) = self.state.read(cx).engine().cloned() else {
+                crate::images::store_error(path, "Engine not connected.");
+                return crate::images::snapshot(path);
+            };
+            let path = path.to_string();
+            let load_path = path.clone();
+            let executor = cx.background_executor().clone();
+            let task = cx.spawn(async move |this, cx| {
+                let result = crate::images::load_thumb(&engine, &load_path, &executor).await;
+                match result {
+                    Ok(thumb) => crate::images::store_loaded(&load_path, thumb),
+                    Err(cause) => crate::images::store_error(&load_path, cause),
+                }
+                this.update(cx, |_, cx| {
+                    cx.notify();
+                })
+                .ok();
+            });
+            task.detach();
+        }
+        let snapshot = crate::images::snapshot(path);
+        if let crate::images::Snapshot::Error { retry_in, .. } = &snapshot {
+            self.schedule_attachment_retry((String::new(), path.to_string()), *retry_in, cx);
+        }
+        snapshot
     }
 
     /// One wake-up per errored source: after the backoff elapses, a notify

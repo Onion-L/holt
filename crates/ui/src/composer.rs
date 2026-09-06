@@ -42,7 +42,7 @@ use gpui::{
 
 use holt_proto::{ProviderId, SlashCommand};
 
-use crate::attachments::{self, StagedAttachment};
+use crate::image_viewer::{ImageViewer, ImageViewerEvent, ViewerTarget};
 use crate::motion;
 use crate::path_refs::PathRef;
 use crate::pickers::Pickers;
@@ -70,20 +70,20 @@ pub struct Composer {
     pickers: Entity<Pickers>,
     /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
     drafts: HashMap<String, String>,
-    /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
-    /// navigating away and back restores them; memory-only, like the original.
-    attachments: HashMap<String, Vec<StagedAttachment>>,
-    /// Staged-but-unsent path references per chat key (picker/drag/paste
-    /// chips; path_refs.rs) — same memory-only, key-swapped lifecycle as
-    /// `attachments` and `drafts`.
+    /// Staged-but-unsent path references per chat key (picker/drag/paste/
+    /// managed chips; path_refs.rs) — memory-only, key-swapped lifecycle,
+    /// like `drafts`: navigating away and back restores them.
     path_refs: HashMap<String, Vec<PathRef>>,
-    /// The staged attachment being viewed full-size (click a thumbnail).
-    preview: Option<attachments::PreviewImage>,
-    /// Focused while the lightbox is open so Escape reaches it; the input
-    /// gets focus back on close.
-    preview_focus: FocusHandle,
-    /// Focus grab deferred to the next render (open sites don't all have a
-    /// `Window` — the `HOLT_ATTACH_PREVIEW` boot knob opens in `new`).
+    pasting: HashMap<String, usize>,
+    preview_path_pending: Option<SharedString>,
+    /// In-flight thumbnail loads (images.rs shared cache); keyed by path so
+    /// concurrent renders never double-fetch.
+    /// The image being viewed in the zoomable viewer (click a thumbnail).
+    preview: Option<Entity<ImageViewer>>,
+    /// The viewer's Closed subscription (owner clears the field + refocuses).
+    viewer_close_sub: Option<gpui::Subscription>,
+    /// Focus grab deferred to the next render (the `HOLT_ATTACH_PREVIEW`
+    /// boot knob opens the viewer without a `Window`).
     preview_focus_pending: bool,
     /// In-flight file-picker prompt (paperclip).
     picker_task: Option<Task<()>>,
@@ -194,6 +194,7 @@ impl Composer {
     }
 
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        crate::images::observe(cx);
         let input = cx.new(|cx| {
             let mut input = ComposerInput::new("Do anything…", cx);
             input.enable_mentions();
@@ -236,13 +237,13 @@ impl Composer {
                 }
             }
             ComposerInputEvent::PastedImages(images) => {
-                let staged = images
-                    .iter()
-                    .map(|image| attachments::stage_clipboard_image(image.clone()))
-                    .collect();
-                this.add_staged(staged, cx);
+                this.stage_pasted_images(images.clone(), cx)
             }
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
+            ComposerInputEvent::PreviewImage(path) => {
+                this.preview_path_pending = Some(path.clone());
+                cx.notify();
+            }
         });
         let current_key = state.read(cx).selected_chat.clone().unwrap_or_default();
         let mut composer = Self {
@@ -250,10 +251,11 @@ impl Composer {
             input,
             pickers,
             drafts: HashMap::new(),
-            attachments: HashMap::new(),
             path_refs: HashMap::new(),
+            pasting: HashMap::new(),
+            preview_path_pending: None,
             preview: None,
-            preview_focus: cx.focus_handle(),
+            viewer_close_sub: None,
             preview_focus_pending: false,
             picker_task: None,
             mention_task: None,
@@ -296,41 +298,64 @@ impl Composer {
             _pickers_observe: pickers_observe,
             _input_events: input_events,
         };
-        // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
-        // a rig) — `HOLT_ATTACH=/path/a.png[,/path/b.png]`, and
-        // `HOLT_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
+        // Dev knob: pre-stage path references (drop/paste can't be
+        // synthesized on a rig) — `HOLT_ATTACH=/path/a.png[,/path/b.png]`,
+        // and `HOLT_ATTACH_PREVIEW=1` boots with the first image's viewer
+        // open (focus lands on the first render).
         if let Ok(spec) = std::env::var("HOLT_ATTACH") {
-            let staged: Vec<StagedAttachment> = spec
+            let refs: Vec<PathRef> = spec
                 .split(',')
                 .filter(|s| !s.trim().is_empty())
                 .filter_map(|path| {
-                    match attachments::stage_file(std::path::Path::new(path.trim())) {
-                        Ok(att) => Some(att),
+                    match crate::path_refs::bind(std::path::Path::new(path.trim())) {
+                        Ok(reference) => Some(reference),
                         Err(err) => {
-                            tracing::warn!(%path, error = %err, "HOLT_ATTACH stage failed");
+                            tracing::warn!(%path, error = %err, "HOLT_ATTACH bind failed");
                             None
                         }
                     }
                 })
                 .collect();
-            if std::env::var("HOLT_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
-                && let Some(first) = staged.first()
-            {
-                composer.preview = Some(attachments::PreviewImage {
-                    name: first.name.clone().into(),
-                    image: first.image.clone(),
-                });
+            if std::env::var("HOLT_ATTACH_PREVIEW").is_ok_and(|v| v == "1") {
                 composer.preview_focus_pending = true;
             }
-            if !staged.is_empty() {
+            if !refs.is_empty() {
                 composer
-                    .attachments
+                    .path_refs
                     .entry(composer.current_key.clone())
                     .or_default()
-                    .extend(staged);
+                    .extend(refs);
             }
         }
         composer
+    }
+
+    /// Open the zoomable viewer over `targets[index]` (the draft's images).
+    /// The composer subscribes to its Closed event to restore focus.
+    pub(super) fn open_viewer(
+        &mut self,
+        targets: Vec<ViewerTarget>,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let viewer = cx.new(|cx| ImageViewer::open(state, targets, index, cx));
+        window.focus(&viewer.focus_handle(cx), cx);
+        self.viewer_close_sub = Some(cx.subscribe_in(
+            &viewer,
+            window,
+            |this, _, _: &ImageViewerEvent, window, cx| {
+                this.preview = None;
+                // Hand focus back to the input so typing (and the next
+                // Escape) lands where it did before the viewer opened.
+                let input_focus = this.input.read(cx).focus_handle.clone();
+                window.focus(&input_focus, cx);
+                cx.notify();
+            },
+        ));
+        self.preview = Some(viewer);
+        cx.notify();
     }
 
     /// Capture-knob passthrough (`HOLT_OPEN_DIALOG=model`): open the
@@ -736,19 +761,25 @@ impl Render for Composer {
         // Committed-height morph: the layout below is already the NEW mode's;
         // only the pill's height (and the entrance fade/text glide driven by
         // `morph_t`) animates. Steady state renders exactly the target.
-        // Staged attachments add the wrap strip's height to the pill in BOTH
-        // modes (attachment-ui.tsx AttachmentStrip sits above the input row).
-        let staged_count = self.staged().len();
+        // The staged strip (thumbnails + chips) adds its wrap height to the
+        // pill in BOTH modes (it sits above the input row).
         let strip_width_hint = if last_width > 0.0 { last_width } else { 720.0 };
-        let strip_h = attachment_strip_height(staged_count, strip_width_hint);
-        let ref_strip_h = path_ref_strip_height(self.staged_refs().len(), strip_width_hint);
+        let refs = self.staged_refs();
+        let thumb_count = refs
+            .iter()
+            .filter(|reference| {
+                !reference.is_dir && crate::images::is_image_path(&reference.path.to_string_lossy())
+            })
+            .count();
+        let chip_count = refs.len() - thumb_count;
+        let ref_strip_h = path_ref_strip_height(thumb_count, chip_count, strip_width_hint);
         let comment_strip_h = comment_strip_height(self.staged_comments(cx).len());
         let base_height = if expanded {
             composer_total_height(content_height)
         } else {
             COMPACT_TOTAL_HEIGHT
         };
-        let target_height = base_height + strip_h + ref_strip_h + comment_strip_h;
+        let target_height = base_height + ref_strip_h + comment_strip_h;
         let (pill_height, morph_t, morphing) = match self.flip_morph {
             Some(m) if !m.done(now_ms) => {
                 (m.height(target_height, now_ms), m.progress(now_ms), true)
@@ -803,9 +834,8 @@ impl Render for Composer {
                     .left(px(1.0))
                     .text_color(theme.text_muted),
             );
-        // Staged-thumbnail strip (attachment-ui.tsx AttachmentStrip), above
-        // the input inside the pill in both modes.
-        let strip = self.render_attachment_strip(&theme, cx);
+        // Staged strip (thumbnails + chips), above the input inside the
+        // pill in both modes.
         let ref_strip = self.render_path_ref_strip(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
@@ -846,7 +876,6 @@ impl Render for Composer {
                 .flex()
                 .flex_col()
                 .children(comments_chip)
-                .children(strip)
                 .children(ref_strip)
                 .child(
                     div()
@@ -909,7 +938,6 @@ impl Render for Composer {
                 .flex_col()
                 .justify_end()
                 .children(comments_chip)
-                .children(strip)
                 .children(ref_strip)
                 .child(
                     div()
@@ -966,6 +994,32 @@ impl Render for Composer {
         } else {
             container
         };
+        let capability = self
+            .pickers
+            .read(cx)
+            .selected_model(cx)
+            .map(|m| m.image_capability)
+            .unwrap_or_default();
+        let has_images = !self.draft_image_targets(cx).is_empty();
+        let container = container.when(has_images, |container| {
+            let notice = match capability {
+                holt_proto::ImageCapability::Unsupported => {
+                    Some("This model cannot view images. Paths can still be sent.")
+                }
+                holt_proto::ImageCapability::Unknown => {
+                    Some("Image support is unknown for this model.")
+                }
+                holt_proto::ImageCapability::Supported => None,
+            };
+            container.children(notice.map(|text| {
+                div()
+                    .px(px(16.0))
+                    .py(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(text)
+            }))
+        });
         // The file dropzone lives in the shell (the whole conversation column,
         // not just the pill — shell.rs `chat-dropzone`); drops land back here
         // via `add_paths`.
@@ -1008,28 +1062,34 @@ impl Render for Composer {
             Some(footer) => container.child(footer),
             None => container,
         };
-        // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
-        if let Some(preview) = self.preview.clone() {
-            if std::mem::take(&mut self.preview_focus_pending) {
-                window.focus(&self.preview_focus, cx);
+        crate::images::flush_evicted(Some(window), cx);
+        if let Some(path) = self.preview_path_pending.take() {
+            let targets = self.draft_image_targets(cx);
+            if let Some(index) = targets.iter().position(|t| t.path == path) {
+                self.open_viewer(targets, index, window, cx);
             }
-            let weak = cx.weak_entity();
-            return container.child(attachments::lightbox(
-                window.viewport_size(),
-                &preview,
-                &self.preview_focus,
-                move |window, cx| {
-                    // Hand focus back to the input so typing (and the next
-                    // Escape) lands where it did before the lightbox opened.
-                    if let Ok(input_focus) = weak.update(cx, |this, cx| {
-                        this.preview = None;
-                        cx.notify();
-                        this.input.read(cx).focus_handle.clone()
-                    }) {
-                        window.focus(&input_focus, cx);
-                    }
-                },
-            ));
+        }
+        if std::mem::take(&mut self.preview_focus_pending) && self.preview.is_none() {
+            let targets: Vec<_> = self
+                .staged_refs()
+                .iter()
+                .filter(|r| !r.is_dir && crate::images::is_image_path(&r.full_path()))
+                .map(|r| ViewerTarget {
+                    path: r.full_path().into(),
+                    label: r.name().into(),
+                })
+                .collect();
+            if !targets.is_empty() {
+                self.open_viewer(targets, 0, window, cx);
+            }
+        }
+        // The zoomable image viewer (a shared modal entity) — when open it
+        // is the composer's whole tail.
+        if let Some(viewer) = self.preview.clone() {
+            if std::mem::take(&mut self.preview_focus_pending) {
+                window.focus(&viewer.focus_handle(cx), cx);
+            }
+            return container.child(viewer);
         }
         container
     }

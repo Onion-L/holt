@@ -239,7 +239,8 @@ impl Pickers {
             | ComposerInputEvent::ViewportChanged
             | ComposerInputEvent::MentionNavigate(_)
             | ComposerInputEvent::MentionAccept
-            | ComposerInputEvent::MentionDismiss => {}
+            | ComposerInputEvent::MentionDismiss
+            | ComposerInputEvent::PreviewImage(_) => {}
         });
         // Chat selection / config changes must re-render the chips (child views
         // only re-render on their own notify). A selection change also drops
@@ -439,7 +440,7 @@ impl Pickers {
     /// The selected model — concrete from the moment the list loads: the
     /// effective id when the list still offers it, else the provider default
     /// (first row). Never `None` with a non-empty catalog.
-    fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
+    pub(crate) fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
         let provider = self.effective_provider(cx)?;
         let models = self.models.get(&provider)?.ready()?;
         match self.effective_model_id(cx) {

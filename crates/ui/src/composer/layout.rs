@@ -194,17 +194,17 @@ pub const STRIP_GAP: f32 = 8.0;
 pub const STRIP_PAD_TOP: f32 = 12.0;
 pub const STRIP_PAD_X: f32 = 16.0;
 
-/// Height the wrap strip adds to the pill for `count` staged thumbnails at an
-/// `inner_width` pill content width (0 when empty). Mirrors flex-wrap: as many
-/// 56px thumbs per row as fit with 8px gaps inside the 16px side insets.
-pub fn attachment_strip_height(count: usize, inner_width: f32) -> f32 {
-    if count == 0 {
-        return 0.0;
-    }
-    let usable = (inner_width - 2.0 * STRIP_PAD_X).max(STRIP_THUMB);
-    let per_row = (((usable + STRIP_GAP) / (STRIP_THUMB + STRIP_GAP)).floor() as usize).max(1);
-    let rows = count.div_ceil(per_row);
-    STRIP_PAD_TOP + rows as f32 * STRIP_THUMB + (rows - 1) as f32 * STRIP_GAP
+/// Rows of wrapped items in one strip line: as many items of `item_width`
+/// per row as fit with [`STRIP_GAP`] gaps inside the side insets.
+fn wrap_rows(count: usize, item_width: f32, inner_width: f32) -> usize {
+    let usable = (inner_width - 2.0 * STRIP_PAD_X).max(item_width);
+    let per_row = (((usable + STRIP_GAP) / (item_width + STRIP_GAP)).floor() as usize).max(1);
+    count.div_ceil(per_row)
+}
+
+/// Height a run of same-size items adds to the pill.
+fn strip_height(rows: usize, item_height: f32) -> f32 {
+    STRIP_PAD_TOP + rows as f32 * item_height + (rows - 1) as f32 * STRIP_GAP
 }
 
 pub fn comment_strip_height(count: usize) -> f32 {
@@ -220,15 +220,30 @@ pub const REF_CHIP_LABEL_MAX: f32 = 160.0;
 /// Widest a chip can grow (icon + capped label + remove button + padding/gaps).
 pub const REF_CHIP_WIDTH: f32 = 240.0;
 
-/// Height the path-reference chip strip adds to the pill (0 when empty).
-pub fn path_ref_strip_height(count: usize, inner_width: f32) -> f32 {
-    if count == 0 {
-        return 0.0;
+/// Height the staged strip adds to the pill: image references render as
+/// [`STRIP_THUMB`] thumbnails, the rest as badge chips, both wrapping (0
+/// when empty). The two sizes wrap independently — the thumbs sit first, so
+/// a mixed strip is thumb rows stacked on chip rows.
+pub fn path_ref_strip_height(thumb_count: usize, chip_count: usize, inner_width: f32) -> f32 {
+    let thumb_rows = if thumb_count > 0 {
+        wrap_rows(thumb_count, STRIP_THUMB, inner_width)
+    } else {
+        0
+    };
+    let chip_rows = if chip_count > 0 {
+        wrap_rows(chip_count, REF_CHIP_WIDTH, inner_width)
+    } else {
+        0
+    };
+    match (thumb_rows, chip_rows) {
+        (0, 0) => 0.0,
+        (t, 0) => strip_height(t, STRIP_THUMB),
+        (0, c) => strip_height(c, crate::badges::BADGE_HEIGHT),
+        (t, c) => {
+            strip_height(t, STRIP_THUMB) + STRIP_GAP + strip_height(c, crate::badges::BADGE_HEIGHT)
+                - STRIP_PAD_TOP
+        }
     }
-    let usable = (inner_width - 2.0 * STRIP_PAD_X).max(REF_CHIP_WIDTH);
-    let per_row = (((usable + STRIP_GAP) / (REF_CHIP_WIDTH + STRIP_GAP)).floor() as usize).max(1);
-    let rows = count.div_ceil(per_row);
-    STRIP_PAD_TOP + rows as f32 * crate::badges::BADGE_HEIGHT + (rows - 1) as f32 * STRIP_GAP
 }
 
 #[cfg(test)]
@@ -254,6 +269,34 @@ mod tests {
         assert!(press_intent(1, false).arms_drag());
         assert!(press_intent(1, true).arms_drag());
         assert!(!press_intent(2, false).arms_drag());
+    }
+
+    #[test]
+    fn staged_strip_height_wraps_thumbs_and_chips_independently() {
+        // Thumbs-only: 56px rows.
+        let width = 720.0;
+        assert_eq!(
+            path_ref_strip_height(1, 0, width),
+            STRIP_PAD_TOP + STRIP_THUMB
+        );
+        assert_eq!(path_ref_strip_height(0, 0, width), 0.0);
+        // Chips-only: badge-height rows.
+        assert_eq!(
+            path_ref_strip_height(0, 1, width),
+            STRIP_PAD_TOP + crate::badges::BADGE_HEIGHT
+        );
+        // Mixed: one thumb row stacked on one chip row, separated by a gap.
+        let mixed = path_ref_strip_height(2, 2, width);
+        assert!(
+            mixed > STRIP_PAD_TOP + STRIP_THUMB + crate::badges::BADGE_HEIGHT,
+            "{mixed}"
+        );
+        // Wrapping: many thumbs in a narrow strip need more rows.
+        let narrow = 200.0;
+        assert!(
+            path_ref_strip_height(4, 0, narrow) > path_ref_strip_height(1, 0, narrow),
+            "4 thumbs wrap past one 56px row in a 200px strip"
+        );
     }
 
     #[test]

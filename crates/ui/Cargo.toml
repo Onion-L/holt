@@ -24,6 +24,8 @@ serde_json.workspace = true
 pulldown-cmark.workspace = true
 alacritty_terminal.workspace = true
 base64 = "0.22"
+smallvec = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 unicode-segmentation.workspace = true
 fontdb.workspace = true
 ttf-parser.workspace = true

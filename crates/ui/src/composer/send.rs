@@ -6,11 +6,11 @@ use super::send_mode::{SendButtonMode, composer_has_content, send_button_mode};
 
 use gpui::{App, Context, div, prelude::*, px};
 
-use holt_doc::{MessagePart, SessionCommandPayload, SessionMessageEntry};
+use holt_doc::SessionCommandPayload;
 use holt_proto::RunRequest;
 use holt_rpc::methods;
 
-use crate::attachments::{self};
+use crate::attachments;
 use crate::state::Indicator;
 use crate::theme::Theme;
 
@@ -35,6 +35,9 @@ impl Composer {
     /// project-less `~`-cwd sessions are no longer mintable from the canvas.
     /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
+        if self.pasting.get(&self.current_key).copied().unwrap_or(0) > 0 {
+            return true;
+        }
         if self.failed_submissions.contains_key(&self.current_key) {
             return true;
         }
@@ -49,7 +52,6 @@ impl Composer {
     pub(super) fn button_mode(&self, cx: &App) -> SendButtonMode {
         let has_text = composer_has_content(
             self.input.read(cx).text(),
-            self.staged().len(),
             self.staged_refs().len(),
             self.staged_comments(cx).len(),
         );
@@ -119,7 +121,6 @@ impl Composer {
         }
         let no_content = !composer_has_content(
             &text,
-            self.staged().len(),
             self.staged_refs().len(),
             self.staged_comments(cx).len(),
         );
@@ -219,17 +220,10 @@ impl Composer {
             .filter(|(previous, _)| previous == &typed)
             .map(|(_, params)| params.clone());
         let keeps_stash = travels_alone || retry.is_some();
-        let staged = if keeps_stash {
-            Vec::new()
-        } else {
-            self.attachments
-                .remove(&self.current_key)
-                .unwrap_or_default()
-        };
         // `/compact` (and a retry, per above) leaves path references staged
         // for a later message; ordinary messages and skill invocations
         // consume the chips now.
-        let references = if keeps_stash {
+        let references = if matches!(slash, super::slash::Parsed::Compact) || retry.is_some() {
             Vec::new()
         } else {
             self.path_refs.remove(&self.current_key).unwrap_or_default()
@@ -258,60 +252,6 @@ impl Composer {
         };
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
-        let created_at = chrono::Utc::now().timestamp_millis();
-
-        // Queued-attachment flow (durable-by-design): stage the bytes on the
-        // local engine, then queue the command immediately with `pending://`
-        // refs — the engine rewrites each ref to an absolute path once the
-        // bytes land. Staging must never gate the queue (2026-08-19 incident:
-        // a send died with a zombie peer link because the upload sat in front
-        // of QueueCommand).
-        let queued_flow = !staged.is_empty();
-        // Upload identities minted NOW: in the queued flow the `pending://`
-        // ref IS the persisted transport until the engine rewrites it, so the
-        // id must exist before any bytes move.
-        let upload_ids: Vec<String> = staged
-            .iter()
-            .map(|_| uuid::Uuid::new_v4().to_string())
-            .collect();
-        // The echo carries attachment refs from the first frame, so photos
-        // render while the send is still pending. Queued flow: the refs are
-        // the real `pending://` identities (stable — no post-upload refresh).
-        // Legacy flow: synthetic `pending/…` paths that the post-upload
-        // refresh replaces with the engine's absolute paths. Either way the
-        // staged bytes are seeded into the transcript cache under the chat's
-        // device key.
-        let echo_paths: Vec<String> = if queued_flow {
-            staged
-                .iter()
-                .zip(&upload_ids)
-                .map(|(att, id)| format!("pending://{id}/{}", att.name))
-                .collect()
-        } else {
-            staged
-                .iter()
-                .map(|att| format!("pending/{}/{}", att.id, att.name))
-                .collect()
-        };
-        let echo_text = attachments::with_attachments(&text, &echo_paths);
-        // Queued flow also seeds the UPLOAD ALIAS: the engine rewrites the
-        // persisted ref to `{its uploads dir}/{id8}-{name}` — an absolute
-        // path the sender can't predict, but whose id8 it minted. The alias
-        // keeps the thumbnail on the already-local bytes through that
-        // rewrite instead of blanking into a reload skeleton.
-        if queued_flow {
-            for (upload_id, att) in upload_ids.iter().zip(&staged) {
-                attachments::seed_attachment_alias(
-                    &device_id,
-                    upload_id,
-                    &att.name,
-                    att.image.clone(),
-                );
-            }
-        }
-        for (path, att) in echo_paths.iter().zip(&staged) {
-            attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
-        }
 
         // No optimistic echo: every submission is a typed queue item now
         // (ticket 04) — it shows in the queue panel immediately and enters
@@ -351,107 +291,7 @@ impl Composer {
                 // bounded by a total budget so a degraded engine fails the
                 // send loudly instead of grinding through silent per-chunk
                 // retries for minutes.
-                let mut content = text.clone();
-                let mut attachment_paths: Vec<String> = Vec::new();
-                let mut transfers: Vec<serde_json::Value> = Vec::new();
-                if !staged.is_empty() && queued_flow {
-                    // Local staging is disk-speed; publish progress anyway so
-                    // huge files still narrate.
-                    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-                    let total: u64 = staged.iter().map(|a| a.bytes().len() as u64).sum();
-                    {
-                        let progress = progress.clone();
-                        this.update(cx, |composer, cx| {
-                            composer.state.update(cx, |s, cx| {
-                                s.begin_upload_progress(total, progress);
-                                cx.notify();
-                            });
-                        })
-                        .ok();
-                    }
-                    for (att, upload_id) in staged.iter().zip(&upload_ids) {
-                        if let Err(err) = attachments::upload_attachment(
-                            &engine,
-                            cx.background_executor(),
-                            upload_id,
-                            att,
-                            Some(progress.clone()),
-                        )
-                        .await
-                        {
-                            tracing::warn!(name = %att.name, error = %err, "local attachment stage failed");
-                            return Err("Couldn't stage the attachment locally.".to_string());
-                        }
-                        transfers.push(serde_json::json!({
-                            "uploadId": upload_id,
-                            "fileName": att.name,
-                        }));
-                    }
-                    // The echo refs ARE the persisted refs — no refresh pass.
-                    attachment_paths = echo_paths.clone();
-                    content = echo_text.clone();
-                } else if !staged.is_empty() {
-                    let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-                    let total: u64 = staged.iter().map(|a| a.bytes().len() as u64).sum();
-                    {
-                        let progress = progress.clone();
-                        this.update(cx, |composer, cx| {
-                            composer.state.update(cx, |s, cx| {
-                                s.begin_upload_progress(total, progress);
-                                cx.notify();
-                            });
-                        })
-                        .ok();
-                    }
-                    for (att, upload_id) in staged.iter().zip(&upload_ids) {
-                        match attachments::upload_attachment(
-                            &engine,
-                            cx.background_executor(),
-                            upload_id,
-                            att,
-                            Some(progress.clone()),
-                        )
-                        .await
-                        {
-                            Ok(path) => attachment_paths.push(path),
-                            Err(err) => {
-                                tracing::warn!(name = %att.name, error = %err, "attachment upload failed");
-                                return Err("Couldn't upload the attachment.".to_string());
-                            }
-                        }
-                    }
-                    // Seed the transcript cache from local bytes so the sent
-                    // bubble's thumbnails never round-trip (seedTranscript-
-                    // Attachment in the original send path).
-                    for (path, att) in attachment_paths.iter().zip(&staged) {
-                        attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
-                    }
-                    content = attachments::with_attachments(&text, &attachment_paths);
-                    // Refresh the echo in place with the attachment refs
-                    // (same id, same clock — the bubble grows its thumbnails
-                    // without flickering).
-                    let refreshed = SessionMessageEntry {
-                        id: message_id.clone(),
-                        role: holt_doc::MessageRole::User,
-                        parts: vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: content.clone(),
-                        }],
-                        created_at,
-                        device_id: "local".into(),
-                        status: None,
-                        continuation_of: None,
-                    };
-                    let echo_chat_id = chat_id.clone();
-                    this.update(cx, |composer, cx| {
-                        composer.state.update(cx, |s, cx| {
-                            s.remove_echo(&echo_chat_id, &message_id);
-                            s.push_echo(&echo_chat_id, refreshed);
-                            cx.notify();
-                        });
-                    })
-                    .ok();
-                }
+                let content = text.clone();
 
                 // Resolve the working directory: existing chats keep theirs;
                 // a new chat always runs in its SPACE's folder (ADR-0007 —
@@ -649,7 +489,7 @@ impl Composer {
                             cwd,
                             permission_mode,
                             auto_approve: false,
-                            attachments: attachment_paths,
+                            attachments: Vec::new(),
                             worktree: run_worktree,
                         },
                         message_id: message_id.clone(),
@@ -658,9 +498,6 @@ impl Composer {
                 let command = serde_json::to_value(&command)
                     .map_err(|e| format!("Send failed: {e}"))?;
                 let mut params = serde_json::json!({ "chatId": chat_id, "command": command });
-                if !transfers.is_empty() {
-                    params["transfers"] = serde_json::Value::Array(transfers);
-                }
                 // Every queued command carries a client-minted identity, so
                 // the durable-enqueue retry path covers ordinary messages,
                 // skill invocations, and Compaction alike.
@@ -714,9 +551,8 @@ impl Composer {
                         }
                     }
                     if !references.is_empty() && !composer.failed_submissions.contains_key(&restore_key) {
-                        // Same hand-back rule as staged attachments, deduped
-                        // by target path: references staged while the send was
-                        // in flight survive the restore.
+                        // References staged while the send was in flight
+                        // survive the restore, deduped by target path.
                         let mut merged = references.clone();
                         for key in [err_chat_id.clone(), restore_key.clone()] {
                             if let Some(slot) = composer.path_refs.get_mut(&key) {
@@ -728,23 +564,6 @@ impl Composer {
                             }
                         }
                         composer.path_refs.insert(restore_key.clone(), merged);
-                    }
-                    if !staged.is_empty() && !composer.failed_submissions.contains_key(&restore_key) {
-                        // Merge by id (stashAttachments): files the user staged
-                        // while the send was in flight survive the hand-back —
-                        // draining the minted chat's slot too when the restore
-                        // target is the canvas.
-                        let mut merged = staged.clone();
-                        for key in [err_chat_id.clone(), restore_key.clone()] {
-                            if let Some(slot) = composer.attachments.get_mut(&key) {
-                                let fresh: Vec<_> = slot
-                                    .drain(..)
-                                    .filter(|e| !merged.iter().any(|f| f.id == e.id))
-                                    .collect();
-                                merged.extend(fresh);
-                            }
-                        }
-                        composer.attachments.insert(restore_key, merged);
                     }
                 }
                 cx.notify();

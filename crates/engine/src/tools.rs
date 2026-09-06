@@ -14,7 +14,7 @@ use pi_core::agent::{
         tools::{
             bash::{BashToolOptions, create_bash_tool},
             edit::create_edit_tool,
-            read::{ReadToolOptions, create_read_tool},
+            read::{ReadImageProcessorResult, ReadToolOptions, create_read_tool},
             tool_context::ExecutionToolContext,
             write::create_write_tool,
         },
@@ -206,11 +206,20 @@ impl FileSystem for LocalExecutionEnv {
     fn read_binary_file<'a>(
         &'a self,
         path: &'a str,
-        _abort_signal: Option<CancellationToken>,
+        abort_signal: Option<CancellationToken>,
     ) -> BoxFuture<'a, Result<Vec<u8>, FileError>> {
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
-            std::fs::read(&path).map_err(|error| io_file_error(&error, &path))
+            let error_path = path.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                crate::images::codec::read_for_tool(Path::new(&path))
+            });
+            tokio::select! {
+                result = read => result.map_err(|e| FileError::with_path(FileErrorCode::Unknown, e.to_string(), &error_path))?
+                    .map_err(|e| FileError::with_path(FileErrorCode::Unknown, e, &error_path)),
+                _ = async { match abort_signal { Some(signal) => signal.cancelled().await, None => pending().await } } =>
+                    Err(FileError::with_path(FileErrorCode::Unknown, "Read interrupted", &error_path)),
+            }
         })
     }
 
@@ -535,16 +544,92 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 /// The toolset handed to the agent loop: pi-core's built-in read/write/
 /// edit/bash, all running against one environment rooted at `cwd`, plus
 /// holt's own content-search tool, exposed to the agent as `grep`.
+#[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
+    execution_tools_for_model(cwd, true)
+}
+
+pub(crate) fn execution_tools_for_model(cwd: &str, allow_images: bool) -> Vec<AgentTool> {
     let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(cwd));
     let context = ExecutionToolContext { env }.into_tool_context();
     vec![
-        with_execution_context(create_read_tool(ReadToolOptions::default()), &context),
+        image_read_tool(&context, allow_images),
         with_execution_context(create_write_tool(), &context),
         with_execution_context(create_edit_tool(), &context),
         with_execution_context(create_bash_tool(BashToolOptions::default()), &context),
         grep::create_grep_tool(cwd),
     ]
+}
+
+fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
+    use base64::Engine as _;
+    let mut tool = with_execution_context(create_read_tool(ReadToolOptions::default()), context);
+    tool.description = "Read text files or images at a local path. Text supports offset/limit. Images: static PNG/JPEG and first-frame GIF/WebP, up to 25 MiB and 32 megapixels. Model input is proportionally resized to at most 2048 pixels per edge and 5 MiB PNG; source files are unchanged. Image input requires a visual model.".into();
+    let context = context.clone();
+    tool.execute = Arc::new(move |id, params, signal, update| {
+        let context = context.clone();
+        let id = id.to_string();
+        let params = params.clone();
+        let signal = signal.cloned();
+        let update = update.cloned();
+        Box::pin(async move {
+            // The upstream hook has no error flag; retain its failure separately
+            // for this invocation, including concurrent read calls.
+            let failure = Arc::new(std::sync::Mutex::new(None));
+            let hook_failure = failure.clone();
+            let processor = Arc::new(move |bytes: &[u8], _: &str, _: bool| {
+                let bytes = bytes.to_vec();
+                let failure = hook_failure.clone();
+                Box::pin(async move {
+                    let processed = if allow_images {
+                        let permit = crate::images::PROCESSING
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .unwrap();
+                        tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
+                            crate::images::codec::model_image(&bytes)
+                        })
+                        .await
+                        .unwrap_or_else(|error| Err(format!("Image processing failed: {error}")))
+                    } else {
+                        Err("The selected model does not support image input. No pixels were supplied. Text files can still be read.".into())
+                    };
+                    match processed {
+                        Ok((bytes, hints)) => ReadImageProcessorResult::Ok {
+                            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                            mime_type: "image/png".into(),
+                            hints,
+                        },
+                        Err(error) => {
+                            *failure.lock().unwrap() = Some(error.clone());
+                            ReadImageProcessorResult::Err(error)
+                        }
+                    }
+                }) as BoxFuture<'static, ReadImageProcessorResult>
+            });
+            let read = with_execution_context(
+                create_read_tool(ReadToolOptions {
+                    auto_resize_images: Some(true),
+                    image_processor: Some(processor),
+                }),
+                &context,
+            );
+            let result = tokio::select! {
+                result = (read.execute)(&id, &params, signal.as_ref(), update.as_ref()) => result?,
+                _ = async { match signal.as_ref() { Some(signal) => signal.cancelled().await, None => pending().await } } => return Err("Image read interrupted".into()),
+            };
+            if signal.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                return Err("Image read interrupted".into());
+            }
+            if let Some(error) = failure.lock().unwrap().take() {
+                return Err(error);
+            }
+            Ok(result)
+        })
+    });
+    tool
 }
 
 #[cfg(test)]

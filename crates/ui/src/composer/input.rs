@@ -351,6 +351,7 @@ pub enum ComposerInputEvent {
     PastedImages(Vec<gpui::Image>),
     /// File paths pasted from the clipboard (a file manager "Copy").
     PastedPaths(Vec<PathBuf>),
+    PreviewImage(SharedString),
 }
 
 /// Multiline input entity: content + selection + IME marked text + measured
@@ -1394,6 +1395,16 @@ impl ComposerInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && let Some(hit) = self.mention_hits.iter().find(|h| {
+                h.bounds.contains(&event.position) && crate::images::is_image_path(&h.target.path)
+            })
+        {
+            cx.emit(ComposerInputEvent::PreviewImage(hit.target.path.clone()));
+            cx.stop_propagation();
+            return;
+        }
         self.invalidate_mention_tooltip();
         window.focus(&self.focus_handle, cx);
         let intent = press_intent(event.click_count, event.modifiers.shift);

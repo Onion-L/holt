@@ -219,6 +219,7 @@ impl ScriptedProvider {
         Arc::new(move |model: &Model, context: &Context, options| {
             requests.lock().unwrap().push(RecordedRequest {
                 model: model.id.clone(),
+                core_model: model.clone(),
                 reasoning: options
                     .and_then(|options| options.reasoning)
                     .map(|reasoning| format!("{reasoning:?}")),
@@ -260,6 +261,7 @@ impl ScriptedProvider {
 #[derive(Clone)]
 pub struct RecordedRequest {
     pub model: String,
+    pub core_model: Model,
     pub reasoning: Option<String>,
     pub messages: Vec<Message>,
     pub system_prompt: Option<String>,

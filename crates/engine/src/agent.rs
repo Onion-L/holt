@@ -1397,6 +1397,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
         },
         cancel.clone(),
     );
+    let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -1422,7 +1423,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
         AgentContext {
             system_prompt,
             messages: history,
-            tools: Some(crate::tools::execution_tools(&cwd)),
+            tools: Some(crate::tools::execution_tools_for_model(&cwd, allow_images)),
         },
         config,
         emit,

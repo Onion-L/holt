@@ -518,6 +518,7 @@ mod tests {
             default_reasoning: None,
             options: Vec::new(),
             custom: false,
+            image_capability: holt_proto::ImageCapability::Unknown,
         }
     }
 

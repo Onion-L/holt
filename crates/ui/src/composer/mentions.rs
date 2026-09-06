@@ -106,7 +106,7 @@ fn label_close(text: &str, start: usize) -> Option<usize> {
     None
 }
 
-fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
+pub(super) fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
     let mut links = Vec::new();
     let mut search = 0;
     while let Some(relative_start) = text[search..].find('[') {

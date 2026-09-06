@@ -80,7 +80,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Path references themselves are not an RPC surface: picker, drag, and `@`
   selections travel as plain prompt text (an appended absolute-path list,
   or inline quoted absolute paths for `@`) through the ordinary queue —
-  nothing is uploaded, copied, snapshotted, or eagerly read.
+  existing sources are not copied or snapshotted. Image previews may read
+  pixels locally; submitting the reference still sends only a path.
+- Local images: `StageImage` (`{data}` base64) validates and durably saves
+  pasted pixels under `<data_dir>/images/<uuid>.<ext>`, returning a stable
+  `ManagedImage` path. `ReadImage` (`{path}`) returns validated local image
+  bytes for UI preview; `ReleaseImage` (`{path}`) only removes Holt-managed
+  files without retained references. Payloads and replies are typed in
+  `crates/rpc/src/images.rs`. These methods are separate from unserved uploads.
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
 - Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
@@ -154,6 +161,49 @@ built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
 named `grep` (ripgrep's crates in process, ADR-0004); the transcript folds their
 calls and results into `MessagePart::Tool` chips.
+
+## Image capability
+
+The composer and Transcript share the local image viewer. Existing picker,
+drop, and inline image references remain live paths; pasted screenshots are
+engine-owned Managed images. Neither previewing nor submitting a path adds
+pixels to a model request. Only the existing `read` tool introduces image
+content, through its bounded reader and image processor in `engine::tools`.
+The actual image tool result persists in History; Transcript rendering
+remains agent-agnostic and does not need a new image MessagePart. Compaction
+keeps images in its retained tail and summarizes older content as text.
+
+PNG, JPEG, static WebP, and the first frame of GIF/animated WebP are supported.
+APNG and other formats are not visual-read formats. Decoding applies image
+orientation, caps input at 25 MiB and decoded pixels at 32 * 1024 * 1024,
+and sets a 256 MiB codec allocation ceiling. The UI preserves source detail
+within these limits. Model input becomes PNG with a maximum edge of 2048
+pixels and maximum size of 5 MiB, proportionally reduced as necessary;
+tool text records original/output dimensions and first-frame conversion.
+Source files are never rewritten. Decode failures are unsuccessful tool
+results. Two engine processing jobs, four thumbnail loads, serialized UI
+decoding, and a 64 MiB / 256-entry thumbnail cache bound background work.
+The viewer invalidates changed/deleted files and ignores stale completions.
+
+`ModelInfo.imageCapability` is `supported`, `unsupported`, or `unknown`.
+Built-ins derive it from the provider catalog; custom models stay unknown.
+Known nonvisual models show a composer limitation while accepting paths;
+image reads report lack of vision, and text reads keep working. Unknown
+custom models may attempt real image requests through their provider's
+transport. Rejection follows normal Turn/queue failure handling; no automatic
+model switch or text-only retry occurs. Capability belongs to the execution
+model captured by the accepted queue item.
+
+Managed files never move during draft/chat transitions. Explicit draft
+removal protects other drafts and send retries before release; the engine
+also checks durable queues, Transcript, and History. Startup reconciles
+durable references before serving image RPCs, reclaiming abandoned images
+and images from deleted chats only when no retained reference needs them.
+Unreadable or malformed durable records conservatively retain managed files.
+External files are never cleanup candidates. Drafts themselves are not
+persisted by this feature.
+
+## Conversation lifecycle
 
 Conversation memory (ADR-0010/0011): a chat's **History** — the model-facing
 `AgentMessage` sequence — persists as its own append-only JSONL record next to

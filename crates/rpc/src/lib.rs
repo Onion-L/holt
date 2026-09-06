@@ -20,6 +20,7 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 mod client;
+pub mod images;
 mod server;
 
 pub use client::{RpcClient, RpcSubscription};
@@ -165,6 +166,17 @@ pub mod methods {
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";
     pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
+    // Local images: bounded preview reads, pasted-image staging (Managed
+    // image), and draft-chip release. Not the legacy upload flow — these are
+    // served contracts over live local paths; see engine/src/images.rs.
+    /// `{ path }` → `{ mimeType, data }` (base64 bytes, byte-limited, sniffed).
+    pub const READ_IMAGE: &str = "ReadImage";
+    /// `{ data }` (base64 pasted bytes) → `{ path, mimeType }`; durable before
+    /// the reply, so a queue acceptance that follows is already covered.
+    pub const STAGE_IMAGE: &str = "StageImage";
+    /// `{ path }` → `{ released }`; managed paths only, and only when no
+    /// durable store still references the file.
+    pub const RELEASE_IMAGE: &str = "ReleaseImage";
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";

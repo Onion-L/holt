@@ -160,6 +160,15 @@ pub enum ApprovalVerdict {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageCapability {
+    Supported,
+    Unsupported,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
@@ -180,6 +189,8 @@ pub struct Model {
     /// deletable); builtin catalog rows are not.
     #[serde(default)]
     pub custom: bool,
+    #[serde(default)]
+    pub image_capability: ImageCapability,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
