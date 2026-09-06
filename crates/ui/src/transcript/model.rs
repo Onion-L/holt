@@ -509,9 +509,16 @@ pub fn rows_for_entry(
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
         let (body, badges) = crate::badges::split(&parsed.text);
+        // Legacy holt-file: mentions project first; new path references
+        // (quoted absolute paths, inline or in the appended list) collapse
+        // to the same chips. Both are pure over the text, so the raw-length
+        // row version below stays a valid cache/diff key.
         let (text, mentions) = match crate::composer::sent_mention_display(&body) {
             Some((display, spans)) => (display, spans),
-            None => (body, Vec::new()),
+            None => match crate::path_refs::sent_reference_display(&body) {
+                Some((display, spans)) => (display, spans),
+                None => (body, Vec::new()),
+            },
         };
         let copy_text = match (&skill, !text.trim().is_empty()) {
             (Some(skill), true) => {

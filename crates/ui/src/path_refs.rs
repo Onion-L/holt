@@ -124,6 +124,140 @@ pub fn append_references_opt(text: Option<&str>, refs: &[PathRef]) -> Option<Str
     Some(append_references(text.unwrap_or(""), refs))
 }
 
+// ---------------------------------------------------------------------------
+// Transcript projection: sent messages render path references as the same
+// `@name` chips the composer showed. Display-only — the raw text (what the
+// queue editor and the model see) is untouched.
+// ---------------------------------------------------------------------------
+
+use std::ops::Range;
+
+use gpui::SharedString;
+
+use crate::composer::SentMentionSpan;
+
+/// One quoted absolute path found in sent text: its raw byte range (quotes
+/// included) and the unescaped target.
+fn quoted_paths(text: &str) -> Vec<(Range<usize>, String)> {
+    let mut paths = Vec::new();
+    let mut at = 0;
+    while let Some(relative) = text[at..].find('"') {
+        let start = at + relative;
+        let mut cursor = start + 1;
+        let mut path = String::new();
+        let mut close = None;
+        while cursor < text.len() {
+            let ch = text[cursor..].chars().next().expect("cursor at boundary");
+            match ch {
+                '"' => {
+                    close = Some(cursor);
+                    break;
+                }
+                // A reference never spans a raw newline — its control
+                // characters are escaped. Anything else is not our format.
+                '\n' | '\r' => break,
+                '\\' => {
+                    let rest = &text[cursor + 1..];
+                    let mut chars = rest.chars();
+                    match chars.next() {
+                        Some('"') => path.push('"'),
+                        Some('\\') => path.push('\\'),
+                        Some('n') => path.push('\n'),
+                        Some('r') => path.push('\r'),
+                        Some('t') => path.push('\t'),
+                        Some('u') => {
+                            // The `\u{XX}` control-char escape.
+                            let Some(end) = rest.find('}') else { break };
+                            let Some(hex) = rest[..end].strip_prefix('{') else {
+                                break;
+                            };
+                            let Ok(code) = u32::from_str_radix(hex, 16) else {
+                                break;
+                            };
+                            let Some(c) = char::from_u32(code) else { break };
+                            path.push(c);
+                            cursor += 2 + end + 1;
+                            continue;
+                        }
+                        // Unknown escape: not our format.
+                        _ => break,
+                    }
+                    cursor += 2;
+                }
+                c => {
+                    path.push(c);
+                    cursor += c.len_utf8();
+                }
+            }
+        }
+        match close {
+            Some(end) => {
+                if path.starts_with('/') {
+                    paths.push((start..end + 1, path));
+                }
+                at = end + 1;
+            }
+            None => at = start + 1,
+        }
+    }
+    paths
+}
+
+/// Chip label for an absolute target: the basename, with a trailing `/` for
+/// folders (text chips have no icon to carry that distinction).
+fn chip_label(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    let name = trimmed.rsplit('/').next().filter(|name| !name.is_empty())?;
+    Some(if path.ends_with('/') {
+        format!("{name}/")
+    } else {
+        name.to_string()
+    })
+}
+
+/// Project a sent message's path references for the transcript: every quoted
+/// absolute path (`format_reference`'s output — inline mentions and the
+/// appended list alike) collapses to the composer's `@name` chip, everything
+/// else passes through. `None` when the text carries no reference, keeping
+/// ordinary prompts on the zero-allocation path.
+pub fn sent_reference_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)> {
+    if !raw.contains("\"/") {
+        return None;
+    }
+    let paths: Vec<_> = quoted_paths(raw)
+        .into_iter()
+        .filter_map(|(range, path)| chip_label(&path).map(|label| (range, path, label)))
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    let mut display = String::with_capacity(raw.len());
+    let mut spans = Vec::with_capacity(paths.len());
+    let mut at = 0;
+    for (range, path, label) in paths {
+        display.push_str(&raw[at..range.start]);
+        let start = display.len();
+        display.push('\u{00A0}');
+        display.push('@');
+        for ch in label.chars() {
+            display.push(if ch == ' ' || ch.is_control() {
+                '\u{00A0}'
+            } else {
+                ch
+            });
+        }
+        display.push('\u{00A0}');
+        spans.push(SentMentionSpan {
+            range: start..display.len(),
+            path: SharedString::from(path.clone()),
+            is_dir: path.ends_with('/'),
+        });
+        at = range.end;
+    }
+    display.push_str(&raw[at..]);
+    Some((display, spans))
+}
+
 /// Expand a leading `~` to the user's home directory (a chat's cwd may carry
 /// it; the engine's `expand_tilde` is the backend twin — the UI cannot link
 /// it across the RPC boundary).
@@ -241,6 +375,60 @@ mod tests {
         assert_eq!(expand_home("~/work/repo"), home.join("work/repo"));
         assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn sent_display_chips_inline_paths_like_the_composer() {
+        let raw = "open \"/abs/space/src/a file.rs\" and \"/abs/space/assets/\" now";
+        let (display, spans) = sent_reference_display(raw).expect("references project");
+        // Spaces in the label shape as NBSPs, exactly like the composer's
+        // mention projection.
+        assert_eq!(
+            display,
+            "open \u{00A0}@a\u{00A0}file.rs\u{00A0} and \u{00A0}@assets/\u{00A0} now"
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].path.as_ref(), "/abs/space/src/a file.rs");
+        assert!(!spans[0].is_dir);
+        assert_eq!(spans[1].path.as_ref(), "/abs/space/assets/");
+        assert!(spans[1].is_dir);
+        assert_eq!(
+            &display[spans[0].range.clone()],
+            "\u{00A0}@a\u{00A0}file.rs\u{00A0}"
+        );
+    }
+
+    #[test]
+    fn sent_display_chips_the_appended_list_and_repeats() {
+        let text = append_references(
+            "look at \"/abs/a.rs\" twice \"/abs/a.rs\"",
+            &[reference("/abs/dir", true), reference("/abs/b.rs", false)],
+        );
+        let (display, spans) = sent_reference_display(&text).expect("references project");
+        assert!(display.contains(REFS_HEADER), "{display}");
+        assert!(display.contains("- \u{00A0}@dir/\u{00A0}"), "{display}");
+        assert!(display.contains("- \u{00A0}@b.rs\u{00A0}"), "{display}");
+        assert_eq!(spans.len(), 4, "inline repeats each project: {display}");
+        assert!(!display.contains('"'), "no raw quotes remain: {display}");
+    }
+
+    #[test]
+    fn sent_display_unescapes_what_formatting_escaped() {
+        let raw = "check \"/abs/say \\\"hi\\\".rs\" and \"/abs/line\\nbreak.rs\"";
+        let (display, spans) = sent_reference_display(raw).expect("references project");
+        assert_eq!(spans[0].path.as_ref(), "/abs/say \"hi\".rs");
+        assert_eq!(spans[1].path.as_ref(), "/abs/line\nbreak.rs");
+        assert!(!display.contains('\\'), "{display}");
+    }
+
+    #[test]
+    fn sent_display_leaves_ordinary_quotes_and_text_alone() {
+        assert_eq!(sent_reference_display("just a prompt"), None);
+        assert_eq!(sent_reference_display("say \"hello\" loudly"), None);
+        assert_eq!(sent_reference_display("quote \"relative/path\" no"), None);
+        assert_eq!(sent_reference_display("unterminated \"/abs/path"), None);
+        // A bare root has no basename to label.
+        assert_eq!(sent_reference_display("root is \"/\" here"), None);
     }
 
     #[test]
