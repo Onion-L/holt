@@ -207,47 +207,80 @@ impl ChatRuntime {
         let mut queue = crate::queue::Queue::load(data_dir, chat_id);
         if let Some(started) = queue.recover_started() {
             let mut recovery_error = None;
-            if !transcript
-                .iter()
-                .any(|entry| entry.id == started.message.message_id)
-            {
-                transcript.push(SessionMessageEntry {
-                    id: started.message.message_id.clone(),
-                    role: MessageRole::User,
-                    parts: vec![MessagePart::Text {
-                        id: "t0".into(),
-                        text: started.message.request.prompt.clone(),
-                    }],
-                    created_at: started.timestamp,
-                    device_id: device_id.into(),
-                    status: None,
-                    continuation_of: None,
-                });
-            }
-            if !history.iter().any(|message| matches!(message, AgentMessage::User(user) if user.timestamp == started.timestamp)) {
-                let prompt = user_agent_message(started.message.request.prompt, started.timestamp);
-                if let Err(error) = crate::history::append_message(data_dir, chat_id, &prompt) {
-                    recovery_error = Some(error.to_string());
+            match started.message.kind {
+                // A manual Compaction was never a Turn: no transcript or
+                // History record to repair, and a restart never retries it —
+                // settling the checkpoint below is the whole recovery.
+                holt_proto::PendingKind::Compact => {}
+                holt_proto::PendingKind::Ordinary | holt_proto::PendingKind::Skill => {
+                    let is_skill = started.message.kind == holt_proto::PendingKind::Skill;
+                    if !transcript
+                        .iter()
+                        .any(|entry| entry.id == started.message.message_id)
+                    {
+                        let parts = if is_skill {
+                            // The skill's source file is not re-resolved on
+                            // load: the chip shows the name, like a pending
+                            // echo would.
+                            crate::skills::user_entry_parts(
+                                started.message.skill_name.clone().unwrap_or_default(),
+                                String::new(),
+                                started.message.extra_instructions.clone(),
+                            )
+                        } else {
+                            vec![MessagePart::Text {
+                                id: "t0".into(),
+                                text: started.message.request.prompt.clone(),
+                            }]
+                        };
+                        transcript.push(SessionMessageEntry {
+                            id: started.message.message_id.clone(),
+                            role: MessageRole::User,
+                            parts,
+                            created_at: started.timestamp,
+                            device_id: device_id.into(),
+                            status: None,
+                            continuation_of: None,
+                        });
+                    }
+                    // A skill Turn's model-visible prompt is the formatted
+                    // skill block; the synchronous load path cannot rescan
+                    // the catalog, so only the ordinary body is re-appended
+                    // here — a skill Turn that had already written History
+                    // is caught by the timestamp guard either way.
+                    if !is_skill
+                        && !history.iter().any(|message| matches!(message, AgentMessage::User(user) if user.timestamp == started.timestamp))
+                    {
+                        let prompt = user_agent_message(
+                            started.message.request.prompt.clone(),
+                            started.timestamp,
+                        );
+                        if let Err(error) =
+                            crate::history::append_message(data_dir, chat_id, &prompt)
+                        {
+                            recovery_error = Some(error.to_string());
+                        }
+                        history.push(prompt);
+                    }
+                    let id = format!("interrupted-{}", started.message.message_id);
+                    if !transcript.iter().any(|entry| entry.id == id) {
+                        transcript.push(SessionMessageEntry {
+                            id,
+                            role: MessageRole::Assistant,
+                            parts: vec![MessagePart::Notice {
+                                id: "n0".into(),
+                                message: "Turn interrupted by restart".into(),
+                            }],
+                            created_at: started.timestamp,
+                            device_id: device_id.into(),
+                            status: Some(MessageStatus::Aborted),
+                            continuation_of: None,
+                        });
+                    }
+                    if let Err(error) = persist_transcript(data_dir, chat_id, &transcript) {
+                        recovery_error = Some(error.to_string());
+                    }
                 }
-                history.push(prompt);
-            }
-            let id = format!("interrupted-{}", started.message.message_id);
-            if !transcript.iter().any(|entry| entry.id == id) {
-                transcript.push(SessionMessageEntry {
-                    id,
-                    role: MessageRole::Assistant,
-                    parts: vec![MessagePart::Notice {
-                        id: "n0".into(),
-                        message: "Turn interrupted by restart".into(),
-                    }],
-                    created_at: started.timestamp,
-                    device_id: device_id.into(),
-                    status: Some(MessageStatus::Aborted),
-                    continuation_of: None,
-                });
-            }
-            if let Err(error) = persist_transcript(data_dir, chat_id, &transcript) {
-                recovery_error = Some(error.to_string());
             }
             queue.recovered(recovery_error);
         }

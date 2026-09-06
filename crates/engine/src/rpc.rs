@@ -8,7 +8,7 @@ use holt_doc::{
     diff_transcript,
 };
 use holt_proto::{
-    AuthState, Chat, ChatConfig, RunRequest, SessionStatus, Space, TitleSettings,
+    AuthState, Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSettings,
     TitleSettingsState, TitleSource,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{AgentRun, ChatRuntime, run_agent_command};
+use crate::agent::{AgentRun, ChatRuntime};
 use crate::local_fs::{list_drives, list_folders, local_device};
 use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
@@ -368,7 +368,7 @@ impl EngineService {
                     if chat.is_removed() {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
-                    queue.enqueue(request, message_id)?;
+                    queue.enqueue(request, message_id, PendingKind::Ordinary, None, None)?;
                 }
                 self.kick_queue(chat);
             }
@@ -378,95 +378,29 @@ impl EngineService {
                 extra_instructions,
                 message_id,
             } => {
-                let execution = chat
-                    .execution
-                    .clone()
-                    .try_lock_owned()
-                    .map_err(|_| RpcError::Failed("this chat is already running".into()))?;
-                let cancel = CancellationToken::new();
-                *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
-                // Resolve against a fresh catalog FIRST: an unknown (or
-                // shadowed/invalid) name fails at submit time with no run
-                // and no transcript entry (ADR-0006).
-                let Some(skill) = self.skills.resolve(Some(&request.cwd), &name).await else {
-                    *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    return Err(RpcError::Failed(format!("unknown skill: {name}")));
-                };
-                let block = crate::skills::invocation_prompt(&skill, None);
-                let prompt =
-                    crate::skills::invocation_prompt(&skill, extra_instructions.as_deref());
-                // The user entry keeps the compact chip (name + source
-                // pointer); the `<skill>` block rides the AGENT entry's
-                // opening chip instead — the reply opens with what the
-                // model was told to follow, ahead of any thinking. The raw
-                // `/skill` directive never appears anywhere.
-                let mut parts = vec![MessagePart::Skill {
-                    id: "t0".into(),
-                    name: skill.name.clone(),
-                    file: skill.file_path.clone(),
-                    content: None,
-                }];
-                if let Some(extra) = extra_instructions
-                    .clone()
-                    .filter(|extra| !extra.trim().is_empty())
-                {
-                    parts.push(MessagePart::Text {
-                        id: "t1".into(),
-                        text: extra,
-                    });
+                if message_id.trim().is_empty() || name.trim().is_empty() {
+                    return Err(RpcError::BadParams(
+                        "messageId and skill name must not be empty".into(),
+                    ));
                 }
-                let preview = format!("/skill {name}");
-                let invocation_seed = MessagePart::Skill {
-                    id: "s0".into(),
-                    name: skill.name.clone(),
-                    file: skill.file_path.clone(),
-                    content: Some(block),
-                };
-                let run = self
-                    .start_turn(
-                        &params.chat_id,
-                        chat.clone(),
+                // Typed from submission to execution: the skill itself is
+                // resolved against a fresh catalog when the queue admits the
+                // item (rule 16) — an unknown or invalid name then retains
+                // the pending item with an error instead of failing here.
+                {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.enqueue(
                         request,
                         message_id,
-                        parts,
-                        preview,
-                        prompt,
-                        Some(invocation_seed),
-                        None,
-                        cancel,
-                        false,
-                    )
-                    .await;
-                let run = match run {
-                    Ok(run) => run,
-                    Err(error) => {
-                        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        return Err(error);
-                    }
-                };
-                let running_chat = chat.clone();
-                let runtime = self.runtime.clone();
-                let task = tokio::spawn(async move {
-                    let _execution = execution;
-                    let interrupted = run.cancel.clone();
-                    let success = run_agent_command(run).await;
-                    if !success && !interrupted.is_cancelled() {
-                        let mut queue =
-                            running_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                        if !running_chat.is_removed() {
-                            let _ = queue.pause(true);
-                        }
-                    }
-                    runtime.set_session(
-                        &running_chat.chat_id,
-                        if success || interrupted.is_cancelled() {
-                            SessionStatus::Idle
-                        } else {
-                            SessionStatus::Errored
-                        },
-                    );
-                });
-                chat.track_task(&task);
+                        PendingKind::Skill,
+                        Some(name),
+                        extra_instructions,
+                    )?;
+                }
+                self.kick_queue(chat);
             }
             SessionCommandPayload::Steer {
                 prompt,
@@ -502,152 +436,42 @@ impl EngineService {
                     "input responses are not available yet".into(),
                 ));
             }
-            SessionCommandPayload::Compact { request } => {
-                self.compact(chat, request).await?;
+            SessionCommandPayload::Compact {
+                request,
+                message_id,
+            } => {
+                // A manual Compaction joins the same ordered queue (ADR-0011
+                // as amended by message-queue ticket 04): the driver admits
+                // it in submission order and runs it outside the Turn model.
+                // A pre-queue peer sends no id — mint one (no dedup possible
+                // for its retries, same as any id-less command).
+                let message_id = if message_id.trim().is_empty() {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    message_id
+                };
+                {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    if chat.is_removed() {
+                        return Err(RpcError::Failed("chat was deleted".into()));
+                    }
+                    queue.enqueue(request, message_id, PendingKind::Compact, None, None)?;
+                }
+                self.kick_queue(chat);
             }
         }
         RpcReply::value(&serde_json::json!({}))
     }
 
-    /// A manual `/compact` (ADR-0011): compaction on demand — never a
-    /// Turn. Nothing Turn-scoped is stamped or reset; the session enters
-    /// `Compacting` (same interrupt affordance as a run) and returns to
-    /// idle on completion, failure, or interruption.
-    async fn compact(&self, chat: Arc<ChatRuntime>, request: RunRequest) -> Result<(), RpcError> {
-        let execution = chat
-            .execution
-            .clone()
-            .try_lock_owned()
-            .map_err(|_| RpcError::Failed("this chat is already running".into()))?;
-        // Slash commands remain direct until ticket 04; they share the
-        // ordinary queue's execution boundary.
-        if chat
-            .cancel
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some()
-        {
-            return Err(RpcError::Failed("this chat is already running".into()));
-        }
-        // A History that fits the retained tail has nothing to compact:
-        // refuse before any status change or model request.
-        let history = chat
-            .history
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if !crate::compaction::has_compactable_content(&history) {
-            return Err(RpcError::Failed("There is nothing to compact".into()));
-        }
-        let model = self
-            .providers
-            .resolve_model(request.provider.as_str(), &request.model)
-            .map_err(RpcError::BadParams)?;
-        let cancel = CancellationToken::new();
-        *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
-        let Some(api_key) = self
-            .providers
-            .credentials
-            .reveal_key(request.provider.as_str())
-            .await
-        else {
-            *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            return Err(RpcError::Failed(format!(
-                "provider {} is not configured",
-                request.provider
-            )));
-        };
-        if cancel.is_cancelled() || chat.is_removed() {
-            *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            return Err(RpcError::Failed(
-                "Compaction interrupted before execution".into(),
-            ));
-        }
-        let stream_fn = self
-            .runtime
-            .stream_fn
-            .clone()
-            .unwrap_or_else(crate::agent::default_stream_fn);
-        self.runtime
-            .set_session(&chat.chat_id, SessionStatus::Compacting);
-
-        let runtime = self.runtime.clone();
-        let device_id = self.engine_info.device_id.clone();
-        let compacting_chat = chat.clone();
-        let compacting_chat_id = chat.chat_id.clone();
-        let task = tokio::spawn(async move {
-            let _execution = execution;
-            let outcome = crate::compaction::compact_now(
-                &history,
-                &model,
-                &stream_fn,
-                &api_key,
-                holt_doc::parts::CompactionTrigger::Manual,
-                Some(&cancel),
-            )
-            .await;
-            match outcome {
-                Ok(Some(outcome)) => {
-                    crate::agent::record_turn_start_compaction(
-                        &compacting_chat,
-                        &device_id,
-                        &outcome.record,
-                    );
-                    *compacting_chat
-                        .history
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner()) = outcome.messages;
-                    // A manual compaction pays the overflow debt too.
-                    runtime.take_compact_before_next_turn(&compacting_chat_id);
-                }
-                // Pre-checked at acceptance; losing the race just settles.
-                Ok(None) => {}
-                Err(reason) => {
-                    // An interruption is the user's own act — settle
-                    // quietly. A real failure surfaces on the Transcript;
-                    // the History is untouched either way.
-                    if !cancel.is_cancelled() {
-                        {
-                            let mut queue = compacting_chat
-                                .queue
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            if !compacting_chat.is_removed() {
-                                let _ = queue.pause(true);
-                            }
-                        }
-                        tracing::warn!(target: "holt::compaction", %reason, "manual compaction failed");
-                        crate::agent::push_system_part(
-                            &compacting_chat,
-                            &device_id,
-                            format!("compaction-failed-{}", uuid::Uuid::new_v4()),
-                            holt_doc::MessagePart::Notice {
-                                id: "n0".into(),
-                                message: format!(
-                                    "Compaction failed ({reason}); the conversation was \
-                                     left unchanged."
-                                ),
-                            },
-                        );
-                    }
-                }
-            }
-            *compacting_chat
-                .cancel
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
-            runtime.set_session(&compacting_chat_id, SessionStatus::Idle);
-        });
-        chat.track_task(&task);
-        Ok(())
-    }
-
-    /// Accept and launch one ordinary Turn — the shared tail of `Run` and
-    /// `InvokeSkill`. `parts` is the transcript user entry (prompt text or
-    /// skill chip), `preview` the sidebar/title text, `prompt` the
-    /// model-visible text, and `invocation` the chip seeded at the head of
-    /// the run's own entry (skill invocations only).
+    /// Accept and launch one queued Turn — the driver's tail for ordinary
+    /// messages and skill invocations. `parts` is the transcript user entry
+    /// (prompt text or skill chip), `preview` the sidebar/title text,
+    /// `prompt` the model-visible text, and `invocation` the chip seeded at
+    /// the head of the run's own entry (skill invocations only). For a
+    /// queued skill the caller resolves the skill against a fresh catalog
+    /// and passes it as `resolved_skill`; the admission checkpoint then
+    /// rebuilds all of the above from the item the queue holds NOW, so an
+    /// edit of the extra instructions that landed mid-pick wins.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn start_turn(
         &self,
@@ -658,10 +482,11 @@ impl EngineService {
         mut parts: Vec<MessagePart>,
         mut preview: String,
         mut prompt: String,
-        invocation: Option<MessagePart>,
+        mut invocation: Option<MessagePart>,
         mut title_prompt: Option<String>,
         cancel: CancellationToken,
         queued: bool,
+        resolved_skill: Option<pi_core::agent::harness::types::Skill>,
     ) -> Result<AgentRun, RpcError> {
         if let Some(error) = chat
             .persistence_error
@@ -714,16 +539,59 @@ impl EngineService {
                 }
                 queue.start(&message_id, timestamp)?
             };
-            let current = admitted.message.request.prompt;
-            if current != prompt {
-                prompt = current.clone();
-                preview = current.clone();
-                // The queued entry's transcript shape is exactly one text part.
-                parts = vec![MessagePart::Text {
-                    id: "t0".into(),
-                    text: current.clone(),
-                }];
-                title_prompt = Some(current);
+            match admitted.message.kind {
+                PendingKind::Ordinary => {
+                    let current = admitted.message.request.prompt;
+                    if current != prompt {
+                        prompt = current.clone();
+                        preview = current.clone();
+                        // The queued entry's transcript shape is exactly one text part.
+                        parts = vec![MessagePart::Text {
+                            id: "t0".into(),
+                            text: current.clone(),
+                        }];
+                        title_prompt = Some(current);
+                    }
+                }
+                PendingKind::Skill => {
+                    let skill = resolved_skill
+                        .as_ref()
+                        .expect("a queued skill Turn resolves its skill at admission");
+                    let extra = admitted
+                        .message
+                        .extra_instructions
+                        .filter(|extra| !extra.trim().is_empty());
+                    let block = crate::skills::invocation_prompt(skill, None);
+                    prompt = crate::skills::invocation_prompt(skill, extra.as_deref());
+                    preview = format!(
+                        "/skill {}",
+                        admitted
+                            .message
+                            .skill_name
+                            .as_deref()
+                            .unwrap_or(&skill.name)
+                    );
+                    // The user entry keeps the compact chip (name + source
+                    // pointer); the `<skill>` block rides the AGENT entry's
+                    // opening chip instead — the reply opens with what the
+                    // model was told to follow, ahead of any thinking. The
+                    // raw `/skill` directive never appears anywhere.
+                    parts = crate::skills::user_entry_parts(
+                        skill.name.clone(),
+                        skill.file_path.clone(),
+                        extra,
+                    );
+                    invocation = Some(MessagePart::Skill {
+                        id: "s0".into(),
+                        name: skill.name.clone(),
+                        file: skill.file_path.clone(),
+                        content: Some(block),
+                    });
+                    title_prompt = None;
+                }
+                // Manual Compaction is admitted by the driver itself — it
+                // never becomes a Turn (ADR-0011).
+                PendingKind::Compact => unreachable!("Compaction never enters start_turn"),
             }
         }
         let baseline = self.git.turn_baseline(&request.cwd).await.ok();

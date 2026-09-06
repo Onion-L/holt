@@ -1,4 +1,6 @@
-//! Durable ordinary-message admission and per-chat serial execution.
+//! Durable typed-command admission and per-chat serial execution: ordinary
+//! messages, skill invocations (each its own Turn), and manual Compaction
+//! (the same execution channel, never a Turn — ADR-0011).
 
 use std::{
     collections::HashSet,
@@ -8,7 +10,7 @@ use std::{
 };
 
 use holt_doc::MessagePart;
-use holt_proto::{MessageQueue, PendingMessage, RunRequest};
+use holt_proto::{MessageQueue, PendingKind, PendingMessage, RunRequest, SessionStatus};
 use holt_rpc::RpcError;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -156,7 +158,14 @@ impl Queue {
         Ok(())
     }
 
-    pub fn enqueue(&mut self, request: RunRequest, message_id: String) -> Result<(), RpcError> {
+    pub fn enqueue(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+        kind: PendingKind,
+        skill_name: Option<String>,
+        extra_instructions: Option<String>,
+    ) -> Result<(), RpcError> {
         if self.record.accepted.contains(&message_id) {
             return if self.error.is_some() {
                 self.commit(self.record.clone())
@@ -169,6 +178,9 @@ impl Queue {
         next.pending.push(PendingMessage {
             message_id,
             request,
+            kind,
+            skill_name,
+            extra_instructions,
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -180,7 +192,13 @@ impl Queue {
         request: RunRequest,
         message_id: String,
     ) -> Result<(), RpcError> {
-        self.enqueue(request, message_id.clone())?;
+        self.enqueue(
+            request,
+            message_id.clone(),
+            PendingKind::Ordinary,
+            None,
+            None,
+        )?;
         let mut next = self.record.clone();
         next.priority.retain(|id| id != &message_id);
         next.priority.push(message_id);
@@ -203,9 +221,11 @@ impl Queue {
         })
     }
 
-    /// Change a pending ordinary message's body. Identity, position, and the
-    /// captured model settings are the queue's — an item that already started
-    /// is no longer editable.
+    /// Change the one editable field of a pending item: an ordinary
+    /// message's body, or a skill invocation's extra instructions. Identity,
+    /// position, kind, and the captured model settings are the queue's — an
+    /// item that already started is no longer editable, and a pending manual
+    /// Compaction has no editable field at all (delete and resubmit instead).
     pub fn edit(&mut self, message_id: &str, prompt: String) -> Result<(), RpcError> {
         let mut next = self.record.clone();
         let Some(item) = next
@@ -215,7 +235,22 @@ impl Queue {
         else {
             return Err(self.mutation_refusal(message_id));
         };
-        item.request.prompt = prompt;
+        match item.kind {
+            PendingKind::Ordinary => {
+                if prompt.trim().is_empty() {
+                    return Err(RpcError::BadParams("prompt must not be empty".into()));
+                }
+                item.request.prompt = prompt;
+            }
+            PendingKind::Skill => {
+                item.extra_instructions = (!prompt.trim().is_empty()).then_some(prompt);
+            }
+            PendingKind::Compact => {
+                return Err(RpcError::Failed(
+                    "A queued Compaction cannot be edited — delete it and submit again".into(),
+                ));
+            }
+        }
         self.commit(next)
     }
 
@@ -258,14 +293,22 @@ impl Queue {
             .flatten()
     }
 
+    /// Move a pending item into the priority order (Run now / Steer of an
+    /// existing item). Manual Compaction has no Run now action: it executes
+    /// strictly in submission order.
     pub fn promote(&mut self, message_id: &str) -> Result<(), RpcError> {
-        if !self
+        let Some(item) = self
             .record
             .pending
             .iter()
-            .any(|m| m.message_id == message_id)
-        {
+            .find(|m| m.message_id == message_id)
+        else {
             return Err(self.mutation_refusal(message_id));
+        };
+        if item.kind == PendingKind::Compact {
+            return Err(RpcError::Failed(
+                "A queued Compaction executes in order and cannot run now".into(),
+            ));
         }
         let mut next = self.record.clone();
         next.priority_only = next.paused;
@@ -341,6 +384,115 @@ impl Queue {
 }
 
 impl EngineService {
+    /// The queued manual Compaction (ADR-0011): never a Turn. The nothing-
+    /// to-compact, model, and credential checks run BEFORE the admission
+    /// checkpoint so a head that cannot start is retained with its feedback
+    /// (pause-under-admission-failure); the checkpoint itself guarantees a
+    /// restart never retries a Compaction that already began. Execution
+    /// publishes `Compacting`, swaps the History only on success, and
+    /// touches nothing Turn-scoped — no baseline, no transcript echo.
+    async fn run_queued_compaction(
+        &self,
+        chat: &Arc<ChatRuntime>,
+        message: &PendingMessage,
+        cancel: &CancellationToken,
+    ) -> (bool, Option<String>) {
+        let request = &message.request;
+        let history = chat
+            .history
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if !crate::compaction::has_compactable_content(&history) {
+            return (false, Some("There is nothing to compact".into()));
+        }
+        let model = match self
+            .providers
+            .resolve_model(request.provider.as_str(), &request.model)
+        {
+            Ok(model) => model,
+            Err(error) => return (false, Some(error.to_string())),
+        };
+        let Some(api_key) = self
+            .providers
+            .credentials
+            .reveal_key(request.provider.as_str())
+            .await
+        else {
+            return (
+                false,
+                Some(format!("provider {} is not configured", request.provider)),
+            );
+        };
+        if cancel.is_cancelled() || chat.is_removed() {
+            return (false, None);
+        }
+        let admitted = {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if cancel.is_cancelled() || chat.is_removed() {
+                return (false, None);
+            }
+            queue.start(&message.message_id, chrono::Utc::now().timestamp_millis())
+        };
+        if let Err(error) = admitted {
+            return (false, (!cancel.is_cancelled()).then(|| error.to_string()));
+        }
+        let stream_fn = self
+            .runtime
+            .stream_fn
+            .clone()
+            .unwrap_or_else(crate::agent::default_stream_fn);
+        self.runtime
+            .set_session(&chat.chat_id, SessionStatus::Compacting);
+        let outcome = crate::compaction::compact_now(
+            &history,
+            &model,
+            &stream_fn,
+            &api_key,
+            holt_doc::parts::CompactionTrigger::Manual,
+            Some(cancel),
+        )
+        .await;
+        match outcome {
+            Ok(Some(outcome)) => {
+                crate::agent::record_turn_start_compaction(
+                    chat,
+                    &self.engine_info.device_id,
+                    &outcome.record,
+                );
+                *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages;
+                // A manual compaction pays the overflow debt too.
+                self.runtime.take_compact_before_next_turn(&chat.chat_id);
+                (true, None)
+            }
+            // Pre-checked above; losing the race just settles.
+            Ok(None) => (true, None),
+            Err(reason) => {
+                // An interruption is the user's own act — settle quietly. A
+                // real failure surfaces on the Transcript; the History is
+                // untouched either way.
+                if cancel.is_cancelled() {
+                    (false, None)
+                } else {
+                    tracing::warn!(target: "holt::compaction", %reason, "manual compaction failed");
+                    crate::agent::push_system_part(
+                        chat,
+                        &self.engine_info.device_id,
+                        format!("compaction-failed-{}", uuid::Uuid::new_v4()),
+                        MessagePart::Notice {
+                            id: "n0".into(),
+                            message: format!(
+                                "Compaction failed ({reason}); the conversation was \
+                                 left unchanged."
+                            ),
+                        },
+                    );
+                    (false, Some(format!("Compaction failed ({reason})")))
+                }
+            }
+        }
+    }
+
     pub(crate) fn kick_queue(&self, chat: Arc<ChatRuntime>) {
         if chat.driver_running.swap(true, Ordering::AcqRel) {
             return;
@@ -367,28 +519,67 @@ impl EngineService {
                     let picked_id = message.message_id.clone();
                     (message, cancel, picked_id)
                 };
-                let prompt = message.request.prompt.clone();
-                let prepared = service
-                    .start_turn(
-                        &worker_chat.chat_id,
-                        worker_chat.clone(),
-                        message.request,
-                        message.message_id,
-                        vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: prompt.clone(),
-                        }],
-                        prompt.clone(),
-                        prompt.clone(),
-                        None,
-                        Some(prompt),
-                        cancel.clone(),
-                        true,
-                    )
-                    .await;
-                let (success, error) = match prepared {
-                    Ok(run) => (run_agent_command(run).await, None),
-                    Err(error) => (false, (!cancel.is_cancelled()).then(|| error.to_string())),
+                let kind = message.kind;
+                let (success, error) = match kind {
+                    PendingKind::Compact => {
+                        service
+                            .run_queued_compaction(&worker_chat, &message, &cancel)
+                            .await
+                    }
+                    PendingKind::Ordinary | PendingKind::Skill => {
+                        // A queued skill resolves against a fresh catalog at
+                        // admission (rule 16): an unknown or invalid name
+                        // retains the pending item with an error and pauses
+                        // the queue BEFORE any Turn is created.
+                        let skill = if kind == PendingKind::Skill {
+                            let name = message.skill_name.clone().unwrap_or_default();
+                            match service
+                                .skills
+                                .resolve(Some(&message.request.cwd), &name)
+                                .await
+                            {
+                                Some(skill) => Ok(Some(skill)),
+                                // Cancel-aware like the start_turn error path
+                                // below: a Steer/Stop that landed during the
+                                // scan settles quietly.
+                                None if cancel.is_cancelled() => Err((false, None)),
+                                None => Err((false, Some(format!("unknown skill: {name}")))),
+                            }
+                        } else {
+                            Ok(None)
+                        };
+                        match skill {
+                            Err(outcome) => outcome,
+                            Ok(skill) => {
+                                let prompt = message.request.prompt.clone();
+                                let prepared = service
+                                    .start_turn(
+                                        &worker_chat.chat_id,
+                                        worker_chat.clone(),
+                                        message.request,
+                                        message.message_id,
+                                        vec![MessagePart::Text {
+                                            id: "t0".into(),
+                                            text: prompt.clone(),
+                                        }],
+                                        prompt.clone(),
+                                        prompt.clone(),
+                                        None,
+                                        Some(prompt),
+                                        cancel.clone(),
+                                        true,
+                                        skill,
+                                    )
+                                    .await;
+                                match prepared {
+                                    Ok(run) => (run_agent_command(run).await, None),
+                                    Err(error) => {
+                                        (false, (!cancel.is_cancelled()).then(|| error.to_string()))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 };
                 let started = worker_chat
                     .queue
@@ -423,12 +614,16 @@ impl EngineService {
                     );
                 }
                 if started {
+                    // A failed or interrupted Compaction settles Idle like a
+                    // successful one: it was never a Turn, so there is no
+                    // errored Turn to report — the pause and the Transcript
+                    // notice carry the failure.
                     service.runtime.set_session(
                         &worker_chat.chat_id,
-                        if success || cancel.is_cancelled() {
-                            holt_proto::SessionStatus::Idle
+                        if kind == PendingKind::Compact || success || cancel.is_cancelled() {
+                            SessionStatus::Idle
                         } else {
-                            holt_proto::SessionStatus::Errored
+                            SessionStatus::Errored
                         },
                     );
                 }
@@ -453,15 +648,23 @@ mod tests {
         .expect("run request")
     }
 
+    fn enqueue_ordinary(queue: &mut Queue, prompt: &str, model: &str, message_id: &str) {
+        queue
+            .enqueue(
+                request(prompt, model),
+                message_id.into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+            )
+            .expect("enqueue");
+    }
+
     fn queue_with_pending() -> (Queue, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut queue = Queue::load(dir.path(), "chat-1");
-        queue
-            .enqueue(request("B", "openai/gpt-5.4"), "m-b".into())
-            .expect("enqueue B");
-        queue
-            .enqueue(request("C", "openai/gpt-5.4-mini"), "m-c".into())
-            .expect("enqueue C");
+        enqueue_ordinary(&mut queue, "B", "openai/gpt-5.4", "m-b");
+        enqueue_ordinary(&mut queue, "C", "openai/gpt-5.4-mini", "m-c");
         (queue, dir)
     }
 
@@ -496,9 +699,7 @@ mod tests {
             ["m-c"]
         );
         // Deleting the tail works the same way.
-        queue
-            .enqueue(request("D", "openai/gpt-5.4"), "m-d".into())
-            .expect("enqueue D");
+        enqueue_ordinary(&mut queue, "D", "openai/gpt-5.4", "m-d");
         queue.delete("m-c").expect("delete tail");
         assert_eq!(
             queue
@@ -555,6 +756,94 @@ mod tests {
             reloaded.record.pending[0].request.model,
             "openai/gpt-5.4-mini"
         );
+        assert!(reloaded.record.paused, "a non-empty queue restores paused");
+    }
+
+    fn queue_with_typed() -> (Queue, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut queue = Queue::load(dir.path(), "chat-1");
+        queue
+            .enqueue(
+                request("", "openai/gpt-5.4"),
+                "m-skill".into(),
+                PendingKind::Skill,
+                Some("grill".into()),
+                Some("focus on the data layer".into()),
+            )
+            .expect("enqueue skill");
+        queue
+            .enqueue(
+                request("", "openai/gpt-5.4"),
+                "m-compact".into(),
+                PendingKind::Compact,
+                None,
+                None,
+            )
+            .expect("enqueue compact");
+        (queue, dir)
+    }
+
+    #[test]
+    fn a_skill_edit_changes_only_the_extra_instructions() {
+        let (mut queue, _dir) = queue_with_typed();
+        let before = queue.record.pending[0].clone();
+        queue
+            .edit("m-skill", "different focus".into())
+            .expect("edit skill");
+        let after = &queue.record.pending[0];
+        assert_eq!(after.extra_instructions.as_deref(), Some("different focus"));
+        assert_eq!(after.kind, PendingKind::Skill);
+        assert_eq!(after.skill_name.as_deref(), Some("grill"));
+        assert_eq!(after.message_id, before.message_id);
+        assert_eq!(after.submitted_at, before.submitted_at);
+        assert_eq!(after.request.model, before.request.model);
+        // Clearing the extra instructions is a valid edit.
+        queue.edit("m-skill", "  ".into()).expect("clear extra");
+        assert_eq!(queue.record.pending[0].extra_instructions, None);
+        // The prompt stays the queue's, never the editor's.
+        assert_eq!(queue.record.pending[0].request.prompt, "");
+    }
+
+    #[test]
+    fn an_ordinary_edit_still_requires_a_body() {
+        let (mut queue, _dir) = queue_with_pending();
+        assert!(queue.edit("m-b", "   ".into()).is_err());
+        assert_eq!(queue.record.pending[0].request.prompt, "B");
+    }
+
+    #[test]
+    fn a_compaction_has_no_edit_or_run_now_but_deletes() {
+        let (mut queue, _dir) = queue_with_typed();
+        let error = queue.edit("m-compact", "nope".into()).unwrap_err();
+        assert!(error.to_string().contains("cannot be edited"), "{error}");
+        let error = queue.promote("m-compact").unwrap_err();
+        assert!(error.to_string().contains("cannot run now"), "{error}");
+        // The skill ahead of it keeps its spot; the compaction deletes fine.
+        queue.delete("m-compact").expect("delete compact");
+        assert_eq!(queue.record.pending.len(), 1);
+        assert_eq!(queue.record.pending[0].message_id, "m-skill");
+    }
+
+    #[test]
+    fn a_skill_promotes_into_the_priority_order() {
+        let (mut queue, _dir) = queue_with_typed();
+        queue.promote("m-skill").expect("promote skill");
+        assert_eq!(queue.record.priority, vec!["m-skill".to_string()]);
+    }
+
+    #[test]
+    fn typed_items_survive_a_reload() {
+        let (mut queue, dir) = queue_with_typed();
+        queue
+            .edit("m-skill", "edited extra".into())
+            .expect("edit skill");
+        let reloaded = Queue::load(dir.path(), "chat-1");
+        assert_eq!(reloaded.record.pending.len(), 2);
+        let skill = &reloaded.record.pending[0];
+        assert_eq!(skill.kind, PendingKind::Skill);
+        assert_eq!(skill.skill_name.as_deref(), Some("grill"));
+        assert_eq!(skill.extra_instructions.as_deref(), Some("edited extra"));
+        assert_eq!(reloaded.record.pending[1].kind, PendingKind::Compact);
         assert!(reloaded.record.paused, "a non-empty queue restores paused");
     }
 }

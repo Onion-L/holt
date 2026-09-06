@@ -73,17 +73,22 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root, shadowed entries, and load diagnostics).
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
-- Ordinary-message queue: `WatchMessageQueue` (`MessageQueue` snapshots
+- Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
-  `QueueCommand run` acknowledges durable acceptance by `messageId`;
-  the same identity is deduplicated across pending, started, and completed
-  work, including after restart. `EditQueuedMessage` (`{chatId, messageId,
-  prompt}`) rewrites only a pending message's body — identity, position, and
-  the captured model settings are the queue's — and `DeleteQueuedMessage`
-  (`{chatId, messageId}`) removes one, preserving the order of the rest.
-  Both acknowledge only after the queue file is durably replaced and reply
-  with the accepted snapshot; a started item refuses both instead of
-  touching the active Turn. Admission errors arrive through the Watch.
+  `QueueCommand run`/`invokeSkill`/`compact` acknowledge durable acceptance
+  by `messageId`; the same identity is deduplicated across pending, started,
+  and completed work, including after restart. Pending items are typed
+  (`PendingKind`): an ordinary message or a skill invocation starts its own
+  Turn, a manual Compaction shares the channel without one (ADR-0011).
+  `EditQueuedMessage` (`{chatId, messageId, prompt}`) rewrites only the one
+  editable field — an ordinary message's body or a skill invocation's extra
+  instructions; identity, position, kind, and the captured model settings
+  are the queue's, and a pending Compaction has no editable field — and
+  `DeleteQueuedMessage` (`{chatId, messageId}`) removes one, preserving the
+  order of the rest. Both acknowledge only after the queue file is durably
+  replaced and reply with the accepted snapshot; a started item refuses both
+  instead of touching the active Turn. Admission errors arrive through the
+  Watch.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
@@ -127,10 +132,11 @@ Skills (ADR-0005/0006) ride the catalog above: every run appends a
 metadata-only `<available_skills>` block to the system prompt from a
 fresh three-root scan (the upstream loader and formatters; budget-capped),
 the model self-serves `SKILL.md` through the mounted read tool, and the
-composer's `/skill` slash command queues a typed `InvokeSkill` command
-whose prompt the engine formats from the skill's content — the raw
-directive never reaches the model, and both invocations and `SKILL.md`
-reads render as compact chips in the transcript.
+composer's `/skill` slash command queues a typed `InvokeSkill` item whose
+prompt the engine formats from the skill's content — resolved against a
+fresh catalog when the queue admits the item, never frozen at submission —
+the raw directive never reaches the model, and both invocations and
+`SKILL.md` reads render as compact chips in the transcript.
 
 The implemented agent slice is intentionally narrow: provider configuration,
 provider/model discovery, `createChat`/`renameChat`, chat/session watches, `QueueCommand`
@@ -153,23 +159,27 @@ Transcript notice rather than blocking the chat. **Compaction**
 plus a verbatim recent tail, using pi-core's compaction primitives through
 the same stream function the agent loop uses: automatically before a Turn
 and between tool rounds (`prepare_next_turn`), manually with the `/compact`
-slash command (a typed command — the `Compacting` session status is
-interruptible like a run), and unconditionally on the Turn after a context
-overflow. The Transcript never shrinks — dividers (expandable, with
-before/after token counts and the trigger) and notices mark what happened.
-Ordinary messages persist in `queues/<chatId>.json`, independently of
-Transcript and History. Each chat has one FIFO consumer and one execution
-lock held through preparation, execution, History repair, Transcript
-settlement, and queue completion. An interrupt requests cancellation and
-pauses the queue; the channel stays occupied until cleanup completes.
-Approval waits and automatic/manual Compaction share that boundary.
-Successful Turns advance automatically. Execution failures pause remaining
-work; admission failures retain the head with an error without creating a
-Turn. New submissions preserve pause state; only Continue resumes it.
+slash command (a typed queue item — the `Compacting` session status is
+interruptible like a run when the queue admits it), and unconditionally on
+the Turn after a context overflow. The Transcript never shrinks — dividers
+(expandable, with before/after token counts and the trigger) and notices
+mark what happened. Queue items — ordinary messages, skill invocations,
+and manual Compaction commands — persist in `queues/<chatId>.json`,
+independently of Transcript and History. Each chat has one FIFO consumer
+and one execution lock held through preparation, execution, History
+repair, Transcript settlement, and queue completion. An interrupt requests
+cancellation and pauses the queue; the channel stays occupied until
+cleanup completes. Approval waits and automatic/manual Compaction share
+that boundary. Successful work advances automatically — a completed
+Compaction included. Execution failures pause remaining work; admission
+failures (missing credentials, an unresolved skill, nothing to compact)
+retain the head with an error without creating a Turn. New submissions
+preserve pause state; only Continue resumes it.
 
 The pending-to-started checkpoint is atomically replaced and synced before
-any model or tool work. Restart repairs a started message as interrupted,
-never requeues it, and restores unstarted work paused. The queue keeps
+any model or tool work. Restart repairs a started Turn as interrupted,
+never requeues it, settles a started Compaction with no record at all (it
+was never a Turn), and restores unstarted work paused. The queue keeps
 accepted message identities to make delivery retries idempotent. A failed
 conversation write pauses consumption and requires storage repair and an
 app reopen before further admission; an unreadable queue is retained and
@@ -177,13 +187,17 @@ blocked instead of overwritten. A completion status is published only
 after queue completion is recorded or its persistence failure is surfaced.
 
 The composer watches only its selected chat's queue, above the input;
-pending messages are absent from Transcript and History. Model and reasoning
+pending items are absent from Transcript and History. Model and reasoning
 are captured on submission. Permission mode and live checkout identity are
 read at Turn admission, when the latest-Turn diff baseline is refreshed.
 The queue is consumed by the engine even when its chat is not selected.
-The composer offers edit and delete on each pending message: the editor is
-its own card (the composer's draft text is unrelated), Escape cancels, and
-a failed save keeps the unsaved text with the error.
+Rows render their command kind — an ordinary body, `/skill <name>` with
+its extra instructions, `/compact` — and offer the actions the kind
+allows: Run now, edit, and delete for ordinary messages and skill
+invocations (a skill edits only its extra instructions), delete alone for
+a pending Compaction. The editor is its own card (the composer's draft
+text is unrelated), Escape cancels, and a failed save keeps the unsaved
+text with the error.
 
 Queue mutations serialize with execution admission on the queue lock. The
 admission checkpoint (pending-to-started) re-reads the item from the queue,
@@ -194,10 +208,15 @@ different item. After the checkpoint the item is execution's property:
 mutations fail with an already-executing error and the run proceeds exactly
 once.
 
-Steer and queued slash commands remain subsequent
-slices. `/skill` and `/compact` still use direct commands and reject an
-occupied execution channel; `/compact` remains outside the Turn model.
-Terminals, worktrees, change requests, and uploads remain unserved.
+Steer (ADR-0015) is the explicit priority action: it interrupts active
+work, waits for its cleanup, and starts the selected message as a new Turn
+ahead of ordinary pending work — pending Steer requests keep their
+submission order, and Run now on a paused queue authorizes only the
+selected item. Skill invocations support the same Run now/Steer promotion;
+a pending Compaction executes strictly in order. `/skill` and `/compact`
+join the same queue as ordinary messages (ticket 04); `/compact` remains
+outside the Turn model. Terminals, worktrees, change requests, and uploads
+remain unserved.
 
 The engine's integration tests drive whole Turns through `RpcService::handle`
 against a scripted provider injected via `EngineConfig::stream_fn` (set only

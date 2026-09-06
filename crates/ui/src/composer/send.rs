@@ -1,8 +1,8 @@
 //! The send path: ordinary-message enqueue, direct slash commands,
 //! durable-delivery retries, and Stop/interrupt.
 
+use super::Composer;
 use super::send_mode::{SendButtonMode, composer_has_content, send_button_mode};
-use super::{Composer, ComposerEvent};
 
 use gpui::{App, Context, div, prelude::*, px};
 
@@ -290,54 +290,15 @@ impl Composer {
             attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
         }
 
-        // Optimistic echo (client-minted id doubles as the persisted message id,
-        // so the doc frame dedups it away). A skill invocation echoes as its
-        // chip — name only; the engine's entry carries the real source file
-        // and supersedes the echo once its frame lands.
-        let echo_parts: Vec<MessagePart> = match &slash {
-            super::slash::Parsed::Skill { name, extra } => {
-                let mut parts = vec![MessagePart::Skill {
-                    id: "t0".into(),
-                    name: name.clone(),
-                    file: String::new(),
-                    // The engine's entry carries the invocation block and
-                    // supersedes this echo by id once its frame lands.
-                    content: None,
-                }];
-                if let Some(extra) = extra {
-                    parts.push(MessagePart::Text {
-                        id: "t1".into(),
-                        text: extra.clone(),
-                    });
-                }
-                parts
-            }
-            _ => vec![MessagePart::Text {
-                id: "t0".into(),
-                text: echo_text.clone(),
-            }],
-        };
-        let echo = SessionMessageEntry {
-            id: message_id.clone(),
-            role: holt_doc::MessageRole::User,
-            parts: echo_parts,
-            created_at,
-            device_id: "local".into(),
-            status: None,
-            continuation_of: None,
-        };
+        // No optimistic echo: every submission is a typed queue item now
+        // (ticket 04) — it shows in the queue panel immediately and enters
+        // the Transcript only when the engine admits it, in the engine's own
+        // frame. `/compact` likewise has no user entry to echo — the
+        // Compacting status is the whole UI story until the divider lands
+        // (ADR-0011).
         self.state.update(cx, |s, cx| {
             if is_new {
                 s.select_chat(Some(chat_id.clone()), cx);
-            }
-            // `/compact` has no user entry to echo — the Compacting status
-            // is the whole UI story until the divider lands (ADR-0011).
-            if matches!(slash, super::slash::Parsed::Skill { .. }) {
-                s.push_echo(&chat_id, echo);
-                // Working overlay until the engine executes the queued
-                // command — without it a send flashed Completed (and could
-                // ring the done-chime) in the queue→drain→sync gap.
-                s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
             }
             cx.notify();
         });
@@ -346,12 +307,6 @@ impl Composer {
         self.drafts.remove(&self.current_key);
         self.failure = None;
         self.sending = true;
-        if matches!(slash, super::slash::Parsed::Skill { .. }) {
-            cx.emit(ComposerEvent::Sent {
-                chat_id: chat_id.clone(),
-                message_id: message_id.clone(),
-            });
-        }
         cx.notify();
 
         let restore_text = failure_restore_text(&slash, typed);
@@ -645,6 +600,7 @@ impl Composer {
                             attachments: Vec::new(),
                             worktree: run_worktree,
                         },
+                        message_id: message_id.clone(),
                     },
                     _ => SessionCommandPayload::Run {
                         request: RunRequest {
@@ -673,14 +629,13 @@ impl Composer {
                 if !transfers.is_empty() {
                     params["transfers"] = serde_json::Value::Array(transfers);
                 }
-                if matches!(slash, super::slash::Parsed::Skill { .. } | super::slash::Parsed::Compact) {
-                    // These direct commands gain queue identities in ticket 04.
-                } else {
-                    if let Some(retry) = retry { params = retry; }
-                    this.update(cx, |composer, _| {
-                        composer.failed_submissions.insert(chat_id.clone(), (submission_text.clone(), params.clone()));
-                    }).ok();
-                }
+                // Every queued command carries a client-minted identity, so
+                // the durable-enqueue retry path covers ordinary messages,
+                // skill invocations, and Compaction alike.
+                if let Some(retry) = retry { params = retry; }
+                this.update(cx, |composer, _| {
+                    composer.failed_submissions.insert(chat_id.clone(), (submission_text.clone(), params.clone()));
+                }).ok();
                 // Deadline-bounded: QueueCommand is a local write, but a
                 // parked backend handle can stall forever —
                 // the send task must never grind silently (2026-08-19).

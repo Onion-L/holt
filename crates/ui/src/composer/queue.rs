@@ -15,8 +15,11 @@ use crate::theme::Theme;
 /// the pending list (started, deleted elsewhere) dismisses an untouched
 /// editor but keeps one holding unsaved text, so Save can surface the
 /// engine's "already executing" refusal instead of silently dropping it.
+/// For a skill invocation the editor holds only its extra instructions —
+/// name, kind, and captured configuration are the queue's.
 pub(super) struct QueueEdit {
     pub(super) message_id: String,
+    pub(super) kind: holt_proto::PendingKind,
     pub(super) original: String,
     pub(super) input: Entity<ComposerInput>,
     pub(super) focus_pending: bool,
@@ -77,10 +80,12 @@ impl Composer {
         }));
     }
 
-    /// Start editing a pending message's body. The captured model, the kind,
-    /// and the position belong to the queue and are not offered here.
+    /// Start editing a pending item's one editable field — an ordinary
+    /// message's body, or a skill invocation's extra instructions. The
+    /// captured model, the kind, and the position belong to the queue and
+    /// are not offered here.
     pub(super) fn open_queue_edit(&mut self, message_id: &str, cx: &mut Context<Self>) {
-        let prompt = {
+        let (kind, body) = {
             let state = self.state.read(cx);
             let Some(item) = state.message_queue.as_ref().and_then(|queue| {
                 queue
@@ -90,10 +95,23 @@ impl Composer {
             }) else {
                 return;
             };
-            item.request.prompt.clone()
+            let body = match item.kind {
+                holt_proto::PendingKind::Skill => {
+                    item.extra_instructions.clone().unwrap_or_default()
+                }
+                holt_proto::PendingKind::Ordinary => item.request.prompt.clone(),
+                // A pending Compaction has no edit affordance — never open
+                // an editor against its (unused) prompt.
+                holt_proto::PendingKind::Compact => return,
+            };
+            (item.kind, body)
         };
-        let input = cx.new(|cx| ComposerInput::new("Edit the queued message", cx));
-        input.update(cx, |input, cx| input.set_text(prompt.clone(), cx));
+        let placeholder = match kind {
+            holt_proto::PendingKind::Skill => "Edit the extra instructions",
+            _ => "Edit the queued message",
+        };
+        let input = cx.new(|cx| ComposerInput::new(placeholder, cx));
+        input.update(cx, |input, cx| input.set_text(body.clone(), cx));
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.save_queue_edit(cx);
@@ -101,7 +119,8 @@ impl Composer {
         });
         self.queue_edit = Some(QueueEdit {
             message_id: message_id.into(),
-            original: prompt,
+            kind,
+            original: body,
             input,
             focus_pending: true,
             _events: events,
@@ -328,7 +347,27 @@ impl Composer {
                         range
                             .map(|ix| {
                                 let item = &pending[ix];
-                                div()
+                                // Typed rows (ticket 04): the command kind
+                                // leads, never a raw slash directive or the
+                                // engine-formatted skill body.
+                                let (title, subtitle) = match item.kind {
+                                    holt_proto::PendingKind::Ordinary => {
+                                        (item.request.prompt.clone(), item.request.model.clone())
+                                    }
+                                    holt_proto::PendingKind::Skill => (
+                                        format!(
+                                            "/skill {}",
+                                            item.skill_name.as_deref().unwrap_or_default()
+                                        ),
+                                        item.extra_instructions
+                                            .clone()
+                                            .unwrap_or_else(|| item.request.model.clone()),
+                                    ),
+                                    holt_proto::PendingKind::Compact => {
+                                        ("/compact".to_string(), item.request.model.clone())
+                                    }
+                                };
+                                let row = div()
                                     .id(gpui::SharedString::from(item.message_id.clone()))
                                     .h(px(40.0))
                                     .w_full()
@@ -354,85 +393,95 @@ impl Composer {
                                                 div()
                                                     .truncate()
                                                     .text_color(theme.text)
-                                                    .child(item.request.prompt.clone()),
+                                                    .child(title),
                                             )
                                             .child(
                                                 div()
                                                     .truncate()
                                                     .text_color(theme.text_faint)
-                                                    .child(item.request.model.clone()),
+                                                    .child(subtitle),
                                             ),
-                                    )
-                                    .child(
+                                    );
+                                let delete = queue_row_action(
+                                    format!("queue-delete-{}", item.message_id),
+                                    "Delete queued message",
+                                    crate::icons::TRASH_BIN_MINIMALISTIC,
+                                    theme.glass_hover(),
+                                    theme.text_muted,
+                                    {
+                                        let composer = composer.clone();
+                                        let message_id = item.message_id.clone();
+                                        move |_, _, cx| {
+                                            composer
+                                                .update(cx, |this, cx| {
+                                                    this.delete_queued_message(
+                                                        message_id.clone(),
+                                                        cx,
+                                                    )
+                                                })
+                                                .ok();
+                                        }
+                                    },
+                                );
+                                // A pending Compaction executes strictly in
+                                // order: delete is its only action.
+                                if item.kind == holt_proto::PendingKind::Compact {
+                                    return row.child(
                                         div()
                                             .flex_none()
                                             .flex()
                                             .items_center()
                                             .gap(px(2.0))
-                                            .child(queue_row_action(
-                                                format!("queue-run-{}", item.message_id),
-                                                "Run queued message now",
-                                                crate::icons::ARROW_RIGHT,
-                                                theme.glass_hover(),
-                                                theme.text_muted,
-                                                {
-                                                    let composer = composer.clone();
-                                                    let message_id = item.message_id.clone();
-                                                    move |_, _, cx| {
-                                                        composer
-                                                            .update(cx, |this, cx| {
-                                                                this.run_queue_now(
-                                                                    message_id.clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                    }
-                                                },
-                                            ))
-                                            .child(queue_row_action(
-                                                format!("queue-edit-{}", item.message_id),
-                                                "Edit queued message",
-                                                crate::icons::PEN,
-                                                theme.glass_hover(),
-                                                theme.text_muted,
-                                                {
-                                                    let composer = composer.clone();
-                                                    let message_id = item.message_id.clone();
-                                                    move |_, _, cx| {
-                                                        composer
-                                                            .update(cx, |this, cx| {
-                                                                this.open_queue_edit(
-                                                                    &message_id,
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                    }
-                                                },
-                                            ))
-                                            .child(queue_row_action(
-                                                format!("queue-delete-{}", item.message_id),
-                                                "Delete queued message",
-                                                crate::icons::TRASH_BIN_MINIMALISTIC,
-                                                theme.glass_hover(),
-                                                theme.text_muted,
-                                                {
-                                                    let composer = composer.clone();
-                                                    let message_id = item.message_id.clone();
-                                                    move |_, _, cx| {
-                                                        composer
-                                                            .update(cx, |this, cx| {
-                                                                this.delete_queued_message(
-                                                                    message_id.clone(),
-                                                                    cx,
-                                                                )
-                                                            })
-                                                            .ok();
-                                                    }
-                                                },
-                                            )),
-                                    )
+                                            .child(delete),
+                                    );
+                                }
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(2.0))
+                                        .child(queue_row_action(
+                                            format!("queue-run-{}", item.message_id),
+                                            "Run queued message now",
+                                            crate::icons::ARROW_RIGHT,
+                                            theme.glass_hover(),
+                                            theme.text_muted,
+                                            {
+                                                let composer = composer.clone();
+                                                let message_id = item.message_id.clone();
+                                                move |_, _, cx| {
+                                                    composer
+                                                        .update(cx, |this, cx| {
+                                                            this.run_queue_now(
+                                                                message_id.clone(),
+                                                                cx,
+                                                            )
+                                                        })
+                                                        .ok();
+                                                }
+                                            },
+                                        ))
+                                        .child(queue_row_action(
+                                            format!("queue-edit-{}", item.message_id),
+                                            "Edit queued message",
+                                            crate::icons::PEN,
+                                            theme.glass_hover(),
+                                            theme.text_muted,
+                                            {
+                                                let composer = composer.clone();
+                                                let message_id = item.message_id.clone();
+                                                move |_, _, cx| {
+                                                    composer
+                                                        .update(cx, |this, cx| {
+                                                            this.open_queue_edit(&message_id, cx)
+                                                        })
+                                                        .ok();
+                                                }
+                                            },
+                                        ))
+                                        .child(delete),
+                                )
                             })
                             .collect::<Vec<_>>()
                     })
@@ -481,7 +530,12 @@ impl Composer {
                 div()
                     .text_size(crate::typography::ui_rems(11.0))
                     .text_color(theme.text_faint)
-                    .child("Edit queued message — Enter saves, Shift-Enter adds a line"),
+                    .child(match edit.kind {
+                        holt_proto::PendingKind::Skill => {
+                            "Edit extra instructions — Enter saves, Shift-Enter adds a line"
+                        }
+                        _ => "Edit queued message — Enter saves, Shift-Enter adds a line",
+                    }),
             )
             .child(div().w_full().min_w_0().child(input))
             .child(

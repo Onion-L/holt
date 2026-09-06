@@ -171,6 +171,7 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
                 "chatId": "chat-1",
                 "command": {
                     "kind": "compact",
+                    "messageId": "manual-compact",
                     "request": {
                         "prompt": "",
                         "provider": "openai",
@@ -185,28 +186,10 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         )
         .await
         .unwrap();
-    let mut statuses = Vec::new();
-    loop {
-        let frame = common::next_frame(&mut sessions).await;
-        if let Some(rows) = frame.as_array() {
-            for row in rows {
-                if row["chatId"] == "chat-1" {
-                    let status = row["status"].as_str().unwrap_or_default().to_string();
-                    if status != statuses.last().cloned().unwrap_or_default() {
-                        statuses.push(status);
-                    }
-                }
-            }
-        }
-        if statuses.last().is_some_and(|status| status == "idle") {
-            break;
-        }
-    }
-    assert_eq!(
-        statuses,
-        ["compacting", "idle"],
-        "manual compact status trail"
-    );
+    // The typed command joins the queue (ticket 04); the divider landing is
+    // the deterministic end of its execution.
+    common::wait_for_requests(&provider, 8).await;
+    common::wait_for_transcript_text(&mut transcript, "compactionDivider").await;
     let requests = provider.requests();
     let manual_history_summary = user_text(&requests[7].messages[0]);
     assert!(
@@ -222,9 +205,10 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
 
     // ── Turn 6: in-Turn compaction between tool rounds ──────────────────
     common::run_prompt(&engine, "chat-1", &cwd, "loop over the files").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    let requests = provider.requests();
     // round one → the summary round between rounds → round two.
+    common::wait_for_requests(&provider, 12).await;
+    common::wait_for_transcript_text(&mut transcript, "mid-turn-round").await;
+    let requests = provider.requests();
     assert!(requests[9].tools > 0, "unexpected request order");
     assert_eq!(requests[10].tools, 0, "no mid-turn summary round");
     let round_two = &requests[11];

@@ -1,8 +1,9 @@
 //! Handle-seam tests for the manual `/compact` slash command (ADR-0011,
-//! spec ticket 07): a typed command on the existing queue path — never
-//! prompt text — with a `Compacting` session status (interruptible like a
-//! run), a `manual` divider on success, "nothing to compact" and
-//! "already running" refusals, and History-untouched failures.
+//! message-queue ticket 04): a typed queue item on the same execution
+//! channel as ordinary messages — never prompt text, never a Turn — with a
+//! `Compacting` session status (interruptible like a run) when the queue
+//! admits it, a `manual` divider on success, nothing-to-compact and
+//! execution failures that retain feedback without touching the History.
 
 mod common;
 
@@ -10,6 +11,7 @@ use common::{ScriptedProvider, ScriptedReply};
 use futures::StreamExt;
 use holt_rpc::{RpcError, RpcReply, RpcService as _, methods};
 use pi_core::ai::types::Usage;
+use serde_json::json;
 
 /// Queue a `/compact` exactly as the composer serializes it.
 async fn compact(engine: &holt_engine::LocalEngine, cwd: &str) -> Result<RpcReply, RpcError> {
@@ -20,6 +22,7 @@ async fn compact(engine: &holt_engine::LocalEngine, cwd: &str) -> Result<RpcRepl
                 "chatId": "chat-1",
                 "command": {
                     "kind": "compact",
+                    "messageId": "compact-1",
                     "request": {
                         "prompt": "",
                         "provider": "openai",
@@ -33,6 +36,46 @@ async fn compact(engine: &holt_engine::LocalEngine, cwd: &str) -> Result<RpcRepl
             }),
         )
         .await
+}
+
+async fn queue_state(engine: &holt_engine::LocalEngine) -> serde_json::Value {
+    let RpcReply::Stream(mut watch) = engine
+        .handle(methods::WATCH_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
+        .await
+        .unwrap()
+    else {
+        panic!("queue watch")
+    };
+    common::next_frame(&mut watch).await
+}
+
+async fn wait_for_queue(
+    engine: &holt_engine::LocalEngine,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let RpcReply::Stream(mut watch) = engine
+        .handle(methods::WATCH_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
+        .await
+        .unwrap()
+    else {
+        panic!("queue watch")
+    };
+    loop {
+        let frame = common::next_frame(&mut watch).await;
+        if ready(&frame) {
+            return frame;
+        }
+    }
+}
+
+/// The long conversation body that cannot fit the retained tail (the manual
+/// gate is the cut, not the threshold).
+fn long_conversation() -> String {
+    let mut text = String::new();
+    while text.len() < 120_000 {
+        text.push_str("manual compaction conversation body ");
+    }
+    text
 }
 
 /// Every status the chat-1 session row passed through, in order (the
@@ -63,17 +106,10 @@ where
 #[tokio::test]
 async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
     let fixture = common::Fixture::new();
+    let summary_gate = std::sync::Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![
-        // A first Turn big enough that the whole History cannot fit the
-        // retained tail (the manual gate is the cut, not the threshold).
         ScriptedReply::text_with_usage(
-            {
-                let mut text = String::new();
-                while text.len() < 120_000 {
-                    text.push_str("manual compaction conversation body ");
-                }
-                text
-            },
+            long_conversation(),
             Usage {
                 input: 1_000,
                 output: 1_000,
@@ -81,7 +117,7 @@ async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
                 ..common::fixed_usage()
             },
         ),
-        ScriptedReply::text("the manual summary"),
+        ScriptedReply::gated(summary_gate.clone(), "the manual summary"),
         ScriptedReply::text("next turn reply"),
     ]);
     let engine = fixture.engine(&provider);
@@ -92,8 +128,10 @@ async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     compact(&engine, &fixture.cwd()).await.unwrap();
-    let statuses = status_history(&mut sessions, "idle").await;
-    assert_eq!(statuses, ["compacting", "idle"], "unexpected status trail");
+    // The queue admits the item and the session publishes Compacting —
+    // never Working, because a manual Compaction is not a Turn.
+    common::wait_for_requests(&provider, 2).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "compacting").await;
 
     // The provider saw exactly ONE request for the compaction — a summary
     // request; the raw `/compact` text appears nowhere.
@@ -103,6 +141,9 @@ async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
     let serialized = serde_json::to_string(&requests[1].messages).unwrap();
     assert!(!serialized.contains("/compact"), "{serialized}");
 
+    summary_gate.notify_one();
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
     // The divider carries trigger `manual`, and the next Turn's request
     // leads with the templated summary.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
@@ -111,7 +152,7 @@ async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
     assert!(snapshot.contains("\"manual\""), "{snapshot}");
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after compacting").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_requests(&provider, 3).await;
     let requests = provider.requests();
     let run = requests.last().unwrap();
     let summary = common::summarize(&run.messages);
@@ -131,24 +172,47 @@ async fn compact_runs_as_a_typed_command_with_a_manual_divider() {
 }
 
 #[tokio::test]
-async fn compact_is_refused_while_a_turn_runs() {
+async fn compact_queues_while_a_turn_runs_and_executes_after_it() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::Silent, ScriptedReply::text("never")]);
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let summary_gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::gated(gate.clone(), long_conversation()),
+        ScriptedReply::gated(summary_gate.clone(), "the manual summary"),
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let _ = common::subscribe(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "a hanging turn").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "a long conversation").await;
     common::wait_for_requests(&provider, 1).await;
-    let error = match compact(&engine, &fixture.cwd()).await {
-        Err(error) => error,
-        Ok(_) => panic!("/compact was accepted while a Turn runs"),
-    };
-    assert!(error.to_string().contains("already running"), "{error}");
+
+    // No more "already running" refusal (ADR-0011 as amended): the typed
+    // command joins the queue in submission order while the Turn runs.
+    compact(&engine, &fixture.cwd()).await.unwrap();
+    let state = queue_state(&engine).await;
+    assert_eq!(state["pending"][0]["kind"], "compact");
+    assert_eq!(state["pending"][0]["messageId"], "compact-1");
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "the Turn still owns the channel"
+    );
+
+    gate.notify_one();
+    common::wait_for_requests(&provider, 2).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "compacting").await;
+    summary_gate.notify_one();
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].tools, 0, "the summary request has no tools");
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(snapshot.to_string().contains("compactionDivider"));
 }
 
 #[tokio::test]
-async fn compact_on_a_short_chat_reports_nothing_to_compact() {
+async fn compact_on_a_short_chat_retains_the_head_with_nothing_to_compact() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("a short reply")]);
     let engine = fixture.engine(&provider);
@@ -158,28 +222,39 @@ async fn compact_on_a_short_chat_reports_nothing_to_compact() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests_before = provider.requests().len();
 
-    let error = match compact(&engine, &fixture.cwd()).await {
-        Err(error) => error,
-        Ok(_) => panic!("short chat compacted"),
-    };
-    assert!(error.to_string().contains("nothing to compact"), "{error}");
+    // The submission is durably accepted; the admission check then retains
+    // the head with the feedback and pauses (spec rule 13).
+    compact(&engine, &fixture.cwd()).await.unwrap();
+    let state = wait_for_queue(&engine, |q| q["paused"] == true).await;
+    assert_eq!(state["pending"][0]["kind"], "compact");
+    assert!(
+        state["pending"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing to compact"),
+        "{state}"
+    );
     // No model request, no status change, no divider.
     assert_eq!(provider.requests().len(), requests_before);
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(!snapshot.to_string().contains("compactionDivider"));
+
+    // Removing the pending command lets the queue proceed.
+    engine
+        .handle(
+            methods::DELETE_QUEUED_MESSAGE,
+            json!({"chatId":"chat-1","messageId":"compact-1"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(queue_state(&engine).await["pending"], json!([]));
 }
 
 #[tokio::test]
 async fn a_failed_manual_compaction_leaves_the_history_untouched() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![
-        ScriptedReply::text({
-            let mut text = String::new();
-            while text.len() < 120_000 {
-                text.push_str("manual compaction conversation body ");
-            }
-            text
-        }),
+        ScriptedReply::text(long_conversation()),
         ScriptedReply::Failed("the summarizer refused".into()),
         ScriptedReply::text("kept the full conversation"),
     ]);
@@ -190,9 +265,10 @@ async fn a_failed_manual_compaction_leaves_the_history_untouched() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     compact(&engine, &fixture.cwd()).await.unwrap();
-    let statuses = status_history(&mut sessions, "idle").await;
-    assert_eq!(statuses, ["compacting", "idle"]);
     common::wait_for_transcript_text(&mut transcript, "Compaction failed").await;
+    // The failure pauses the queue; the started item left nothing pending.
+    let state = queue_state(&engine).await;
+    assert_eq!(state["paused"], true);
 
     // The failure surfaces, and the next Turn carries the UNCOMPACTED
     // History — nothing was replaced.

@@ -76,13 +76,18 @@ pub enum SessionCommandPayload {
         message_id: String,
     },
     /// A manual `/compact` (ADR-0011): compaction on demand. NOT a Turn —
-    /// the session enters `Compacting` instead, and nothing Turn-scoped is
+    /// it joins the chat's message queue and the session enters
+    /// `Compacting` when the queue admits it; nothing Turn-scoped is
     /// stamped or reset. The raw `/compact` directive never reaches the
     /// model; `request` carries only the provider/model resolution, its
-    /// prompt is unused.
+    /// prompt is unused. `message_id` is the client-minted queue identity
+    /// (dedup key for retried submissions); an empty id — a pre-queue peer
+    /// — has the engine mint one.
     #[serde(rename_all = "camelCase")]
     Compact {
         request: RunRequest,
+        #[serde(default)]
+        message_id: String,
     },
 }
 

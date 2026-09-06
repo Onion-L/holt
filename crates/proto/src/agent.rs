@@ -237,12 +237,37 @@ pub struct RunRequest {
     pub worktree: Option<WorktreeSpec>,
 }
 
-/// An accepted ordinary message waiting to start its own Turn.
+/// What a queued item executes as (spec: message queue and Steer, ticket
+/// 04): an ordinary message or a skill invocation starts its own Turn; a
+/// manual Compaction occupies the same execution channel without becoming
+/// a Turn (ADR-0011). Serde-defaulted so queue files written before typed
+/// commands decode as ordinary messages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingKind {
+    #[default]
+    Ordinary,
+    Skill,
+    Compact,
+}
+
+/// An accepted queue item waiting for the execution channel. For
+/// `Ordinary` items `request.prompt` is the message body; for `Skill` and
+/// `Compact` it is unused — the engine builds the model-visible content at
+/// execution admission from `skill_name` / `extra_instructions` (a skill's
+/// body is resolved fresh from the filesystem then, never frozen at
+/// submission) or from the compaction summary request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingMessage {
     pub message_id: String,
     pub request: RunRequest,
+    #[serde(default)]
+    pub kind: PendingKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_instructions: Option<String>,
     pub submitted_at: i64,
     pub error: Option<String>,
 }

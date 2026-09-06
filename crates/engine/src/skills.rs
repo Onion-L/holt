@@ -225,6 +225,31 @@ pub(crate) fn invocation_prompt(skill: &Skill, extra_instructions: Option<&str>)
     format_skill_invocation(skill, extra_instructions)
 }
 
+/// The transcript user entry of a skill invocation: the compact chip (name
+/// + source pointer; the `<skill>` block rides the AGENT entry instead)
+/// followed by any extra instructions verbatim. Shared by Turn admission
+/// and restart recovery, which passes an empty `file` — the catalog is not
+/// re-scanned on load.
+pub(crate) fn user_entry_parts(
+    name: String,
+    file: String,
+    extra_instructions: Option<String>,
+) -> Vec<holt_doc::MessagePart> {
+    let mut parts = vec![holt_doc::MessagePart::Skill {
+        id: "t0".into(),
+        name,
+        file,
+        content: None,
+    }];
+    if let Some(extra) = extra_instructions.filter(|extra| !extra.trim().is_empty()) {
+        parts.push(holt_doc::MessagePart::Text {
+            id: "t1".into(),
+            text: extra,
+        });
+    }
+    parts
+}
+
 /// Group the per-root scans into the catalog: a skill the loader flagged
 /// (any diagnostic naming its file) is invalid, not invocable; diagnostics
 /// that match no loaded skill (parse failures, traversal faults) surface on
