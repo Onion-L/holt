@@ -6,18 +6,24 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use holt_proto::FileSearchMatch;
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 /// Matches returned at most — the palette pages a bounded list.
 const RESULT_LIMIT: usize = 50;
 
-/// Walked-entry ceiling: huge ignored trees (`node_modules` and friends)
-/// stay responsive because the walk stops once this many entries were seen.
-const WALK_ENTRY_CAP: usize = 100_000;
+/// Walked-entry ceiling: huge ignored trees (`node_modules`, `target`) stay
+/// responsive because the walk quits once this many entries were seen. The
+/// PARALLEL walk visits siblings concurrently, so shallow entries (a repo's
+/// own files) are reached long before the cap can land — a depth-first
+/// single-threaded walk could grind the cap away inside one deep ignored
+/// directory and never reach the project files at all.
+const WALK_ENTRY_CAP: usize = 500_000;
 
 /// The best fuzzy path matches under `root`, best score first, ties broken
 /// by path ascending so repeat queries order identically. An empty or
@@ -31,8 +37,8 @@ pub(crate) fn search(root: &Path, query: &str) -> Vec<FileSearchMatch> {
         return Vec::new();
     }
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let mut scored: Vec<(u32, String, bool)> = Vec::new();
+    let scored: Mutex<Vec<(u32, String, bool)>> = Mutex::new(Vec::new());
+    let walked = AtomicUsize::new(0);
     let mut walker = WalkBuilder::new(root);
     // The mention contract searches hidden files and does not let ignore
     // files suppress candidates, but repository metadata is never
@@ -42,26 +48,37 @@ pub(crate) fn search(root: &Path, query: &str) -> Vec<FileSearchMatch> {
         .hidden(false)
         .standard_filters(false)
         .filter_entry(|entry| entry.file_name() != OsStr::new(".git"));
-    let mut walked = 0usize;
-    for entry in walker.build() {
-        walked += 1;
-        if walked > WALK_ENTRY_CAP {
-            break;
-        }
-        let Ok(entry) = entry else { continue };
-        if entry.depth() == 0 {
-            continue;
-        }
-        let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-        let Ok(relative) = entry.path().strip_prefix(root) else {
-            continue;
-        };
-        let path = relative.to_string_lossy().replace('\\', "/");
-        let mut buf = Vec::new();
-        if let Some(score) = pattern.score(Utf32Str::new(&path, &mut buf), &mut matcher) {
-            scored.push((score, path, is_dir));
-        }
-    }
+    walker.build_parallel().run(|| {
+        let pattern = pattern.clone();
+        let scored = &scored;
+        let walked = &walked;
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        Box::new(move |entry| {
+            if walked.fetch_add(1, Ordering::Relaxed) >= WALK_ENTRY_CAP {
+                return WalkState::Quit;
+            }
+            let Ok(entry) = entry else {
+                return WalkState::Continue;
+            };
+            if entry.depth() == 0 {
+                return WalkState::Continue;
+            }
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            let Ok(relative) = entry.path().strip_prefix(root) else {
+                return WalkState::Continue;
+            };
+            let path = relative.to_string_lossy().replace('\\', "/");
+            let mut buf = Vec::new();
+            if let Some(score) = pattern.score(Utf32Str::new(&path, &mut buf), &mut matcher) {
+                scored
+                    .lock()
+                    .expect("scored poisoned")
+                    .push((score, path, is_dir));
+            }
+            WalkState::Continue
+        })
+    });
+    let mut scored = scored.into_inner().expect("scored poisoned");
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.truncate(RESULT_LIMIT);
     scored
