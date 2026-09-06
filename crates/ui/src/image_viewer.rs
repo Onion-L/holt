@@ -310,7 +310,11 @@ impl ImageViewer {
 
     fn render_toolbar(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> gpui::Div {
         let zoom_label = format!("{:.0}%", self.scale(viewport) * 100.0);
-        let glyph = |name| crate::icons::icon(name).size(px(18.0));
+        let glyph = |name| {
+            crate::icons::icon(name)
+                .size(px(18.0))
+                .text_color(gpui::rgb(0xd4d4d4))
+        };
         div()
             .absolute()
             .inset_0()
@@ -724,6 +728,64 @@ fn clamped_pan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toolbar_icons_reach_the_svg_renderer() {
+        use gpui::AssetSource;
+        use std::{
+            borrow::Cow,
+            collections::HashSet,
+            sync::{Arc, Mutex},
+        };
+
+        struct RecordingAssets(Arc<Mutex<HashSet<String>>>);
+        impl AssetSource for RecordingAssets {
+            fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+                self.0.lock().unwrap().insert(path.to_string());
+                crate::icons::Assets.load(path)
+            }
+
+            fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+                crate::icons::Assets.list(path)
+            }
+        }
+
+        let loaded = Arc::new(Mutex::new(HashSet::new()));
+        let mut app = gpui::TestApp::with_text_system_and_assets(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(RecordingAssets(loaded.clone())),
+        );
+        app.update(|cx| cx.set_global(Theme::default()));
+        let state = app.new_entity(|_| AppState::new());
+        let mut window = app.open_window(|_, cx| {
+            let targets = ["one.png", "two.png"]
+                .into_iter()
+                .map(|path| ViewerTarget {
+                    path: path.into(),
+                    label: path.into(),
+                })
+                .collect();
+            let mut viewer = ImageViewer::open(state, targets, 0, cx);
+            viewer.watch_task = None;
+            viewer
+        });
+        window.draw();
+        for icon in [
+            crate::icons::WINDOW_MAXIMIZE,
+            crate::icons::CLOSE,
+            crate::icons::ALT_ARROW_LEFT,
+            crate::icons::ALT_ARROW_RIGHT,
+            crate::icons::WINDOW_MINIMIZE,
+            crate::icons::PLUS,
+        ] {
+            assert!(
+                loaded.lock().unwrap().contains(icon),
+                "{icon} was skipped by SVG paint"
+            );
+        }
+        drop(window);
+        app.update(|cx| cx.shutdown());
+    }
 
     #[gpui::test]
     fn toolbar_controls_do_not_dismiss_or_drag_the_viewer(cx: &mut gpui::TestAppContext) {
