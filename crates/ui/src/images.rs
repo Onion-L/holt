@@ -430,32 +430,70 @@ async fn load_pixels(
     max_edge: Option<u32>,
     executor: &gpui::BackgroundExecutor,
 ) -> Result<(Arc<RenderImage>, u32, u32), gpui::SharedString> {
-    let reply = engine
+    let reply = read_original(engine, path).await?;
+    executor
+        .spawn(async move {
+            static DECODE: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
+            let _guard = DECODE.lock().await;
+            let bytes = original_bytes(reply)?;
+            decode_to_render(&bytes, max_edge)
+        })
+        .await
+}
+
+async fn read_original(
+    engine: &EngineHandle,
+    path: &str,
+) -> Result<serde_json::Value, gpui::SharedString> {
+    engine
         .client()
         .call(
             holt_rpc::methods::READ_IMAGE,
             serde_json::json!({ "path": path }),
         )
         .await
-        .map_err(|error| gpui::SharedString::from(error.to_string()))?;
+        .map_err(|error| error.to_string().into())
+}
+
+fn original_bytes(reply: serde_json::Value) -> Result<Vec<u8>, gpui::SharedString> {
+    let reply: holt_rpc::images::ImageData = serde_json::from_value(reply)
+        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))?;
+    if reply.data.len() > (25usize * 1024 * 1024).div_ceil(3) * 4 {
+        return Err("Image exceeds the 25 MiB limit.".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(reply.data.as_bytes())
+        .map_err(|error| error.to_string().into())
+}
+
+/// Export original encoded bytes, preserving animation, metadata and resolution.
+pub async fn save_original(
+    engine: &EngineHandle,
+    path: &str,
+    destination: std::path::PathBuf,
+    executor: &gpui::BackgroundExecutor,
+) -> Result<(), gpui::SharedString> {
+    let reply = read_original(engine, path).await?;
     executor
-        .spawn(async move {
-            static DECODE: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
-            let _guard = DECODE.lock().await;
-            let reply: holt_rpc::images::ImageData =
-                serde_json::from_value(reply).map_err(|error| {
-                    gpui::SharedString::from(format!("Invalid image reply: {error}"))
-                })?;
-            let data = &reply.data;
-            if data.len() > (25usize * 1024 * 1024).div_ceil(3) * 4 {
-                return Err("Image exceeds the 25 MiB limit.".into());
-            }
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data.as_bytes())
-                .map_err(|e| gpui::SharedString::from(e.to_string()))?;
-            decode_to_render(&bytes, max_edge)
-        })
+        .spawn(async move { save_original_reply(reply, &destination) })
         .await
+}
+
+fn save_original_reply(
+    reply: serde_json::Value,
+    destination: &Path,
+) -> Result<(), gpui::SharedString> {
+    use std::io::Write;
+    let bytes = original_bytes(reply)?;
+    let write = || -> std::io::Result<()> {
+        let mut file =
+            tempfile::NamedTempFile::new_in(destination.parent().unwrap_or(Path::new(".")))?;
+        file.write_all(&bytes)?;
+        file.as_file().sync_all()?;
+        file.persist(destination).map_err(|error| error.error)?;
+        Ok(())
+    };
+    write().map_err(|error| format!("Could not save image: {error}").into())
 }
 
 /// Decode image bytes with explicit budgets and convert to gpui-ready BGRA,
@@ -530,6 +568,34 @@ fn rgba_to_render(rgba: image::RgbaImage) -> Arc<RenderImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_preserves_original_bytes_and_failed_saves_preserve_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("animation.webp");
+        let original = include_bytes!("../../engine/tests/fixtures/first-frame.webp");
+        let reply = serde_json::json!({
+            "mimeType": "image/webp",
+            "data": base64::engine::general_purpose::STANDARD.encode(original),
+        });
+        std::fs::write(&destination, b"previous contents").unwrap();
+        save_original_reply(reply.clone(), &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+
+        let invalid = serde_json::json!({"mimeType":"image/webp", "data":"not base64"});
+        assert!(save_original_reply(invalid, &destination).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+
+        let blocked = dir.path().join("existing-directory");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(save_original_reply(reply, &blocked).is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "temporary save file leaked"
+        );
+    }
 
     fn png(bytes_b64: &str) -> Vec<u8> {
         base64::engine::general_purpose::STANDARD

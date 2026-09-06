@@ -156,6 +156,7 @@ icon_assets![
     (ALT_ARROW_RIGHT, "alt-arrow-right"),
     (SMARTPHONE, "smartphone"),
     (ARCHIVE_UP_MINIMALISTIC, "archive-up-minimalistic"),
+    (DOWNLOAD_MINIMALISTIC, "download-minimalistic"),
     (REFRESH, "refresh"),
     (RESTART, "restart"),
     (ADD_CIRCLE, "add-circle"),

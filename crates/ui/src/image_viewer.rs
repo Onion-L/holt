@@ -81,6 +81,7 @@ pub struct ImageViewer {
     source_fingerprint: Option<(u64, u128)>,
     load_task: Option<gpui::Task<()>>,
     watch_task: Option<gpui::Task<()>>,
+    downloading: bool,
     focus: FocusHandle,
 }
 
@@ -112,6 +113,7 @@ impl ImageViewer {
             source_fingerprint: None,
             load_task: None,
             watch_task: None,
+            downloading: false,
             focus: cx.focus_handle(),
         };
         viewer.select_index(index, cx);
@@ -281,6 +283,62 @@ impl ImageViewer {
         cx.notify();
     }
 
+    fn download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.downloading {
+            return;
+        }
+        let source = self.target().path.clone();
+        let engine = self.engine(cx);
+        let home = std::env::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let downloads = home.join("Downloads");
+        let directory = if downloads.is_dir() { downloads } else { home };
+        let name = std::path::Path::new(source.as_ref())
+            .file_name()
+            .and_then(|name| name.to_str());
+        let selection = cx.prompt_for_new_path(&directory, name);
+        let window = window.window_handle();
+        self.downloading = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result: Result<(), SharedString> = async {
+                let destination = selection
+                    .await
+                    .map_err(|error| SharedString::from(error.to_string()))?
+                    .map_err(|error| SharedString::from(error.to_string()))?;
+                let Some(destination) = destination else {
+                    return Ok(());
+                };
+                let engine = engine.ok_or_else(|| SharedString::from("Engine not connected."))?;
+                crate::images::save_original(
+                    &engine,
+                    &source,
+                    destination,
+                    cx.background_executor(),
+                )
+                .await
+            }
+            .await;
+            this.update(cx, |viewer, cx| {
+                viewer.downloading = false;
+                cx.notify();
+            })
+            .ok();
+            if let Err(error) = result {
+                cx.update_window(window, |_, window, cx| {
+                    drop(window.prompt(
+                        gpui::PromptLevel::Critical,
+                        "Could not download image",
+                        Some(&error),
+                        &["OK"],
+                        cx,
+                    ));
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     fn toolbar_button(
         id: &'static str,
         tooltip: &'static str,
@@ -327,11 +385,12 @@ impl ImageViewer {
                     .gap(px(8.0))
                     .child(
                         Self::toolbar_button(
-                            "viewer-fit",
-                            "Fit to window (0)",
-                            glyph(crate::icons::WINDOW_MAXIMIZE),
+                            "viewer-download",
+                            "Download original image",
+                            glyph(crate::icons::DOWNLOAD_MINIMALISTIC),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.zoom_fit(cx))),
+                        .when(self.downloading, |el| el.opacity(0.5))
+                        .on_click(cx.listener(|this, _, window, cx| this.download(window, cx))),
                     )
                     .child(
                         Self::toolbar_button(
@@ -771,7 +830,7 @@ mod tests {
         });
         window.draw();
         for icon in [
-            crate::icons::WINDOW_MAXIMIZE,
+            crate::icons::DOWNLOAD_MINIMALISTIC,
             crate::icons::CLOSE,
             crate::icons::ALT_ARROW_LEFT,
             crate::icons::ALT_ARROW_RIGHT,
@@ -832,7 +891,7 @@ mod tests {
             "viewer-next",
             "viewer-zoom-out",
             "viewer-zoom-in",
-            "viewer-fit",
+            "viewer-download",
             "viewer-100",
         ] {
             viewer.update(cx, |viewer, cx| {
@@ -845,13 +904,21 @@ mod tests {
             let fit = cx.update(|window, _| fit_scale(window.viewport_size(), nat(2000.0, 1000.0)));
             let bounds = cx.debug_bounds(id).expect("rendered toolbar button");
             cx.simulate_click(bounds.center(), Default::default());
+            if id == "viewer-download" {
+                assert!(cx.did_prompt_for_new_path());
+                cx.simulate_new_path_selection(|_| None);
+                cx.run_until_parked();
+            }
             assert_eq!(closed.get(), 0, "{id} dismissed the viewer");
             viewer.read_with(cx, |viewer, _| match id {
                 "viewer-prev" => assert_eq!(viewer.index, 0),
                 "viewer-next" => assert_eq!(viewer.index, 1),
                 "viewer-zoom-out" => assert_eq!(viewer.zoom, Some(fit)),
                 "viewer-zoom-in" => assert_eq!(viewer.zoom, Some(fit * ZOOM_STEP)),
-                "viewer-fit" => assert_eq!(viewer.zoom, None),
+                "viewer-download" => {
+                    assert_eq!(viewer.zoom, None);
+                    assert!(!viewer.downloading);
+                }
                 "viewer-100" => assert_eq!(viewer.zoom, Some(1.0)),
                 _ => unreachable!(),
             });
@@ -882,11 +949,16 @@ mod tests {
         for id in [
             "viewer-zoom-out",
             "viewer-zoom-in",
-            "viewer-fit",
+            "viewer-download",
             "viewer-100",
         ] {
             let bounds = cx.debug_bounds(id).unwrap();
             cx.simulate_click(bounds.center(), Default::default());
+            if id == "viewer-download" {
+                assert!(cx.did_prompt_for_new_path());
+                cx.simulate_new_path_selection(|_| None);
+                cx.run_until_parked();
+            }
             assert_eq!(closed.get(), 0, "{id} dismissed a failed preview");
         }
 
