@@ -9,8 +9,8 @@ use super::{Composer, ComposerInput, ComposerInputEvent};
 use crate::theme::Theme;
 
 /// Inline editor state for one pending queue message. The editor renders as
-/// its own card beside the list — a fixed-height uniform_list row cannot host
-/// a real input — and never touches the per-chat drafts the composer input
+/// a borderless input inside the message's own row — Enter saves, Escape
+/// cancels — and never touches the per-chat drafts the composer input
 /// holds. `original` is the body the editor opened with: an item that left
 /// the pending list (started, deleted elsewhere) dismisses an untouched
 /// editor but keeps one holding unsaved text, so Save can surface the
@@ -19,7 +19,6 @@ use crate::theme::Theme;
 /// name, kind, and captured configuration are the queue's.
 pub(super) struct QueueEdit {
     pub(super) message_id: String,
-    pub(super) kind: holt_proto::PendingKind,
     pub(super) original: String,
     pub(super) input: Entity<ComposerInput>,
     pub(super) focus_pending: bool,
@@ -119,40 +118,51 @@ impl Composer {
         });
         self.queue_edit = Some(QueueEdit {
             message_id: message_id.into(),
-            kind,
             original: body,
             input,
             focus_pending: true,
             _events: events,
         });
+        self.queue_expanded = true;
         cx.notify();
     }
 
     pub(super) fn run_queue_now(&mut self, message_id: String, cx: &mut Context<Self>) {
+        if self.queue_busy {
+            return;
+        }
+        let chat_id = self.current_key.clone();
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        let chat_id = self.current_key.clone();
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::QUEUE_COMMAND,
-                    serde_json::json!({
-                        "chatId": chat_id,
-                        "command": {"kind":"steer", "prompt":"", "messageId": message_id}
-                    }),
-                )
-                .await;
-            if let Err(error) = result {
-                this.update(cx, |this, cx| {
-                    this.failure = Some(format!("Could not run message: {error}").into());
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
+        self.queue_busy = true;
+        cx.notify();
+        self.queue_task = Some(cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                methods::QUEUE_COMMAND,
+                serde_json::json!({
+                    "chatId": chat_id,
+                    "command": {
+                        "kind": "steer",
+                        "prompt": "",
+                        "messageId": message_id,
+                    },
+                }),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                this.queue_busy = false;
+                if let Err(error) = result {
+                    this.failure = Some(format!("Could not run queued message: {error}").into());
+                    this.failure_key = Some(chat_id);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Save the edit through the typed RPC boundary. The acknowledgement
@@ -287,7 +297,9 @@ impl Composer {
         // uniform_list's item closure sees only `&mut App`, so row handlers
         // dispatch through the composer's weak handle instead of a listener.
         let composer = cx.weak_entity();
-        let editor = self.render_queue_edit_card(theme, cx);
+        // The editor renders inline in its own row; the entity is cloned in so
+        // the closure can hand it to that row.
+        let edit_input = self.queue_edit.as_ref().map(|edit| edit.input.clone());
         let error = queue
             .error
             .clone()
@@ -297,50 +309,65 @@ impl Composer {
         } else {
             format!("Queued ({count})")
         };
+        let expanded = self.queue_expanded;
         div()
             .id("message-queue")
             .w_full()
             .min_w_0()
+            // This is an overlay above the transcript, so it must paint an
+            // opaque surface; otherwise transcript text remains visible
+            // through the queue rows.
+            .bg(theme.bg)
+            .border_1()
+            .border_b_0()
+            .border_color(theme.border)
+            .rounded_tl(px(12.0))
+            .rounded_tr(px(12.0))
+            .px_2()
+            .py_1()
             .flex()
             .flex_col()
             .gap_2()
-            .px_2()
-            .py_1()
             .text_size(crate::typography::ui_rems(12.0))
             .child(
                 div()
+                    .id("message-queue-header")
+                    .role(gpui::Role::Button)
+                    .aria_label(if expanded {
+                        "Collapse message queue"
+                    } else {
+                        "Expand message queue"
+                    })
+                    .focusable()
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap_2()
+                    .px(px(4.0))
+                    .py(px(2.0))
                     .child(div().text_color(theme.text_muted).child(header))
-                    .when(queue.paused, |el| {
-                        el.child(
-                            div()
-                                .id("continue-message-queue")
-                                .role(gpui::Role::Button)
-                                .aria_label("Continue message queue")
-                                .focusable()
-                                .px_2()
-                                .py_1()
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_color(theme.text)
-                                .hover(|el| el.bg(theme.glass_hover()))
-                                .focus(|el| el.border_color(theme.border_strong))
-                                .on_click(cx.listener(|this, _, _, cx| this.continue_queue(cx)))
-                                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        cx.stop_propagation();
-                                        this.continue_queue(cx);
-                                    }
-                                }))
-                                .child("Continue"),
-                        )
-                    }),
+                    .child(
+                        crate::icons::icon(if expanded {
+                            crate::icons::ALT_ARROW_DOWN
+                        } else {
+                            crate::icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.queue_expanded = !this.queue_expanded;
+                        cx.notify();
+                    }))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            this.queue_expanded = !this.queue_expanded;
+                            cx.notify();
+                        }
+                    })),
             )
-            .when(count > 0, |el| {
+            .when(expanded && count > 0, |el| {
                 el.child(
                     gpui::uniform_list("pending-messages", count, move |range, _, cx| {
                         let theme = Theme::of(cx);
@@ -350,58 +377,123 @@ impl Composer {
                                 // Typed rows (ticket 04): the command kind
                                 // leads, never a raw slash directive or the
                                 // engine-formatted skill body.
-                                let (title, subtitle) = match item.kind {
+                                let title = match item.kind {
                                     holt_proto::PendingKind::Ordinary => {
-                                        (item.request.prompt.clone(), item.request.model.clone())
+                                        item.request.prompt.clone()
                                     }
-                                    holt_proto::PendingKind::Skill => (
-                                        format!(
-                                            "/skill {}",
-                                            item.skill_name.as_deref().unwrap_or_default()
-                                        ),
-                                        item.extra_instructions
-                                            .clone()
-                                            .unwrap_or_else(|| item.request.model.clone()),
+                                    holt_proto::PendingKind::Skill => format!(
+                                        "/skill {}",
+                                        item.skill_name.as_deref().unwrap_or_default()
                                     ),
-                                    holt_proto::PendingKind::Compact => {
-                                        ("/compact".to_string(), item.request.model.clone())
-                                    }
+                                    holt_proto::PendingKind::Compact => "/compact".to_string(),
                                 };
+                                let editing =
+                                    editing_id.as_deref() == Some(item.message_id.as_str());
                                 let row = div()
                                     .id(gpui::SharedString::from(item.message_id.clone()))
-                                    .h(px(40.0))
+                                    .h(px(30.0))
                                     .w_full()
                                     .min_w_0()
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .gap_2()
-                                    .border_b_1()
-                                    .border_color(theme.border)
-                                    .when(
-                                        editing_id.as_deref() == Some(item.message_id.as_str()),
-                                        |el| el.bg(theme.glass_hover()),
-                                    )
+                                    .pr(px(6.0))
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .when(!editing, |el| {
+                                        el.hover(|el| el.bg(theme.glass_hover()))
+                                    })
+                                    .when(editing, |el| {
+                                        el.bg(theme.glass_hover()).on_key_down({
+                                            let composer = composer.clone();
+                                            move |event: &KeyDownEvent, _, cx| {
+                                                // Escape cancels the edit; it
+                                                // must never reach the shell's
+                                                // Turn-interrupt binding.
+                                                if event.keystroke.key == "escape" {
+                                                    cx.stop_propagation();
+                                                    composer
+                                                        .update(cx, |this, cx| {
+                                                            this.cancel_queue_edit(cx)
+                                                        })
+                                                        .ok();
+                                                }
+                                            }
+                                        })
+                                    })
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .flex()
-                                            .flex_col()
-                                            .justify_center()
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_color(theme.text)
-                                                    .child(title),
-                                            )
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_color(theme.text_faint)
-                                                    .child(subtitle),
-                                            ),
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .pl(px(12.0))
+                                            // Editing swaps the row's title
+                                            // for a borderless inline input.
+                                            .when(editing, |el| {
+                                                el.when_some(edit_input.clone(), |el, input| {
+                                                    el.child(
+                                                        div().w_full().min_w_0().child(input),
+                                                    )
+                                                })
+                                            })
+                                            .when(!editing, |el| {
+                                                el.child(
+                                                    div()
+                                                        .truncate()
+                                                        .text_color(theme.text)
+                                                        .child(title),
+                                                )
+                                            }),
                                     );
+                                // The editing row's affordances: Enter saves,
+                                // Escape cancels, plus explicit confirm /
+                                // cancel icons on the right.
+                                if editing {
+                                    return row.child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(2.0))
+                                            .child(queue_row_action(
+                                                format!("queue-save-{}", item.message_id),
+                                                "Save the queued message edit",
+                                                crate::icons::CHECK,
+                                                theme.glass_hover(),
+                                                theme.text_muted,
+                                                {
+                                                    let composer = composer.clone();
+                                                    move |_, _, cx| {
+                                                        composer
+                                                            .update(cx, |this, cx| {
+                                                                cx.stop_propagation();
+                                                                this.save_queue_edit(cx);
+                                                            })
+                                                            .ok();
+                                                    }
+                                                },
+                                            ))
+                                            .child(queue_row_action(
+                                                format!("queue-cancel-{}", item.message_id),
+                                                "Cancel editing the queued message",
+                                                crate::icons::CLOSE,
+                                                theme.glass_hover(),
+                                                theme.text_muted,
+                                                {
+                                                    let composer = composer.clone();
+                                                    move |_, _, cx| {
+                                                        composer
+                                                            .update(cx, |this, cx| {
+                                                                this.cancel_queue_edit(cx)
+                                                            })
+                                                            .ok();
+                                                    }
+                                                },
+                                            )),
+                                    );
+                                }
                                 let delete = queue_row_action(
                                     format!("queue-delete-{}", item.message_id),
                                     "Delete queued message",
@@ -485,140 +577,18 @@ impl Composer {
                             })
                             .collect::<Vec<_>>()
                     })
-                    .h(px(40.0 * count.min(4) as f32))
+                    .h(px(30.0 * count.min(4) as f32 + 8.0))
                     .w_full()
                     .min_w_0()
                     .occlude(),
                 )
             })
-            .children(editor)
-            .when_some(error, |el, error| {
-                el.child(div().min_w_0().text_color(theme.danger).child(error))
+            .when(expanded, |el| {
+                el.when_some(error, |el, error| {
+                    el.child(div().min_w_0().text_color(theme.danger).child(error))
+                })
             })
             .into_any_element()
-    }
-
-    /// The edit card under the list: body input, Escape cancels, Enter saves.
-    fn render_queue_edit_card(
-        &self,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let edit = self.queue_edit.as_ref()?;
-        let input = edit.input.clone();
-        let can_save = !input.read(cx).text().trim().is_empty() && !self.queue_busy;
-        let card = div()
-            .id("queue-edit-card")
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(theme.border)
-            .px(px(10.0))
-            .py(px(8.0))
-            // Escape never interrupts the running Turn from the editor.
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    this.cancel_queue_edit(cx);
-                }
-            }))
-            .child(
-                div()
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .text_color(theme.text_faint)
-                    .child(match edit.kind {
-                        holt_proto::PendingKind::Skill => {
-                            "Edit extra instructions — Enter saves, Shift-Enter adds a line"
-                        }
-                        _ => "Edit queued message — Enter saves, Shift-Enter adds a line",
-                    }),
-            )
-            .child(div().w_full().min_w_0().child(input))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .id("queue-edit-cancel")
-                            .role(gpui::Role::Button)
-                            .aria_label("Cancel editing the queued message")
-                            .focusable()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_color(theme.text)
-                            .hover(|el| el.bg(theme.glass_hover()))
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_queue_edit(cx)))
-                            .child("Cancel"),
-                    )
-                    .child(
-                        div()
-                            .id("queue-edit-save")
-                            .role(gpui::Role::Button)
-                            .aria_label("Save the queued message edit")
-                            .focusable()
-                            .px_2()
-                            .py_1()
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(if can_save {
-                                theme.border_strong
-                            } else {
-                                theme.border
-                            })
-                            .text_color(if can_save {
-                                theme.text
-                            } else {
-                                theme.text_faint
-                            })
-                            .when(can_save, |el| {
-                                el.hover(|el| el.bg(theme.glass_hover()))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.save_queue_edit(cx);
-                                    }))
-                            })
-                            .child("Save"),
-                    ),
-            )
-            .into_any_element();
-        Some(card)
-    }
-
-    fn continue_queue(&mut self, cx: &mut Context<Self>) {
-        let state = self.state.read(cx);
-        let (Some(engine), Some(chat_id)) = (state.engine().cloned(), state.selected_chat.clone())
-        else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            if let Err(error) = engine
-                .client()
-                .call(
-                    methods::CONTINUE_MESSAGE_QUEUE,
-                    serde_json::json!({"chatId": chat_id}),
-                )
-                .await
-            {
-                this.update(cx, |this, cx| {
-                    this.failure = Some(format!("Could not continue the queue: {error}").into());
-                    this.failure_key = Some(chat_id);
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
     }
 }
 

@@ -118,6 +118,7 @@ pub struct Composer {
     /// `queue_busy` and freeze the row actions.
     queue_task: Option<Task<()>>,
     queue_busy: bool,
+    queue_expanded: bool,
     /// Requests already answered locally (suppresses the panel until the doc
     /// frame marks them resolved).
     answered_requests: HashSet<String>,
@@ -267,6 +268,7 @@ impl Composer {
             queue_edit: None,
             queue_task: None,
             queue_busy: false,
+            queue_expanded: true,
             answered_requests: HashSet::new(),
             failure_key: None,
             action_task: None,
@@ -592,7 +594,6 @@ impl Render for Composer {
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
-            .child(self.render_message_queue(window, cx))
             // Raw Escape (no popup/dialog consumed it) = interrupt the
             // running Turn while an Approval gates it (ADR-0014).
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -963,6 +964,20 @@ impl Render for Composer {
         let container = container.child(
             div()
                 .relative()
+                // The queue is an overlay above the input. Keeping it out of
+                // the flex flow prevents queue changes from resizing the
+                // transcript viewport or shifting its content.
+                .child(
+                    div()
+                        .absolute()
+                        // Docked flush against the pill (no gap) and inset on
+                        // both sides, so the queue reads as a narrower panel
+                        // sitting on top of the input.
+                        .left(px(20.0))
+                        .right(px(20.0))
+                        .bottom_full()
+                        .child(self.render_message_queue(window, cx)),
+                )
                 .child(crate::frost::frosted(
                     26.0,
                     16.0,
