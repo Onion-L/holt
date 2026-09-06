@@ -509,10 +509,33 @@ pub fn rows_for_entry(
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
         let (body, badges) = crate::badges::split(&parsed.text);
-        // Legacy holt-file: mentions project first; new path references
-        // (quoted absolute paths, inline or in the appended list) collapse
-        // to the same chips. Both are pure over the text, so the raw-length
-        // row version below stays a valid cache/diff key.
+        // The appended path list leaves the bubble entirely: it rides the
+        // prompt for the model, but on screen the references render as an
+        // attachment chip row above the bubble (one badge per target, full
+        // path on hover), next to the comment badge.
+        let (body, references) = crate::path_refs::split_sent_references(&body);
+        let mut badges = badges;
+        badges.extend(
+            references
+                .iter()
+                .map(|reference| crate::badges::MessageBadge {
+                    icon: if reference.is_dir {
+                        crate::icons::FOLDER
+                    } else {
+                        crate::icons::DOCUMENT
+                    },
+                    label: reference.label.clone().into(),
+                    details: vec![crate::badges::BadgeDetail {
+                        location: reference.label.clone().into(),
+                        tag: None,
+                        body: reference.path.clone().into(),
+                    }],
+                }),
+        );
+        // Legacy holt-file: mentions project first; new inline path
+        // references (quoted absolute paths inside the composed text)
+        // collapse to the same chips. Both are pure over the text, so the
+        // raw-length row version below stays a valid cache/diff key.
         let (text, mentions) = match crate::composer::sent_mention_display(&body) {
             Some((display, spans)) => (display, spans),
             None => match crate::path_refs::sent_reference_display(&body) {

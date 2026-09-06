@@ -215,6 +215,61 @@ fn chip_label(path: &str) -> Option<String> {
     })
 }
 
+/// One reference lifted out of a sent message's appended list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentReference {
+    /// Chip label: the basename, with a trailing `/` for folders.
+    pub label: String,
+    /// The full absolute target (hover text).
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// Lift the appended path list OUT of a sent message: the trailer rides the
+/// prompt for the model, but the bubble shows only the user's own text — the
+/// transcript renders the references as a separate attachment row instead.
+/// Returns the text unchanged when no well-formed trailer ends it.
+pub fn split_sent_references(text: &str) -> (String, Vec<SentReference>) {
+    let none = || (text.to_string(), Vec::new());
+    let Some(header_at) = text.rfind(REFS_HEADER) else {
+        return none();
+    };
+    // The header must start a line, and everything after it must be
+    // `- "..."` items — anything else is user text that happens to mention
+    // the header and stays put.
+    if header_at > 0 && !text[..header_at].ends_with('\n') {
+        return none();
+    }
+    let Some(trailer) = text[header_at + REFS_HEADER.len()..].strip_prefix('\n') else {
+        return none();
+    };
+    let mut refs = Vec::new();
+    for line in trailer.lines() {
+        let Some(item) = line.strip_prefix("- ") else {
+            return none();
+        };
+        let quoted = quoted_paths(item);
+        let [(range, path)] = quoted.as_slice() else {
+            return none();
+        };
+        if range.start != 0 || range.end != item.len() {
+            return none();
+        }
+        let Some(label) = chip_label(path) else {
+            return none();
+        };
+        refs.push(SentReference {
+            label,
+            path: path.clone(),
+            is_dir: path.ends_with('/'),
+        });
+    }
+    if refs.is_empty() {
+        return none();
+    }
+    (text[..header_at].trim_end().to_string(), refs)
+}
+
 /// Project a sent message's path references for the transcript: every quoted
 /// absolute path (`format_reference`'s output — inline mentions and the
 /// appended list alike) collapses to the composer's `@name` chip, everything
@@ -429,6 +484,52 @@ mod tests {
         assert_eq!(sent_reference_display("unterminated \"/abs/path"), None);
         // A bare root has no basename to label.
         assert_eq!(sent_reference_display("root is \"/\" here"), None);
+    }
+
+    #[test]
+    fn split_lifts_the_trailer_off_the_users_own_text() {
+        let text = append_references(
+            "look at this",
+            &[
+                reference("/abs/lvdao-logo", true),
+                reference("/abs/a.rs", false),
+            ],
+        );
+        let (body, refs) = split_sent_references(&text);
+        assert_eq!(body, "look at this");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].label, "lvdao-logo/");
+        assert_eq!(refs[0].path, "/abs/lvdao-logo/");
+        assert!(refs[0].is_dir);
+        assert_eq!(refs[1].label, "a.rs");
+        assert!(!refs[1].is_dir);
+    }
+
+    #[test]
+    fn split_handles_a_references_only_message() {
+        let text = append_references("", &[reference("/abs/a.rs", false)]);
+        let (body, refs) = split_sent_references(&text);
+        assert_eq!(body, "");
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn split_leaves_inline_paths_and_lookalike_text_alone() {
+        // Inline references are composed input — they stay in the body.
+        let (body, refs) = split_sent_references("open \"/abs/a.rs\" now");
+        assert_eq!(body, "open \"/abs/a.rs\" now");
+        assert!(refs.is_empty());
+        // A header mention that isn't a well-formed trailer stays put.
+        for text in [
+            "what does Referenced paths: mean?",
+            "Referenced paths:\n- not quoted",
+            "Referenced paths:\n- \"/abs/a.rs\"\ntrailing text",
+            "note\nReferenced paths:",
+        ] {
+            let (body, refs) = split_sent_references(text);
+            assert_eq!(body, text, "{text:?}");
+            assert!(refs.is_empty(), "{text:?}");
+        }
     }
 
     #[test]
