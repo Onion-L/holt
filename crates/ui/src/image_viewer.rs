@@ -291,6 +291,7 @@ impl ImageViewer {
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
+            .debug_selector(|| id.to_string())
             .role(gpui::Role::Button)
             .aria_label(tooltip)
             .focusable()
@@ -337,6 +338,10 @@ impl ImageViewer {
             .px(px(12.0))
             .child(
                 div()
+                    .debug_selector(|| "viewer-toolbar".into())
+                    // The toolbar overlays the sibling backdrop, whose hitbox
+                    // must not receive toolbar clicks or start a pan.
+                    .occlude()
                     .max_w_full()
                     .flex()
                     .items_center()
@@ -729,6 +734,116 @@ fn clamped_pan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn toolbar_controls_do_not_dismiss_or_drag_the_viewer(cx: &mut gpui::TestAppContext) {
+        use std::{cell::Cell, rc::Rc, sync::Arc};
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (viewer, cx) = cx.add_window_view(|_, cx| {
+            let mut viewer = ImageViewer::open(
+                state,
+                vec![
+                    ViewerTarget {
+                        path: "one.png".into(),
+                        label: "one.png".into(),
+                    },
+                    ViewerTarget {
+                        path: "two.png".into(),
+                        label: "two.png".into(),
+                    },
+                ],
+                0,
+                cx,
+            );
+            viewer.watch_task = None;
+            viewer
+        });
+        let closed = Rc::new(Cell::new(0));
+        let _subscription = cx.update(|_, cx| {
+            let closed = closed.clone();
+            cx.subscribe(&viewer, move |_, _: &ImageViewerEvent, _| {
+                closed.set(closed.get() + 1);
+            })
+        });
+        let pixels = crate::images::ViewerPixels {
+            pixels: Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(image::RgbaImage::new(2, 1),)
+            ])),
+            width: 2000,
+            height: 1000,
+        };
+
+        for id in [
+            "viewer-prev",
+            "viewer-next",
+            "viewer-zoom-out",
+            "viewer-zoom-in",
+            "viewer-fit",
+            "viewer-100",
+        ] {
+            viewer.update(cx, |viewer, cx| {
+                viewer.index = usize::from(id == "viewer-prev");
+                viewer.load = LoadState::Ready(pixels.clone());
+                viewer.zoom = None;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let fit = cx.update(|window, _| fit_scale(window.viewport_size(), nat(2000.0, 1000.0)));
+            let bounds = cx.debug_bounds(id).expect("rendered toolbar button");
+            cx.simulate_click(bounds.center(), Default::default());
+            assert_eq!(closed.get(), 0, "{id} dismissed the viewer");
+            viewer.read_with(cx, |viewer, _| match id {
+                "viewer-prev" => assert_eq!(viewer.index, 0),
+                "viewer-next" => assert_eq!(viewer.index, 1),
+                "viewer-zoom-out" => assert_eq!(viewer.zoom, Some(fit)),
+                "viewer-zoom-in" => assert_eq!(viewer.zoom, Some(fit * ZOOM_STEP)),
+                "viewer-fit" => assert_eq!(viewer.zoom, None),
+                "viewer-100" => assert_eq!(viewer.zoom, Some(1.0)),
+                _ => unreachable!(),
+            });
+        }
+
+        // Toolbar padding is also a surface, not an empty-backdrop target.
+        viewer.update(cx, |viewer, cx| viewer.zoom_fit(cx));
+        cx.run_until_parked();
+        let toolbar = cx.debug_bounds("viewer-toolbar").unwrap();
+        let padding = toolbar.origin + point(px(2.0), px(2.0));
+        cx.simulate_click(padding, Default::default());
+        assert_eq!(closed.get(), 0, "toolbar padding dismissed the viewer");
+        cx.simulate_mouse_down(padding, MouseButton::Left, Default::default());
+        viewer.read_with(cx, |viewer, _| assert!(viewer.drag.is_none()));
+        cx.simulate_mouse_up(padding, MouseButton::Left, Default::default());
+
+        // Failed previews and disabled navigation have no image behind the
+        // toolbar to absorb a click; they need the same isolation.
+        viewer.update(cx, |viewer, cx| {
+            viewer.targets.truncate(1);
+            viewer.index = 0;
+            viewer.load = LoadState::Failed("Image file not found.".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        for id in [
+            "viewer-prev",
+            "viewer-next",
+            "viewer-zoom-out",
+            "viewer-zoom-in",
+            "viewer-fit",
+            "viewer-100",
+        ] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            cx.simulate_click(bounds.center(), Default::default());
+            assert_eq!(closed.get(), 0, "{id} dismissed a failed preview");
+        }
+
+        let close = cx.debug_bounds("viewer-close").unwrap();
+        cx.simulate_click(close.center(), Default::default());
+        assert_eq!(closed.get(), 1, "close control must dismiss exactly once");
+        cx.simulate_click(point(px(2.0), px(2.0)), Default::default());
+        assert_eq!(closed.get(), 2, "empty backdrop must still dismiss");
+    }
 
     fn vp(w: f32, h: f32) -> Size<Pixels> {
         size(px(w), px(h))
