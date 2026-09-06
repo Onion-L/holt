@@ -28,6 +28,10 @@ pub(crate) struct StartedMessage {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Record {
     pending: Vec<PendingMessage>,
+    #[serde(default)]
+    priority: Vec<String>,
+    #[serde(default)]
+    priority_only: bool,
     paused: bool,
     started: Option<StartedMessage>,
     accepted: HashSet<String>,
@@ -171,6 +175,18 @@ impl Queue {
         self.commit(next)
     }
 
+    pub fn enqueue_priority(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+    ) -> Result<(), RpcError> {
+        self.enqueue(request, message_id.clone())?;
+        let mut next = self.record.clone();
+        next.priority.retain(|id| id != &message_id);
+        next.priority.push(message_id);
+        self.commit(next)
+    }
+
     /// How edit/delete must answer for an id that is not waiting in the
     /// queue: a started item has already become a Turn, anything else was
     /// never (or is no longer) pending.
@@ -231,8 +247,31 @@ impl Queue {
 
     fn head(&self) -> Option<PendingMessage> {
         (!self.record.paused && !self.unreadable)
-            .then(|| self.record.pending.first().cloned())
+            .then(|| {
+                self.record
+                    .priority
+                    .iter()
+                    .find_map(|id| self.record.pending.iter().find(|m| &m.message_id == id))
+                    .cloned()
+                    .or_else(|| self.record.pending.first().cloned())
+            })
             .flatten()
+    }
+
+    pub fn promote(&mut self, message_id: &str) -> Result<(), RpcError> {
+        if !self
+            .record
+            .pending
+            .iter()
+            .any(|m| m.message_id == message_id)
+        {
+            return Err(self.mutation_refusal(message_id));
+        }
+        let mut next = self.record.clone();
+        next.priority_only = next.paused;
+        next.priority.retain(|id| id != message_id);
+        next.priority.push(message_id.to_string());
+        self.commit(next)
     }
 
     /// The admission checkpoint: atomically move the head from pending to
@@ -245,17 +284,27 @@ impl Queue {
             return Err(RpcError::Failed("Message queue is paused".into()));
         }
         let mut next = self.record.clone();
-        if next
-            .pending
-            .first()
-            .is_none_or(|m| m.message_id != message_id)
-        {
+        let is_head = next.priority.first().map_or_else(
+            || {
+                next.pending
+                    .first()
+                    .is_some_and(|m| m.message_id == message_id)
+            },
+            |id| id == message_id,
+        );
+        if !is_head {
             return Err(RpcError::Failed("Message is no longer pending".into()));
         }
+        let index = next
+            .pending
+            .iter()
+            .position(|m| m.message_id == message_id)
+            .expect("head exists");
         let started = StartedMessage {
-            message: next.pending.remove(0),
+            message: next.pending.remove(index),
             timestamp,
         };
+        next.priority.retain(|id| id != message_id);
         next.started = Some(started.clone());
         let result = self.commit(next);
         if result.is_err() && self.record.started.is_some() {
@@ -272,7 +321,10 @@ impl Queue {
     fn finish(&mut self, success: bool, error: Option<String>) {
         let mut next = self.record.clone();
         let was_started = next.started.take().is_some();
-        next.paused |= !success;
+        next.paused |= !success || next.priority_only;
+        if was_started && next.priority_only {
+            next.priority_only = false;
+        }
         if !was_started && let Some(head) = next.pending.first_mut() {
             head.error = error.clone();
         }

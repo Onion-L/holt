@@ -49,6 +49,8 @@ pub enum SessionCommandPayload {
     Steer {
         prompt: String,
         message_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<RunRequest>,
     },
     Interrupt {},
     #[serde(rename_all = "camelCase")]
@@ -227,6 +229,7 @@ mod tests {
             SessionCommandPayload::Steer {
                 prompt: "go".into(),
                 message_id: None,
+                request: None,
             },
             issued_at,
         )

@@ -72,6 +72,7 @@ fn main() {
         payload: SessionCommandPayload::Steer {
             prompt: "also run clippy".into(),
             message_id: None,
+            request: None,
         },
         issued_by: "device-rust".into(),
         issued_at: 1_700_000_002_000,

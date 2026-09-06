@@ -109,6 +109,33 @@ impl Composer {
         cx.notify();
     }
 
+    pub(super) fn run_queue_now(&mut self, message_id: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let chat_id = self.current_key.clone();
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::QUEUE_COMMAND,
+                    serde_json::json!({
+                        "chatId": chat_id,
+                        "command": {"kind":"steer", "prompt":"", "messageId": message_id}
+                    }),
+                )
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| {
+                    this.failure = Some(format!("Could not run message: {error}").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Save the edit through the typed RPC boundary. The acknowledgement
     /// means the queue file was persisted; a failure keeps the editor open
     /// with the unsaved text.
@@ -342,6 +369,27 @@ impl Composer {
                                             .flex()
                                             .items_center()
                                             .gap(px(2.0))
+                                            .child(queue_row_action(
+                                                format!("queue-run-{}", item.message_id),
+                                                "Run queued message now",
+                                                crate::icons::ARROW_RIGHT,
+                                                theme.glass_hover(),
+                                                theme.text_muted,
+                                                {
+                                                    let composer = composer.clone();
+                                                    let message_id = item.message_id.clone();
+                                                    move |_, _, cx| {
+                                                        composer
+                                                            .update(cx, |this, cx| {
+                                                                this.run_queue_now(
+                                                                    message_id.clone(),
+                                                                    cx,
+                                                                )
+                                                            })
+                                                            .ok();
+                                                    }
+                                                },
+                                            ))
                                             .child(queue_row_action(
                                                 format!("queue-edit-{}", item.message_id),
                                                 "Edit queued message",

@@ -468,8 +468,34 @@ impl EngineService {
                 });
                 chat.track_task(&task);
             }
-            SessionCommandPayload::Steer { .. } => {
-                return Err(RpcError::Failed("steering is not available yet".into()));
+            SessionCommandPayload::Steer {
+                prompt,
+                message_id,
+                request,
+            } => {
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(id) = message_id {
+                    queue.promote(&id)?;
+                } else {
+                    let mut request = request
+                        .ok_or_else(|| RpcError::BadParams("steer request is required".into()))?;
+                    if prompt.trim().is_empty() {
+                        return Err(RpcError::BadParams("prompt must not be empty".into()));
+                    }
+                    request.prompt = prompt;
+                    queue.enqueue_priority(request, uuid::Uuid::new_v4().to_string())?;
+                }
+                queue.pause(false)?;
+                if let Some(cancel) = chat
+                    .cancel
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    cancel.cancel();
+                }
+                drop(queue);
+                self.kick_queue(chat);
             }
             SessionCommandPayload::RespondInput { .. } => {
                 return Err(RpcError::Failed(

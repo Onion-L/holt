@@ -1745,6 +1745,7 @@ mod tests {
             payload: SessionCommandPayload::Steer {
                 prompt: "focus".into(),
                 message_id: None,
+                request: None,
             },
             issued_by: "dev-b".into(),
             issued_at: 10,
