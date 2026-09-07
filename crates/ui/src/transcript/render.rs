@@ -398,6 +398,15 @@ impl Transcript {
                     .flex_none()
                     .opacity(opacity),
             )
+            .when(compacting, |el| {
+                el.child(crate::loaders::mini_mono_spinner(
+                    "compaction-loading",
+                    2.0,
+                    theme.text_muted,
+                    cx.entity_id(),
+                    cx,
+                ))
+            })
             .child(if compacting {
                 "Compacting context"
             } else {
