@@ -537,7 +537,9 @@ impl Transcript {
             .flex()
             .gap(px(8.0))
             .overflow_x_scroll()
-            .occlude()
+            // Keep clicks local while allowing vertical wheel events to reach
+            // the transcript list behind this horizontal strip.
+            .block_mouse_except_scroll()
             .px(px(4.0))
             .pt(px(4.0))
             .child(div().flex_1());
