@@ -99,7 +99,11 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.providers = Loadable::Loading;
+        // Keep an already-rendered catalog mounted while refreshing it. Save
+        // and Remove call this path while a provider panel may be expanded;
+        // replacing Ready with Loading would unmount that panel and replay its
+        // open animation when the RPC returns.
+        mark_provider_loading(&mut self.providers);
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -768,6 +772,12 @@ fn provider_controls_height(models: &Loadable<Vec<Model>>, variants: bool, hint:
     224.0 + list_height + if variants { 34.0 } else { 0.0 } + if hint { 24.0 } else { 0.0 }
 }
 
+fn mark_provider_loading(providers: &mut Loadable<Vec<Provider>>) {
+    if !matches!(providers, Loadable::Ready(_)) {
+        *providers = Loadable::Loading;
+    }
+}
+
 /// The variant pills at the top of an expanded organization card — the region
 /// / edition picker that decides which concrete provider the key and model
 /// sections below act on. Absent for single-variant rows.
@@ -935,5 +945,19 @@ fn provider_model_list(
 impl Drop for ProvidersPage {
     fn drop(&mut self) {
         self.revealed.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_keeps_ready_provider_rows_mounted() {
+        let mut providers = Loadable::Ready(Vec::<Provider>::new());
+
+        mark_provider_loading(&mut providers);
+
+        assert!(matches!(providers, Loadable::Ready(_)));
     }
 }
