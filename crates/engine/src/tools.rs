@@ -412,6 +412,36 @@ fn io_execution_error(error: &std::io::Error) -> ExecutionError {
     ExecutionError::new(ExecutionErrorCode::SpawnError, error.to_string())
 }
 
+#[cfg(unix)]
+struct ShellProcessGroup {
+    id: Option<u32>,
+}
+
+#[cfg(unix)]
+impl ShellProcessGroup {
+    fn signal(&self, signal: libc::c_int) -> bool {
+        let Some(id) = self.id else { return false };
+        // SAFETY: the child was spawned with process_group(0), so its PID
+        // identifies only this execution's process group.
+        if unsafe { libc::kill(-(id as libc::pid_t), signal) } == 0 {
+            return true;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            tracing::warn!(pid = id, %error, "could not signal shell process group");
+        }
+        false
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ShellProcessGroup {
+    fn drop(&mut self) {
+        // Also covers the execution future being dropped during cleanup.
+        self.signal(libc::SIGKILL);
+    }
+}
+
 impl Shell for LocalExecutionEnv {
     fn exec<'a>(
         &'a self,
@@ -429,9 +459,9 @@ impl Shell for LocalExecutionEnv {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                // The child handle is owned by the select block below and
-                // dropped on the abort/timeout branches — dropping kills it.
                 .kill_on_drop(true);
+            #[cfg(unix)]
+            cmd.process_group(0);
             match options.and_then(|options| options.inherit_env) {
                 Some(false) => {
                     cmd.env_clear();
@@ -446,6 +476,8 @@ impl Shell for LocalExecutionEnv {
                 }
             }
             let mut child = cmd.spawn().map_err(|error| io_execution_error(&error))?;
+            #[cfg(unix)]
+            let mut group = ShellProcessGroup { id: child.id() };
             // Readers own their pipes; capped so `cat huge.log` cannot balloon
             // memory ahead of the bash tool's own truncation.
             async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut pipe: Option<R>) -> String {
@@ -455,40 +487,70 @@ impl Shell for LocalExecutionEnv {
                 }
                 String::from_utf8_lossy(&buffer).into_owned()
             }
-            let stdout_task = tokio::spawn(read_capped(child.stdout.take()));
-            let stderr_task = tokio::spawn(read_capped(child.stderr.take()));
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
 
             let aborted = options.and_then(|options| options.abort_signal.clone());
             let timeout = options
                 .and_then(|options| options.timeout)
                 .map(Duration::from_secs_f64);
-            let status = tokio::select! {
-                _ = async {
-                    match aborted.as_ref() {
-                        Some(signal) => signal.cancelled().await,
-                        None => pending::<()>().await,
-                    }
-                } => {
-                    return Err(ExecutionError::new(
+            let result = {
+                // Output pipes can outlive bash when descendants inherit
+                // them. Keep the entire wait cancellable, with no detached readers.
+                let execution = async {
+                    let (status, stdout, stderr) =
+                        tokio::join!(child.wait(), read_capped(stdout), read_capped(stderr),);
+                    status
+                        .map(|status| (status, stdout, stderr))
+                        .map_err(|error| io_execution_error(&error))
+                };
+                tokio::select! {
+                    biased;
+                    _ = async {
+                        match aborted.as_ref() {
+                            Some(signal) => signal.cancelled().await,
+                            None => pending::<()>().await,
+                        }
+                    } => Err(ExecutionError::new(
                         ExecutionErrorCode::Aborted,
                         "command aborted",
-                    ));
-                }
-                _ = async {
-                    match timeout {
-                        Some(budget) => sleep(budget).await,
-                        None => pending::<()>().await,
-                    }
-                } => {
-                    return Err(ExecutionError::new(
+                    )),
+                    _ = async {
+                        match timeout {
+                            Some(budget) => sleep(budget).await,
+                            None => pending::<()>().await,
+                        }
+                    } => Err(ExecutionError::new(
                         ExecutionErrorCode::Timeout,
                         format!("command exceeded its timeout: {command}"),
-                    ));
+                    )),
+                    result = execution => result,
                 }
-                status = child.wait() => status.map_err(|error| io_execution_error(&error))?,
             };
-            let stdout = stdout_task.await.unwrap_or_default();
-            let stderr = stderr_task.await.unwrap_or_default();
+            let (status, stdout, stderr) = match result {
+                Ok(result) => {
+                    #[cfg(unix)]
+                    {
+                        group.id = None;
+                    }
+                    result
+                }
+                Err(error) => {
+                    #[cfg(unix)]
+                    {
+                        if group.signal(libc::SIGTERM) {
+                            sleep(Duration::from_millis(250)).await;
+                        }
+                        group.signal(libc::SIGKILL);
+                        group.id = None;
+                    }
+                    // Reap the direct child even if bash already exited and
+                    // it was only a descendant's output pipe holding us up.
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(error);
+                }
+            };
             if let Some(options) = options {
                 if let Some(listener) = options.on_stdout.as_ref()
                     && let Err(_error) = listener(&stdout)
@@ -689,6 +751,162 @@ mod tests {
         signal.cancel();
         let error = task.await.unwrap().unwrap_err();
         assert_eq!(error.code, ExecutionErrorCode::Aborted);
+    }
+
+    #[cfg(unix)]
+    struct TestChild(i32);
+
+    #[cfg(unix)]
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            // SAFETY: this PID belongs to the child created by this test.
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+
+    #[cfg(unix)]
+    async fn shell_child_ready(root: &str) -> TestChild {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(Path::new(root).join("child.pid"))
+                    && let Ok(pid) = pid.trim().parse::<i32>()
+                    && Path::new(root).join("writes").exists()
+                {
+                    return TestChild(pid);
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell child did not start")
+    }
+
+    #[cfg(unix)]
+    const WRITING_CHILD: &str = r#"bash -c 'trap "" TERM; echo $$ > child.pid; for ((i=0; i<500; i++)); do echo tick >> writes; sleep 0.01; done'"#;
+
+    #[cfg(unix)]
+    async fn assert_descendant_stopped_writing(root: &str) {
+        let path = Path::new(root).join("writes");
+        let writes = std::fs::read(&path).unwrap();
+        sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            writes,
+            "descendant kept writing after exec returned"
+        );
+    }
+
+    #[cfg(unix)]
+    async fn shell_leader_reaped(root: &str) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(Path::new(root).join("leader.pid"))
+                    && let Ok(pid) = pid.trim().parse::<i32>()
+                    // SAFETY: signal 0 only checks existence of the test's process.
+                    && unsafe { libc::kill(pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    return;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell leader did not exit");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_abort_stops_descendant_writes_before_returning() {
+        let (root, _dir) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let signal = CancellationToken::new();
+        let options = ShellExecOptions {
+            abort_signal: Some(signal.clone()),
+            ..Default::default()
+        };
+        let command = format!("{WRITING_CHILD} & wait");
+        let mut execution = env.exec(&command, Some(&options));
+        let _child = tokio::select! {
+            result = &mut execution => panic!("command ended before cancellation: {result:?}"),
+            child = shell_child_ready(&root) => child,
+        };
+        signal.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(3), &mut execution).await;
+        assert_eq!(
+            result.unwrap().unwrap_err().code,
+            ExecutionErrorCode::Aborted
+        );
+        assert_descendant_stopped_writing(&root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_output_wait_remains_interruptible_after_bash_exits() {
+        for cancel in [true, false] {
+            let (root, _dir) = temp_root();
+            let env = LocalExecutionEnv::new(&root);
+            let signal = CancellationToken::new();
+            let options = ShellExecOptions {
+                abort_signal: Some(signal.clone()),
+                timeout: (!cancel).then_some(1.0),
+                ..Default::default()
+            };
+            let command = format!("echo $$ > leader.pid; {WRITING_CHILD} &");
+            let mut execution = env.exec(&command, Some(&options));
+            let _child = tokio::select! {
+                result = &mut execution => panic!("command ended before bash exited: {result:?}"),
+                child = async {
+                    let child = shell_child_ready(&root).await;
+                    shell_leader_reaped(&root).await;
+                    child
+                } => child,
+            };
+            if cancel {
+                signal.cancel();
+            }
+            let error = tokio::time::timeout(Duration::from_secs(3), &mut execution)
+                .await
+                .expect("output wait ignored cancellation or timeout")
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                if cancel {
+                    ExecutionErrorCode::Aborted
+                } else {
+                    ExecutionErrorCode::Timeout
+                }
+            );
+            assert_descendant_stopped_writing(&root).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_exec_during_cancellation_stops_descendants() {
+        let (root, _dir) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let signal = CancellationToken::new();
+        let options = ShellExecOptions {
+            abort_signal: Some(signal.clone()),
+            ..Default::default()
+        };
+        let command = format!("{WRITING_CHILD} & wait");
+        let mut execution = env.exec(&command, Some(&options));
+        let _child = tokio::select! {
+            result = &mut execution => panic!("command ended before cancellation: {result:?}"),
+            child = shell_child_ready(&root) => child,
+        };
+        signal.cancel();
+        tokio::select! {
+            _ = &mut execution => {},
+            _ = sleep(Duration::from_millis(30)) => {},
+        }
+        drop(execution);
+        // Drop sends SIGKILL synchronously; let an in-progress filesystem
+        // write finish before checking that no further writes happen.
+        sleep(Duration::from_millis(30)).await;
+        assert_descendant_stopped_writing(&root).await;
     }
 
     #[tokio::test]

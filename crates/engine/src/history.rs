@@ -8,7 +8,7 @@
 //! `Custom` variant) and a truncated or unparsable trailing line — the
 //! crash-mid-append shape — is treated as absent.
 
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use pi_core::agent::types::AgentMessage;
@@ -76,6 +76,7 @@ pub(crate) fn append_entry(
         serde_json::to_string(entry).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(&path)?;
     // Header on an empty file, not on a new one: a crash between create
@@ -84,6 +85,15 @@ pub(crate) fn append_entry(
     if file.metadata()?.len() == 0 {
         let header = serde_json::json!({ "version": HISTORY_VERSION });
         writeln!(file, "{header}")?;
+    } else {
+        // A crash may leave a partial record or only omit its newline.
+        // Keep those bytes, but isolate them from every later append.
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            file.write_all(b"\n")?;
+        }
     }
     writeln!(file, "{line}")
 }
@@ -633,11 +643,18 @@ mod tests {
             })),
         )
         .unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(history_path(&dir, "chat-1").unwrap())
+            .unwrap()
+            .write_all(b"{\"kind\":\"message\",\"entry\":")
+            .unwrap();
         let replayed = load(&dir, "chat-1").unwrap();
         assert_eq!(replayed.len(), 2);
         let repaired = load_repaired(&dir, "chat-1").unwrap();
         assert_eq!(result_ids(&repaired), ["call-1"]);
         assert_eq!(repaired.len(), 3);
+        assert_eq!(load(&dir, "chat-1").unwrap(), repaired);
 
         // The repair is on disk too: a later Turn and another load keep the
         // synthetic result next to its call instead of re-deriving it at
@@ -660,6 +677,24 @@ mod tests {
         append_message(&dir, "chat-1", &user("hello")).unwrap();
         assert_eq!(load(&dir, "chat-1").unwrap(), vec![user("hello")]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn appending_preserves_a_complete_record_without_a_final_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        append_message(dir.path(), "chat-1", &user("before")).unwrap();
+        let path = history_path(dir.path(), "chat-1").unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.pop(), Some(b'\n'));
+        std::fs::write(&path, &bytes).unwrap();
+
+        append_message(dir.path(), "chat-1", &user("after")).unwrap();
+
+        assert_eq!(
+            load_repaired(dir.path(), "chat-1").unwrap(),
+            [user("before"), user("after")]
+        );
+        assert!(std::fs::read(&path).unwrap().starts_with(&bytes));
     }
 
     #[test]

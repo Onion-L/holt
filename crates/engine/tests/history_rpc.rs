@@ -296,6 +296,7 @@ async fn a_truncated_history_tail_opens_clean_and_repairs() {
         ScriptedReply::tool_call("call-1", "read", serde_json::json!({ "path": "notes.txt" })),
         ScriptedReply::text("the final reply"),
         ScriptedReply::text("after the truncation"),
+        ScriptedReply::text("after the second restart"),
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
@@ -327,6 +328,17 @@ async fn a_truncated_history_tail_opens_clean_and_repairs() {
     );
     // The truncated closing reply is gone; the new prompt follows.
     assert_eq!(summary[3], "user:after the truncation");
+
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "remember the new turn").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    let reloaded = common::summarize(&requests[3].messages);
+    assert_eq!(reloaded[3], "user:after the truncation");
+    assert_eq!(reloaded[4], "assistant:text:after the truncation");
+    assert_eq!(reloaded[5], "user:remember the new turn");
 }
 
 #[tokio::test]

@@ -138,6 +138,73 @@ async fn continue_during_cancellation_waits_for_cleanup_then_runs_the_queue() {
     assert!(transcript.to_string().contains("aborted"));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn continue_after_shell_interrupt_waits_for_descendant_cleanup() {
+    use std::time::Duration;
+
+    struct ChildGuard(i32);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            // SAFETY: this PID belongs to the test's writing child.
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "shell-a",
+            "bash",
+            json!({"command": "bash -c 'trap \"\" TERM; echo $$ > child.pid; for ((i=0; i<500; i++)); do echo tick >> writes; sleep 0.01; done' & wait"}),
+        ),
+        ScriptedReply::text("answer B"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_ungated_chat(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
+    let writes = fixture.project_dir.path().join("writes");
+    let pid_file = fixture.project_dir.path().join("child.pid");
+    let _child = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = pid.trim().parse::<i32>()
+                && writes.exists()
+            {
+                break ChildGuard(pid);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bash tool never started its child");
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            json!({"chatId":"chat-1","command":{"kind":"interrupt"}}),
+        )
+        .await
+        .unwrap();
+    engine
+        .handle(methods::CONTINUE_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
+        .await
+        .unwrap();
+    wait_for_queue(&engine, |q| {
+        q["pending"] == json!([]) && q["activeMessageId"].is_null()
+    })
+    .await;
+
+    let stopped = std::fs::read(&writes).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read(&writes).unwrap(), stopped);
+    assert_eq!(provider.requests().len(), 2);
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(transcript.to_string().contains("answer B"));
+    assert!(transcript.to_string().contains("aborted"));
+}
+
 #[tokio::test]
 async fn restart_retains_pending_messages_paused_and_never_replays_a_started_turn() {
     let fixture = Fixture::new();
