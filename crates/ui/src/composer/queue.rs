@@ -17,6 +17,10 @@ use crate::theme::Theme;
 /// otherwise snap to the post-tween target without the easing curve).
 const QUEUE_DISCLOSURE_TWEEN_GRACE: Duration = Duration::from_millis(120);
 
+/// Keep long queues from taking over the composer; `uniform_list` scrolls the
+/// rows that do not fit in this viewport.
+const QUEUE_LIST_MAX_HEIGHT: f32 = 240.0;
+
 /// Interruptible height tween for the queue's expand/collapse body — the same
 /// recipe as the shell sidebar disclosure (shell/spaces.rs). `epoch` bumps on
 /// every toggle so the element-id-keyed `with_animation` clock remounts; a
@@ -377,19 +381,20 @@ impl Composer {
             format!("Queued ({count})")
         };
         let expanded = self.queue_expanded;
-        // Body height for the expand/collapse tween: the list (capped at
-        // four visible rows) plus the error line, with a single `gap_2`
-        // (8px) between them when both are mounted. Captured by the toggle
-        // handlers below so the tween starts from the height the user
-        // actually saw when they clicked.
+        // Body height for the expand/collapse tween: the list viewport (the
+        // rows beyond the cap scroll inside `uniform_list`) plus the error
+        // line, with a single `gap_2` (8px) between them when both are
+        // mounted. Captured by the toggle handlers below so the tween starts
+        // from the height the user actually saw when they clicked.
         let list_visible = count > 0;
         let error_visible = error.is_some();
         let body_present = list_visible || error_visible;
-        let list_height = if list_visible {
-            30.0 * count.min(4) as f32 + 8.0
+        let list_content_height = if list_visible {
+            30.0 * count as f32 + 8.0
         } else {
             0.0
         };
+        let list_height = list_content_height.min(QUEUE_LIST_MAX_HEIGHT);
         // Single-line body text at the queue's 12px type size.
         const QUEUE_ERROR_LINE_HEIGHT: f32 = 22.0;
         const QUEUE_INTER_GAP: f32 = 8.0;
@@ -618,6 +623,7 @@ impl Composer {
                             .collect::<Vec<_>>()
                     })
                     .h(px(list_height))
+                    .max_h(px(QUEUE_LIST_MAX_HEIGHT))
                     .w_full()
                     .min_w_0()
                     .occlude(),

@@ -1031,32 +1031,32 @@ impl Render for Composer {
         // via `add_paths`.
         // Frosted: the pill backdrop-blurs the transcript scrolling under it
         // (the popover glass treatment; radius matches the pill's rounding).
+        // Keep the queue in normal flow so the shell's bottom-stack measurement
+        // reserves its actual height from the transcript.
         let container = container.child(
             div()
-                .relative()
-                // The queue is an overlay above the input. Keeping it out of
-                // the flex flow prevents queue changes from resizing the
-                // transcript viewport or shifting its content.
+                .w_full()
+                .flex()
+                .flex_col()
                 .child(
                     div()
-                        .absolute()
-                        // Docked flush against the pill (no gap) and inset on
-                        // both sides, so the queue reads as a narrower panel
-                        // sitting on top of the input.
-                        .left(px(20.0))
-                        .right(px(20.0))
-                        .bottom_full()
+                        .w_full()
+                        .px(px(20.0))
                         .child(self.render_message_queue(window, cx)),
                 )
-                .child(crate::frost::frosted(
-                    26.0,
-                    16.0,
-                    motion::fade_quick("composer-input", body),
-                ))
-                // Both completion popups span the full pill width above it —
-                // the file-mention and slash tokens are mutually exclusive.
-                .children(self.render_file_mention_popup(&theme, cx))
-                .children(self.render_slash_popup(&theme, cx)),
+                .child(
+                    div()
+                        .relative()
+                        .child(crate::frost::frosted(
+                            26.0,
+                            16.0,
+                            motion::fade_quick("composer-input", body),
+                        ))
+                        // Both completion popups span the full pill width above it —
+                        // the file-mention and slash tokens are mutually exclusive.
+                        .children(self.render_file_mention_popup(&theme, cx))
+                        .children(self.render_slash_popup(&theme, cx)),
+                ),
         );
         // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
         // checkout-kind selector + ref picker for new sessions, read-only
