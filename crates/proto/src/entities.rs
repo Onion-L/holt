@@ -634,6 +634,9 @@ pub struct TerminalSession {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TerminalEvent {
+    /// Replay was evicted. The following bytes are only a retained tail;
+    /// the UI must disclose that the terminal screen is incomplete.
+    Gap { seq: u64 },
     /// Output chunk; `data` is base64 (PTY output is raw bytes, not valid UTF-8).
     Data { seq: u64, data: String },
     #[serde(rename_all = "camelCase")]

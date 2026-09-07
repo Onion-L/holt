@@ -97,6 +97,10 @@ unsafe fn build_classes() {
                 will_terminate as extern "C" fn(&mut Object, Sel, id),
             );
             decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C" fn(&mut Object, Sel, id) -> usize,
+            );
+            decl.add_method(
                 sel!(handleGPUIMenuItem:),
                 handle_menu_item as extern "C" fn(&mut Object, Sel, id),
             );
@@ -178,6 +182,7 @@ pub(crate) struct MacPlatformState {
     on_system_wake: Option<Box<dyn FnMut()>>,
     system_wake_observer_registered: bool,
     quit: Option<Box<dyn FnMut()>>,
+    should_quit: Option<Box<dyn FnMut() -> bool>>,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     will_open_menu: Option<Box<dyn FnMut()>>,
@@ -222,6 +227,7 @@ impl MacPlatform {
             find_pasteboard: Pasteboard::find(),
             reopen: None,
             quit: None,
+            should_quit: None,
             menu_command: None,
             validate_menu_command: None,
             will_open_menu: None,
@@ -913,6 +919,10 @@ impl Platform for MacPlatform {
         self.0.lock().quit = Some(callback);
     }
 
+    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
+        self.0.lock().should_quit = Some(callback);
+    }
+
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().reopen = Some(callback);
     }
@@ -1318,6 +1328,18 @@ extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
         drop(lock);
         callback();
         platform.0.lock().quit.get_or_insert(callback);
+    }
+}
+
+extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> usize {
+    let platform = unsafe { get_mac_platform(this) };
+    let callback = platform.0.lock().should_quit.take();
+    if let Some(mut callback) = callback {
+        let allowed = callback();
+        platform.0.lock().should_quit.get_or_insert(callback);
+        usize::from(allowed) // NSTerminateCancel = 0, NSTerminateNow = 1.
+    } else {
+        1
     }
 }
 

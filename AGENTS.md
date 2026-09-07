@@ -14,7 +14,7 @@ path.
   `cargo fmt --all`.
 - Test: `cargo test --workspace`; focus with `-p`, e.g. `cargo test -p holt-doc`.
 - The engine slice is intentionally narrow (see "The RPC contract" in
-  `ARCHITECTURE.md`): terminals, worktrees, change requests, and uploads
+  `ARCHITECTURE.md`): worktrees, change requests, and uploads
   are rendered by the UI but unserved — those RPCs reply `UnknownMethod` by
   design, not regression. The git surface (branches, checkout diffs in all
   four modes, history, fetch) IS served on the git2 backend; all git2

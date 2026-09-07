@@ -309,6 +309,7 @@ impl EngineService {
             )
             .map_err(|error| RpcError::Failed(error.to_string()))?;
             self.runtime.remove_chat(&params.chat_id);
+            self.terminals.close_chat(&params.chat_id);
             self.runtime.publish_chats();
             // Reclaim at restart, when no in-memory draft or retry owns files.
         }
@@ -1137,6 +1138,66 @@ impl RpcService for LocalEngine {
 impl RpcService for EngineService {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         match method {
+            methods::OPEN_TERMINAL => {
+                let params: holt_rpc::terminals::OpenTerminal = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                let cwd = self.search_files_root(&SearchFilesParams {
+                    chat_id: Some(params.chat_id.clone()),
+                    space_id: None,
+                    query: String::new(),
+                })?;
+                let terminals = self.terminals.clone();
+                let session = tokio::task::spawn_blocking(move || {
+                    terminals.open(params.chat_id, &cwd, params.cols, params.rows)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))??;
+                RpcReply::value(&session)
+            }
+            methods::SUBSCRIBE_TERMINAL => {
+                let params: holt_rpc::terminals::SubscribeTerminal = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                self.terminals
+                    .subscribe(&params.terminal_id, params.after_seq)
+            }
+            methods::WRITE_TERMINAL => {
+                let params: holt_rpc::terminals::WriteTerminal = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                let terminals = self.terminals.clone();
+                tokio::task::spawn_blocking(move || {
+                    terminals.write(&params.terminal_id, &params.data)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))??;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::RESIZE_TERMINAL => {
+                let params: holt_rpc::terminals::ResizeTerminal = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                self.terminals
+                    .resize(&params.terminal_id, params.cols, params.rows)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::LIST_TERMINALS => RpcReply::value(&self.terminals.list()),
+            methods::CLOSE_TERMINAL | methods::CLOSE_ALL_TERMINALS => {
+                let id = if method == methods::CLOSE_TERMINAL {
+                    Some(
+                        serde_json::from_value::<holt_rpc::terminals::TerminalId>(params)
+                            .map_err(|error| RpcError::BadParams(error.to_string()))?
+                            .terminal_id,
+                    )
+                } else {
+                    None
+                };
+                let terminals = self.terminals.clone();
+                tokio::task::spawn_blocking(move || match id {
+                    Some(id) => terminals.close(&id),
+                    None => terminals.close_all(false),
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::WATCH_MESSAGE_QUEUE => {
                 let chat_id = required_string(&params, "chatId")?;
                 if !crate::store::chat_id_is_path_safe(chat_id) {
@@ -1446,9 +1507,7 @@ impl RpcService for EngineService {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({"text": text}))
             }
-            methods::SUBSCRIBE_TERMINAL | methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
-                Ok(pending_stream())
-            }
+            methods::WATCH_CHECKOUT_CHANGE_REQUEST => Ok(pending_stream()),
 
             // Live checkout-diff awareness (git-capability issue 03): the
             // hub owns one watcher per git space; first subscriber starts

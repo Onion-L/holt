@@ -984,6 +984,16 @@ impl App {
         self.platform.quit();
     }
 
+    /// Register the gate for native quit requests. Return false while an
+    /// asynchronous confirmation is pending, then call `quit` after approval.
+    pub fn on_should_quit(&self, mut callback: impl FnMut(&mut App) -> bool + 'static) {
+        let app = self.this.clone();
+        self.platform.on_should_quit(Box::new(move || {
+            app.upgrade()
+                .is_none_or(|app| callback(&mut app.borrow_mut()))
+        }));
+    }
+
     /// Returns the current policy for hiding the cursor in response to
     /// keyboard input.
     pub fn cursor_hide_mode(&self) -> CursorHideMode {

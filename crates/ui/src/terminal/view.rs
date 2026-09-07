@@ -19,7 +19,7 @@ use gpui::{
 use crate::theme::{Appearance, Theme, rgb_to_hsl};
 
 use super::emulator::{CellColor, CellSnapshot, Side};
-use super::panel::TerminalPanel;
+use super::pane::TerminalPane;
 
 /// Terminal font metrics (mono).
 pub const TERM_FONT_SIZE: f32 = 13.0;
@@ -206,6 +206,43 @@ pub fn keystroke_bytes(
     if mods.platform {
         return None;
     }
+    let modifier = 1 + u8::from(mods.shift) + 2 * u8::from(mods.alt) + 4 * u8::from(mods.control);
+    if modifier > 1 {
+        let final_byte = match key {
+            "up" => Some('A'),
+            "down" => Some('B'),
+            "right" => Some('C'),
+            "left" => Some('D'),
+            "home" => Some('H'),
+            "end" => Some('F'),
+            "f1" => Some('P'),
+            "f2" => Some('Q'),
+            "f3" => Some('R'),
+            "f4" => Some('S'),
+            _ => None,
+        };
+        if let Some(ch) = final_byte {
+            return Some(format!("\x1b[1;{modifier}{ch}").into_bytes());
+        }
+        let number = match key {
+            "insert" => Some(2),
+            "delete" => Some(3),
+            "pageup" => Some(5),
+            "pagedown" => Some(6),
+            "f5" => Some(15),
+            "f6" => Some(17),
+            "f7" => Some(18),
+            "f8" => Some(19),
+            "f9" => Some(20),
+            "f10" => Some(21),
+            "f11" => Some(23),
+            "f12" => Some(24),
+            _ => None,
+        };
+        if let Some(n) = number {
+            return Some(format!("\x1b[{n};{modifier}~").into_bytes());
+        }
+    }
     if mods.alt {
         // ESC-prefix the same keystroke without alt.
         let inner = keystroke_bytes(
@@ -304,6 +341,32 @@ fn control_bytes(key: &str) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
+mod modifier_tests {
+    use super::*;
+    #[test]
+    fn modified_navigation_uses_xterm_modifier_parameters() {
+        let ctrl = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            keystroke_bytes("left", None, &ctrl, true).unwrap(),
+            b"\x1b[1;5D"
+        );
+        let alt_shift = Modifiers {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            keystroke_bytes("f5", None, &alt_shift, false).unwrap(),
+            b"\x1b[15;4~"
+        );
+        assert_eq!(keystroke_bytes("c", None, &ctrl, false).unwrap(), [3]);
+    }
+}
+
 /// Wrap pasted text for the PTY (bracketed-paste aware; strips the one control
 /// sequence a paste could inject).
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
@@ -355,12 +418,12 @@ impl InputCoalescer {
 /// height for rows. The measured cols×rows feed back into the panel, which
 /// resizes the emulator immediately and debounces the `ResizeTerminal` RPC.
 pub struct TerminalElement {
-    panel: Entity<TerminalPanel>,
+    panel: Entity<TerminalPane>,
     focused: bool,
 }
 
 impl TerminalElement {
-    pub fn new(panel: Entity<TerminalPanel>, focused: bool) -> Self {
+    pub fn new(panel: Entity<TerminalPane>, focused: bool) -> Self {
         Self { panel, focused }
     }
 }
@@ -459,7 +522,7 @@ impl gpui::Element for TerminalElement {
         );
         let snapshot = self.panel.update(cx, |panel, cx| {
             panel.on_grid_metrics(
-                super::panel::GridGeometry {
+                super::pane::GridGeometry {
                     bounds,
                     origin,
                     cell_w: f32::from(cell_w),
@@ -572,6 +635,12 @@ impl gpui::Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let focus = self.panel.read(cx).focus_handle();
+        window.handle_input(
+            &focus,
+            gpui::ElementInputHandler::new(bounds, self.panel.clone()),
+            cx,
+        );
         let line_h = px(TERM_LINE_HEIGHT);
         let origin = point(
             bounds.left() + px(TERM_PADDING),
@@ -600,6 +669,45 @@ impl gpui::Element for TerminalElement {
             }
             if let Some(cursor) = prepaint.cursor.take() {
                 window.paint_quad(cursor);
+            }
+            let composition = self.panel.read(cx).composition().to_owned();
+            if !composition.is_empty() {
+                let theme = Theme::of(cx);
+                let cursor = self
+                    .panel
+                    .read(cx)
+                    .active_grid_snapshot(cx)
+                    .and_then(|s| s.cursor);
+                if let Some(cursor) = cursor {
+                    let line = window.text_system().shape_line(
+                        composition.clone().into(),
+                        px(TERM_FONT_SIZE),
+                        &[TextRun {
+                            len: composition.len(),
+                            font: font(theme.font_mono.clone()),
+                            color: theme.text,
+                            background_color: Some(theme.surface_raised),
+                            underline: Some(gpui::UnderlineStyle {
+                                thickness: px(1.),
+                                color: Some(theme.text),
+                                wavy: false,
+                            }),
+                            strikethrough: None,
+                        }],
+                        None,
+                    );
+                    let _ = line.paint(
+                        point(
+                            origin.x + prepaint.cell_w * cursor.col as f32,
+                            origin.y + line_h * cursor.row as f32,
+                        ),
+                        line_h,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
             }
         });
     }

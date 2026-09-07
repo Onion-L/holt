@@ -21,7 +21,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (terminals, worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -91,6 +91,20 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat or
   Subagent document). `FetchToolBlob` serves completed Subagent transcripts
   as JSON text for a `{parentChatId}/{subagentDocId}` reference.
+- Terminals (ADR-0017): `OpenTerminal`, `WriteTerminal`, `ResizeTerminal`,
+  `SubscribeTerminal`, and `CloseTerminal` serve user-operated PTYs in
+  `engine::terminals`, rooted at the owning Chat's working directory.
+  `ListTerminals` supplies running status for close confirmation;
+  `CloseAllTerminals` releases sessions when the window closes. The default
+  login shell inherits the user's environment and shell configuration.
+  Output is base64 with monotonic sequence numbers and a bounded 1 MiB /
+  4,096-event replay buffer. Evicted replay emits an explicit `Gap`; the UI
+  reports incomplete output and keeps the same process. Terminal viewports
+  use Alacritty with 10,000 scrollback lines. Tabs group independent split
+  panes, retained while moving between the bottom drawer and right pane.
+  Closing running terminals requires confirmation, including Chat deletion,
+  native window closure, and macOS Dock quit. The vendored GPUI macOS backend
+  exposes `on_should_quit` so native quit can await that decision.
 - Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
   `QueueCommand run`/`invokeSkill`/`compact` acknowledge durable acceptance
@@ -119,7 +133,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
   30 s timeout).
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
-  terminals, worktrees, change requests, and uploads.
+  worktrees, change requests, and uploads.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips
 methods that error with `UnknownMethod`.
@@ -324,7 +338,7 @@ submission order, and Run now on a paused queue authorizes only the
 selected item. Skill invocations support the same Run now/Steer promotion;
 a pending Compaction executes strictly in order. `/skill` and `/compact`
 join the same queue as ordinary messages (ticket 04); `/compact` remains
-outside the Turn model. Terminals, worktrees, change requests, and uploads
+outside the Turn model. Worktrees, change requests, and uploads
 remain unserved.
 
 The engine's integration tests drive whole Turns through `RpcService::handle`

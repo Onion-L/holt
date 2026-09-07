@@ -43,6 +43,7 @@ mod rpc;
 mod skills;
 mod store;
 mod subagents;
+mod terminals;
 mod title_settings;
 mod title_task;
 mod tools;
@@ -127,6 +128,7 @@ struct EngineService {
     /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
+    terminals: Arc<terminals::Terminals>,
 }
 
 impl LocalEngine {
@@ -188,6 +190,7 @@ impl LocalEngine {
                 images: images::assemble(&config.data_dir),
                 title_settings,
                 mode_default,
+                terminals: Arc::new(terminals::Terminals::default()),
             },
             _instance_lock: lock,
         })
@@ -196,11 +199,16 @@ impl LocalEngine {
     pub fn engine_info(&self) -> &EngineInfo {
         &self.service.engine_info
     }
+
+    pub fn shutdown(&self) {
+        self.service.runtime.shutdown();
+        self.service.terminals.close_all(true);
+    }
 }
 
 impl Drop for LocalEngine {
     fn drop(&mut self) {
-        self.service.runtime.shutdown();
+        self.shutdown();
     }
 }
 

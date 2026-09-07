@@ -138,6 +138,7 @@ pub fn run_app(config: UiConfig) {
         cx.register_url_scheme("holt").detach();
 
         let state = cx.new(|_| state::AppState::new());
+        terminal::lifecycle::init(state.clone(), cx);
         let url_state = state.clone();
         cx.spawn(async move |cx| {
             while let Some(url) = url_rx.next().await {
@@ -240,6 +241,10 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
             ..Default::default()
         },
         move |window, cx| {
+            window.on_window_should_close(cx, |window, cx| {
+                terminal::lifecycle::request_close(window, cx, false);
+                false
+            });
             window.set_rem_size(px(typography::font_size(cx).pixels()));
             // React to the user flipping macOS between light and dark. Detached:
             // the subscription lives as long as the window does, and the window

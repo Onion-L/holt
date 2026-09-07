@@ -130,10 +130,8 @@ impl Render for SurfaceTabGhost {
 
 impl Shell {
     pub(super) fn right_terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {
-        if let Some(terminal) = &self.right_terminal {
-            return terminal.clone();
-        }
-        let terminal = cx.new(|cx| TerminalPanel::new_embedded(self.state.clone(), cx));
+        let terminal = self.terminal_panel(cx);
+        terminal.update(cx, |panel, cx| panel.set_embedded(true, cx));
         self.right_terminal = Some(terminal.clone());
         terminal
     }
@@ -162,10 +160,11 @@ impl Shell {
                     // Contextual title (user request): the pane's scope
                     // label, or the pinned commit's subject.
                     .map(|changes| (*surface, changes.read(cx).tab_title())),
-                RightSurface::Terminal(tab) => terminals
+                RightSurface::Terminal(tab) if !self.terminal_open(cx) => terminals
                     .iter()
                     .find(|(k, _, _)| k == tab)
                     .map(|(_, title, _)| (*surface, title.clone())),
+                RightSurface::Terminal(_) => None,
                 RightSurface::Subagent(id) => self
                     .subagent_tabs
                     .get(id)
@@ -178,9 +177,13 @@ impl Shell {
     /// Drag-reorder a surface tab within this chat's strip.
     pub(super) fn reorder_right_tabs(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let key = self.panel_key(cx);
+        let rows = self.right_surface_rows(cx);
+        let (Some((source, _)), Some((target, _))) = (rows.get(from), rows.get(to)) else {
+            return;
+        };
         if let Some(tabs) = self.right_tabs.get_mut(&key)
-            && from < tabs.len()
-            && to < tabs.len()
+            && let Some(from) = tabs.iter().position(|surface| surface == source)
+            && let Some(to) = tabs.iter().position(|surface| surface == target)
             && from != to
         {
             let surface = tabs.remove(from);
@@ -241,6 +244,8 @@ impl Shell {
         self.panels.update(&key, |p| p.right_active = surface);
         match surface {
             RightSurface::Terminal(tab) => {
+                self.panels.update(&key, |p| p.terminal_open = false);
+                self.terminal_tween = None;
                 let panel = self.right_terminal_panel(cx);
                 panel.update(cx, |panel, cx| panel.select_tab_by_key(tab, cx));
             }
@@ -302,10 +307,7 @@ impl Shell {
     /// opens a fresh embedded terminal tab.
     pub(super) fn add_terminal_surface(&mut self, cx: &mut Context<Self>) {
         let panel = self.right_terminal_panel(cx);
-        let opened = panel.update(cx, |panel, cx| {
-            panel.set_open(true, cx);
-            panel.open_tab_for_selected(cx)
-        });
+        let opened = panel.update(cx, |panel, cx| panel.open_tab_for_selected(cx));
         if let Some(tab) = opened {
             let key = self.panel_key(cx);
             self.right_tabs
@@ -447,6 +449,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let RightSurface::Terminal(tab) = surface {
+            let panel = self.right_terminal_panel(cx);
+            panel.update(cx, |panel, cx| panel.close_tab_by_key(tab, window, cx));
+            return;
+        }
         let key = self.panel_key(cx);
         if let Some(tabs) = self.right_tabs.get_mut(&key) {
             tabs.retain(|s| *s != surface);

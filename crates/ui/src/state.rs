@@ -82,7 +82,8 @@ impl EngineBackend for InProcessEngine {
         EngineMode::InProcess
     }
     async fn shutdown(&self) {
-        // The in-process backend has no separate shutdown work.
+        let engine = self._engine.clone();
+        let _ = tokio::task::spawn_blocking(move || engine.shutdown()).await;
     }
 }
 

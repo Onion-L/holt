@@ -190,6 +190,8 @@ pub trait Platform: 'static {
     fn open_with_system(&self, path: &Path);
 
     fn on_quit(&self, callback: Box<dyn FnMut()>);
+    /// Veto a native quit request before teardown begins (macOS).
+    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
     fn on_reopen(&self, callback: Box<dyn FnMut()>);
     fn on_system_wake(&self, callback: Box<dyn FnMut()>);
 

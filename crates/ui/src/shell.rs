@@ -129,6 +129,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
     crate::app_menus::bind_keys(cx);
+    crate::terminal::panel::init(cx);
     cx.bind_keys([
         KeyBinding::new(
             &valid_or_default(
@@ -897,7 +898,11 @@ impl Shell {
             self.terminal_tween = None;
             let panels = self.panels.get(&self.panel_key(cx));
             if let Some(panel) = self.terminal.clone() {
-                panel.update(cx, |panel, cx| panel.set_open(panels.terminal_open, cx));
+                panel.update(cx, |panel, cx| {
+                    panel.set_embedded(!panels.terminal_open, cx);
+                    panel.set_resize_suspended(false);
+                    panel.set_open(panels.terminal_open, cx);
+                });
             }
             if panels.changes_open
                 && let RightSurface::Diff(id) = self.resolved_right_active(cx)
@@ -1041,6 +1046,33 @@ impl Shell {
             return terminal.clone();
         }
         let terminal = cx.new(|cx| TerminalPanel::new(self.state.clone(), cx));
+        cx.observe(&terminal, |this, terminal, cx| {
+            if !this.terminal_open(cx) {
+                let key = this.panel_key(cx);
+                let summaries = terminal.read(cx).tab_summaries(cx);
+                let stored = this.right_tabs.entry(key.clone()).or_default();
+                stored.retain(|surface| match surface {
+                    RightSurface::Terminal(id) => summaries.iter().any(|(key, _, _)| key == id),
+                    _ => true,
+                });
+                for (id, _, _) in summaries {
+                    let surface = RightSurface::Terminal(id);
+                    if !stored.contains(&surface) {
+                        stored.push(surface);
+                    }
+                }
+                if matches!(
+                    this.panels.get(&key).right_active,
+                    RightSurface::Terminal(_)
+                ) && let Some(id) = terminal.read(cx).active_key(cx)
+                {
+                    this.panels
+                        .update(&key, |p| p.right_active = RightSurface::Terminal(id));
+                }
+            }
+            cx.notify();
+        })
+        .detach();
         self.terminal = Some(terminal.clone());
         terminal
     }
@@ -1057,12 +1089,23 @@ impl Shell {
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
     /// The flag is per chat (holt `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_open(cx)
+            && self.right_pane_open(cx)
+            && matches!(self.resolved_right_active(cx), RightSurface::Terminal(_))
+        {
+            self.toggle_right_pane(cx);
+            return;
+        }
         let from = self.terminal_target(cx);
         let key = self.panel_key(cx);
         let open = self.panels.toggle_terminal(&key);
         self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
         let panel = self.terminal_panel(cx);
-        panel.update(cx, |panel, cx| panel.set_open(open, cx));
+        panel.update(cx, |panel, cx| {
+            panel.set_embedded(false, cx);
+            panel.set_resize_suspended(false);
+            panel.set_open(open, cx);
+        });
         if open {
             // Opening lands keyboard focus IN the shell — typing goes straight
             // to the prompt, no click needed (holt terminal-panel.tsx: the
@@ -1088,6 +1131,40 @@ impl Shell {
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    fn move_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.panel_key(cx);
+        let to_right = self.terminal_open(cx);
+        let panel = self.terminal_panel(cx);
+        self.terminal_tween = None;
+        if to_right {
+            let summaries = panel.read(cx).tab_summaries(cx);
+            let stored = self.right_tabs.entry(key.clone()).or_default();
+            for (id, _, _) in &summaries {
+                let surface = RightSurface::Terminal(*id);
+                if !stored.contains(&surface) {
+                    stored.push(surface);
+                }
+            }
+            self.right_terminal = Some(panel.clone());
+            self.panels.update(&key, |p| {
+                p.terminal_open = false;
+                p.changes_open = true;
+            });
+            if let Some(id) = panel.read(cx).active_key(cx) {
+                self.set_right_active(RightSurface::Terminal(id), cx);
+            }
+        } else {
+            self.panels.update(&key, |p| p.terminal_open = true);
+            panel.update(cx, |p, cx| {
+                p.set_embedded(false, cx);
+                p.set_resize_suspended(false);
+                p.set_open(true, cx);
+            });
+        }
+        window.focus(&panel.read(cx).focus_handle(), cx);
         cx.notify();
     }
 
@@ -1710,7 +1787,7 @@ impl Shell {
                 .child(popover::dialog_title(&theme, "Delete session?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
-                    format!("\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."),
+                    format!("\u{201C}{title}\u{201D} will be permanently deleted. Its terminals and running programs will also end. This can\u{2019}t be undone."),
                 )))
                 .child(
                     div()
@@ -2547,6 +2624,11 @@ impl Render for Shell {
                     this.toggle_terminal(window, cx)
                 }
             }))
+            .on_action(cx.listener(
+                |this, _: &crate::terminal::panel::MoveTerminal, window, cx| {
+                    this.move_terminal(window, cx)
+                },
+            ))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.

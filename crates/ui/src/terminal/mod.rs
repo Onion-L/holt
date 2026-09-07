@@ -12,5 +12,7 @@
 //! engine serves (feature-inventory §2.1).
 
 pub mod emulator;
+pub mod lifecycle;
+pub mod pane;
 pub mod panel;
 pub mod view;

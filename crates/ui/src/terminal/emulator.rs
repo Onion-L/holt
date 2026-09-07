@@ -235,6 +235,142 @@ impl Emulator {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
+    pub fn focus_reporting(&self) -> bool {
+        self.term.mode().contains(TermMode::FOCUS_IN_OUT)
+    }
+    pub fn alternate_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    pub fn mouse_bytes(
+        &self,
+        button: u8,
+        released: bool,
+        motion: bool,
+        row: usize,
+        col: usize,
+        modifiers: u8,
+    ) -> Option<Vec<u8>> {
+        let mode = self.term.mode();
+        if !mode.intersects(TermMode::MOUSE_MODE) || self.display_offset() != 0 {
+            return None;
+        }
+        if motion
+            && !(mode.contains(TermMode::MOUSE_MOTION)
+                || (button != 3 && mode.contains(TermMode::MOUSE_DRAG)))
+        {
+            return Some(Vec::new());
+        }
+        let code = button + modifiers + if motion { 32 } else { 0 };
+        if mode.contains(TermMode::SGR_MOUSE) {
+            Some(
+                format!(
+                    "\x1b[<{code};{};{}{}",
+                    col + 1,
+                    row + 1,
+                    if released { 'm' } else { 'M' }
+                )
+                .into_bytes(),
+            )
+        } else {
+            let code = if released { 3 + modifiers } else { code };
+            let mut bytes = vec![0x1b, b'[', b'M', 32 + code];
+            if mode.contains(TermMode::UTF8_MOUSE) {
+                for value in [col, row] {
+                    bytes.extend(
+                        char::from_u32((value.min(2014) + 33) as u32)
+                            .unwrap()
+                            .to_string()
+                            .as_bytes(),
+                    );
+                }
+            } else {
+                if col > 222 || row > 222 {
+                    return Some(Vec::new());
+                }
+                bytes.extend([col as u8 + 33, row as u8 + 33]);
+            }
+            Some(bytes)
+        }
+    }
+
+    pub fn find(&mut self, query: &str, backwards: bool, reset: bool) -> bool {
+        use alacritty_terminal::{
+            index::{Boundary, Direction},
+            term::search::RegexSearch,
+        };
+        if query.is_empty() {
+            self.clear_selection();
+            return true;
+        }
+        let pattern: String = query
+            .chars()
+            .map(|ch| format!("\\x{{{:x}}}", ch as u32))
+            .collect();
+        let Ok(mut regex) = RegexSearch::new(&pattern) else {
+            return false;
+        };
+        let default = if backwards {
+            Point::new(Line(self.rows() as i32 - 1), Column(self.cols() - 1))
+        } else {
+            Point::new(Line(-(self.history_lines() as i32)), Column(0))
+        };
+        let origin = if reset {
+            default
+        } else {
+            self.selection_range()
+                .map(|r| {
+                    if backwards {
+                        r.start.sub(&self.term, Boundary::None, 1)
+                    } else {
+                        r.end.add(&self.term, Boundary::None, 1)
+                    }
+                })
+                .unwrap_or(default)
+        };
+        let found = self.term.search_next(
+            &mut regex,
+            origin,
+            if backwards {
+                Direction::Left
+            } else {
+                Direction::Right
+            },
+            if backwards { Side::Left } else { Side::Right },
+            None,
+        );
+        if let Some(found) = found {
+            self.term.scroll_to_point(*found.start());
+            self.start_selection(SelectionType::Simple, *found.start(), Side::Left);
+            self.update_selection(*found.end(), Side::Right);
+            true
+        } else {
+            self.clear_selection();
+            false
+        }
+    }
+
+    pub fn url_at(&self, point: Point) -> Option<String> {
+        let row = &self.term.grid()[point.line];
+        if let Some(link) = row[point.column].hyperlink() {
+            let uri = link.uri();
+            return (uri.starts_with("https://") || uri.starts_with("http://"))
+                .then(|| uri.to_owned());
+        }
+        let mut start = point.column.0;
+        let mut end = start;
+        let delimiter = |ch: char| ch.is_whitespace() || matches!(ch, '<' | '>' | '\"' | '\'');
+        while start > 0 && !delimiter(row[Column(start - 1)].c) {
+            start -= 1;
+        }
+        while end < self.cols() && !delimiter(row[Column(end)].c) {
+            end += 1;
+        }
+        let text: String = (start..end).map(|c| row[Column(c)].c).collect();
+        let text = text.trim_end_matches(['.', ',', ';', ')', ']']);
+        (text.starts_with("https://") || text.starts_with("http://")).then(|| text.to_owned())
+    }
+
     /// Pastes should be wrapped in `ESC [200~` / `ESC [201~`.
     pub fn bracketed_paste_mode(&self) -> bool {
         self.term.mode().contains(TermMode::BRACKETED_PASTE)
@@ -431,6 +567,62 @@ mod tests {
         e.feed(b"hello");
         assert_eq!(e.row_text(0), "hello");
         assert_eq!(e.cursor(), Some(CursorSnapshot { row: 0, col: 5 }));
+    }
+
+    #[test]
+    fn search_finds_literal_unicode_in_scrollback_and_wraps() {
+        let mut e = emu(20, 3);
+        e.feed("target.[中]\r\none\r\ntwo\r\nthree\r\nfour".as_bytes());
+        assert!(e.find("target.[中]", false, true));
+        assert_eq!(e.selection_text().as_deref(), Some("target.[中]"));
+        assert!(e.display_offset() > 0);
+        assert!(e.find("target.[中]", false, false));
+        assert!(e.find("target.[中]", true, false));
+        assert!(!e.find("not present", false, true));
+    }
+
+    #[test]
+    fn mouse_protocol_honors_modes_and_release_encoding() {
+        let mut e = emu(80, 24);
+        assert!(e.mouse_bytes(0, false, false, 2, 4, 0).is_none());
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(
+            e.mouse_bytes(0, false, false, 2, 4, 0).unwrap(),
+            b"\x1b[<0;5;3M"
+        );
+        assert_eq!(
+            e.mouse_bytes(0, true, false, 2, 4, 0).unwrap(),
+            b"\x1b[<0;5;3m"
+        );
+        assert!(e.mouse_bytes(0, false, true, 2, 4, 0).unwrap().is_empty());
+        e.feed(b"\x1b[?1002h");
+        assert_eq!(
+            e.mouse_bytes(0, false, true, 2, 4, 16).unwrap(),
+            b"\x1b[<48;5;3M"
+        );
+        assert!(e.mouse_bytes(3, false, true, 2, 4, 0).unwrap().is_empty());
+        e.feed(b"\x1b[?1003h");
+        assert_eq!(
+            e.mouse_bytes(3, false, true, 2, 4, 0).unwrap(),
+            b"\x1b[<35;5;3M"
+        );
+    }
+
+    #[test]
+    fn urls_open_only_http_targets_and_osc52_is_ignored() {
+        let mut e = emu(80, 3);
+        e.feed(b"https://example.com/test \x1b]8;;https://example.com\x07link\x1b]8;;\x07");
+        assert_eq!(
+            e.url_at(e.grid_point(0, 5)).as_deref(),
+            Some("https://example.com/test")
+        );
+        assert_eq!(
+            e.url_at(e.grid_point(0, 26)).as_deref(),
+            Some("https://example.com")
+        );
+        assert!(e.feed(b"\x1b]52;c;dGVzdA==\x07").is_empty());
+        e.feed(b"\r\n\x1b]8;;file:///tmp/test\x07local\x1b]8;;\x07");
+        assert!(e.url_at(e.grid_point(1, 1)).is_none());
     }
 
     #[test]

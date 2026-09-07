@@ -50,7 +50,13 @@ pub fn init(cx: &mut App) {
     // (crates/zed/src/zed.rs `register_action(Minimize/Zoom)`).
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
     cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
-    cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, |window| window.remove_window()));
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(handle) = cx.active_window() {
+            let _ = handle.update(cx, |_, window, cx| {
+                crate::terminal::lifecycle::request_close(window, cx, false)
+            });
+        }
+    });
     // Appearance. Each verb persists and repaints every window; see
     // `appearance::set_mode`.
     cx.on_action(|_: &AppearanceSystem, cx| appearance::set_mode(AppearanceMode::System, cx));
@@ -70,7 +76,13 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
 /// flush) with gpui's shutdown timeout before the process exits. Same graceful
 /// path as quitting from the Dock or closing the last window.
 fn quit(_: &Quit, cx: &mut App) {
-    cx.quit();
+    if let Some(handle) = cx.active_window() {
+        let _ = handle.update(cx, |_, window, cx| {
+            crate::terminal::lifecycle::request_close(window, cx, true)
+        });
+    } else {
+        cx.quit();
+    }
 }
 
 /// Fixed app-level shortcuts backing the menu key equivalents. These live

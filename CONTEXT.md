@@ -35,6 +35,7 @@
 - **Automatic title**: a short, model-generated name derived from a chat's first user prompt, used only when the chat has no user-supplied title.
 - **Title settings**: the device-wide choice of model and instruction used for automatic titles; an empty model means automatic titles are disabled.
 - **Title task**: the one-shot background operation that asks the configured model for an automatic title after a chat receives its first user prompt; it is independent of the Turn lifecycle and never becomes chat History.
+- **Terminal**: an interactive shell session owned by one Chat and operated directly by the user inside Holt; switching chats or hiding its view keeps it running. It is independent of the agent's bash tool calls and does not automatically contribute to History or Transcript.
 - **Subagent**: an agent delegated a bounded task by a parent agent, with its own History. It receives a Task brief and applicable project instructions, and returns a final summary to its waiting parent; several Subagents may work in parallel.
 - **Task brief**: the goal, necessary background, and acceptance criteria a parent agent supplies to a Subagent. It does not include the parent's entire History.
 - **Explorer**: a Subagent that investigates and reports findings using only reading and Content search.

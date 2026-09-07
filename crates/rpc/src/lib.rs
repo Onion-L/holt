@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 mod client;
 pub mod images;
 mod server;
+pub mod terminals;
 
 pub use client::{RpcClient, RpcSubscription};
 pub use server::serve_connection;
@@ -154,6 +155,10 @@ pub mod methods {
     pub const WRITE_TERMINAL: &str = "WriteTerminal";
     pub const RESIZE_TERMINAL: &str = "ResizeTerminal";
     pub const CLOSE_TERMINAL: &str = "CloseTerminal";
+    /// All retained terminal sessions, including exited ones.
+    pub const LIST_TERMINALS: &str = "ListTerminals";
+    /// End and release all terminals; used after window-close confirmation.
+    pub const CLOSE_ALL_TERMINALS: &str = "CloseAllTerminals";
     /// Checkout-diff stream for the target device's chats (DataRpc,
     /// relay-forwardable — diffs are produced where the checkout lives).
     pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
