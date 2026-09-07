@@ -47,12 +47,14 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod chat_list;
+mod chat_menu;
 mod right_pane;
 mod spaces;
 mod tabs;
 mod titlebar;
 
 pub use chat_list::*;
+use chat_menu::ChatMenuState;
 pub use right_pane::*;
 use spaces::{AddSpaceFlow, RenameSpaceDialog, SidebarDisclosureMotion};
 pub use titlebar::*;
@@ -460,6 +462,7 @@ pub struct Shell {
     shortcuts_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
     chat_menu: popover::Popup<ChatMenuState>,
+    chat_copy_task: Option<Task<()>>,
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
@@ -707,6 +710,7 @@ impl Shell {
             provider_error_timer: None,
             shortcuts_sub: None,
             chat_menu: popover::Popup::default(),
+            chat_copy_task: None,
             rename_dialog: None,
             delete_confirm: None,
             archive_confirm: None,
@@ -1167,13 +1171,6 @@ impl Shell {
         }
     }
 
-    fn open_chat_copy_menu(&mut self, cx: &mut Context<Self>) {
-        if let Some(menu) = self.chat_menu.open_mut() {
-            menu.page = ChatMenuPage::Copy;
-            cx.notify();
-        }
-    }
-
     fn copy_holt_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let link = {
             let state = self.state.read(cx);
@@ -1504,7 +1501,9 @@ impl Shell {
     /// so an unguarded jump would switch sessions UNDER the open popover,
     /// stranding it over a session the user never picked.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
-        self.add_space.is_some() || self.composer.read(cx).pickers().read(cx).is_open()
+        self.chat_menu.get().is_some()
+            || self.add_space.is_some()
+            || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
     /// Track the held modifiers so the sidebar can show its jump hints. Only a
@@ -1644,119 +1643,7 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let mut overlays: Vec<AnyElement> = Vec::new();
 
-        if let Some(menu_state) = self.chat_menu.get().cloned() {
-            let chat_id = menu_state.chat_id;
-            let position = menu_state.position;
-            let chat_menu_closing = self.chat_menu.closing_since();
-            let rename_id = chat_id.clone();
-            let archive_id = chat_id.clone();
-            let delete_id = chat_id.clone();
-            let menu = popover::popover_card(&theme)
-                .w(px(216.0))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.close_chat_menu(cx);
-                }))
-                .flex()
-                .flex_col();
-            let menu = match menu_state.page {
-                ChatMenuPage::Root => menu
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-menu-rename-{chat_id}"))
-                            .id("chat-menu-rename")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_rename_chat(rename_id.clone(), cx)
-                            }))
-                            .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
-                            .child(SharedString::from("Rename…")),
-                    )
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-menu-archive-{chat_id}"))
-                            .id("chat-menu-archive")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.request_archive_chat(archive_id.clone(), cx)
-                            }))
-                            .child(
-                                icon(icons::ARCHIVE_MINIMALISTIC)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Archive")),
-                    )
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-menu-copy-{chat_id}"))
-                            .id("chat-menu-copy")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_chat_copy_menu(cx)))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(div().flex_1().child(SharedString::from("Copy")))
-                            .child(
-                                icon(icons::ALT_ARROW_RIGHT)
-                                    .size(px(14.0))
-                                    .text_color(theme.text_muted.opacity(0.7)),
-                            ),
-                    )
-                    .child(popover::menu_separator())
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-menu-delete-{chat_id}"))
-                            .id("chat-menu-delete")
-                            .text_color(theme.danger)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.close_chat_menu(cx);
-                                this.delete_confirm = Some(delete_id.clone());
-                                cx.notify();
-                            }))
-                            .child(
-                                icon(icons::TRASH_BIN_MINIMALISTIC)
-                                    .size(px(16.0))
-                                    .text_color(theme.danger),
-                            )
-                            .child(SharedString::from("Delete…")),
-                    ),
-                ChatMenuPage::Copy => {
-                    let holt_id = chat_id.clone();
-                    menu.child(
-                        popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
-                            .id("chat-copy-back")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(menu) = this.chat_menu.open_mut() {
-                                    menu.page = ChatMenuPage::Root;
-                                    cx.notify();
-                                }
-                            }))
-                            .child(
-                                icon(icons::ALT_ARROW_LEFT)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Back")),
-                    )
-                    .child(popover::menu_separator())
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-copy-holt-{chat_id}"))
-                            .id("chat-copy-holt")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_holt_conversation_link(&holt_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Holt conversation link")),
-                    )
-                }
-            }
-            .into_any_element();
-            overlays.push(popover::menu_at(
-                "chat-context-menu",
-                position,
-                menu,
-                chat_menu_closing,
-            ));
-        }
+        overlays.extend(self.render_chat_menu(viewport, window, cx));
 
         if let Some(dialog) = &mut self.rename_dialog {
             if std::mem::take(&mut dialog.focus_pending) {

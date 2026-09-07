@@ -4,19 +4,6 @@
 
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) enum ChatMenuPage {
-    Root,
-    Copy,
-}
-
-#[derive(Clone)]
-pub(super) struct ChatMenuState {
-    pub(super) chat_id: String,
-    pub(super) position: Point<Pixels>,
-    pub(super) page: ChatMenuPage,
-}
-
 /// Sidebar resort glide (feature-inventory §1.6): 260ms
 /// `cubic-bezier(0.22,1,0.36,1)` per-row translate, the View Transitions
 /// equivalent.
@@ -504,13 +491,8 @@ impl Shell {
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.chat_menu.open(ChatMenuState {
-                        chat_id: menu_id.clone(),
-                        position: event.position,
-                        page: ChatMenuPage::Root,
-                    });
-                    cx.notify();
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_chat_menu(menu_id.clone(), event.position, window, cx);
                 }),
             )
             // Line 1: project, status word / time-ago right.
