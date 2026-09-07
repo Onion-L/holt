@@ -769,7 +769,7 @@ pub(super) fn header_icon_button(
     icon_path: &'static str,
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::Stateful<gpui::Div> {
     let muted = theme.text_muted;
     let fade_key = format!("header-icon-{id}");
     div()

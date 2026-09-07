@@ -122,6 +122,7 @@ icon_assets![
     (CLOUD, "cloud"),
     (TAG, "tag"),
     (SIDEBAR_MINIMALISTIC, "sidebar-minimalistic"),
+    (PROGRAMMING_OUTLINE, "programming-outline"),
     // Mirrored variant (holt window-controls.tsx `-scale-x-100`): the LEFT
     // sidebar toggle shows the panel line on the left; gpui divs have no
     // scale transform at the pinned rev, so the flip is baked into the asset.

@@ -113,7 +113,7 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [provider icon + session title] … [toggle-changes]`.
+    /// `[new-session +] [provider icon + session title] … [terminal] [changes]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
     /// animated left inset, the toggle-changes button on git projects).
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -224,11 +224,9 @@ impl Shell {
                 // options that used to live here moved into the pane's own
                 // second row; expand stays in this band (user request).
                 let tabs = self.render_right_tab_strip(cx);
-                // The toggle is the fixed right-edge anchor, like the left
-                // sidebar control. Only the tabs + expand section reveals to
-                // its left; including the toggle in this animated width
-                // compressed both icons into the same clipped box at open.
-                let animated_width = ((right_now - pr).min(avail) - 28.0).max(0.0);
+                // Both panel toggles stay fixed while tabs + expand reveal
+                // to their left. Reserve their two 28px slots outside the clip.
+                let animated_width = ((right_now - pr).min(avail) - 56.0).max(0.0);
                 controls = controls.child(
                     div()
                         .w(px(animated_width))
@@ -264,12 +262,28 @@ impl Shell {
             // controls reveal to its left.
             Some(
                 controls
-                    .child(header_icon_button(
-                        "toggle-changes",
-                        icons::SIDEBAR_MINIMALISTIC,
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                    ))
+                    .child(
+                        header_icon_button(
+                            "toggle-terminal",
+                            icons::PROGRAMMING_OUTLINE,
+                            &theme,
+                            cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                        )
+                        .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle terminal".into()))
+                                .into()
+                        }),
+                    )
+                    .child(
+                        header_icon_button(
+                            "toggle-changes",
+                            icons::SIDEBAR_MINIMALISTIC,
+                            &theme,
+                            cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                        )
+                        .when(right_open, |el| el.bg(theme.glass_hover())),
+                    )
                     .into_any_element(),
             )
         };
