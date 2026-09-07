@@ -34,7 +34,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 
 - Identity/barrier: `EngineInfo`, `EngineReady`.
 - Entity watches: `WatchChats`, `WatchSpaces`, `WatchSessions`
-  (each emits `Vec<T>` snapshots), `WatchConnectivity`, `WatchTransfers`.
+  (each emits `Vec<T>` snapshots), `WatchConnectivity`.
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
   `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`.
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the

@@ -1450,7 +1450,6 @@ impl RpcService for EngineService {
             }
             methods::WATCH_CHATS => Ok(Self::watch_value(self.runtime.chats_tx.subscribe())),
             methods::WATCH_SESSIONS => Ok(Self::watch_value(self.runtime.sessions_tx.subscribe())),
-            methods::WATCH_TRANSFERS => Ok(static_watch(serde_json::json!([]))),
             methods::WATCH_SPACES => Ok(self.watch_spaces()),
             methods::WATCH_CONNECTIVITY => {
                 // Default = state Disabled ("no edge transports on this
