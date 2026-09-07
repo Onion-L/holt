@@ -357,6 +357,7 @@ impl Terminals {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .exited,
+                has_running_jobs: session.has_running_jobs(),
             })
             .collect()
     }
@@ -405,6 +406,16 @@ impl Terminals {
 }
 
 impl Session {
+    fn has_running_jobs(&self) -> bool {
+        let shell = self
+            .child
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .process_id()
+            .map(|pid| pid as i32);
+        shell.is_some_and(has_session_jobs)
+    }
+
     // Both reader and exit watcher can observe shell exit. Clean jobs once,
     // under the child lock, before publishing Exit or allowing later closes.
     fn cleanup_jobs(&self, child: &(dyn Child + Send + Sync)) {
@@ -471,6 +482,24 @@ impl Drop for Terminals {
 
 #[cfg(unix)]
 fn kill_session_jobs(session: i32) {
+    for pid in session_processes(session) {
+        if pid != session {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn has_session_jobs(session: i32) -> bool {
+    session_processes(session)
+        .into_iter()
+        .any(|pid| pid != session)
+}
+
+#[cfg(unix)]
+fn session_processes(session: i32) -> Vec<i32> {
     #[cfg(target_os = "macos")]
     let pids = unsafe {
         let count = libc::proc_listallpids(std::ptr::null_mut(), 0).max(0) as usize;
@@ -491,15 +520,16 @@ fn kill_session_jobs(session: i32) {
         .collect();
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let pids: Vec<i32> = Vec::new();
-    for pid in pids {
+    pids.into_iter()
         // Job-control background groups share the shell's session, but may
         // not be either its foreground group or its process group.
-        if pid > 1 && pid != session && unsafe { libc::getsid(pid) } == session {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-    }
+        .filter(|pid| *pid > 1 && unsafe { libc::getsid(*pid) } == session)
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn has_session_jobs(_session: i32) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -583,6 +613,36 @@ mod tests {
                 .open("chat".into(), dir.path().to_str().unwrap(), 80, 24)
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn status_distinguishes_idle_shell_from_child_job() {
+        let terminals = Terminals::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let idle = shell(&terminals, dir.path(), "read");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let idle_status = terminals
+            .list()
+            .into_iter()
+            .find(|status| status.terminal_id == idle.id)
+            .unwrap();
+        assert!(idle_status.running);
+        assert!(!idle_status.has_running_jobs);
+        terminals.close(&idle.id);
+
+        // Keep a command after sleep so shells that optimize a final simple
+        // command with exec still leave a child process to observe.
+        let job = shell(&terminals, dir.path(), "sleep 60; true");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let job_status = terminals
+            .list()
+            .into_iter()
+            .find(|status| status.terminal_id == job.id)
+            .unwrap();
+        assert!(job_status.running);
+        assert!(job_status.has_running_jobs);
+        terminals.close(&job.id);
     }
 
     #[tokio::test]

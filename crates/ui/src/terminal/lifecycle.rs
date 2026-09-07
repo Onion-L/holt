@@ -64,7 +64,7 @@ pub fn request_close(window: &mut Window, cx: &mut App, quit: bool) {
                 None => Ok(Vec::new()),
             };
             let running = match sessions {
-                Ok(sessions) => sessions.iter().filter(|s| s.running).count(),
+                Ok(sessions) => sessions.iter().filter(|s| s.has_running_jobs).count(),
                 Err(error) => {
                     let _ = cx.update(|window, cx| {
                         cx.global_mut::<Lifecycle>().pending = false;

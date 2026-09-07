@@ -6,6 +6,7 @@ use gpui::{
     App, Context, Entity, FocusHandle, IntoElement, KeyBinding, Render, SharedString, Subscription,
     Window, actions, div, prelude::*,
 };
+use holt_rpc::{methods, terminals::TerminalStatus};
 use std::collections::HashMap;
 
 pub use super::pane::{TAB_BAR_HEIGHT, clamp_terminal_height, drop_index, slide_offset};
@@ -453,17 +454,54 @@ impl TerminalPanel {
             return;
         }
         self.confirming = true;
-        let answer = window.prompt(
-            gpui::PromptLevel::Warning,
-            "Close running terminals?",
-            Some(&format!(
-                "This will end {running} terminal(s) and their running programs."
-            )),
-            &["Cancel", "Close terminals"],
-            cx,
-        );
+        let terminal_ids: Vec<String> = ids
+            .iter()
+            .filter_map(|id| self.panes.get(id)?.view.read(cx).terminal_id(cx))
+            .collect();
+        let engine = self.state.read(cx).engine().cloned();
+        let fallback_running = running;
         cx.spawn_in(window, async move |this, cx| {
-            let confirmed = answer.await == Ok(1);
+            let running = match engine {
+                Some(engine) if !terminal_ids.is_empty() => {
+                    match engine
+                        .client()
+                        .call_as::<Vec<TerminalStatus>>(
+                            methods::LIST_TERMINALS,
+                            serde_json::json!({}),
+                        )
+                        .await
+                    {
+                        Ok(statuses) => statuses
+                            .iter()
+                            .filter(|status| {
+                                terminal_ids.iter().any(|id| id == &status.terminal_id)
+                                    && status.has_running_jobs
+                            })
+                            .count(),
+                        Err(_) => fallback_running,
+                    }
+                }
+                _ => fallback_running,
+            };
+            let confirmed = if running > 0 {
+                let prompt = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        gpui::PromptLevel::Warning,
+                        "Close running terminals?",
+                        Some(&format!(
+                            "This will end {running} terminal(s) and their running programs."
+                        )),
+                        &["Cancel", "Close terminals"],
+                        cx,
+                    )
+                });
+                match prompt {
+                    Ok(prompt) => prompt.await == Ok(1),
+                    Err(_) => false,
+                }
+            } else {
+                true
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.confirming = false;
                 if confirmed {

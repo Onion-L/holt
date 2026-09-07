@@ -444,6 +444,9 @@ impl TerminalPane {
     pub fn running(&self, cx: &App) -> bool {
         self.active_tab(cx).is_some_and(|t| t.exited.is_none())
     }
+    pub fn terminal_id(&self, cx: &App) -> Option<String> {
+        self.active_tab(cx).and_then(|tab| tab.terminal_id.clone())
+    }
     /// The live OSC 0/2 title when the running program set one (shells title
     /// themselves with the cwd / running command — the contextual name, user
     /// request); `None` leaves the display name to the owning surface.

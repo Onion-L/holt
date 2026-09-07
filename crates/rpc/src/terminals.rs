@@ -44,5 +44,9 @@ pub struct ResizeTerminal {
 pub struct TerminalStatus {
     pub terminal_id: String,
     pub chat_id: String,
+    /// Whether the terminal's shell/PTY is still alive.
     pub running: bool,
+    /// Whether a process other than the terminal's shell is alive in its
+    /// session. An idle shell is not considered a running job.
+    pub has_running_jobs: bool,
 }
