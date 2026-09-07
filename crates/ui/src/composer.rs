@@ -124,6 +124,11 @@ pub struct Composer {
     queue_task: Option<Task<()>>,
     queue_busy: bool,
     queue_expanded: bool,
+    /// In-flight height tween for the queue body's expand/collapse (queue.rs).
+    /// `None` when settled — `begin_queue_disclosure_motion` stamps it on
+    /// every toggle and the renderer reads `animating()` to decide whether
+    /// to drive `with_animation` or jump to the target height.
+    queue_motion: Option<queue::QueueDisclosureMotion>,
     /// Requests already answered locally (suppresses the panel until the doc
     /// frame marks them resolved).
     answered_requests: HashSet<String>,
@@ -277,6 +282,7 @@ impl Composer {
             queue_task: None,
             queue_busy: false,
             queue_expanded: true,
+            queue_motion: None,
             answered_requests: HashSet::new(),
             failure_key: None,
             action_task: None,

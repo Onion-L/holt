@@ -130,8 +130,36 @@ impl Render for SurfaceTabGhost {
 
 impl Shell {
     pub(super) fn right_terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {
-        let terminal = self.terminal_panel(cx);
+        if let Some(terminal) = &self.right_terminal {
+            return terminal.clone();
+        }
+        let terminal = cx.new(|cx| TerminalPanel::new(self.state.clone(), cx));
         terminal.update(cx, |panel, cx| panel.set_embedded(true, cx));
+        cx.observe(&terminal, |this, terminal, cx| {
+            let key = this.panel_key(cx);
+            let summaries = terminal.read(cx).tab_summaries(cx);
+            let stored = this.right_tabs.entry(key.clone()).or_default();
+            stored.retain(|surface| match surface {
+                RightSurface::Terminal(id) => summaries.iter().any(|(key, _, _)| key == id),
+                _ => true,
+            });
+            for (id, _, _) in summaries {
+                let surface = RightSurface::Terminal(id);
+                if !stored.contains(&surface) {
+                    stored.push(surface);
+                }
+            }
+            if matches!(
+                this.panels.get(&key).right_active,
+                RightSurface::Terminal(_)
+            ) && let Some(id) = terminal.read(cx).active_key(cx)
+            {
+                this.panels
+                    .update(&key, |p| p.right_active = RightSurface::Terminal(id));
+            }
+            cx.notify();
+        })
+        .detach();
         self.right_terminal = Some(terminal.clone());
         terminal
     }
@@ -160,11 +188,10 @@ impl Shell {
                     // Contextual title (user request): the pane's scope
                     // label, or the pinned commit's subject.
                     .map(|changes| (*surface, changes.read(cx).tab_title())),
-                RightSurface::Terminal(tab) if !self.terminal_open(cx) => terminals
+                RightSurface::Terminal(tab) => terminals
                     .iter()
                     .find(|(k, _, _)| k == tab)
                     .map(|(_, title, _)| (*surface, title.clone())),
-                RightSurface::Terminal(_) => None,
                 RightSurface::Subagent(id) => self
                     .subagent_tabs
                     .get(id)
@@ -244,8 +271,6 @@ impl Shell {
         self.panels.update(&key, |p| p.right_active = surface);
         match surface {
             RightSurface::Terminal(tab) => {
-                self.panels.update(&key, |p| p.terminal_open = false);
-                self.terminal_tween = None;
                 let panel = self.right_terminal_panel(cx);
                 panel.update(cx, |panel, cx| panel.select_tab_by_key(tab, cx));
             }
@@ -773,9 +798,7 @@ impl Shell {
                 }),
                 _ => false,
             };
-            // t3 tab hover: the surface icon swaps IN PLACE for the close ✕
-            // (same slot, no width jump) — the ✕ only shows while the tab is
-            // hovered (user request).
+            // Reserve a trailing close slot so hover never shifts the title.
             let group: SharedString = format!("right-surface-tab-{ix}").into();
             let ghost_title = title.clone();
             let chip = div()
@@ -831,65 +854,35 @@ impl Shell {
                     },
                 )
                 .child(
-                    // Leading slot: icon normally, ✕ on tab hover — two
-                    // stacked layers opacity-swapped by the group hover.
                     div()
-                        .id(("right-surface-close", ix))
                         .flex_none()
                         .size(px(18.0))
-                        .rounded(px(4.0))
-                        .relative()
-                        .hover(|s| s.bg(crate::theme::wash(0.12)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.close_right_surface(surface, window, cx);
-                        }))
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .group_hover(group.clone(), |s| s.opacity(0.0))
-                                .child(if subagent_running {
-                                    loaders::mini_glyph_spinner(
-                                        format!("subagent-tab-{ix}"),
-                                        2.0,
-                                        theme.glyph,
-                                        cx.entity_id(),
-                                        cx,
-                                    )
-                                    .into_any_element()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(if subagent_running {
+                            loaders::mini_glyph_spinner(
+                                format!("subagent-tab-{ix}"),
+                                2.0,
+                                theme.glyph,
+                                cx.entity_id(),
+                                cx,
+                            )
+                            .into_any_element()
+                        } else {
+                            icon(icon_path)
+                                .size(px(12.0))
+                                .text_color(if is_active {
+                                    theme.text_muted
                                 } else {
-                                    icon(icon_path)
-                                        .size(px(12.0))
-                                        .text_color(if is_active {
-                                            theme.text_muted
-                                        } else {
-                                            theme.text_muted.opacity(0.7)
-                                        })
-                                        .into_any_element()
-                                }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .opacity(0.0)
-                                .group_hover(group.clone(), |s| s.opacity(1.0))
-                                .child(
-                                    icon(icons::CLOSE)
-                                        .size(px(12.0))
-                                        .text_color(theme.text_muted),
-                                ),
-                        ),
+                                    theme.text_muted.opacity(0.7)
+                                })
+                                .into_any_element()
+                        }),
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .truncate()
                         .text_size(crate::typography::ui_rems(11.5))
@@ -899,6 +892,27 @@ impl Shell {
                             theme.text_muted
                         })
                         .child(title),
+                )
+                .child(
+                    div()
+                        .id(("right-surface-close", ix))
+                        .flex_none()
+                        .size(px(18.0))
+                        .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(0.0)
+                        .group_hover(group.clone(), |s| s.opacity(1.0))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_right_surface(surface, window, cx);
+                        }))
+                        .child(
+                            icon(icons::CLOSE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        ),
                 );
             // Sliding transform while a sibling drags over (the terminal
             // drawer's exact recipe): animate 150ms between committed

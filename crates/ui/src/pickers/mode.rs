@@ -166,11 +166,12 @@ impl Pickers {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let mode = self.effective_permission_mode(cx);
-        self.footer_chip(
+        self.footer_chip_with_icon_tint(
             PickerKind::Mode,
             "picker-mode",
             mode_icon(mode),
             SharedString::from(mode_label(mode)),
+            mode_tint(mode, theme),
             theme,
             cx,
         )

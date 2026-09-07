@@ -1,12 +1,79 @@
 //! Presentation and commands for the selected chat's engine-owned queue.
 
+use std::time::{Duration, Instant};
+
 use gpui::{
     Context, Entity, Focusable, KeyDownEvent, Render, Subscription, Window, div, prelude::*, px,
 };
 use holt_rpc::methods;
 
 use super::{Composer, ComposerInput, ComposerInputEvent};
+use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
+
+/// Grace period after [`motion::COLLAPSE`] ends during which the tween is
+/// still considered animating. One frame's slack so a missed render near the
+/// deadline doesn't drop the `with_animation` wrapper (next paint would
+/// otherwise snap to the post-tween target without the easing curve).
+const QUEUE_DISCLOSURE_TWEEN_GRACE: Duration = Duration::from_millis(120);
+
+/// Interruptible height tween for the queue's expand/collapse body — the same
+/// recipe as the shell sidebar disclosure (shell/spaces.rs). `epoch` bumps on
+/// every toggle so the element-id-keyed `with_animation` clock remounts; a
+/// mid-flight reversal captures the current interpolated height as the new
+/// `from`, so the user never sees a snap when they click again.
+#[derive(Clone, Copy)]
+pub(super) struct QueueDisclosureMotion {
+    pub(super) epoch: u64,
+    pub(super) from: f32,
+    pub(super) to: f32,
+    started: Instant,
+}
+
+impl QueueDisclosureMotion {
+    fn new(epoch: u64, from: f32, to: f32) -> Self {
+        Self {
+            epoch,
+            from,
+            to,
+            started: Instant::now(),
+        }
+    }
+
+    fn current(self) -> f32 {
+        let total = motion::COLLAPSE.total().as_secs_f32();
+        let raw = if total > 0.0 {
+            self.started.elapsed().as_secs_f32() / total
+        } else {
+            1.0
+        };
+        motion::lerp(self.from, self.to, motion::COLLAPSE.progress(raw))
+    }
+
+    fn animating(self) -> bool {
+        self.started.elapsed() < motion::COLLAPSE.total() + QUEUE_DISCLOSURE_TWEEN_GRACE
+    }
+}
+
+impl Composer {
+    /// Begin (or reverse) the queue body's expand/collapse tween. Captures the
+    /// current interpolated height as the new `from` if a tween is already in
+    /// flight, otherwise starts from `resting_height`. Mirrors
+    /// [`crate::shell::Shell::begin_sidebar_disclosure_motion`].
+    pub(super) fn begin_queue_disclosure_motion(
+        &mut self,
+        resting_height: f32,
+        target_height: f32,
+    ) {
+        let previous = self.queue_motion;
+        let from = previous
+            .filter(|motion| motion.animating())
+            .map(QueueDisclosureMotion::current)
+            .unwrap_or(resting_height);
+        let epoch = previous.map_or(1, |motion| motion.epoch + 1);
+        self.queue_motion = Some(QueueDisclosureMotion::new(epoch, from, target_height));
+    }
+}
 
 /// Inline editor state for one pending queue message. The editor renders as
 /// a borderless input inside the message's own row — Enter saves, Escape
@@ -310,65 +377,42 @@ impl Composer {
             format!("Queued ({count})")
         };
         let expanded = self.queue_expanded;
-        div()
-            .id("message-queue")
-            .w_full()
-            .min_w_0()
-            // This is an overlay above the transcript, so it must paint an
-            // opaque surface; otherwise transcript text remains visible
-            // through the queue rows.
-            .bg(theme.bg)
-            .border_1()
-            .border_b_0()
-            .border_color(theme.border)
-            .rounded_tl(px(12.0))
-            .rounded_tr(px(12.0))
-            .px_2()
-            .py_1()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_size(crate::typography::ui_rems(12.0))
-            .child(
-                div()
-                    .id("message-queue-header")
-                    .role(gpui::Role::Button)
-                    .aria_label(if expanded {
-                        "Collapse message queue"
-                    } else {
-                        "Expand message queue"
-                    })
-                    .focusable()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px(px(4.0))
-                    .py(px(2.0))
-                    .child(div().text_color(theme.text_muted).child(header))
-                    .child(
-                        crate::icons::icon(if expanded {
-                            crate::icons::ALT_ARROW_DOWN
-                        } else {
-                            crate::icons::ALT_ARROW_RIGHT
-                        })
-                        .size(px(14.0))
-                        .text_color(theme.text_muted),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.queue_expanded = !this.queue_expanded;
-                        cx.notify();
-                    }))
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            this.queue_expanded = !this.queue_expanded;
-                            cx.notify();
-                        }
-                    })),
-            )
-            .when(expanded && count > 0, |el| {
-                el.child(
+        // Body height for the expand/collapse tween: the list (capped at
+        // four visible rows) plus the error line, with a single `gap_2`
+        // (8px) between them when both are mounted. Captured by the toggle
+        // handlers below so the tween starts from the height the user
+        // actually saw when they clicked.
+        let list_visible = count > 0;
+        let error_visible = error.is_some();
+        let body_present = list_visible || error_visible;
+        let list_height = if list_visible {
+            30.0 * count.min(4) as f32 + 8.0
+        } else {
+            0.0
+        };
+        // Single-line body text at the queue's 12px type size.
+        const QUEUE_ERROR_LINE_HEIGHT: f32 = 22.0;
+        const QUEUE_INTER_GAP: f32 = 8.0;
+        let error_height = if error_visible {
+            QUEUE_ERROR_LINE_HEIGHT
+        } else {
+            0.0
+        };
+        let inter_gap = if list_visible && error_visible {
+            QUEUE_INTER_GAP
+        } else {
+            0.0
+        };
+        let body_height = list_height + inter_gap + error_height;
+        let target_body_height = if expanded { body_height } else { 0.0 };
+        let body = if body_present {
+            // Always mounted during the tween (the frame's `overflow_hidden`
+            // + animated height clip the content). When `body_height` is 0
+            // (no list, no error) we wouldn't reach this — `body_present`
+            // gates it.
+            let mut content = div().w_full().min_w_0().flex().flex_col().gap_2();
+            if list_visible {
+                content = content.child(
                     gpui::uniform_list("pending-messages", count, move |range, _, cx| {
                         let theme = Theme::of(cx);
                         range
@@ -573,17 +617,126 @@ impl Composer {
                             })
                             .collect::<Vec<_>>()
                     })
-                    .h(px(30.0 * count.min(4) as f32 + 8.0))
+                    .h(px(list_height))
                     .w_full()
                     .min_w_0()
                     .occlude(),
-                )
-            })
-            .when(expanded, |el| {
-                el.when_some(error, |el, error| {
-                    el.child(div().min_w_0().text_color(theme.danger).child(error))
-                })
-            })
+                );
+            }
+            if let Some(error) = error.as_ref() {
+                content = content.child(
+                    div()
+                        .min_w_0()
+                        .text_color(theme.danger)
+                        .child(error.clone()),
+                );
+            }
+            // Frame clips the always-mounted body; the tween interpolates
+            // its height between 0 and `body_height`, with a soft opacity
+            // ramp and a 2px top lift for the "settling into place" feel.
+            let frame = div()
+                .w_full()
+                .min_w_0()
+                .flex_none()
+                .overflow_hidden()
+                .child(content);
+            let tween = self.queue_motion.filter(|m| m.animating());
+            let rendered: gpui::AnyElement = if let Some(tween) = tween {
+                let epoch = tween.epoch;
+                let from = tween.from;
+                let to = tween.to;
+                let denom = body_height.max(1.0);
+                frame
+                    .with_animation(
+                        gpui::SharedString::from(format!("queue-body-{epoch}")),
+                        motion::COLLAPSE.animation(),
+                        move |el, t| {
+                            let h = motion::lerp(from, to, t);
+                            let reveal = (h / denom).clamp(0.0, 1.0);
+                            el.h(px(h))
+                                .opacity(0.4 + 0.6 * reveal)
+                                .relative()
+                                .top(px(-2.0 * (1.0 - reveal)))
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                frame.h(px(target_body_height)).into_any_element()
+            };
+            rendered
+        } else {
+            div().into_any_element()
+        };
+        // The toggle handlers capture `body_height` from the render closure
+        // so the tween starts from the height the user actually saw.
+        let click_toggle = cx.listener(move |this, _, _, cx| {
+            let was_expanded = this.queue_expanded;
+            let from = if was_expanded { body_height } else { 0.0 };
+            let to = if was_expanded { 0.0 } else { body_height };
+            this.queue_expanded = !was_expanded;
+            this.begin_queue_disclosure_motion(from, to);
+            cx.notify();
+        });
+        let key_toggle = cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                let was_expanded = this.queue_expanded;
+                let from = if was_expanded { body_height } else { 0.0 };
+                let to = if was_expanded { 0.0 } else { body_height };
+                this.queue_expanded = !was_expanded;
+                this.begin_queue_disclosure_motion(from, to);
+                cx.notify();
+            }
+        });
+        div()
+            .id("message-queue")
+            .w_full()
+            .min_w_0()
+            // This is an overlay above the transcript, so it must paint an
+            // opaque surface; otherwise transcript text remains visible
+            // through the queue rows.
+            .bg(theme.bg)
+            .border_1()
+            .border_b_0()
+            .border_color(theme.border)
+            .rounded_tl(px(12.0))
+            .rounded_tr(px(12.0))
+            .px_2()
+            .py_1()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .text_size(crate::typography::ui_rems(12.0))
+            .child(
+                div()
+                    .id("message-queue-header")
+                    .role(gpui::Role::Button)
+                    .aria_label(if expanded {
+                        "Collapse message queue"
+                    } else {
+                        "Expand message queue"
+                    })
+                    .focusable()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px(px(4.0))
+                    .py(px(2.0))
+                    .child(div().text_color(theme.text_muted).child(header))
+                    .child(
+                        crate::icons::icon(if expanded {
+                            crate::icons::ALT_ARROW_DOWN
+                        } else {
+                            crate::icons::ALT_ARROW_RIGHT
+                        })
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                    )
+                    .on_click(click_toggle)
+                    .on_key_down(key_toggle),
+            )
+            .child(body)
             .into_any_element()
     }
 }
@@ -704,5 +857,45 @@ mod tests {
             px(0.0),
             "empty paused queue still occupies space"
         );
+    }
+
+    #[test]
+    fn queue_disclosure_motion_lands_exactly_on_its_target() {
+        // Mirrors the sidebar disclosure test (shell/spaces.rs): once the
+        // wall clock has passed the timeline + grace, `current()` snaps to
+        // the target and `animating()` flips false — no leftover frames.
+        let mut tween = QueueDisclosureMotion::new(1, 240.0, 0.0);
+        tween.started = Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
+        assert_eq!(tween.current(), 0.0);
+        assert!(!tween.animating());
+    }
+
+    #[test]
+    fn queue_disclosure_motion_reverses_without_a_snap() {
+        // A second toggle mid-flight captures the current interpolated height
+        // as the new `from`, so a half-expanded click that reverses lands on
+        // the current visual height (no jump). The capture isn't bit-exact
+        // because wall time advances between the two `current()` reads; a
+        // sub-pixel tolerance is plenty for "no visible snap".
+        let mut first = QueueDisclosureMotion::new(1, 0.0, 100.0);
+        first.started = Instant::now() - motion::COLLAPSE.total().mul_f32(0.5);
+        let mid = first.current();
+        assert!(
+            mid > 0.0 && mid < 100.0,
+            "mid-flight value out of range: {mid}"
+        );
+        let previous = Some(first);
+        let captured = previous
+            .filter(|motion| motion.animating())
+            .map(QueueDisclosureMotion::current)
+            .unwrap_or(0.0);
+        assert!(
+            (captured - mid).abs() < 1.0,
+            "reversal snap: {mid} vs {captured}"
+        );
+        // Critically: the captured height is still mid-flight (not at the
+        // resting endpoint), so the reversal starts from where the user
+        // sees the queue, not from 0 or 100.
+        assert!(captured > 1.0 && captured < 99.0, "captured={captured}");
     }
 }

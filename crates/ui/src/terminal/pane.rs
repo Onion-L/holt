@@ -444,10 +444,17 @@ impl TerminalPane {
     pub fn running(&self, cx: &App) -> bool {
         self.active_tab(cx).is_some_and(|t| t.exited.is_none())
     }
-    pub fn title(&self, cx: &App) -> SharedString {
-        self.active_tab(cx)
-            .map(Self::display_title)
-            .unwrap_or_else(|| "Terminal".into())
+    /// The live OSC 0/2 title when the running program set one (shells title
+    /// themselves with the cwd / running command — the contextual name, user
+    /// request); `None` leaves the display name to the owning surface.
+    pub fn osc_title(&self, cx: &App) -> Option<SharedString> {
+        self.active_tab(cx).and_then(|tab| {
+            tab.emulator
+                .title()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(|title| title.to_string().into())
+        })
     }
     pub fn close_session(&mut self, cx: &mut Context<Self>) {
         let engine = self.engine(cx);
@@ -1616,8 +1623,6 @@ impl TerminalPane {
             .gap(px(4.0))
             .pl(px(8.0))
             .pr(px(6.0))
-            .border_b_1()
-            .border_color(crate::theme::hairline(0.07))
             .on_drag_move::<TabDragPayload>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<TabDragPayload>, _, cx| {
                     let payload = event.drag(cx);

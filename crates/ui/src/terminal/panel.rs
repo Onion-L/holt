@@ -14,7 +14,6 @@ actions!(
     terminal,
     [
         ToggleTerminal,
-        MoveTerminal,
         ClosePane,
         FindTerminal,
         SplitHorizontal,
@@ -133,11 +132,25 @@ struct Group {
     key: u64,
     layout: Layout,
     active: u64,
+    /// Stable fallback tab number — the group shows as "Terminal N" until
+    /// the running program sets an OSC title. Survivors never renumber on
+    /// close; freed numbers are reused so names stay unique and dense.
+    no: u64,
 }
 #[derive(Default)]
 struct ChatTabs {
     groups: Vec<Group>,
     active: usize,
+}
+
+impl ChatTabs {
+    /// Lowest tab number not claimed by a live group.
+    fn free_no(&self) -> u64 {
+        let used: std::collections::HashSet<u64> = self.groups.iter().map(|g| g.no).collect();
+        (1..)
+            .find(|no| !used.contains(no))
+            .expect("a finite set of groups leaves a free u64")
+    }
 }
 
 struct GroupDrag {
@@ -148,14 +161,14 @@ struct GroupDrag {
 impl Render for GroupDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .w_32()
-            .h_7()
+            .w(gpui::px(112.))
+            .h_6()
             .px_2()
             .flex()
             .items_center()
             .bg(Theme::of(cx).surface_raised)
             .text_color(Theme::of(cx).text)
-            .text_sm()
+            .text_xs()
             .child(div().truncate().child(self.title.clone()))
     }
 }
@@ -312,10 +325,12 @@ impl TerminalPanel {
         self.state.read(cx).engine()?;
         let id = self.create_pane(chat.clone(), cx);
         let tabs = self.chats.entry(chat).or_default();
+        let no = tabs.free_no();
         tabs.groups.push(Group {
             key: id,
             layout: Layout::Pane(id),
             active: id,
+            no,
         });
         tabs.active = tabs.groups.len() - 1;
         self.sync_focus(cx);
@@ -339,8 +354,11 @@ impl TerminalPanel {
                         });
                         (
                             g.key,
-                            pane.map(|p| p.title(cx))
-                                .unwrap_or_else(|| "Terminal".into()),
+                            // The program's OSC title wins (the contextual
+                            // name, user request); else this group's stable
+                            // "Terminal N" — unique among the chat's tabs.
+                            pane.and_then(|p| p.osc_title(cx))
+                                .unwrap_or_else(|| format!("Terminal {}", g.no).into()),
                             exited,
                         )
                     })
@@ -632,14 +650,12 @@ impl Render for TerminalPanel {
         let layout = self.active_group(cx).map(|g| g.layout.clone());
         let rows = self.tab_summaries(cx);
         let bar = div()
-            .h_9()
+            .h_8()
             .flex_none()
             .flex()
             .items_center()
             .gap_1()
             .px_2()
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 div()
                     .id("terminal-tabs")
@@ -651,14 +667,15 @@ impl Render for TerminalPanel {
                         |(key, title, exited)| {
                             div()
                                 .id(("terminal-tab", key))
-                                .h_7()
-                                .w_32()
+                                .h_6()
+                                .w(gpui::px(112.))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .gap_1()
                                 .px_2()
                                 .rounded_sm()
+                                .text_xs()
                                 .bg(if Some(key) == active {
                                     theme.element_hover
                                 } else {
@@ -699,18 +716,34 @@ impl Render for TerminalPanel {
                                 )
                                 .child(div().flex_1().min_w_0().truncate().child(title))
                                 .child(
-                                    tool(
-                                        "close-terminal-tab",
-                                        crate::icons::CLOSE,
-                                        "Close terminal group",
-                                        cx,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, window, cx| {
+                                    div()
+                                        .id("close-terminal-tab")
+                                        .size_5()
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .text_color(theme.text_muted)
+                                        .hover(|s| s.text_color(theme.text))
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| {
+                                                crate::image_viewer::ViewerTooltip(
+                                                    "Close terminal group".into(),
+                                                )
+                                            })
+                                            .into()
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
                                             cx.stop_propagation();
                                             this.close_tab_by_key(key, window, cx);
-                                        },
-                                    )),
+                                        }))
+                                        .child(
+                                            crate::icons::icon(crate::icons::CLOSE)
+                                                .size_3()
+                                                .text_color(theme.text_muted),
+                                        ),
                                 )
                         },
                     )),
@@ -723,42 +756,10 @@ impl Render for TerminalPanel {
                     },
                 )),
             )
-            .child(
-                tool(
-                    "terminal-split-horizontal",
-                    crate::icons::SPLIT_COLUMNS,
-                    "Split side by side",
-                    cx,
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.split(false, window, cx))),
-            )
-            .child(
-                tool(
-                    "terminal-split-vertical",
-                    crate::icons::ALT_ARROW_DOWN,
-                    "Split top and bottom",
-                    cx,
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.split(true, window, cx))),
-            )
-            .child(
-                tool(
-                    "move-terminal",
-                    crate::icons::SPLIT_COLUMNS,
-                    "Move terminal panel",
-                    cx,
-                )
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(MoveTerminal), cx)),
-            )
-            .child(
-                tool(
-                    "hide-terminal",
-                    crate::icons::ALT_ARROW_DOWN,
-                    "Hide terminal",
-                    cx,
-                )
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTerminal), cx)),
-            );
+            .children((!self.embedded).then(|| {
+                tool("close-terminal", crate::icons::CLOSE, "Close terminal", cx)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleTerminal), cx))
+            }));
         let body = layout
             .map(|l| self.render_layout(&l, window, cx))
             .unwrap_or_else(|| {
@@ -831,6 +832,26 @@ impl Render for TerminalPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_numbers_stay_unique_and_reuse_freed_slots() {
+        let mut tabs = ChatTabs::default();
+        let group = |key: u64, no: u64| Group {
+            key,
+            layout: Layout::Pane(key),
+            active: key,
+            no,
+        };
+        assert_eq!(tabs.free_no(), 1);
+        tabs.groups.push(group(1, 1));
+        assert_eq!(tabs.free_no(), 2);
+        tabs.groups.push(group(2, 2));
+        assert_eq!(tabs.free_no(), 3);
+        // Closing Terminal 1 frees its number for the next group while
+        // Terminal 2 keeps its name — no duplicate "Terminal 2".
+        tabs.groups.retain(|g| g.key != 1);
+        assert_eq!(tabs.free_no(), 1);
+    }
 
     #[test]
     fn split_removal_preserves_other_sessions_and_collapses_empty_branches() {

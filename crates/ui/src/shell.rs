@@ -396,8 +396,8 @@ pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
-    /// Measured height of the bottom chrome stack (status strip + composer +
-    /// terminal dock) the full-height transcript scrolls under — written by a
+    /// Measured height of the bottom chrome stack (status strip + composer)
+    /// the full-height transcript scrolls under — written by a
     /// paint-time canvas each frame, read the NEXT frame for the fade inset,
     /// the transcript's bottom clearance, and the jump pill's anchor (the
     /// same one-frame lag every fade here rides).
@@ -899,7 +899,6 @@ impl Shell {
             let panels = self.panels.get(&self.panel_key(cx));
             if let Some(panel) = self.terminal.clone() {
                 panel.update(cx, |panel, cx| {
-                    panel.set_embedded(!panels.terminal_open, cx);
                     panel.set_resize_suspended(false);
                     panel.set_open(panels.terminal_open, cx);
                 });
@@ -1046,33 +1045,6 @@ impl Shell {
             return terminal.clone();
         }
         let terminal = cx.new(|cx| TerminalPanel::new(self.state.clone(), cx));
-        cx.observe(&terminal, |this, terminal, cx| {
-            if !this.terminal_open(cx) {
-                let key = this.panel_key(cx);
-                let summaries = terminal.read(cx).tab_summaries(cx);
-                let stored = this.right_tabs.entry(key.clone()).or_default();
-                stored.retain(|surface| match surface {
-                    RightSurface::Terminal(id) => summaries.iter().any(|(key, _, _)| key == id),
-                    _ => true,
-                });
-                for (id, _, _) in summaries {
-                    let surface = RightSurface::Terminal(id);
-                    if !stored.contains(&surface) {
-                        stored.push(surface);
-                    }
-                }
-                if matches!(
-                    this.panels.get(&key).right_active,
-                    RightSurface::Terminal(_)
-                ) && let Some(id) = terminal.read(cx).active_key(cx)
-                {
-                    this.panels
-                        .update(&key, |p| p.right_active = RightSurface::Terminal(id));
-                }
-            }
-            cx.notify();
-        })
-        .detach();
         self.terminal = Some(terminal.clone());
         terminal
     }
@@ -1089,20 +1061,12 @@ impl Shell {
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
     /// The flag is per chat (holt `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.terminal_open(cx)
-            && self.right_pane_open(cx)
-            && matches!(self.resolved_right_active(cx), RightSurface::Terminal(_))
-        {
-            self.toggle_right_pane(cx);
-            return;
-        }
         let from = self.terminal_target(cx);
         let key = self.panel_key(cx);
         let open = self.panels.toggle_terminal(&key);
         self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| {
-            panel.set_embedded(false, cx);
             panel.set_resize_suspended(false);
             panel.set_open(open, cx);
         });
@@ -1131,40 +1095,6 @@ impl Shell {
             })
             .ok();
         }));
-        cx.notify();
-    }
-
-    fn move_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let key = self.panel_key(cx);
-        let to_right = self.terminal_open(cx);
-        let panel = self.terminal_panel(cx);
-        self.terminal_tween = None;
-        if to_right {
-            let summaries = panel.read(cx).tab_summaries(cx);
-            let stored = self.right_tabs.entry(key.clone()).or_default();
-            for (id, _, _) in &summaries {
-                let surface = RightSurface::Terminal(*id);
-                if !stored.contains(&surface) {
-                    stored.push(surface);
-                }
-            }
-            self.right_terminal = Some(panel.clone());
-            self.panels.update(&key, |p| {
-                p.terminal_open = false;
-                p.changes_open = true;
-            });
-            if let Some(id) = panel.read(cx).active_key(cx) {
-                self.set_right_active(RightSurface::Terminal(id), cx);
-            }
-        } else {
-            self.panels.update(&key, |p| p.terminal_open = true);
-            panel.update(cx, |p, cx| {
-                p.set_embedded(false, cx);
-                p.set_resize_suspended(false);
-                p.set_open(true, cx);
-            });
-        }
-        window.focus(&panel.read(cx).focus_handle(), cx);
         cx.notify();
     }
 
@@ -2131,15 +2061,9 @@ impl Shell {
                 // report). The jump pill floats outside the fade scope,
                 // anchored above the measured stack.
                 {
-                    // The terminal dock is NOT glass the transcript may slide
-                    // under: with the dock's translucent fill, transcript text
-                    // ghosted through the grid (user report). The underlay
-                    // ends at the dock's top instead, riding the same height
-                    // tween the dock animates with; `stack_h` below is only
-                    // the chrome that still overlaps the transcript (status
-                    // strip + composer).
-                    let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
-                    let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
+                    // The dock sits below this entire row; only the composer
+                    // and status strip overlap the transcript viewport.
+                    let stack_h = self.bottom_stack.get();
                     // Opaque from the composer PILL's top (the reserved
                     // status strip above it is empty air), zero at the
                     // underlay's bottom edge.
@@ -2147,7 +2071,6 @@ impl Shell {
                     div()
                         .absolute()
                         .inset_0()
-                        .bottom(px(term_h))
                         .child(
                             crate::edge_fade::edge_faded(
                                 Theme::TRANSCRIPT_FADE_BAND,
@@ -2167,7 +2090,7 @@ impl Shell {
             )
             // The glass chrome stack, floating over the transcript's bottom:
             // reserved status strip (h-6, the WorkingIndicator — the composer
-            // below never shifts), composer, terminal dock. A paint-time
+            // below never shifts) and composer. A paint-time
             // canvas measures the stack for next frame's fade inset and
             // transcript clearance. The flex_1 spacer has no id/listeners, so
             // pointer + wheel events over it fall through to the list below.
@@ -2189,7 +2112,6 @@ impl Shell {
                     )
                     .child(status)
                     .when(has_spaces, |el| el.child(self.composer.clone()))
-                    .child(self.render_terminal_container(cx))
             })
             .child(
                 div()
@@ -2321,7 +2243,7 @@ impl Shell {
         crate::frost::frosted(15.0, 16.0, motion::dialog_in(anim_key, pill)).into_any_element()
     }
 
-    /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
+    /// Terminal dock below the conversation and right pane: a 5px height-drag handle
     /// over the panel, the whole container height-animated 200 ms on toggle.
     fn render_terminal_container(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let target = self.terminal_target(cx);
@@ -2386,6 +2308,7 @@ impl Shell {
             .child(handle.absolute().top_0().left_0().right_0());
 
         div()
+            .debug_selector(|| "bottom-terminal-dock".into())
             .w_full()
             .flex_none()
             .overflow_hidden()
@@ -2624,11 +2547,6 @@ impl Render for Shell {
                     this.toggle_terminal(window, cx)
                 }
             }))
-            .on_action(cx.listener(
-                |this, _: &crate::terminal::panel::MoveTerminal, window, cx| {
-                    this.move_terminal(window, cx)
-                },
-            ))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
@@ -2733,11 +2651,7 @@ impl Render for Shell {
                 self.composer.update(cx, |composer, cx| {
                     composer.set_available_width(main_width, cx)
                 });
-                // Clearance excludes the terminal dock: the transcript
-                // viewport ends at the dock's top (see the underlay in
-                // `render_main`), so only the chrome above it overlaps.
-                let term_h = self.eval_tween(self.terminal_tween, self.terminal_target(cx));
-                let stack_h = (self.bottom_stack.get() - term_h).max(0.0);
+                let stack_h = self.bottom_stack.get();
                 self.transcript.update(cx, |t, cx| {
                     t.set_rail_enabled(rail::rail_visible(main_width), cx);
                     t.set_bottom_clearance(stack_h, cx);
@@ -2865,9 +2779,28 @@ impl Render for Shell {
                             .flex_row()
                             .child(sidebar)
                             .child(sidebar_seam)
-                            .child(card)
-                            .child(right_seam)
-                            .child(right),
+                            .child(
+                                div()
+                                    .debug_selector(|| "workspace-content".into())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "workspace-top".into())
+                                            .flex_1()
+                                            .min_h_0()
+                                            .flex()
+                                            .child(card)
+                                            .child(right_seam)
+                                            .child(right),
+                                    )
+                                    .when(on_chat, |el| {
+                                        el.child(self.render_terminal_container(cx))
+                                    }),
+                            ),
                     )
                     .child(div().absolute().top_0().left_0().right_0().child(title_bar))
                     .child(self.render_titlebar_cluster(cx))
@@ -2934,6 +2867,78 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn terminal_hosts_coexist_below_and_beside_the_chat(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_chat = Some("terminal-layout".into());
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "terminal-layout", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-09-07T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell.active_chat = "terminal-layout".into();
+            shell
+        });
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_terminal(window, cx);
+                shell.toggle_right_pane(cx);
+                let bottom = shell.terminal_panel(cx);
+                let right = shell.right_terminal_panel(cx);
+                assert_ne!(bottom.entity_id(), right.entity_id());
+                shell.set_right_active(RightSurface::Terminal(1), cx);
+                assert!(shell.terminal_open(cx));
+                assert!(shell.right_pane_open(cx));
+                shell.toggle_terminal(window, cx);
+                assert!(!shell.terminal_open(cx));
+                assert!(shell.right_pane_open(cx));
+                shell.toggle_terminal(window, cx);
+                assert!(shell.terminal_open(cx));
+                assert!(shell.right_pane_open(cx));
+                assert_eq!(bottom.entity_id(), shell.terminal_panel(cx).entity_id());
+                assert_eq!(
+                    right.entity_id(),
+                    shell.right_terminal_panel(cx).entity_id()
+                );
+                shell.terminal_tween = None;
+                shell.right_tween = None;
+            });
+        });
+        for size in [
+            gpui::size(px(1280.0), px(900.0)),
+            gpui::size(px(960.0), px(700.0)),
+        ] {
+            cx.simulate_resize(size);
+            cx.run_until_parked();
+            let workspace = cx.debug_bounds("workspace-content").unwrap();
+            let top = cx.debug_bounds("workspace-top").unwrap();
+            let dock = cx.debug_bounds("bottom-terminal-dock").unwrap();
+            assert_eq!(dock.left(), workspace.left());
+            assert_eq!(dock.right(), workspace.right());
+            assert_eq!(dock.top(), top.bottom());
+            assert_eq!(dock.bottom(), workspace.bottom());
+            assert!(top.size.height > px(0.0));
+            assert!(dock.size.height >= px(160.0));
+        }
+    }
 
     #[test]
     fn every_default_shortcut_binds_on_this_platform() {

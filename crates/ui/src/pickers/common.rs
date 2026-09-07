@@ -136,6 +136,19 @@ impl Pickers {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        self.footer_chip_with_icon_tint(kind, id, icon_path, label, None, theme, cx)
+    }
+
+    pub(super) fn footer_chip_with_icon_tint(
+        &self,
+        kind: PickerKind,
+        id: &'static str,
+        icon_path: &'static str,
+        label: SharedString,
+        icon_tint: Option<gpui::Hsla>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let open = self.open_kind() == Some(kind);
         div()
             .id(id)
@@ -171,7 +184,7 @@ impl Pickers {
             .child(
                 crate::icons::icon(icon_path)
                     .size(px(12.0))
-                    .text_color(theme.text_muted.opacity(0.7)),
+                    .text_color(icon_tint.unwrap_or(theme.text_muted.opacity(0.7))),
             )
             .child(div().min_w_0().truncate().child(label))
             .child(
