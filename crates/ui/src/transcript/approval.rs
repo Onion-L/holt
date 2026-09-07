@@ -175,6 +175,42 @@ impl Transcript {
                     .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
+                    .when_some(gate.origin, |card, origin| {
+                        let chat_id = self.chat_id.clone().unwrap_or_default();
+                        let open = super::TranscriptEvent::OpenSubagent {
+                            chat_id,
+                            doc_id: origin.doc_id.clone(),
+                            title: origin.label.clone(),
+                            frozen: false,
+                        };
+                        let keyboard_open = open.clone();
+                        card.child(
+                            div()
+                                .id(format!("approval-source-{}", approval_id))
+                                .debug_selector(|| "approval-subagent-source".to_string())
+                                .role(gpui::Role::Button)
+                                .aria_label("Open subagent")
+                                .focusable()
+                                .tab_index(0)
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .text_color(theme.text_muted)
+                                .hover(|el| el.bg(theme.ink(0.05)))
+                                .focus(|el| el.bg(theme.ink(0.09)))
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(open.clone())))
+                                .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        cx.emit(keyboard_open.clone());
+                                    }
+                                }))
+                                .child(SharedString::from(format!(
+                                    "Open subagent: {}",
+                                    origin.label
+                                ))),
+                        )
+                    })
                     // Header: pulsing dot + "Waiting for approval · {tool}".
                     .child(
                         div()
@@ -552,6 +588,7 @@ mod tests {
 
     fn pending_gate(id: &str) -> ToolGate {
         ToolGate {
+            origin: None,
             id: id.into(),
             state: ToolGateState::Pending,
         }
@@ -560,6 +597,7 @@ mod tests {
     #[test]
     fn pending_gate_scans_from_the_tail() {
         let settled = ToolGate {
+            origin: None,
             id: "old".into(),
             state: ToolGateState::Settled {
                 verdict: GateVerdict::Allowed,
@@ -758,6 +796,7 @@ mod tests {
             tool_part(
                 id,
                 Some(ToolGate {
+                    origin: None,
                     id: format!("gate-{id}"),
                     state,
                 }),
@@ -817,6 +856,48 @@ mod tests {
     /// note editor opens/submits/closes keyed by approval id; the settle
     /// prunes a stale editor; and the whole transcript draws in both states
     /// (card while pending, verdict chip once settled).
+    #[gpui::test]
+    fn child_approval_opens_its_source_transcript(cx: &mut gpui::TestAppContext) {
+        use crate::state::AppState;
+        use std::{cell::RefCell, rc::Rc};
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.subscribe(
+                &transcript,
+                move |_, event: &super::super::TranscriptEvent, _| {
+                    opened.borrow_mut().push(event.clone());
+                },
+            )
+        });
+        let mut gate = pending_gate("child-gate");
+        gate.origin = Some(holt_doc::parts::SubagentOrigin {
+            doc_id: "child-doc".into(),
+            label: "Inspect assigned files".into(),
+        });
+        state.update(cx, |state, cx| {
+            state
+                .transcript
+                .push(entry("m1", vec![tool_part("write", Some(gate))]));
+            cx.notify();
+        });
+        transcript.update(cx, |this, cx| {
+            this.chat_id = Some("chat-1".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds("approval-subagent-source")
+            .expect("visible source button");
+        cx.simulate_click(bounds.center(), Default::default());
+        assert!(
+            matches!(opened.borrow().last(), Some(super::super::TranscriptEvent::OpenSubagent { chat_id, doc_id, frozen: false, .. }) if chat_id == "chat-1" && doc_id == "child-doc")
+        );
+    }
+
     #[gpui::test]
     fn approval_rows_note_editor_and_render(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
@@ -886,6 +967,7 @@ mod tests {
                 vec![tool_part(
                     "p1",
                     Some(ToolGate {
+                        origin: None,
                         id: "g1".into(),
                         state: ToolGateState::Settled {
                             verdict: GateVerdict::ReviewPassed,

@@ -1410,8 +1410,41 @@ impl RpcService for EngineService {
                     .get("chatId")
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| RpcError::BadParams("chatId is required".into()))?;
-                let chat = self.runtime.chat(chat_id);
+                let chat = if chat_id.contains("--sub--") {
+                    self.runtime
+                        .subagents
+                        .load(&self.runtime, chat_id)
+                        .map_err(RpcError::Failed)?
+                } else {
+                    self.runtime.chat(chat_id)
+                };
                 Ok(Self::watch_transcript(chat))
+            }
+            methods::FETCH_TOOL_BLOB => {
+                let blob_ref = required_string(&params, "blobRef")?;
+                let (parent, id) = blob_ref
+                    .split_once('/')
+                    .ok_or_else(|| RpcError::BadParams("Invalid subagent blob reference".into()))?;
+                if crate::subagents::parent_id(id) != Some(parent) {
+                    return Err(RpcError::BadParams(
+                        "Invalid subagent blob reference".into(),
+                    ));
+                }
+                let child = self
+                    .runtime
+                    .subagents
+                    .load(&self.runtime, id)
+                    .map_err(RpcError::Failed)?;
+                let entries = child.transcript.read().unwrap_or_else(|e| e.into_inner());
+                if entries
+                    .iter()
+                    .any(|entry| entry.status == Some(holt_doc::MessageStatus::Streaming))
+                {
+                    return Err(RpcError::Failed("Subagent is still running".into()));
+                }
+                let text = serde_json::to_string(&*entries)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({"text": text}))
             }
             methods::SUBSCRIBE_TERMINAL | methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
                 Ok(pending_stream())

@@ -89,7 +89,9 @@ pub(crate) struct ChatRuntime {
     pub(crate) removed: std::sync::atomic::AtomicBool,
     /// This chat's always-allow grants (ADR-0014): in-memory and
     /// session-scoped — a restart starts with none.
-    pub(crate) grants: Mutex<crate::gate::GateGrants>,
+    pub(crate) grants: Arc<Mutex<crate::gate::GateGrants>>,
+    pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
+    pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -126,7 +128,9 @@ impl ChatRuntime {
             data_dir: PathBuf::new(),
             chat_id: String::new(),
             removed: std::sync::atomic::AtomicBool::new(false),
-            grants: Mutex::new(crate::gate::GateGrants::default()),
+            grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
+            child: None,
+            usage: Mutex::new(Default::default()),
         }
     }
 
@@ -140,7 +144,12 @@ impl ChatRuntime {
     /// an empty History and one persisted Transcript notice saying where
     /// the model's memory begins — written once, never rebuilt from the
     /// Transcript.
-    fn load(data_dir: &Path, chat_id: &str, device_id: &str, persistence: Arc<Mutex<()>>) -> Self {
+    pub(crate) fn load(
+        data_dir: &Path,
+        chat_id: &str,
+        device_id: &str,
+        persistence: Arc<Mutex<()>>,
+    ) -> Self {
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
         let replayed = crate::history::load_repaired(data_dir, chat_id);
         let (mut history, mut notice) = match replayed {
@@ -199,6 +208,7 @@ impl ChatRuntime {
         // ended (ADR-0014): settle it as aborted so the replayed chip never
         // poses as answerable.
         crate::gate::settle_pending_gates_on_load(&mut transcript);
+        crate::subagents::settle_on_load(&mut transcript);
         for entry in &mut transcript {
             if entry.status == Some(MessageStatus::Streaming) {
                 entry.status = Some(MessageStatus::Aborted);
@@ -303,7 +313,9 @@ impl ChatRuntime {
             data_dir: data_dir.to_path_buf(),
             chat_id: chat_id.to_string(),
             removed: std::sync::atomic::AtomicBool::new(false),
-            grants: Mutex::new(crate::gate::GateGrants::default()),
+            grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
+            child: None,
+            usage: Mutex::new(Default::default()),
         }
     }
 
@@ -323,10 +335,19 @@ impl ChatRuntime {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
         }
+        drop(transcript);
+        drop(_persistence);
+        if let Some(child) = &self.child {
+            child.publish(self);
+        }
     }
 
     pub(crate) fn is_removed(&self) -> bool {
         self.removed.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .child
+                .as_ref()
+                .is_some_and(|child| child.parent.is_removed())
     }
 
     /// Append one completed message to the persisted History (ADR-0010):
@@ -335,6 +356,7 @@ impl ChatRuntime {
     /// Best-effort like the transcript snapshot — an unreadable tail is
     /// absorbed on load.
     pub(crate) fn append_history(&self, message: AgentMessage) {
+        crate::subagents::record_usage(&self.usage, &message);
         let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         if self.chat_id.is_empty() || self.is_removed() {
             return;
@@ -367,13 +389,14 @@ impl ChatRuntime {
 pub(crate) struct AgentRuntime {
     pub(crate) persistence: Arc<Mutex<()>>,
     pub(crate) stopping: std::sync::atomic::AtomicBool,
-    device_id: String,
-    data_dir: PathBuf,
+    pub(crate) device_id: String,
+    pub(crate) data_dir: PathBuf,
     pub(crate) chats: RwLock<Vec<Chat>>,
     pub(crate) chats_tx: watch::Sender<serde_json::Value>,
     sessions: RwLock<Vec<Session>>,
     pub(crate) sessions_tx: watch::Sender<serde_json::Value>,
     chat_runtime: Mutex<HashMap<String, Arc<ChatRuntime>>>,
+    pub(crate) subagents: crate::subagents::Subagents,
     /// Open confirm-changes approvals across all chats (ADR-0014), keyed
     /// by approval id — the registry the `ResolveApproval` RPC addresses.
     /// Entries live only while their gate is open.
@@ -443,6 +466,7 @@ impl AgentRuntime {
             sessions: RwLock::new(Vec::new()),
             sessions_tx,
             chat_runtime: Mutex::new(HashMap::new()),
+            subagents: crate::subagents::Subagents::default(),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             stream_fn,
         }
@@ -501,6 +525,7 @@ impl AgentRuntime {
         }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
+        self.subagents.remove_parent(&self.data_dir, chat_id);
         if crate::store::chat_id_is_path_safe(chat_id) {
             let _ =
                 std::fs::remove_file(self.data_dir.join("queues").join(format!("{chat_id}.json")));
@@ -1037,7 +1062,11 @@ pub(crate) struct AgentRun {
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
 
-pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
+pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, bool> {
+    Box::pin(run_agent_command_inner(run))
+}
+
+async fn run_agent_command_inner(run: AgentRun) -> bool {
     let AgentRun {
         runtime,
         chat_id,
@@ -1057,7 +1086,11 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
     // The run's fresh skill catalog: one scan feeds the system-prompt block
     // AND the transcript's SKILL.md read collapsing — both see the same
     // live view of the roots.
-    let (system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
+    *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
+    let (mut system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
+    if let Some(child) = &chat.child {
+        system_prompt = crate::subagents::system_prompt(&child.role, &cwd, &catalog).await;
+    }
     let skill_files: HashMap<String, String> = catalog
         .winners
         .iter()
@@ -1196,7 +1229,27 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
                     is_error,
                     ..
                 } => {
-                    resolve_tool_part(&chat, &tool_call_id, is_error, tool_output_full(&result));
+                    let output = tool_output_full(&result);
+                    for part in base_parts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter_mut()
+                    {
+                        if let MessagePart::Tool {
+                            id,
+                            resolved,
+                            is_error: failed,
+                            output: slot,
+                            ..
+                        } = part
+                            && id == &tool_call_id
+                        {
+                            *resolved = true;
+                            *failed = is_error;
+                            *slot = output.clone();
+                        }
+                    }
+                    resolve_tool_part(&chat, &tool_call_id, is_error, output);
                 }
                 _ => {}
             }
@@ -1225,7 +1278,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
     // the persisted flag. Either way this is never a Turn: no
     // source-context stamping, no turn-diff baseline reset, no status
     // change.
-    let overflow_recovery = runtime.take_compact_before_next_turn(&chat_id);
+    let overflow_recovery = chat.child.is_none() && runtime.take_compact_before_next_turn(&chat_id);
     let turn_start_compaction = if overflow_recovery {
         crate::compaction::compact_now(
             &history,
@@ -1398,6 +1451,27 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
         cancel.clone(),
     );
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
+    let mut tools = crate::tools::execution_tools_for_model(&cwd, allow_images);
+    if let Some(child) = &chat.child {
+        if child.role == "explorer" {
+            tools.retain(|tool| matches!(tool.name.as_str(), "read" | "grep"));
+        }
+    } else {
+        tools.push(crate::subagents::tool(crate::subagents::Delegation {
+            runtime: runtime.clone(),
+            parent: chat.clone(),
+            parent_parts: base_parts.clone(),
+            parent_entry: entry_id.clone(),
+            cwd: cwd.clone(),
+            reasoning,
+            model: model.clone(),
+            api_key: api_key.clone(),
+            skills: skills.clone(),
+            permission_mode,
+            stream_fn: stream_fn.clone(),
+            cancel: cancel.clone(),
+        }));
+    }
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -1416,14 +1490,14 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
         get_follow_up_messages: None,
         tool_execution: None,
         before_tool_call: Some(gate),
-        after_tool_call: None,
+        after_tool_call: Some(crate::subagents::after_tool_call()),
     };
     let result = run_agent_loop(
         vec![prompt_message],
         AgentContext {
             system_prompt,
             messages: history,
-            tools: Some(crate::tools::execution_tools_for_model(&cwd, allow_images)),
+            tools: Some(tools),
         },
         config,
         emit,
@@ -1438,7 +1512,19 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
                 .iter()
                 .rev()
                 .find_map(|message| match message {
-                    AgentMessage::Assistant(message) => Some(message.error_message.is_some()),
+                    AgentMessage::Assistant(message) => Some(
+                        message.error_message.is_some()
+                            || (chat.child.is_some()
+                                && (matches!(
+                                    message.stop_reason,
+                                    pi_core::ai::types::StopReason::Aborted
+                                        | pi_core::ai::types::StopReason::Error
+                                        | pi_core::ai::types::StopReason::Length
+                                ) || pi_core::ai::utils::overflow::is_context_overflow(
+                                    message,
+                                    Some(overflow_model.context_window),
+                                ))),
+                    ),
                     _ => None,
                 })
                 .unwrap_or(false);
@@ -1495,7 +1581,7 @@ pub(crate) async fn run_agent_command(run: AgentRun) -> bool {
                 }
                 _ => None,
             });
-            if overflowed == Some(true) {
+            if overflowed == Some(true) && chat.child.is_none() {
                 runtime.set_compact_before_next_turn(&chat_id);
                 push_system_part(
                     &chat,

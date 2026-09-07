@@ -42,6 +42,7 @@ mod queue;
 mod rpc;
 mod skills;
 mod store;
+mod subagents;
 mod title_settings;
 mod title_task;
 mod tools;

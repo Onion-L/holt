@@ -334,6 +334,11 @@ fn hash_gate(acc: &mut Vec<u8>, gate: Option<&ToolGate>) {
         None => acc.push(0),
         Some(gate) => {
             acc.extend_from_slice(gate.id.as_bytes());
+            if let Some(origin) = &gate.origin {
+                acc.extend_from_slice(origin.doc_id.as_bytes());
+                acc.push(0);
+                acc.extend_from_slice(origin.label.as_bytes());
+            }
             match &gate.state {
                 ToolGateState::Pending => acc.push(1),
                 ToolGateState::Settled { verdict } => {

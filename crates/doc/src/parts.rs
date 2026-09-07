@@ -138,6 +138,15 @@ pub struct ToolGate {
     /// Opaque id a `ResolveApproval` verdict addresses; unique per opening.
     pub id: String,
     pub state: ToolGateState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SubagentOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentOrigin {
+    pub doc_id: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

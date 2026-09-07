@@ -332,6 +332,7 @@ pub(crate) fn before_tool_call_hook(
                         &base_parts,
                         &ctx.tool_call.id,
                         ToolGate {
+                            origin: None,
                             id: uuid::Uuid::new_v4().to_string(),
                             state: ToolGateState::Settled {
                                 verdict: GateVerdict::Exempted,
@@ -358,6 +359,7 @@ pub(crate) fn before_tool_call_hook(
                                 &base_parts,
                                 &ctx.tool_call.id,
                                 ToolGate {
+                                    origin: None,
                                     id: uuid::Uuid::new_v4().to_string(),
                                     state: ToolGateState::Settled {
                                         verdict: GateVerdict::ReviewPassed,
@@ -372,6 +374,7 @@ pub(crate) fn before_tool_call_hook(
                                 &base_parts,
                                 &ctx.tool_call.id,
                                 ToolGate {
+                                    origin: None,
                                     id: uuid::Uuid::new_v4().to_string(),
                                     state: ToolGateState::Settled {
                                         verdict: GateVerdict::ReviewRejected {
@@ -405,6 +408,7 @@ pub(crate) fn before_tool_call_hook(
                     &base_parts,
                     &ctx.tool_call.id,
                     ToolGate {
+                        origin: None,
                         id: approval_id.clone(),
                         state: ToolGateState::Pending,
                     },
@@ -428,6 +432,7 @@ pub(crate) fn before_tool_call_hook(
                         &base_parts,
                         &ctx.tool_call.id,
                         ToolGate {
+                            origin: None,
                             id: approval_id,
                             state: ToolGateState::Settled {
                                 verdict: GateVerdict::Aborted,
@@ -451,6 +456,7 @@ pub(crate) fn before_tool_call_hook(
                             &base_parts,
                             &ctx.tool_call.id,
                             ToolGate {
+                                origin: None,
                                 id: approval_id,
                                 state: ToolGateState::Settled {
                                     verdict: if matches!(verdict, ApprovalVerdict::AlwaysAllow) {
@@ -472,6 +478,7 @@ pub(crate) fn before_tool_call_hook(
                             &base_parts,
                             &ctx.tool_call.id,
                             ToolGate {
+                                origin: None,
                                 id: approval_id,
                                 state: ToolGateState::Settled {
                                     verdict: GateVerdict::Denied { note: note.clone() },
@@ -533,6 +540,7 @@ mod tests {
             subagent_status: None,
             subagent_tail: None,
             gate: Some(ToolGate {
+                origin: None,
                 id: format!("approval-{id}"),
                 state,
             }),

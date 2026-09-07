@@ -88,7 +88,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   bytes for UI preview; `ReleaseImage` (`{path}`) only removes Holt-managed
   files without retained references. Payloads and replies are typed in
   `crates/rpc/src/images.rs`. These methods are separate from unserved uploads.
-- Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat).
+- Transcript: `WatchDocMessages` (`TranscriptFrame` stream per chat or
+  Subagent document). `FetchToolBlob` serves completed Subagent transcripts
+  as JSON text for a `{parentChatId}/{subagentDocId}` reference.
 - Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
   `QueueCommand run`/`invokeSkill`/`compact` acknowledge durable acceptance
@@ -160,7 +162,51 @@ run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run l
 built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
 named `grep` (ripgrep's crates in process, ADR-0004); the transcript folds their
-calls and results into `MessagePart::Tool` chips.
+calls and results into `MessagePart::Tool` chips. Parent runs also mount
+the foreground `Agent` delegation tool (ADR-0016).
+
+## Subagents
+
+`engine::subagents` owns foreground delegation through the existing pi-core-rs
+loop, without upstream changes. The fixed Explorer and Worker roles inherit
+the parent Turn's model, reasoning, working directory, and Permission mode.
+Explorers mount only read/grep; Workers also mount write/edit/bash. Neither
+can delegate. Each child starts with independent History, a Task brief,
+applicable ancestor AGENTS.md instructions, and a fresh skills listing.
+Workers share the actual working directory; the parent assigns file ownership,
+without automatic worktrees, merging, or rollback.
+
+An engine-wide semaphore allows four running children; a parent Turn may
+create eight in total. There is no fixed child request-count or total-runtime
+cap. Child cancellation descends from the parent Turn; Stop and Steer wait for
+child cleanup before the next Turn. A child failure returns an error and
+partial output without cancelling its siblings. Children use the existing
+Compaction implementation against their own History; context overflow fails
+the child without retry or changing models.
+
+Child documents use `{parentChatId}--sub--{uuid}` identities and independent
+transcript/History files under `<data_dir>/subagents/{parentChatId}`. They reuse
+the transcript runtime and event folding, but never join the chat registry,
+session list, or queue consumer. Their queue is unused and never persisted.
+Child records survive restart for viewing; running records recover as aborted,
+with failed parent spawn chips, and execution is never resumed. Deleting the
+parent also deletes its child records. Completed children leave the active
+registry and can be loaded from disk for inspection.
+
+Spawn chips carry the child document reference, live tail, and completion
+status. Child Approvals also appear in the parent Transcript with a typed
+`ToolGate.origin` that opens the child tab; these are display-only projections,
+not parent History messages. Always-allow grants are shared with the parent
+chat. Child results carry usage, including child Compaction and auto-review
+requests, in the parent's tool-result History record.
+
+Only the final summary enters parent History, bounded to 12,000 tokens measured
+with the shared o200k tokenizer (a stable output budget, not a claim about a
+provider's billing tokenizer). The full final output is saved under the child's
+`results/` directory; truncation includes an explicit notice and an absolute
+file path usable by `read`. The independent Transcript retains intermediate
+work. `FetchToolBlob` only serves finished child transcripts; live documents
+use `WatchDocMessages`.
 
 ## Image capability
 

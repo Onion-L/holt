@@ -226,6 +226,13 @@ impl ScriptedProvider {
                 messages: context.messages.clone(),
                 system_prompt: context.system_prompt.clone(),
                 tools: context.tools.as_ref().map_or(0, Vec::len),
+                tool_names: context
+                    .tools
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
             });
             let reply = match &title {
                 Some(title)
@@ -267,6 +274,7 @@ pub struct RecordedRequest {
     pub system_prompt: Option<String>,
     /// How many tools the request advertised (0 = a bare completion).
     pub tools: usize,
+    pub tool_names: Vec<String>,
 }
 
 /// Render one scripted reply onto a fresh stream as its terminal event —
