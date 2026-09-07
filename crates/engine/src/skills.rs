@@ -225,11 +225,12 @@ pub(crate) fn invocation_prompt(skill: &Skill, extra_instructions: Option<&str>)
     format_skill_invocation(skill, extra_instructions)
 }
 
-/// The transcript user entry of a skill invocation: the compact chip (name
-/// + source pointer; the `<skill>` block rides the AGENT entry instead)
-/// followed by any extra instructions verbatim. Shared by Turn admission
-/// and restart recovery, which passes an empty `file` — the catalog is not
-/// re-scanned on load.
+/// The transcript user entry of a skill invocation: the compact chip
+/// (name plus source pointer; the `<skill>` block rides the AGENT entry
+/// instead) followed by any extra instructions verbatim.
+///
+/// Shared by Turn admission and restart recovery, which passes an empty
+/// `file`. The catalog is not re-scanned on load.
 pub(crate) fn user_entry_parts(
     name: String,
     file: String,

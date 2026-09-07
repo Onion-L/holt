@@ -88,7 +88,7 @@ async fn ordinary_messages_wait_their_turn_without_entering_the_transcript() {
                     }
                     _ => None,
                 })
-                .last()
+                .next_back()
                 .unwrap()
         })
         .collect();
@@ -696,12 +696,10 @@ fn user_text(request: &common::RecordedRequest) -> String {
         .messages
         .iter()
         .filter_map(|message| match message {
-            pi_core::ai::types::Message::User(message) => {
-                Some(format!("{}", message.content.text()))
-            }
+            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap_or_default()
 }
 

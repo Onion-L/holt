@@ -139,6 +139,7 @@ impl Pickers {
         self.footer_chip_with_icon_tint(kind, id, icon_path, label, None, theme, cx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn footer_chip_with_icon_tint(
         &self,
         kind: PickerKind,

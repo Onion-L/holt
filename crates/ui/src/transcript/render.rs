@@ -230,6 +230,7 @@ impl Transcript {
     /// reveals the exact `<skill>` block the model received, with the
     /// source file one click away. Collapsing tweens the measured height
     /// to zero like the tool-group folds.
+    #[allow(clippy::too_many_arguments)]
     fn render_skill_invocation(
         &mut self,
         row_id: &SharedString,
@@ -1816,20 +1817,6 @@ fn auto_flip_armed(pinned: Option<bool>, last_auto: Option<bool>, auto_now: bool
 /// gpui's line-layout cache (identical text + runs ⇒ reuse) and the underlay
 /// repaints O(chips) quads — no layout work, no re-projection (spans were
 /// computed once in [`rows_for_entry`]).
-/// The user bubble's text: runs split at mention-chip boundaries (one plain
-/// run when there are none), with the same selection machinery as rendered
-/// markdown — the element registers into the frame's document-ordered
-/// registry, so drags select, span into adjacent rows, and Cmd+C copies.
-#[cfg(test)]
-fn user_bubble_text(
-    row_id: &SharedString,
-    text: SharedString,
-    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
-    theme: &Theme,
-) -> AnyElement {
-    user_bubble_text_with_chip(row_id, text, mentions, None, theme, None)
-}
-
 /// A leading skill chip inside the bubble text: `range` covers the label
 /// (always at offset 0), `open_url` is the click-through to its source file.
 struct SkillChipRun {

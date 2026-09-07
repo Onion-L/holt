@@ -633,7 +633,7 @@ mod tests {
         assert_eq!((w, h), (2, 1));
         assert_eq!(u32::from(render.size(0).width), 2);
         let bytes = render.as_bytes(0).unwrap();
-        assert_eq!(bytes.len(), 2 * 1 * 4);
+        assert_eq!(bytes.len(), 2 * 4);
         assert!(!render.as_bytes(0).unwrap().is_empty());
     }
 
@@ -742,7 +742,7 @@ mod tests {
         assert!(matches!(snapshot(path), Snapshot::Loaded(_)));
         // Same length, different mtime may still fingerprint equal on coarse
         // filesystems; a different LENGTH always refreshes.
-        std::fs::write(&path, png(PNG_2X1)).unwrap();
+        std::fs::write(path, png(PNG_2X1)).unwrap();
         assert!(
             matches!(snapshot(path), Snapshot::Loading),
             "changed content must reload, not serve stale pixels"
