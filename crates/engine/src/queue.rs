@@ -546,6 +546,13 @@ impl EngineService {
                     (message, cancel, picked_id)
                 };
                 let kind = message.kind;
+                let heartbeat_stop = CancellationToken::new();
+                let heartbeat = tokio::spawn(crate::agent::heartbeat_session(
+                    service.runtime.clone(),
+                    worker_chat.chat_id.clone(),
+                    heartbeat_stop.clone(),
+                ));
+                worker_chat.track_task(&heartbeat);
                 let (success, error) = match kind {
                     PendingKind::Compact => {
                         service
@@ -607,6 +614,10 @@ impl EngineService {
                         }
                     }
                 };
+                // Wait for the heartbeat to stop before publishing the final
+                // status so a last tick cannot revive an idle session.
+                heartbeat_stop.cancel();
+                let _ = heartbeat.await;
                 let started = worker_chat
                     .queue
                     .lock()

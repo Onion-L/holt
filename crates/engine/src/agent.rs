@@ -101,6 +101,11 @@ pub(crate) struct ChatRuntime {
 /// token on the engine thread and starve the SSE pump.
 const STREAM_PUBLISH_INTERVAL: Duration = Duration::from_millis(120);
 
+/// Keep a live session fresh without coupling liveness to provider deltas.
+/// Tool calls, model thinking, and foreground subagents can all be silent for
+/// longer than the UI's stale-session window.
+const SESSION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
 impl ChatRuntime {
     pub(crate) fn track_task(&self, task: &tokio::task::JoinHandle<()>) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
@@ -644,6 +649,43 @@ impl AgentRuntime {
         }
         if let Ok(value) = serde_json::to_value(&*sessions) {
             self.sessions_tx.send_replace(value);
+        }
+    }
+
+    pub(crate) fn touch_session(&self, chat_id: &str) {
+        let now = Utc::now();
+        let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        let Some(session) = sessions
+            .iter_mut()
+            .find(|session| session.chat_id == chat_id)
+        else {
+            return;
+        };
+        session.updated_at = now;
+        if let Ok(value) = serde_json::to_value(&*sessions) {
+            self.sessions_tx.send_replace(value);
+        }
+    }
+}
+
+pub(crate) async fn heartbeat_session(
+    runtime: Arc<AgentRuntime>,
+    chat_id: String,
+    stop: CancellationToken,
+) {
+    heartbeat_session_every(runtime, chat_id, stop, SESSION_HEARTBEAT_INTERVAL).await;
+}
+
+async fn heartbeat_session_every(
+    runtime: Arc<AgentRuntime>,
+    chat_id: String,
+    stop: CancellationToken,
+    interval: Duration,
+) {
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = tokio::time::sleep(interval) => runtime.touch_session(&chat_id),
         }
     }
 }
@@ -1695,7 +1737,58 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holt_proto::TitleSource;
     use pi_core::ai::types::{AssistantMessage, TextContent, ThinkingContent, ToolCall};
+
+    fn session_chat(id: &str) -> Chat {
+        Chat {
+            id: id.into(),
+            device_id: "device".into(),
+            title: None,
+            title_source: TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc::now(),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_heartbeat_refreshes_a_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.path().to_path_buf(),
+            vec![session_chat("chat-1")],
+            None,
+        ));
+        runtime.set_session("chat-1", SessionStatus::Working);
+        let before = runtime.sessions.read().unwrap()[0].updated_at;
+        let stop = CancellationToken::new();
+        let heartbeat = tokio::spawn(heartbeat_session_every(
+            runtime.clone(),
+            "chat-1".into(),
+            stop.clone(),
+            Duration::from_millis(5),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(runtime.sessions.read().unwrap()[0].updated_at > before);
+
+        stop.cancel();
+        heartbeat.await.unwrap();
+    }
 
     fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
         ToolCall {
