@@ -18,7 +18,7 @@ use gpui::{Entity, actions};
 use crate::state::AppState;
 use viewer::FileViewer;
 
-actions!(files, [SaveFile]);
+actions!(files, [SaveFile, FindInFile]);
 
 /// One open file tab. Lives in [`FileTabs`] keyed by the owning Space —
 /// never per Chat (ADR-0020).

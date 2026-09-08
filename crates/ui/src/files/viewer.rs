@@ -7,9 +7,14 @@
 //! content (oversized, non-UTF-8, binary) stays read-only with an
 //! external-open action.
 
+use std::ops::Range;
+
 use gpui::prelude::*;
 
-use gpui::{AnyElement, Context, Entity, EventEmitter, SharedString, Task, WeakEntity, div, px};
+use gpui::{
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, SharedString, Task, WeakEntity,
+    Window, div, px,
+};
 
 use super::editor::{CodeEditor, EDITOR_LINE_HEIGHT, EDITOR_TEXT_SIZE, EditorEvent};
 use crate::icons::{self, icon};
@@ -89,6 +94,17 @@ pub struct FileViewer {
     generation: u64,
     /// A save error currently shown (kept until the next save attempt).
     save_error: Option<SharedString>,
+    /// In-file search (ticket 03): the bar, its query, and the computed
+    /// matches. Searching never touches the buffer or its undo history —
+    /// the editor only paints what lands in `set_search_matches`.
+    search_open: bool,
+    search_input: Option<Entity<crate::composer::ComposerInput>>,
+    search_matches: Vec<Range<usize>>,
+    search_active: Option<usize>,
+    /// Bumped per query/content change; a result for an older pair is
+    /// dropped, never applied.
+    search_generation: u64,
+    search_task: Option<Task<()>>,
 }
 
 impl EventEmitter<FileViewerEvent> for FileViewer {}
@@ -118,9 +134,118 @@ impl FileViewer {
             pending_save: None,
             generation: 0,
             save_error: None,
+            search_open: false,
+            search_input: None,
+            search_matches: Vec::new(),
+            search_active: None,
+            search_generation: 0,
+            search_task: None,
         };
         viewer.load(cx);
         viewer
+    }
+
+    /// Open (or close) the in-file search bar, focusing its input.
+    pub fn toggle_search(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if self.search_open {
+            self.close_search(cx);
+            return;
+        }
+        let input = cx.new(|cx| {
+            crate::composer::ComposerInput::with_context("Find in file", "PaletteSearch", cx)
+        });
+        cx.subscribe(
+            &input,
+            |viewer: &mut FileViewer, _, event: &crate::composer::ComposerInputEvent, cx| {
+                if matches!(event, crate::composer::ComposerInputEvent::Edited) {
+                    viewer.on_search_query_changed(cx);
+                }
+            },
+        )
+        .detach();
+        let handle = gpui::Focusable::focus_handle(input.read(cx), cx).clone();
+        window.focus(&handle, cx);
+        self.search_input = Some(input);
+        self.search_open = true;
+        cx.notify();
+    }
+
+    pub fn close_search(&mut self, cx: &mut Context<Self>) {
+        self.search_open = false;
+        self.search_input = None;
+        self.search_matches.clear();
+        self.search_active = None;
+        self.search_generation += 1;
+        self.search_task = None;
+        if let Some(editor) = self.editor() {
+            editor.update(cx, |editor, cx| {
+                editor.set_search_matches(Vec::new(), None, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn on_search_query_changed(&mut self, cx: &mut Context<Self>) {
+        self.run_search(cx);
+    }
+
+    /// Compute matches off the edit path: the query (case-insensitive
+    /// substring) against the current buffer, generation-guarded so a result
+    /// for an older query or buffer revision never replaces a newer one.
+    fn run_search(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.search_input.clone() else {
+            return;
+        };
+        let query = input.read(cx).text().to_string();
+        let Some(buffer) = self.buffer_text.clone() else {
+            return;
+        };
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let matches = cx
+                .background_executor()
+                .spawn(async move { find_matches(&buffer, &query) })
+                .await;
+            let _ = this.update(cx, |viewer, cx| {
+                if viewer.search_generation != generation {
+                    return;
+                }
+                let active = (!matches.is_empty()).then_some(0usize);
+                viewer.search_matches = matches;
+                viewer.search_active = active;
+                if let Some(editor) = viewer.editor() {
+                    let matches = viewer.search_matches.clone();
+                    editor.update(cx, |editor, cx| {
+                        editor.set_search_matches(matches, active, cx);
+                    });
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Next/previous match; wraps at both ends.
+    pub fn search_step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let current = self.search_active.unwrap_or(0);
+        let count = self.search_matches.len();
+        let next = if forward {
+            (current + 1) % count
+        } else {
+            (current + count - 1) % count
+        };
+        self.search_active = Some(next);
+        if let Some(editor) = self.editor() {
+            let matches = self.search_matches.clone();
+            let active = self.search_active;
+            editor.update(cx, |editor, cx| {
+                editor.set_search_matches(matches, active, cx);
+            });
+        }
+        cx.notify();
     }
 
     pub fn path(&self) -> &str {
@@ -187,9 +312,11 @@ impl FileViewer {
                         viewer.view = match read.text.clone() {
                             Some(text) => {
                                 let buffer = text.clone();
+                                let path = viewer.path.clone();
                                 let editor = cx.new(|cx| {
                                     let mut editor = CodeEditor::new(cx);
                                     editor.load(buffer, cx);
+                                    editor.set_path(path, cx);
                                     editor
                                 });
                                 cx.subscribe(
@@ -240,6 +367,9 @@ impl FileViewer {
                 // An edit clears the stale save error and re-dirties.
                 self.save_error = None;
                 let dirty = self.is_dirty();
+                if self.search_open {
+                    self.run_search(cx);
+                }
                 cx.emit(FileViewerEvent::PinRequested);
                 cx.emit(FileViewerEvent::DirtyChanged { dirty });
                 cx.notify();
@@ -401,6 +531,77 @@ impl FileViewer {
                         .child(message),
                 )
         });
+        // The in-file search bar (ticket 03): query, live count, prev/next.
+        let search_bar = self.search_open.then(|| {
+            let count = self.search_matches.len();
+            let label: SharedString = if self.search_query_is_empty(cx) {
+                "".into()
+            } else if count == 0 {
+                "No matches".into()
+            } else {
+                format!("{}/{}", self.search_active.map_or(1, |ix| ix + 1), count).into()
+            };
+            let input = self
+                .search_input
+                .clone()
+                .map(|input| input.into_any_element())
+                .unwrap_or_else(|| div().into_any_element());
+            div()
+                .id("file-search-bar")
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.close_search(cx),
+                        "enter" => {
+                            cx.stop_propagation();
+                            this.search_step(!event.keystroke.modifiers.shift, cx);
+                        }
+                        _ => {}
+                    }
+                }))
+                .flex_none()
+                .h(px(32.0))
+                .px(px(8.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    icon(icons::MAGNIFER)
+                        .size(px(12.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(div().flex_1().min_w_0().h_full().child(input))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(if label.as_ref() == "No matches" {
+                            theme.warning_muted
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(label),
+                )
+                .child(search_icon_button(
+                    &theme,
+                    "search-prev",
+                    icons::ARROW_UP,
+                    cx.listener(|this, _, _, cx| this.search_step(false, cx)),
+                ))
+                .child(search_icon_button(
+                    &theme,
+                    "search-next",
+                    icons::ALT_ARROW_DOWN,
+                    cx.listener(|this, _, _, cx| this.search_step(true, cx)),
+                ))
+                .child(search_icon_button(
+                    &theme,
+                    "search-close",
+                    icons::CLOSE,
+                    cx.listener(|this, _, _, cx| this.close_search(cx)),
+                ))
+        });
         let content: AnyElement = match &self.view {
             ViewerState::Loading => centered_muted("Loading…", &theme),
             ViewerState::Unsupported { reason } => {
@@ -425,10 +626,81 @@ impl FileViewer {
             .size_full()
             .flex()
             .flex_col()
+            .children(search_bar)
             .children(error_banner)
             .child(content)
             .into_any_element()
     }
+
+    fn search_query_is_empty(&self, cx: &App) -> bool {
+        self.search_input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).is_empty())
+    }
+}
+
+/// Case-insensitive substring matches as BYTE ranges over the original
+/// buffer. Folding happens per character with positions tracked, because
+/// `to_lowercase` changes byte lengths (U+0130 folds to two chars, the
+/// Kelvin sign to one) and folded-buffer offsets would not map back. The
+/// query's own newlines are ignored — a match never spans lines.
+fn find_matches(buffer: &str, query: &str) -> Vec<Range<usize>> {
+    let mut needle: Vec<char> = query
+        .chars()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .flat_map(char::to_lowercase)
+        .collect();
+    needle.shrink_to_fit();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    // Folded haystack with, per folded char, the byte offset of its source
+    // char and that char's byte length.
+    let mut hay: Vec<char> = Vec::with_capacity(buffer.len());
+    let mut starts: Vec<usize> = Vec::with_capacity(buffer.len());
+    let mut lens: Vec<usize> = Vec::with_capacity(buffer.len());
+    for (offset, character) in buffer.char_indices() {
+        let len = character.len_utf8();
+        for folded in character.to_lowercase() {
+            hay.push(folded);
+            starts.push(offset);
+            lens.push(len);
+        }
+    }
+    let mut matches = Vec::new();
+    let mut at = 0usize;
+    while at + needle.len() <= hay.len() {
+        if hay[at..at + needle.len()] == needle[..] {
+            let start = starts[at];
+            let end = starts[at + needle.len() - 1] + lens[at + needle.len() - 1];
+            matches.push(start..end);
+            at += needle.len();
+        } else {
+            at += 1;
+        }
+    }
+    matches
+}
+
+/// A small square icon button for the search bar's prev/next/close cluster.
+fn search_icon_button(
+    theme: &Theme,
+    id: &'static str,
+    path: &'static str,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(20.0))
+        .rounded(px(4.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|state| state.bg(crate::theme::wash(0.08)))
+        .on_click(handler)
+        .child(icon(path).size(px(11.0)).text_color(theme.text_muted))
 }
 
 fn centered_muted(label: &str, theme: &Theme) -> AnyElement {
@@ -511,4 +783,18 @@ fn unsupported_state(
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn matches_are_case_insensitive_and_never_span_lines() {
+        let matches = find_matches("Ab ra cadabra\nabra", "ABRA");
+        assert_eq!(matches, vec![9..13, 14..18]);
+        // A query's newlines are ignored, so no match can cross a line.
+        assert!(find_matches("a\nb", "a\nb").is_empty());
+        assert!(find_matches("anything", "").is_empty());
+    }
 }

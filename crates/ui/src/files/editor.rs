@@ -19,14 +19,17 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::syntax_cache::{DocumentHighlightKey, SyntaxHighlightCache};
 use crate::theme::Theme;
 
 /// Monospace row height at the editor's fixed 12.5px text size.
 pub(crate) const EDITOR_LINE_HEIGHT: f32 = 19.0;
 pub(crate) const EDITOR_TEXT_SIZE: f32 = 12.5;
-/// Left/right padding inside the text surface (the gutter lands left of it
-/// with ticket 03).
+/// Left/right padding inside the text surface, right of the gutter.
 const PAD_X: f32 = 10.0;
+/// Holt's default indentation width: four spaces. Files whose lines lead
+/// with tabs keep tabs — indentation matches the file, never reformats it.
+const INDENT_SPACES: &str = "    ";
 const PAD_Y: f32 = 8.0;
 /// How long a run of single-character edits keeps merging into one undo step.
 const UNDO_COALESCE: Duration = Duration::from_millis(700);
@@ -69,6 +72,7 @@ actions!(
         Paste,
         Newline,
         InsertTab,
+        Outdent,
         Undo,
         Redo,
         Escape
@@ -83,6 +87,7 @@ pub(crate) fn init(cx: &mut App) {
         // it never submits or mentions anything.
         KeyBinding::new("enter", Newline, ctx),
         KeyBinding::new("tab", InsertTab, ctx),
+        KeyBinding::new("shift-tab", Outdent, ctx),
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
         KeyBinding::new("left", Left, ctx),
@@ -119,6 +124,11 @@ pub(crate) fn init(cx: &mut App) {
     }
     // Cmd+S is the FILE's, not the editor's: it fires wherever focus sits
     // while a file tab is the active surface (tree, composer, editor).
+    let find_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
+        .iter()
+        .map(|prefix| KeyBinding::new(&format!("{prefix}-f"), super::FindInFile, None))
+        .collect();
+    cx.bind_keys(find_bindings);
     let save_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
         .iter()
         .map(|prefix| KeyBinding::new(&format!("{prefix}-s"), super::SaveFile, None))
@@ -216,6 +226,29 @@ pub struct CodeEditor {
     undo_stack: VecDeque<EditSnapshot>,
     redo_stack: Vec<EditSnapshot>,
     last_edit: Option<(EditKind, usize, Instant)>,
+    /// The file's path and resolved language — unknown text formats stay
+    /// plain and editable without requiring a language service.
+    path: String,
+    language: Option<holt_syntax::LanguageId>,
+    /// Cached tree-sitter highlight for the current content revision.
+    highlight: Option<std::sync::Arc<holt_syntax::HighlightedDocument>>,
+    /// The content revision the cached highlight covers.
+    highlight_version: u64,
+    /// The content revision (bumped per edit) a background highlight runs
+    /// against — a stale result is dropped, never applied.
+    content_version: u64,
+    highlight_task: Option<gpui::Task<()>>,
+    /// Quiet-window debounce: typing bursts re-highlight once, 120ms after
+    /// the last keystroke, instead of reparsing per key.
+    highlight_debounce: Option<gpui::Task<()>>,
+    /// A reveal target (search hit) that overrides the caret for one
+    /// scroll clamp — consumed by the next paint.
+    reveal_target: Option<usize>,
+    syntax_cache: SyntaxHighlightCache,
+    /// Search matches (viewer-owned — searching never touches the buffer)
+    /// painted as quads; `search_active` is the highlighted one.
+    search_matches: Vec<Range<usize>>,
+    search_active: Option<usize>,
 }
 
 impl Focusable for CodeEditor {
@@ -249,9 +282,28 @@ impl CodeEditor {
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             last_edit: None,
+            path: String::new(),
+            language: None,
+            highlight: None,
+            highlight_version: 0,
+            content_version: 0,
+            highlight_task: None,
+            highlight_debounce: None,
+            reveal_target: None,
+            syntax_cache: SyntaxHighlightCache::default(),
+            search_matches: Vec::new(),
+            search_active: None,
         };
         editor.sync_lines();
         editor
+    }
+
+    /// The file this editor holds — resolves the language once and primes
+    /// highlighting.
+    pub fn set_path(&mut self, path: String, cx: &mut Context<Self>) {
+        self.language = holt_syntax::language_for_path(&path);
+        self.path = path;
+        self.schedule_highlight(cx);
     }
 
     pub fn text(&self) -> &str {
@@ -273,6 +325,7 @@ impl CodeEditor {
         self.redo_stack.clear();
         self.last_edit = None;
         self.sync_lines();
+        self.schedule_highlight(cx);
         cx.notify();
     }
 
@@ -280,6 +333,7 @@ impl CodeEditor {
     /// unchanged (an edit re-splits the buffer but only re-shapes the lines
     /// that actually differ at their index).
     fn sync_lines(&mut self) {
+        self.content_version += 1;
         let mut lines: Vec<String> = self.content.split('\n').map(str::to_string).collect();
         if lines.is_empty() {
             lines.push(String::new());
@@ -310,7 +364,203 @@ impl CodeEditor {
         self.shaped = shaped;
     }
 
+    /// Refresh syntax highlighting off the edit path: cached revisions hit
+    /// the LRU instantly, new ones run tree-sitter on the background
+    /// executor, and a result for an older revision is dropped.
+    /// Mark the highlight stale; reparse after a 120ms quiet window so a
+    /// typing burst costs one parse, not one per keystroke.
+    fn mark_highlight_dirty(&mut self, cx: &mut Context<Self>) {
+        if self.language.is_none() {
+            return;
+        }
+        self.highlight_debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
+            let _ = this.update(cx, |editor, cx| editor.schedule_highlight(cx));
+        }));
+    }
+
+    fn schedule_highlight(&mut self, cx: &mut Context<Self>) {
+        self.highlight_debounce = None;
+        let Some(language) = self.language else {
+            self.highlight = None;
+            return;
+        };
+        let version = self.content_version;
+        let key = DocumentHighlightKey::new(language, &self.content);
+        if let Some(document) = self.syntax_cache.get(&key) {
+            let changed = self.highlight_version != version;
+            self.highlight = Some(document);
+            self.highlight_version = version;
+            if changed {
+                self.invalidate_shaped();
+            }
+            cx.notify();
+            return;
+        }
+        let source = self.content.clone();
+        let path = self.path.clone();
+        let shape = cx.background_executor().spawn(async move {
+            holt_syntax::highlight(holt_syntax::HighlightRequest {
+                source: &source,
+                path: Some(&path),
+                fence_tag: None,
+            })
+        });
+        self.highlight_task = Some(cx.spawn(async move |this, cx| {
+            let document = shape.await;
+            let _ = this.update(cx, |editor, cx| {
+                if editor.content_version != version {
+                    return; // an edit superseded this revision
+                }
+                if let Ok(document) = document {
+                    let key = DocumentHighlightKey::new(language, &editor.content);
+                    let document = std::sync::Arc::new(document);
+                    editor.syntax_cache.insert(key, document.clone());
+                    editor.highlight = Some(document);
+                    editor.highlight_version = version;
+                    editor.invalidate_shaped();
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Drop shaped lines so a fresh highlight re-shapes them with colored
+    /// runs (the text itself may be unchanged).
+    fn invalidate_shaped(&mut self) {
+        for shaped in &mut self.shaped {
+            shaped.line = None;
+        }
+    }
+
+    /// Indent (or outdent) the cursor line or every selected line by one
+    /// unit, as a single undo step. The unit matches the file: tabs for
+    /// lines that already lead with tabs, Holt's four-space default
+    /// otherwise. Only the touched lines change — no whole-file reformat.
+    fn indent(&mut self, outdent: bool, cx: &mut Context<Self>) {
+        let (first_line, last_line) = if self.selected_range.is_empty() {
+            let line = self.line_index_for_offset(self.cursor_offset());
+            (line, line)
+        } else {
+            let first_line = self.line_index_for_offset(self.selected_range.start);
+            let mut last_line = self.line_index_for_offset(self.selected_range.end);
+            // A selection ending exactly at a line start does not include
+            // that line (platform convention).
+            if last_line > first_line
+                && self.line_starts.get(last_line).copied() == Some(self.selected_range.end)
+            {
+                last_line -= 1;
+            }
+            (first_line, last_line)
+        };
+        let Some(first_start) = self.line_starts.get(first_line).copied() else {
+            return;
+        };
+        // The affected region runs to the END of the last line (its whole
+        // leading whitespace participates).
+        let last_end = self
+            .line_range_at(
+                self.line_starts
+                    .get(last_line)
+                    .copied()
+                    .unwrap_or(self.content.len()),
+            )
+            .end;
+        let region = first_start..last_end;
+        let unit_is_tab = self.content[first_start..last_end]
+            .lines()
+            .any(|line| line.starts_with('\t'));
+        let unit = if unit_is_tab { "\t" } else { INDENT_SPACES };
+        let mut rebuilt = String::with_capacity(last_end - first_start);
+        let mut delta = 0isize;
+        for line in self.content[first_start..last_end].split('\n') {
+            if !rebuilt.is_empty() {
+                rebuilt.push('\n');
+            }
+            if outdent {
+                let strip = line.strip_prefix('\t').map_or_else(
+                    || {
+                        INDENT_SPACES
+                            .len()
+                            .min(line.chars().take_while(|c| *c == ' ').count())
+                    },
+                    |_| 1,
+                );
+                delta -= strip as isize;
+                rebuilt.push_str(&line[strip..]);
+            } else {
+                delta += unit.len() as isize;
+                rebuilt.push_str(unit);
+                rebuilt.push_str(line);
+            }
+        }
+        if rebuilt == self.content[first_start..last_end] {
+            return; // outdent with nothing to strip
+        }
+        self.record_edit(&region, &rebuilt);
+        self.content =
+            self.content[..region.start].to_owned() + &rebuilt + &self.content[region.end..];
+        // Keep the selection over the same lines, shifted by the edit.
+        let shift = |offset: usize| -> usize {
+            if offset <= region.start {
+                offset
+            } else if offset >= region.end {
+                (offset as isize + delta) as usize
+            } else {
+                (offset as isize + delta).clamp(
+                    region.start as isize,
+                    (region.start + rebuilt.len()) as isize,
+                ) as usize
+            }
+        };
+        self.selected_range = shift(self.selected_range.start)..shift(self.selected_range.end);
+        if self.selected_range.end < self.selected_range.start {
+            self.selected_range = self.selected_range.end..self.selected_range.start;
+        }
+        self.follow_cursor = true;
+        self.blink_anchor = Instant::now();
+        // A fresh edit never merges into the indent's undo step.
+        self.last_edit = None;
+        self.sync_lines();
+        self.mark_highlight_dirty(cx);
+        cx.emit(EditorEvent::Edited);
+        cx.notify();
+    }
+
+    /// The viewer hands over computed search matches (searching never
+    /// touches the buffer or its undo history); `active` highlights one.
+    pub fn set_search_matches(
+        &mut self,
+        matches: Vec<Range<usize>>,
+        active: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_matches = matches;
+        self.search_active = active;
+        if let Some(active) = active
+            && let Some(range) = self.search_matches.get(active)
+        {
+            self.reveal_offset(range.start, cx);
+        }
+        cx.notify();
+    }
+
+    /// Scroll a search hit into view on the next paint — one-shot, without
+    /// touching the caret or the selection.
+    pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.reveal_target = Some(offset);
+        cx.notify();
+    }
+
     // ---- undo history ----
+
+    /// Test accessor: how many undo steps are recorded.
+    #[cfg(test)]
+    pub(crate) fn undo_stack_len(&self) -> usize {
+        self.undo_stack.len()
+    }
 
     fn snapshot(&self) -> EditSnapshot {
         EditSnapshot {
@@ -361,6 +611,7 @@ impl CodeEditor {
         self.follow_cursor = true;
         self.last_edit = None;
         self.sync_lines();
+        self.mark_highlight_dirty(cx);
         cx.emit(EditorEvent::Edited);
         cx.notify();
     }
@@ -483,13 +734,14 @@ impl CodeEditor {
             return Some(point(px(PAD_X), px(y)));
         };
         // Unwrapped line: x comes straight off the shaped layout, offset by
-        // the surface's left padding so caret/selection/IME rectangles and
-        // painted glyphs share one coordinate system.
+        // the gutter so caret/selection/IME rectangles and painted glyphs
+        // share one coordinate system.
+        let origin_x = self.text_x();
         let x = shaped
             .line
             .as_ref()
-            .map(|line| PAD_X + f32::from(line.x_for_index(local_ix)))
-            .unwrap_or(PAD_X);
+            .map(|line| origin_x + f32::from(line.x_for_index(local_ix)))
+            .unwrap_or(origin_x);
         Some(point(px(x), px(y)))
     }
 
@@ -505,7 +757,7 @@ impl CodeEditor {
         let Some(shaped) = self.shaped.get(line_ix) else {
             return *line_start;
         };
-        let local_x = f32::from(position.x) - PAD_X;
+        let local_x = f32::from(position.x) - self.text_x();
         let ix = shaped
             .line
             .as_ref()
@@ -525,6 +777,18 @@ impl CodeEditor {
         self.index_for_point(local)
     }
 
+    /// The line-number gutter's width — sized to the document's line count
+    /// so numbers never reflow mid-session except across magnitude jumps.
+    pub fn gutter_width(&self) -> f32 {
+        let digits = self.lines.len().max(1).to_string().len();
+        (digits as f32 * 7.2 + 16.0).max(36.0)
+    }
+
+    /// The text surface's x origin inside the element (right of gutter).
+    fn text_x(&self) -> f32 {
+        self.gutter_width() + PAD_X
+    }
+
     /// Vertical offset of the last scrollable pixel.
     fn max_scroll_top(&self, viewport_height: f32) -> f32 {
         (self.lines.len() as f32 * EDITOR_LINE_HEIGHT + 2.0 * PAD_Y - viewport_height).max(0.0)
@@ -535,10 +799,13 @@ impl CodeEditor {
     }
 
     /// Reveal the caret after motion/edits; manual scrolling pauses this
-    /// until the next caret move.
+    /// until the next caret move. A pending search reveal wins for one
+    /// frame.
     fn clamp_scroll(&mut self, viewport: Size<Pixels>) {
-        if self.follow_cursor
-            && let Some(cursor) = self.point_for_index(self.cursor_offset())
+        let reveal = self.reveal_target.take();
+        let target = reveal.or_else(|| self.follow_cursor.then(|| self.cursor_offset()));
+        if let Some(target) = target
+            && let Some(cursor) = self.point_for_index(target)
         {
             let (cx, cy) = (f32::from(cursor.x), f32::from(cursor.y));
             let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
@@ -548,8 +815,8 @@ impl CodeEditor {
             } else if cy + margin - self.scroll_top > vh {
                 self.scroll_top = (cy + margin - vh).max(0.0);
             }
-            if cx - self.scroll_left < PAD_X {
-                self.scroll_left = (cx - PAD_X).max(0.0);
+            if cx - self.scroll_left < self.text_x() {
+                self.scroll_left = (cx - self.text_x()).max(0.0);
             } else if cx + 24.0 - self.scroll_left > vw {
                 self.scroll_left = (cx + 24.0 - vw).max(0.0);
             }
@@ -635,6 +902,7 @@ impl CodeEditor {
         self.follow_cursor = true;
         self.blink_anchor = Instant::now();
         self.sync_lines();
+        self.mark_highlight_dirty(cx);
         cx.emit(EditorEvent::Edited);
         cx.notify();
     }
@@ -725,8 +993,9 @@ impl CodeEditor {
     pub(super) fn shape_visible(
         &mut self,
         bounds: Bounds<Pixels>,
-        style: &TextStyle,
+        _style: &TextStyle,
         window: &mut Window,
+        cx: &mut App,
     ) -> Range<usize> {
         let viewport_height = f32::from(bounds.size.height);
         let first = ((self.scroll_top / EDITOR_LINE_HEIGHT).floor() as usize)
@@ -736,6 +1005,8 @@ impl CodeEditor {
             ((viewport_height / EDITOR_LINE_HEIGHT).ceil() as usize).saturating_add(4);
         let last = (first + visible_rows).clamp(first, self.lines.len());
         let font_size = px(EDITOR_TEXT_SIZE);
+        let theme = Theme::of(cx).clone();
+        let mono = gpui::font(theme.font_mono.clone());
         for ix in first..last {
             let Some(shaped) = self.shaped.get_mut(ix) else {
                 continue;
@@ -743,18 +1014,20 @@ impl CodeEditor {
             if shaped.line.is_some() {
                 continue;
             }
-            let run = TextRun {
-                len: shaped.text.len(),
-                font: style.font(),
-                color: style.color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
+            // Token colors ride the shaping runs — plain text (unknown
+            // languages, pre-highlight frames) shapes with one run.
+            let spans = self
+                .highlight
+                .as_ref()
+                .and_then(|document| document.lines.get(ix))
+                .map(|spans| spans.as_slice())
+                .unwrap_or(&[]);
+            let runs =
+                crate::markdown::render::runs_for_syntax_line(&shaped.text, spans, &mono, &theme);
             shaped.line = Some(window.text_system().shape_line(
                 gpui::SharedString::from(shaped.text.clone()),
                 font_size,
-                &[run],
+                &runs,
                 None,
             ));
         }
@@ -765,7 +1038,8 @@ impl CodeEditor {
             .iter()
             .filter_map(|shaped| shaped.line.as_ref())
             .map(|line| f32::from(line.width()))
-            .fold(0.0f32, f32::max);
+            .fold(0.0f32, f32::max)
+            + self.gutter_width();
         first..last
     }
 
@@ -854,6 +1128,7 @@ impl EntityInputHandler for CodeEditor {
         self.follow_cursor = true;
         self.blink_anchor = Instant::now();
         self.sync_lines();
+        self.mark_highlight_dirty(cx);
         cx.emit(EditorEvent::Edited);
         cx.notify();
     }
@@ -896,6 +1171,7 @@ impl EntityInputHandler for CodeEditor {
         self.follow_cursor = true;
         self.blink_anchor = Instant::now();
         self.sync_lines();
+        self.mark_highlight_dirty(cx);
         cx.emit(EditorEvent::Edited);
         cx.notify();
     }
@@ -1089,8 +1365,10 @@ impl Render for CodeEditor {
                 this.replace_range(range, "\n", cx);
             }))
             .on_action(cx.listener(|this, _: &InsertTab, _, cx| {
-                let range = this.selected_range.clone();
-                this.replace_range(range, "\t", cx);
+                this.indent(false, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Outdent, _, cx| {
+                this.indent(true, cx);
             }))
             .on_action(cx.listener(CodeEditor::undo))
             .on_action(cx.listener(CodeEditor::redo))
@@ -1183,9 +1461,9 @@ impl Element for CodeEditorElement {
     ) {
         let theme = Theme::of(cx).clone();
         let style = window.text_style();
-        let visible = self.editor.update(cx, |editor, _| {
+        let visible = self.editor.update(cx, |editor, cx| {
             editor.last_bounds = Some(bounds);
-            let visible = editor.shape_visible(bounds, &style, window);
+            let visible = editor.shape_visible(bounds, &style, window, cx);
             editor.clamp_scroll(bounds.size);
             visible
         });
@@ -1203,7 +1481,82 @@ impl Element for CodeEditorElement {
 
         let (scroll_top, scroll_left) = self.editor.read(cx).scroll_offsets();
         let line_height = px(EDITOR_LINE_HEIGHT);
+        let gutter = self.editor.read(cx).gutter_width();
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            // The gutter: stable line numbers, vertically scrolled with the
+            // text, horizontally pinned (long lines never slide under it).
+            // The caret's line reads a step brighter.
+            let caret_line = self
+                .editor
+                .read(cx)
+                .line_index_for_offset(self.editor.read(cx).cursor_offset());
+            let number_font_size = px(EDITOR_TEXT_SIZE - 1.5);
+            for line_ix in visible.clone() {
+                let number: gpui::SharedString = (line_ix + 1).to_string().into();
+                let bright = line_ix == caret_line;
+                let run = TextRun {
+                    len: number.len(),
+                    font: gpui::font(theme.font_mono.clone()),
+                    color: if bright {
+                        theme.text.opacity(0.75)
+                    } else {
+                        theme.text_muted.opacity(0.55)
+                    },
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped =
+                    window
+                        .text_system()
+                        .shape_line(number, number_font_size, &[run], None);
+                let width = shaped.width();
+                let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
+                let _ = shaped.paint(
+                    point(
+                        bounds.left() + px(gutter - 6.0) - width,
+                        bounds.top() + px(y),
+                    ),
+                    line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
+            // Search matches paint under everything else: the active hit in
+            // the accent, the rest in the selection wash (ticket 03).
+            let search = {
+                let editor = self.editor.read(cx);
+                (editor.search_matches.clone(), editor.search_active)
+            };
+            for (ix, range) in search.0.iter().enumerate() {
+                let (Some(start), Some(end)) = (
+                    self.editor.read(cx).x_for_offset(range.start),
+                    self.editor.read(cx).x_for_offset(range.end),
+                ) else {
+                    continue;
+                };
+                if end <= start {
+                    continue;
+                }
+                let line_ix = self.editor.read(cx).line_index_for_offset(range.start);
+                let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
+                window.paint_quad(gpui::fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + start - px(scroll_left),
+                            bounds.top() + px(y),
+                        ),
+                        size(end - start, line_height),
+                    ),
+                    if Some(ix) == search.1 {
+                        theme.accent.opacity(0.45)
+                    } else {
+                        theme.selection.opacity(0.55)
+                    },
+                ));
+            }
             // Selection quads per affected line.
             let selected = self.editor.read(cx).selected_range();
             if !selected.is_empty() {
@@ -1251,16 +1604,27 @@ impl Element for CodeEditorElement {
             // shaped fresh with an underline run; everything else paints its
             // cached plain shape. Lines are read one at a time — no
             // whole-buffer clones per frame.
+            let text_origin_x = self.editor.read(cx).text_x();
             for line_ix in visible.clone() {
                 let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
                 let origin = point(
-                    bounds.left() + px(PAD_X) - px(scroll_left),
+                    bounds.left() + px(text_origin_x) - px(scroll_left),
                     bounds.top() + px(y),
                 );
                 let marked = self.editor.read(cx).marked_range_local(line_ix);
                 let underlined = marked.and_then(|marked| {
-                    let text = self.editor.read(cx).line_text(line_ix)?;
-                    let runs = underlined_runs(&text, marked, &style);
+                    let editor = self.editor.read(cx);
+                    let text = editor.line_text(line_ix)?;
+                    let spans = editor
+                        .highlight
+                        .as_ref()
+                        .and_then(|document| document.lines.get(line_ix))
+                        .map(|spans| spans.as_slice())
+                        .unwrap_or(&[]);
+                    let mono = gpui::font(theme.font_mono.clone());
+                    let base =
+                        crate::markdown::render::runs_for_syntax_line(&text, spans, &mono, &theme);
+                    let runs = overlay_underline(base, marked);
                     Some(window.text_system().shape_line(
                         gpui::SharedString::from(text),
                         px(EDITOR_TEXT_SIZE),
@@ -1307,40 +1671,40 @@ impl Element for CodeEditorElement {
     }
 }
 
-/// One plain run, with the marked byte range underlined — the IME
-/// composition's live preview.
-fn underlined_runs(text: &str, marked: Range<usize>, style: &TextStyle) -> Vec<TextRun> {
-    let plain = |len: usize| TextRun {
-        len,
-        font: style.font(),
-        color: style.color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let underlined = |len: usize| TextRun {
-        len,
-        underline: Some(UnderlineStyle {
-            color: Some(style.color),
-            thickness: px(1.0),
-            wavy: false,
-        }),
-        ..plain(len)
-    };
-    let mut runs = Vec::new();
+/// Split prepared (syntax-colored) runs at the marked boundaries and
+/// underline the composition slice — the IME preview keeps token colors.
+fn overlay_underline(runs: Vec<TextRun>, marked: Range<usize>) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + 2);
     let mut at = 0usize;
-    if marked.start > at {
-        runs.push(plain((marked.start - at).min(text.len())));
-        at = marked.start;
+    for run in runs {
+        let run_end = at + run.len;
+        let overlap_start = marked.start.max(at);
+        let overlap_end = marked.end.min(run_end);
+        if overlap_start < overlap_end {
+            if overlap_start > at {
+                let mut head = run.clone();
+                head.len = overlap_start - at;
+                out.push(head);
+            }
+            let mut middle = run.clone();
+            middle.len = overlap_end - overlap_start;
+            middle.underline = Some(UnderlineStyle {
+                thickness: px(1.0),
+                wavy: false,
+                color: None,
+            });
+            out.push(middle);
+            if run_end > overlap_end {
+                let mut tail = run;
+                tail.len = run_end - overlap_end;
+                out.push(tail);
+            }
+        } else {
+            out.push(run);
+        }
+        at = run_end;
     }
-    if marked.end > at {
-        runs.push(underlined((marked.end - at).min(text.len())));
-        at = marked.end;
-    }
-    if text.len() > at {
-        runs.push(plain(text.len() - at));
-    }
-    runs.into_iter().filter(|run| run.len > 0).collect()
+    out
 }
 
 impl CodeEditor {
@@ -1358,7 +1722,11 @@ impl CodeEditor {
 
     fn x_for_local(&self, line_ix: usize, local: usize) -> Option<Pixels> {
         self.shaped_line(line_ix)
-            .map(|line| line.x_for_index(local))
+            .map(|line| px(self.text_x() + f32::from(line.x_for_index(local))))
+    }
+
+    fn x_for_offset(&self, offset: usize) -> Option<Pixels> {
+        self.point_for_index(offset).map(|point| point.x)
     }
 
     fn marked_range_local(&self, line_ix: usize) -> Option<Range<usize>> {
@@ -1368,5 +1736,100 @@ impl CodeEditor {
         let start = marked.start.clamp(line_start, line_start + line_len);
         let end = marked.end.clamp(line_start, line_start + line_len);
         (start < end).then_some(start - line_start..end - line_start)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor_with(cx: &mut App, text: &str) -> Entity<CodeEditor> {
+        cx.new(|cx| {
+            let mut editor = CodeEditor::new(cx);
+            editor.load(text.to_string(), cx);
+            editor
+        })
+    }
+
+    #[gpui::test]
+    fn tab_indents_selected_lines_as_one_undo_step(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let editor = editor_with(cx, "a\nb\nc\n");
+            editor.update(cx, |editor, cx| {
+                editor.selected_range = 0..4; // "a\nb\n"
+                editor.indent(false, cx);
+            });
+            assert_eq!(editor.read(cx).text(), "    a\n    b\nc\n");
+            // Undo rewinds the whole indentation in one step — the snapshot
+            // count proves a single entry was pushed.
+            let pushed = editor.read(cx).undo_stack_len();
+            assert_eq!(pushed, 1, "one undo step for the multi-line indent");
+        })
+    }
+
+    #[gpui::test]
+    fn shift_tab_strips_at_most_one_unit(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let editor = editor_with(cx, "        deep\n");
+            editor.update(cx, |editor, cx| {
+                editor.selected_range = 0..0;
+                editor.indent(true, cx);
+            });
+            assert_eq!(editor.read(cx).text(), "    deep\n");
+            // At zero indent a further outdent changes nothing.
+            editor.update(cx, |editor, cx| {
+                for _ in 0..3 {
+                    editor.indent(true, cx);
+                }
+            });
+            // Either fully stripped or untouched — never negative/garbage.
+            let text = editor.read(cx).text();
+            assert!(text == "deep\n" || text == "    deep\n", "{text:?}");
+        })
+    }
+
+    #[gpui::test]
+    fn tab_leading_files_keep_tabs(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let editor = editor_with(cx, "\tcode\nplain\n");
+            editor.update(cx, |editor, cx| {
+                editor.selected_range = 0..0;
+                editor.indent(false, cx);
+            });
+            assert_eq!(editor.read(cx).text(), "\t\tcode\nplain\n");
+        })
+    }
+
+    #[gpui::test]
+    fn gutter_width_grows_with_the_line_count(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let small = editor_with(cx, "one\ntwo\n");
+            let narrow = small.read(cx).gutter_width();
+            let big = cx.new(|cx| {
+                let mut editor = CodeEditor::new(cx);
+                let text: String = (0..100_000).map(|ix| format!("line {ix}\n")).collect();
+                editor.load(text, cx);
+                editor
+            });
+            assert!(big.read(cx).gutter_width() > narrow);
+        })
+    }
+
+    #[test]
+    fn overlay_underline_splits_runs_at_the_marked_slice() {
+        let plain = |len: usize| TextRun {
+            len,
+            font: gpui::font("monospace"),
+            color: gpui::Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = vec![plain(2), plain(4)];
+        let overlay = overlay_underline(runs, 1..3);
+        let lens: Vec<usize> = overlay.iter().map(|run| run.len).collect();
+        assert_eq!(lens, vec![1, 1, 1, 3]);
+        assert!(overlay[1].underline.is_some());
+        assert!(overlay[0].underline.is_none());
     }
 }

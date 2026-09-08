@@ -2942,6 +2942,21 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &crate::files::SaveFile, _, cx| {
                 this.save_active_file(cx);
             }))
+            // Cmd+F opens the active file tab's in-file search.
+            .on_action(
+                cx.listener(|this, _: &crate::files::FindInFile, window, cx| {
+                    if let RightSurface::File(id) = this.resolved_right_active(cx)
+                        && let Some(space) = this.file_space_key(cx)
+                        && let Some(tab) =
+                            this.file_state.space(&space).and_then(|tabs| tabs.find(id))
+                    {
+                        let viewer = tab.viewer.clone();
+                        viewer.update(cx, |viewer, cx| {
+                            viewer.toggle_search(window, cx);
+                        });
+                    }
+                }),
+            )
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))
