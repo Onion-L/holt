@@ -392,6 +392,66 @@ struct SubagentTab {
     _events: Subscription,
 }
 
+/// Semantic kind for a holt notice — drives the icon + color tokens used
+/// to render the chip. Each kind pairs with a `(border/icon, text)` color
+/// pair so error reads as urgent, success as affirming, etc.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoltNoticeKind {
+    /// Routine status (e.g. "Copying…", deep-link echoes). Brand-accent
+    /// tint — informational but not alarming.
+    Plain,
+    /// Completed an action the user asked for (copy succeeded).
+    Success,
+    /// Heads-up that something is wrong or might fail (missing data,
+    /// deprecation). Amber tint — softer than error.
+    Warning,
+    /// Action failed. Red tint — the most attention-demanding kind.
+    Error,
+}
+
+/// One stacked top-right notification chip — replaces the inline sidebar
+/// notice strip. Each entry owns its own auto-dismiss timer; the timer is
+/// dropped (canceled) while hovered and re-armed on unhover. Manual
+/// dismissal is also exposed via the close button.
+struct HoltNotice {
+    /// Stable per-notice id — lets listeners and animations key on the
+    /// specific entry even when several stack at once.
+    id: u64,
+    kind: HoltNoticeKind,
+    message: SharedString,
+    /// Whether the pointer is currently over the chip. Drives the
+    /// hover-pause contract for the auto-dismiss timer.
+    hovered: bool,
+    /// 2s auto-dismiss. Dropped (and therefore canceled) when the chip
+    /// becomes hovered, re-armed on unhover, and on manual close.
+    timer: Option<Task<()>>,
+}
+
+/// Color pair used to paint a holt notice chip: `(border/icon, text)`.
+/// Kept local to the shell since the pairing is a chip-specific decision,
+/// not a generic theme contract.
+fn holt_notice_palette(kind: HoltNoticeKind, theme: &Theme) -> (gpui::Hsla, gpui::Hsla) {
+    match kind {
+        // Plain uses the brand accent — informational without alarm.
+        HoltNoticeKind::Plain => (theme.accent, theme.accent.opacity(0.85)),
+        HoltNoticeKind::Success => (theme.success, theme.success_muted),
+        HoltNoticeKind::Warning => (theme.warning, theme.warning_muted),
+        HoltNoticeKind::Error => (theme.danger, theme.danger_muted),
+    }
+}
+
+/// Icon glyph for each notice kind. Warning and error share the triangle
+/// so the *color* — not the shape — carries the severity distinction
+/// (matches the rest of the app, e.g. provider_error).
+fn holt_notice_icon(kind: HoltNoticeKind) -> &'static str {
+    match kind {
+        HoltNoticeKind::Plain => icons::INFO_CIRCLE,
+        HoltNoticeKind::Success => icons::CHECK,
+        HoltNoticeKind::Warning => icons::DANGER_TRIANGLE,
+        HoltNoticeKind::Error => icons::DANGER_TRIANGLE,
+    }
+}
+
 pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
@@ -489,8 +549,11 @@ pub struct Shell {
     sidebar_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
-    /// Inline sidebar error strip (mutation failures); click dismisses.
-    sidebar_notice: Option<SharedString>,
+    /// Stacked top-right notification chips — replaces the inline sidebar
+    /// notice strip. Each entry owns its own 2s auto-dismiss timer that's
+    /// paused on hover. Click the × to dismiss early.
+    holt_notices: Vec<HoltNotice>,
+    next_holt_notice_id: u64,
     mutate_task: Option<Task<()>>,
     /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
@@ -724,7 +787,8 @@ impl Shell {
             chat_status_hover: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
             space_boot_applied: false,
-            sidebar_notice: None,
+            holt_notices: Vec::new(),
+            next_holt_notice_id: 0,
             mutate_task: None,
             boot,
             settings,
@@ -769,7 +833,7 @@ impl Shell {
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         if let Some(notice) = state.update(cx, |state, _| state.take_deep_link_notice()) {
-            self.sidebar_notice = Some(notice.into());
+            self.push_holt_notice(HoltNoticeKind::Plain, notice.into(), cx);
         }
         // Capture knob: the add-space palette opens as soon as it is requested.
         if self.debug_dialog.as_deref() == Some("add-space") {
@@ -1190,9 +1254,13 @@ impl Shell {
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Holt Chat link copied".into());
+            self.push_holt_notice(HoltNoticeKind::Success, "Holt Chat link copied".into(), cx);
         } else {
-            self.sidebar_notice = Some("Chat link is not ready yet".into());
+            self.push_holt_notice(
+                HoltNoticeKind::Warning,
+                "Chat link is not ready yet".into(),
+                cx,
+            );
         }
         self.close_chat_menu(cx);
         cx.notify();
@@ -1215,6 +1283,83 @@ impl Shell {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// Push a top-right holt notice and arm its 2s auto-dismiss timer.
+    /// Multiple notices stack vertically and coexist; each owns its own
+    /// timer. Replaces the inline `sidebar_notice` strip.
+    fn push_holt_notice(
+        &mut self,
+        kind: HoltNoticeKind,
+        message: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.next_holt_notice_id;
+        self.next_holt_notice_id += 1;
+        self.holt_notices.push(HoltNotice {
+            id,
+            kind,
+            message,
+            hovered: false,
+            timer: None,
+        });
+        self.arm_holt_notice_timer(id, cx);
+        cx.notify();
+    }
+
+    /// (Re)arm the auto-dismiss timer for a single notice. The task
+    /// captures the notice id; on fire it removes that exact entry — other
+    /// stacked notices are left alone.
+    fn arm_holt_notice_timer(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(notice) = self.holt_notices.iter_mut().find(|n| n.id == id) {
+            notice.timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(2000))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if let Some(pos) = this.holt_notices.iter().position(|n| n.id == id) {
+                        this.holt_notices.remove(pos);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
+        }
+    }
+
+    /// Hover state flip for one chip — pauses its timer while hovered
+    /// and rearms it once the pointer leaves. `false` is delivered when
+    /// the element goes away (including via timer fire); the lookup is
+    /// guarded so a missing entry is a no-op.
+    fn set_holt_notice_hover(&mut self, id: u64, hovered: bool, cx: &mut Context<Self>) {
+        let needs_rearm = if let Some(notice) = self.holt_notices.iter_mut().find(|n| n.id == id) {
+            if notice.hovered == hovered {
+                return;
+            }
+            notice.hovered = hovered;
+            if hovered {
+                // Drop the task to cancel it (no epoch guard needed).
+                notice.timer = None;
+                false
+            } else {
+                true
+            }
+        } else {
+            return;
+        };
+        if needs_rearm {
+            self.arm_holt_notice_timer(id, cx);
+        }
+        cx.notify();
+    }
+
+    /// Manual dismiss for one chip (the × button). Removes the entry and
+    /// drops its timer; other notices are untouched.
+    fn dismiss_holt_notice(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(pos) = self.holt_notices.iter().position(|n| n.id == id) {
+            self.holt_notices.remove(pos);
+            cx.notify();
+        }
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
@@ -1392,14 +1537,14 @@ impl Shell {
     /// Fire a Mutate op; failures surface in the sidebar notice strip.
     fn mutate(&mut self, params: serde_json::Value, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.sidebar_notice = Some("Engine not connected".into());
+            self.push_holt_notice(HoltNoticeKind::Error, "Engine not connected".into(), cx);
             cx.notify();
             return;
         };
         self.mutate_task = Some(cx.spawn(async move |this, cx| {
             if let Err(err) = engine.client().call(methods::MUTATE, params).await {
                 this.update(cx, |shell, cx| {
-                    shell.sidebar_notice = Some(format!("{err}").into());
+                    shell.push_holt_notice(HoltNoticeKind::Error, format!("{err}").into(), cx);
                     cx.notify();
                 })
                 .ok();
@@ -1842,7 +1987,99 @@ impl Shell {
             overlays.push(popover::top_alert("provider-error-alert", viewport, card));
         }
 
+        if !self.holt_notices.is_empty() {
+            // Top-right stacked holt notices. Newest at the bottom of the
+            // visual stack (matches the top alert above) so a fresh notice
+            // does not push existing ones off-screen; a single fixed slot
+            // means the column only grows downward and only ever needs one
+            // anchor. Each chip animates in independently on its own id.
+            let mut stack = div()
+                .id("holt-notice-stack")
+                .w(viewport.width)
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(8.0))
+                .pt(px(14.0))
+                .pr(px(14.0));
+            for notice in &self.holt_notices {
+                let id = notice.id;
+                // Outer div satisfies `dialog_in`'s `Styled` bound; the
+                // chip itself is a `Stateful<Div>` because of the hover
+                // listener and is rendered as `AnyElement`.
+                stack = stack.child(motion::dialog_in(
+                    ("holt-notice", id),
+                    div().child(self.render_holt_notice(notice, &theme, cx)),
+                ));
+            }
+            overlays.push(
+                gpui::deferred(
+                    gpui::anchored()
+                        .position(gpui::point(px(0.0), px(0.0)))
+                        .child(stack),
+                )
+                .priority(3)
+                .into_any_element(),
+            );
+        }
+
         overlays
+    }
+
+    /// Render one stacked top-right notice chip. Color and icon are
+    /// driven by `notice.kind` so success / error / etc. read at a glance.
+    /// Returns `AnyElement` — the outer caller wraps it in
+    /// `motion::dialog_in` for the per-chip entrance animation.
+    fn render_holt_notice(
+        &self,
+        notice: &HoltNotice,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = notice.id;
+        let (accent, text) = holt_notice_palette(notice.kind, theme);
+        let glyph = holt_notice_icon(notice.kind);
+        div()
+            .id(("holt-notice-card", id))
+            .occlude()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .max_w(px(420.0))
+            .pl(px(14.0))
+            .pr(px(8.0))
+            .py(px(8.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(accent.opacity(0.35))
+            .bg(theme.surface_dialog)
+            .shadow_lg()
+            .text_size(crate::typography::ui_rems(12.5))
+            .text_color(text)
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.set_holt_notice_hover(id, *hovered, cx);
+            }))
+            .child(icon(glyph).size(px(15.0)).flex_none().text_color(accent))
+            .child(notice.message.clone())
+            .child(
+                div()
+                    .id(("holt-notice-dismiss", id))
+                    .flex_none()
+                    .cursor_pointer()
+                    .p(px(4.0))
+                    .rounded(px(6.0))
+                    .hover(|style| style.bg(crate::theme::ink(0.08)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dismiss_holt_notice(id, cx);
+                    }))
+                    .child(
+                        icon(icons::CLOSE)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn resize_handle<T>(

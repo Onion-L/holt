@@ -328,12 +328,19 @@ impl Shell {
             .find(|chat| chat.id == chat_id)
             .and_then(|chat| chat.cwd.clone())
             .filter(|cwd| !cwd.trim().is_empty());
-        self.sidebar_notice = Some(if let Some(cwd) = cwd {
+        let (kind, message) = if let Some(cwd) = cwd {
             cx.write_to_clipboard(ClipboardItem::new_string(cwd));
-            "Working directory copied".into()
+            (
+                super::HoltNoticeKind::Success,
+                "Working directory copied".into(),
+            )
         } else {
-            "This session has no working directory".into()
-        });
+            (
+                super::HoltNoticeKind::Warning,
+                "This session has no working directory".into(),
+            )
+        };
+        self.push_holt_notice(kind, message, cx);
         self.close_chat_menu(cx);
         cx.notify();
     }
@@ -348,12 +355,21 @@ impl Shell {
             .and_then(|chat| chat.title.clone())
             .unwrap_or_else(|| "Session".into());
         let Some(engine) = state.engine().cloned() else {
-            self.sidebar_notice = Some("Cannot copy session: engine is unavailable".into());
+            self.push_holt_notice(
+                super::HoltNoticeKind::Error,
+                "Cannot copy session: engine is unavailable".into(),
+                cx,
+            );
             cx.notify();
             return;
         };
         let chat_id = chat_id.to_owned();
-        self.sidebar_notice = Some("Copying session as Markdown...".into());
+        // The in-progress notice was deliberately dropped (was:
+        // "Copying session as Markdown..."): it flickered in/out faster
+        // than the user could parse it and crowded the corner with a
+        // transient chip that was always replaced by the final result
+        // anyway. The success-or-failure notice at the end of the task
+        // is the only signal the copy attempt needs.
         self.chat_copy_task = Some(cx.spawn(async move |this, cx| {
             let snapshot = read_conversation_markdown(engine.client(), &chat_id, &title);
             futures::pin_mut!(snapshot);
@@ -367,13 +383,20 @@ impl Shell {
                 futures::future::Either::Right(_) => Err("Reading session timed out".into()),
             };
             this.update(cx, |this, cx| {
-                this.sidebar_notice = Some(match result {
+                let (kind, message) = match result {
                     Ok(markdown) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(markdown));
-                        "Session copied as Markdown".into()
+                        (
+                            super::HoltNoticeKind::Success,
+                            "Session copied as Markdown".into(),
+                        )
                     }
-                    Err(error) => format!("Could not copy session: {error}").into(),
-                });
+                    Err(error) => (
+                        super::HoltNoticeKind::Error,
+                        format!("Could not copy session: {error}").into(),
+                    ),
+                };
+                this.push_holt_notice(kind, message, cx);
                 this.chat_copy_task = None;
                 cx.notify();
             })

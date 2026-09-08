@@ -790,28 +790,9 @@ impl Shell {
             .when_some(self.render_connection_pill(theme, cx), |el, pill| {
                 el.child(pill)
             })
-            // Inline mutation-failure notice.
-            .when_some(self.sidebar_notice.clone(), |el, notice| {
-                el.child(
-                    div()
-                        .id("sidebar-notice")
-                        .mx(px(Theme::SPACE_SM))
-                        .mb(px(Theme::SPACE_SM))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.danger)
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.danger)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sidebar_notice = None;
-                            cx.notify();
-                        }))
-                        .child(notice),
-                )
-            })
+            // Holt notices are rendered as top-right overlays in
+            // `render_overlays`, so the sidebar column itself stays a pure
+            // nav surface with no in-flow feedback strip.
             .child(
                 div()
                     .px(px(Theme::SPACE_SM))
