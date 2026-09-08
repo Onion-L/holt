@@ -1117,6 +1117,23 @@ struct SaveWorkspaceFileParams {
     text: String,
     /// The disk version token the draft was based on.
     version: String,
+    /// A confirmed overwrite's reviewed disk token (ticket 04): when set,
+    /// the save applies only if the disk STILL holds exactly that version.
+    #[serde(default)]
+    expect_disk_version: Option<String>,
+    #[serde(default)]
+    bom: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteFileAsParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    path: String,
+    text: String,
     #[serde(default)]
     bom: bool,
 }
@@ -1492,14 +1509,20 @@ impl RpcService for EngineService {
                     chat_id: params.chat_id,
                     space_id: params.space_id,
                 })?;
-                let (path, text, version, bom) =
-                    (params.path, params.text, params.version, params.bom);
+                let (path, text, version, expect_disk_version, bom) = (
+                    params.path,
+                    params.text,
+                    params.version,
+                    params.expect_disk_version,
+                    params.bom,
+                );
                 let save = tokio::task::spawn_blocking(move || {
                     crate::files::save_file(
                         std::path::Path::new(&root),
                         &path,
                         &text,
                         &version,
+                        expect_disk_version.as_deref(),
                         bom,
                     )
                 })
@@ -1507,6 +1530,40 @@ impl RpcService for EngineService {
                 .map_err(|error| RpcError::Failed(format!("save task failed: {error}")))?
                 .map_err(|fault| RpcError::Failed(fault.to_string()))?;
                 RpcReply::value(&save)
+            }
+            methods::WRITE_WORKSPACE_FILE_AS => {
+                let params: WriteFileAsParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let (path, text, bom) = (params.path, params.text, params.bom);
+                let saved = tokio::task::spawn_blocking(move || {
+                    crate::files::write_file_as(std::path::Path::new(&root), &path, &text, bom)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("save-as task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&saved)
+            }
+            methods::WATCH_WORKSPACE_ENTRIES => {
+                let params: WorkspacePathParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                params.check_selector()?;
+                let root = self.search_files_root(&params.as_search_root())?;
+                let canonical = std::path::Path::new(&root)
+                    .canonicalize()
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let stream =
+                    crate::workspace_watch::subscribe(canonical).map_err(RpcError::Failed)?;
+                Ok(RpcReply::Stream(Box::pin(stream)))
             }
 
             // Git capability (ADR-0001): branch listing and safe switching

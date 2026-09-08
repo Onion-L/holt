@@ -61,6 +61,26 @@ impl Shell {
             } => {
                 self.open_file(path.clone(), resolved.clone(), *pin, cx);
             }
+            FileTreeEvent::DiskChanged { paths } => {
+                // Live refresh (ticket 04): clean viewers reload from disk;
+                // dirty ones enter the conflict state — the notification
+                // supplements, never replaces, the save-time check.
+                let Some(space) = self.file_space_key(cx) else {
+                    return;
+                };
+                let viewers: Vec<Entity<FileViewer>> = self
+                    .file_state
+                    .space(&space)
+                    .map(|tabs| tabs.tabs.iter().map(|tab| tab.viewer.clone()).collect())
+                    .unwrap_or_default();
+                for viewer in viewers {
+                    let affected = viewer.read(cx).affected_by(paths);
+                    if !affected {
+                        continue;
+                    }
+                    viewer.update(cx, |viewer, cx| viewer.on_disk_changed(cx));
+                }
+            }
         }
     }
 
@@ -160,6 +180,19 @@ impl Shell {
                             }
                         }
                         FileViewerEvent::DirtyChanged { .. } => {}
+                        FileViewerEvent::Moved { path } => {
+                            let path = path.clone();
+                            if let Some(tab) = this
+                                .file_state
+                                .get(&space)
+                                .tabs
+                                .iter_mut()
+                                .find(|tab| tab.id == id)
+                            {
+                                tab.path = path;
+                                tab.resolved = None;
+                            }
+                        }
                     }
                     cx.notify();
                 },

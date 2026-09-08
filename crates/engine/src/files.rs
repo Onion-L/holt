@@ -359,6 +359,7 @@ pub(crate) fn save_file(
     requested: &str,
     text: &str,
     expected_version: &str,
+    expect_disk_version: Option<&str>,
     bom: bool,
 ) -> Result<holt_proto::WorkspaceFileSave, FilesFault> {
     let canonical = resolve_inside_root(root, requested)?;
@@ -373,7 +374,11 @@ pub(crate) fn save_file(
     if !canonical.exists() {
         return Err(FilesFault::NotFound(canonical.display().to_string()));
     }
-    if version_token(&metadata) != expected_version {
+    // The version the save must still match: the read baseline, or — for an
+    // explicitly confirmed overwrite — the disk version the user reviewed.
+    // Any intervening change misses the token and re-conflicts.
+    let baseline = expect_disk_version.unwrap_or(expected_version);
+    if version_token(&metadata) != baseline {
         return Ok(holt_proto::WorkspaceFileSave {
             status: holt_proto::WorkspaceSaveStatus::VersionConflict,
             version: None,
@@ -410,7 +415,7 @@ pub(crate) fn save_file(
     // check and the write still fails closed.
     let recheck = std::fs::symlink_metadata(&canonical);
     let conflict = match &recheck {
-        Ok(meta) => version_token(meta) != expected_version,
+        Ok(meta) => version_token(meta) != baseline,
         Err(_) => true,
     };
     if conflict {
@@ -421,6 +426,76 @@ pub(crate) fn save_file(
             version: None,
             disk_version,
         });
+    }
+    std::fs::rename(&temp, &canonical).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        FilesFault::Io(canonical.display().to_string(), error.to_string())
+    })?;
+    let saved = std::fs::symlink_metadata(&canonical)
+        .map_err(|error| FilesFault::Io(canonical.display().to_string(), error.to_string()))?;
+    Ok(holt_proto::WorkspaceFileSave {
+        status: holt_proto::WorkspaceSaveStatus::Saved,
+        version: Some(version_token(&saved)),
+        disk_version: None,
+    })
+}
+
+/// Save As: write `text` to a NEW path inside the root. The destination
+/// must not exist (no overwrite as a side effect), its parent must, and
+/// the original file is never touched.
+pub(crate) fn write_file_as(
+    root: &Path,
+    requested: &str,
+    text: &str,
+    bom: bool,
+) -> Result<holt_proto::WorkspaceFileSave, FilesFault> {
+    let canonical = resolve_inside_root(root, requested)?;
+    // The destination's parent must exist and be a directory — new-file
+    // destinations validate through their existing parents.
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| FilesFault::NotFound(canonical.display().to_string()))?;
+    let parent_metadata = std::fs::metadata(parent).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => FilesFault::NotFound(parent.display().to_string()),
+        _ => FilesFault::Io(parent.display().to_string(), error.to_string()),
+    })?;
+    if !parent_metadata.is_dir() {
+        return Err(FilesFault::NotDirectory(parent.display().to_string()));
+    }
+    if canonical.exists() {
+        return Err(FilesFault::Io(
+            canonical.display().to_string(),
+            "the destination already exists".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(text.len() + 3);
+    if bom {
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    bytes.extend_from_slice(text.as_bytes());
+    static SAVE_TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = SAVE_TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = canonical
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let temp = canonical.with_file_name(format!(".{file_name}.holt-as-{unique}"));
+    let write = (|| -> std::io::Result<()> {
+        // create_new refuses to clobber a race-created destination.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&temp);
+        return Err(FilesFault::Io(
+            canonical.display().to_string(),
+            error.to_string(),
+        ));
     }
     std::fs::rename(&temp, &canonical).map_err(|error| {
         let _ = std::fs::remove_file(&temp);

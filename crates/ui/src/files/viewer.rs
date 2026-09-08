@@ -43,6 +43,14 @@ impl FileScope {
     }
 }
 
+/// Which load a reply answers: the first read builds the editor; a reload
+/// swaps the buffer in place (cursor and focus survive the refresh).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadMode {
+    First,
+    Reload,
+}
+
 /// Events up to the shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileViewerEvent {
@@ -54,8 +62,12 @@ pub enum FileViewerEvent {
     DirtyChanged { dirty: bool },
     /// The user edited a preview tab — it must pin immediately (decision 12).
     PinRequested,
+    /// Save As landed: the tab now shows `path` (the original file keeps
+    /// its disk state).
+    Moved { path: String },
 }
 
+#[derive(Clone)]
 enum ViewerState {
     Loading,
     Editable { editor: Entity<CodeEditor> },
@@ -101,6 +113,18 @@ pub struct FileViewer {
     search_input: Option<Entity<crate::composer::ComposerInput>>,
     search_matches: Vec<Range<usize>>,
     search_active: Option<usize>,
+    /// The conflict state (ticket 04): set when the disk under a DIRTY
+    /// buffer changed. `disk_snapshot` is the version the user reviews —
+    /// a confirmed overwrite targets exactly it.
+    conflicted: bool,
+    disk_snapshot: Option<holt_proto::WorkspaceFileRead>,
+    /// The compare overlay (draft vs disk) while the conflict is up.
+    compare_open: bool,
+    /// The Save As destination input (the banner's Save As… opens it).
+    save_as_input: Option<Entity<crate::composer::ComposerInput>>,
+    /// The reviewed disk token a confirmed overwrite targets (consumed by
+    /// the next `save`).
+    overwrite_baseline: Option<String>,
     /// Bumped per query/content change; a result for an older pair is
     /// dropped, never applied.
     search_generation: u64,
@@ -138,11 +162,200 @@ impl FileViewer {
             search_input: None,
             search_matches: Vec::new(),
             search_active: None,
+            conflicted: false,
+            disk_snapshot: None,
+            compare_open: false,
+            save_as_input: None,
+            overwrite_baseline: None,
             search_generation: 0,
             search_task: None,
         };
         viewer.load(cx);
         viewer
+    }
+
+    /// Does a disk-change frame touch this viewer's file (its own path,
+    /// resolved target, or an ancestor)?
+    pub fn affected_by(&self, paths: &[String]) -> bool {
+        let own = self.resolved.clone().unwrap_or_else(|| self.path.clone());
+        paths.iter().any(|changed| {
+            changed == &own
+                || changed == &self.path
+                || own.starts_with(&format!("{changed}/"))
+                || self.path.starts_with(&format!("{changed}/"))
+        })
+    }
+
+    /// A watched disk change under this file: clean buffers reload from
+    /// disk; dirty buffers enter the conflict state (the draft stays, no
+    /// automatic merge or overwrite).
+    pub fn on_disk_changed(&mut self, cx: &mut Context<Self>) {
+        if self.pending_save.is_some() {
+            // The save's own version check decides; a mid-save reload would
+            // race the acknowledgement.
+            return;
+        }
+        if self.is_dirty() {
+            // Every frame refreshes the reviewed snapshot — a repeated
+            // change invalidates the previous decision.
+            self.conflicted = true;
+            self.refresh_disk_snapshot(cx);
+            cx.notify();
+        } else {
+            self.reload_from_disk(cx);
+        }
+    }
+
+    /// Re-read the file from disk (clean viewers only — external deletion
+    /// or an unreadable target leaves the state alone for the user to see).
+    fn reload_from_disk(&mut self, cx: &mut Context<Self>) {
+        if self.is_dirty() {
+            return;
+        }
+        self.load_with(cx, LoadMode::Reload);
+    }
+
+    /// Fetch the current disk contents as the reviewed conflict baseline.
+    fn refresh_disk_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let params = self.scope.params(&self.path);
+        self.generation += 1;
+        let generation = self.generation;
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let reply = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                holt_rpc::methods::READ_WORKSPACE_FILE,
+                params,
+                std::time::Duration::from_secs(20),
+            )
+            .await;
+            let _ = this.update(cx, |viewer, cx| {
+                if viewer.generation != generation {
+                    return;
+                }
+                if let Ok(value) = reply
+                    && let Ok(read) = serde_json::from_value::<holt_proto::WorkspaceFileRead>(value)
+                {
+                    viewer.disk_snapshot = Some(read);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Reload from disk, discarding the draft — explicit, with the loss
+    /// stated on the button.
+    pub fn conflict_reload(&mut self, cx: &mut Context<Self>) {
+        if !self.conflicted {
+            return;
+        }
+        self.conflicted = false;
+        self.compare_open = false;
+        self.disk_snapshot = None;
+        self.save_error = None;
+        self.load(cx);
+    }
+
+    /// Toggle the draft-vs-disk compare overlay.
+    pub fn conflict_toggle_compare(&mut self, cx: &mut Context<Self>) {
+        self.compare_open = !self.compare_open;
+        if self.compare_open && self.disk_snapshot.is_none() {
+            self.refresh_disk_snapshot(cx);
+        }
+        cx.notify();
+    }
+
+    /// Save As: write the draft to a NEW path in the same root. On success
+    /// the tab becomes the new file (the original keeps its disk state).
+    pub fn conflict_save_as(&mut self, destination: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(buffer) = self.buffer_text.clone() else {
+            return;
+        };
+        let bom = self.facts.as_ref().map(|facts| facts.bom).unwrap_or(false);
+        let mut params = serde_json::Map::new();
+        if let Some(chat_id) = &self.scope.chat_id {
+            params.insert("chatId".into(), serde_json::json!(chat_id));
+        } else if let Some(space_id) = &self.scope.space_id {
+            params.insert("spaceId".into(), serde_json::json!(space_id));
+        }
+        params.insert("path".into(), serde_json::json!(destination.clone()));
+        params.insert("text".into(), serde_json::json!(buffer));
+        params.insert("bom".into(), serde_json::json!(bom));
+        let params = serde_json::Value::Object(params);
+        self.generation += 1;
+        let generation = self.generation;
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let reply = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                holt_rpc::methods::WRITE_WORKSPACE_FILE_AS,
+                params,
+                std::time::Duration::from_secs(20),
+            )
+            .await;
+            let _ = this.update(cx, |viewer, cx| {
+                if viewer.generation != generation {
+                    return;
+                }
+                let saved: Result<holt_proto::WorkspaceFileSave, String> = match reply {
+                    Ok(value) => serde_json::from_value(value).map_err(|error| error.to_string()),
+                    Err(message) => Err(message),
+                };
+                match saved {
+                    Ok(saved) if saved.status == holt_proto::WorkspaceSaveStatus::Saved => {
+                        // The draft now lives at the destination.
+                        viewer.path = destination.clone();
+                        viewer.resolved = None;
+                        viewer.save_as_input = None;
+                        let moved = destination.clone();
+                        cx.emit(FileViewerEvent::Moved { path: moved });
+                        viewer.saved_text = viewer.buffer_text.clone();
+                        viewer.conflicted = false;
+                        viewer.compare_open = false;
+                        viewer.disk_snapshot = None;
+                        viewer.save_error = None;
+                        if let (Some(facts), Some(version)) = (viewer.facts.as_mut(), saved.version)
+                        {
+                            facts.version = version;
+                        }
+                        cx.emit(FileViewerEvent::DirtyChanged { dirty: false });
+                    }
+                    Ok(_) => {
+                        viewer.save_error = Some("The destination already exists.".into());
+                    }
+                    Err(message) => {
+                        viewer.save_error = Some(message.into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Confirmed overwrite: applies to the disk version the user reviewed
+    /// (the snapshot). Another intervening change re-conflicts engine-side.
+    pub fn conflict_overwrite(&mut self, cx: &mut Context<Self>) -> Option<Task<bool>> {
+        let reviewed = self
+            .disk_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.version.clone())?;
+        // Route through save() with the reviewed token as the baseline.
+        self.overwrite_baseline = Some(reviewed);
+        let task = self.save(cx);
+        self.overwrite_baseline = None;
+        if task.is_some() {
+            // A successful overwrite clears the conflict on its own when the
+            // save settles (the DirtyChanged handler checks clean+conflict).
+        }
+        task
     }
 
     /// Open (or close) the in-file search bar, focusing its input.
@@ -278,6 +491,10 @@ impl FileViewer {
     /// (Re)read the file from the engine. The request is bound to this
     /// viewer's scope and generation; a stale reply is dropped, never shown.
     fn load(&mut self, cx: &mut Context<Self>) {
+        self.load_with(cx, LoadMode::First)
+    }
+
+    fn load_with(&mut self, cx: &mut Context<Self>, mode: LoadMode) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.view = ViewerState::Failed {
                 message: "The engine is not available.".into(),
@@ -309,8 +526,17 @@ impl FileViewer {
                     Ok(read) => {
                         let resolved = read.path.clone();
                         viewer.resolved = Some(read.path.clone());
-                        viewer.view = match read.text.clone() {
-                            Some(text) => {
+                        viewer.view = match (read.text.clone(), mode) {
+                            (Some(text), LoadMode::Reload)
+                                if matches!(viewer.view, ViewerState::Editable { .. }) =>
+                            {
+                                let existing = viewer.editor().expect("checked");
+                                existing.update(cx, |editor, cx| {
+                                    editor.reload(text.clone(), cx);
+                                });
+                                viewer.view.clone()
+                            }
+                            (Some(text), _) => {
                                 let buffer = text.clone();
                                 let path = viewer.path.clone();
                                 let editor = cx.new(|cx| {
@@ -328,7 +554,7 @@ impl FileViewer {
                                 .detach();
                                 ViewerState::Editable { editor }
                             }
-                            None => ViewerState::Unsupported {
+                            (None, _) => ViewerState::Unsupported {
                                 reason: read
                                     .unsupported_reason
                                     .clone()
@@ -421,6 +647,9 @@ impl FileViewer {
         params.insert("path".into(), serde_json::json!(self.path));
         params.insert("text".into(), serde_json::json!(submitted));
         params.insert("version".into(), serde_json::json!(facts.version));
+        if let Some(baseline) = self.overwrite_baseline.clone() {
+            params.insert("expectDiskVersion".into(), serde_json::json!(baseline));
+        }
         params.insert("bom".into(), serde_json::json!(facts.bom));
         let params = serde_json::Value::Object(params);
         let mut settled = self
@@ -473,14 +702,11 @@ impl FileViewer {
                         // Keep the draft AND the read baseline: adopting the
                         // conflict's disk token would let a second plain
                         // save overwrite a version the buffer never saw.
-                        // Staying conflicting is the honest interim state —
-                        // ticket 04 adds reload / Save As / confirmed
-                        // overwrite.
+                        // The conflict banner owns the resolution from here.
                         let _ = conflict;
-                        viewer.save_error = Some(
-                            "The file changed on disk since it was read. Your changes were kept."
-                                .into(),
-                        );
+                        viewer.conflicted = true;
+                        viewer.save_error = None;
+                        viewer.refresh_disk_snapshot(cx);
                         false
                     }
                     Err(message) => {
@@ -492,6 +718,13 @@ impl FileViewer {
                     let _ = pending.done.send(succeeded);
                 }
                 let dirty = viewer.is_dirty();
+                if !dirty {
+                    // A settled save that leaves the buffer clean ends any
+                    // conflict state (the overwrite landed).
+                    viewer.conflicted = false;
+                    viewer.compare_open = false;
+                    viewer.disk_snapshot = None;
+                }
                 cx.emit(FileViewerEvent::DirtyChanged { dirty });
                 cx.notify();
             });
@@ -531,6 +764,168 @@ impl FileViewer {
                         .child(message),
                 )
         });
+        // The conflict banner (ticket 04): the four resolutions. Reload
+        // states its loss; Overwrite targets the reviewed disk version.
+        let conflict_banner = self.conflicted.then(|| {
+            let theme = theme.clone();
+            let save_as_input = self.save_as_input.clone();
+            let mut bar = div()
+                .id("file-conflict-banner")
+                .flex_none()
+                .px(px(8.0))
+                .py(px(6.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.warning.opacity(0.08))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    icon(icons::DANGER_TRIANGLE)
+                        .size(px(12.0))
+                        .text_color(theme.warning_muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(crate::typography::ui_rems(11.5))
+                        .text_color(theme.warning_muted)
+                        .child("This file changed on disk. Your changes are kept."),
+                );
+            if let Some(input) = save_as_input {
+                bar = bar
+                    .child(
+                        div()
+                            .id("conflict-save-as-input")
+                            .w(px(240.0))
+                            .h(px(22.0))
+                            .child(input),
+                    )
+                    .child(conflict_action(
+                        &theme,
+                        "conflict-save-as-go",
+                        "Save",
+                        cx.listener(|this, _, _, cx| {
+                            let destination = this
+                                .save_as_input
+                                .as_ref()
+                                .map(|input| input.read(cx).text().to_string())
+                                .unwrap_or_default();
+                            if !destination.trim().is_empty() {
+                                this.save_as_input = None;
+                                this.conflict_save_as(destination, cx);
+                            }
+                        }),
+                    ));
+            }
+            bar = bar
+                .child(conflict_action(
+                    &theme,
+                    "conflict-compare",
+                    if self.compare_open {
+                        "Hide changes"
+                    } else {
+                        "Compare"
+                    },
+                    cx.listener(|this, _, _, cx| this.conflict_toggle_compare(cx)),
+                ))
+                .child(conflict_action(
+                    &theme,
+                    "conflict-save-as",
+                    "Save As…",
+                    cx.listener(|this, _, window, cx| {
+                        // Seed a real input with a sibling destination — the
+                        // engine resolves relatives against the root and
+                        // refuses existing names.
+                        let sibling =
+                            format!("{}/{}-copy", this.parent_dir(), this.path_basename());
+                        let input = cx.new(|cx| {
+                            crate::composer::ComposerInput::with_context(
+                                "Destination path",
+                                "PaletteSearch",
+                                cx,
+                            )
+                        });
+                        input.update(cx, |input, cx| input.set_text(sibling, cx));
+                        let handle = gpui::Focusable::focus_handle(input.read(cx), cx).clone();
+                        window.focus(&handle, cx);
+                        this.save_as_input = Some(input);
+                        cx.notify();
+                    }),
+                ))
+                .child(conflict_action(
+                    &theme,
+                    "conflict-reload",
+                    "Reload (discard draft)",
+                    cx.listener(|this, _, _, cx| {
+                        this.conflict_reload(cx);
+                    }),
+                ))
+                .child(conflict_action(
+                    &theme,
+                    "conflict-overwrite",
+                    "Overwrite disk",
+                    cx.listener(|this, _, _, cx| {
+                        this.conflict_overwrite(cx);
+                    }),
+                ));
+            bar
+        });
+
+        // The compare overlay: the draft against the reviewed disk version.
+        let compare_overlay = (self.conflicted && self.compare_open).then(|| {
+            let rows = self.compare_rows();
+            let count = rows.len();
+            div()
+                .id("file-compare")
+                .flex_none()
+                .max_h(px(240.0))
+                .overflow_y_scroll()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.surface)
+                .font_family(theme.font_mono.clone())
+                .text_size(px(11.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .children(rows.into_iter().take(400).map(|row| {
+                            let (marker, text) = row;
+                            let color = match marker {
+                                '-' => theme.danger_muted,
+                                '+' => theme.success_muted,
+                                _ => theme.text_muted.opacity(0.7),
+                            };
+                            div()
+                                .flex()
+                                .px(px(8.0))
+                                .h(px(16.0))
+                                .items_center()
+                                .gap(px(6.0))
+                                .when(marker == '-', |el| el.bg(theme.danger.opacity(0.10)))
+                                .when(marker == '+', |el| el.bg(theme.success.opacity(0.10)))
+                                .child(
+                                    div()
+                                        .w(px(10.0))
+                                        .text_color(color)
+                                        .child(marker.to_string()),
+                                )
+                                .child(div().truncate().text_color(color).child(text))
+                        }))
+                        .when(count > 400, |el| {
+                            el.child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(2.0))
+                                    .text_color(theme.text_muted)
+                                    .child(format!("… {} more changed lines", count - 400)),
+                            )
+                        }),
+                )
+        });
+
         // The in-file search bar (ticket 03): query, live count, prev/next.
         let search_bar = self.search_open.then(|| {
             let count = self.search_matches.len();
@@ -626,10 +1021,45 @@ impl FileViewer {
             .size_full()
             .flex()
             .flex_col()
+            .children(conflict_banner)
+            .children(compare_overlay)
             .children(search_bar)
             .children(error_banner)
             .child(content)
             .into_any_element()
+    }
+
+    fn parent_dir(&self) -> String {
+        std::path::Path::new(&self.path)
+            .parent()
+            .map(|parent| parent.display().to_string())
+            .unwrap_or_default()
+    }
+
+    fn path_basename(&self) -> String {
+        self.path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("file")
+            .to_string()
+    }
+
+    /// Draft-vs-disk compare rows: `- old`, `+ new`, `· unchanged context`
+    /// around each changed region (common prefix/suffix trimming).
+    fn compare_rows(&self) -> Vec<(char, SharedString)> {
+        let Some(snapshot) = &self.disk_snapshot else {
+            return Vec::new();
+        };
+        let draft: Vec<&str> = self
+            .buffer_text
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .collect();
+        let disk: Vec<&str> = snapshot.text.as_deref().unwrap_or("").lines().collect();
+        // Colors resolve at paint time; the rows carry only markers here.
+        simple_diff_rows(&disk, &draft)
     }
 
     fn search_query_is_empty(&self, cx: &App) -> bool {
@@ -680,6 +1110,66 @@ fn find_matches(buffer: &str, query: &str) -> Vec<Range<usize>> {
         }
     }
     matches
+}
+
+/// A conflict action chip.
+fn conflict_action(
+    theme: &Theme,
+    id: &'static str,
+    label: &str,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(20.0))
+        .px(px(6.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(theme.border)
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .hover(|state| state.bg(crate::theme::wash(0.06)))
+        .on_click(handler)
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text)
+                .child(label),
+        )
+}
+
+/// Minimal honest compare: common prefix/suffix lines are context; the
+/// middle block lists every disk line as removed and every draft line as
+/// added. No merge, no fine-grained hunking — a review, not an edit.
+fn simple_diff_rows(disk: &[&str], draft: &[&str]) -> Vec<(char, SharedString)> {
+    let mut prefix = 0usize;
+    while prefix < disk.len() && prefix < draft.len() && disk[prefix] == draft[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < disk.len().saturating_sub(prefix)
+        && suffix < draft.len().saturating_sub(prefix)
+        && disk[disk.len() - 1 - suffix] == draft[draft.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let mut rows = Vec::new();
+    for line in disk.iter().take(prefix) {
+        rows.push(('·', (*line).into()));
+    }
+    for line in &disk[prefix..disk.len() - suffix] {
+        rows.push(('-', (*line).into()));
+    }
+    for line in &draft[prefix..draft.len() - suffix] {
+        rows.push(('+', (*line).into()));
+    }
+    for line in disk.iter().skip(disk.len() - suffix) {
+        rows.push(('·', (*line).into()));
+    }
+    rows
 }
 
 /// A small square icon button for the search bar's prev/next/close cluster.
@@ -783,6 +1273,29 @@ fn unsupported_state(
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[test]
+    fn diff_rows_mark_the_changed_block() {
+        let disk = vec!["one", "two", "three", "four"];
+        let draft = vec!["one", "TWO", "three", "four", "five"];
+        let rows = simple_diff_rows(&disk, &draft);
+        let markers: String = rows.iter().map(|(m, _)| *m).collect();
+        assert_eq!(markers, "·---++++");
+        assert!(rows.iter().any(|(_, t)| t.as_ref() == "TWO"));
+        assert!(rows.iter().any(|(_, t)| t.as_ref() == "five"));
+    }
+
+    #[test]
+    fn identical_documents_have_no_changed_block() {
+        let same = vec!["a", "b"];
+        let rows = simple_diff_rows(&same, &same);
+        assert!(rows.iter().all(|(m, _)| *m == '·'));
+    }
 }
 
 #[cfg(test)]

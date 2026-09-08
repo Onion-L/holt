@@ -12,7 +12,7 @@ use gpui::prelude::*;
 
 use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    ListState, SharedString, WeakEntity, div, list, px,
+    ListState, SharedString, Task, WeakEntity, div, list, px,
 };
 use holt_proto::{WorkspaceEntryKind, WorkspaceListing};
 
@@ -69,6 +69,10 @@ struct ActiveRoot {
 
 /// Events up to the shell: the tree never owns tabs, it just asks for opens.
 pub enum FileTreeEvent {
+    /// Coalesced disk changes under the active root (ticket 04) — the shell
+    /// fans these out to the space's open viewers (clean ones reload; dirty
+    /// ones enter the conflict state).
+    DiskChanged { paths: Vec<String> },
     /// Open a file — `pin` marks the double-click path; single clicks ask
     /// for a replaceable preview. `resolved` carries the engine-resolved
     /// path for inside-root symlink aliases when the tree already knows it.
@@ -109,6 +113,9 @@ pub struct FileTreePanel {
     active: Option<ActiveRoot>,
     /// The visible rows for the active space (drives the ListState count).
     rows: Vec<TreeRow>,
+    /// The live watch task for the active root (replaced on switch — the
+    /// old stream drops, ending the engine-side watch with it).
+    watch_task: Option<Task<()>>,
 }
 
 impl Focusable for FileTreePanel {
@@ -221,6 +228,7 @@ impl FileTreePanel {
             spaces: HashMap::new(),
             active: None,
             rows: Vec::new(),
+            watch_task: None,
         };
         panel.sync_root(cx);
         // Re-derive the root whenever the selection moves — switching Chats
@@ -288,7 +296,118 @@ impl FileTreePanel {
             self.list.reset(0);
             self.rebuild_rows();
             self.ensure_dir_loaded("", cx);
+            self.start_watch(cx);
         }
+    }
+
+    /// One watch per active root. Frames re-list the affected directories
+    /// (keeping expansion and selection) and tell the shell what moved so
+    /// open viewers can react. A root switch drops the subscription — the
+    /// engine-side watch ends with it.
+    fn start_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        let mut params = serde_json::Map::new();
+        if let Some(chat_id) = &active.chat_id {
+            params.insert("chatId".into(), serde_json::json!(chat_id));
+        } else if let Some(space_id) = &active.space_id {
+            params.insert("spaceId".into(), serde_json::json!(space_id));
+        }
+        let params = serde_json::Value::Object(params);
+        let generation = active.generation;
+        self.watch_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(mut frames) = engine
+                .client()
+                .subscribe(holt_rpc::methods::WATCH_WORKSPACE_ENTRIES, params)
+                .await
+            else {
+                return;
+            };
+            while let Some(frame) = frames.recv().await {
+                let Ok(frame) = serde_json::from_value::<holt_proto::WorkspaceWatchFrame>(frame)
+                else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    let current = this.active.clone();
+                    if current.is_none_or(|root| root.generation != generation) {
+                        return; // stale after a switch
+                    }
+                    let reload = this.invalidate_changed_dirs(&frame.paths);
+                    this.rebuild_rows();
+                    for dir in reload {
+                        this.ensure_dir_loaded(&dir, cx);
+                    }
+                    cx.emit(FileTreeEvent::DiskChanged {
+                        paths: frame.paths.clone(),
+                    });
+                    cx.notify();
+                });
+            }
+        }));
+    }
+
+    /// Drop the cached listings for the directories that changed (and for
+    /// changed directories themselves when expanded), then reload whichever
+    /// are still shown so the tree reflects current disk state. The ROOT's
+    /// listing is keyed `""` — the canonical root path maps onto it.
+    fn invalidate_changed_dirs(&mut self, paths: &[String]) -> Vec<String> {
+        let Some(active) = self.active.clone() else {
+            return Vec::new();
+        };
+        let root_canonical = self
+            .spaces
+            .get(&active.space_key)
+            .and_then(|space| match space.dirs.get("") {
+                Some(DirState::Loaded(listing)) => Some(listing.path.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut stale: Vec<String> = Vec::new();
+        {
+            let Some(space) = self.spaces.get_mut(&active.space_key) else {
+                return Vec::new();
+            };
+            for path in paths {
+                let changed = std::path::Path::new(path);
+                let parent = changed
+                    .parent()
+                    .map(|parent| parent.display().to_string())
+                    .unwrap_or_default();
+                let parent_key = if parent == root_canonical {
+                    String::new()
+                } else {
+                    parent
+                };
+                stale.push(parent_key);
+                // A changed directory's own listing is stale when expanded.
+                stale.push(path.clone());
+            }
+            for dir in &stale {
+                if space.dirs.remove(dir).is_some() {
+                    space.dir_requests.remove(dir);
+                }
+            }
+        }
+        // Reload: the root always (if it was loaded), expanded dirs, and any
+        // stale dir whose parent is still expanded (visible rows).
+        let mut reload: Vec<String> = Vec::new();
+        for dir in &stale {
+            let shown = dir.is_empty() || {
+                self.spaces
+                    .get(&active.space_key)
+                    .map(|space| space.expanded.contains(dir))
+                    .unwrap_or(false)
+            };
+            if shown {
+                reload.push(dir.clone());
+            }
+        }
+        reload
     }
 
     /// The `ListWorkspaceEntries` params for the current root.

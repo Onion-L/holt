@@ -556,6 +556,26 @@ impl CodeEditor {
 
     // ---- undo history ----
 
+    /// Swap the whole buffer on a disk reload: selection clamps to the new
+    /// length, scroll survives, undo resets (the document changed under the
+    /// user — there is nothing coherent to rewind into).
+    pub fn reload(&mut self, text: String, cx: &mut Context<Self>) {
+        let caret = self.cursor_offset().min(text.len());
+        self.content = text;
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_edit = None;
+        let (top, left) = self.scroll_offsets();
+        self.sync_lines();
+        self.scroll_top = top;
+        self.scroll_left = left;
+        self.schedule_highlight(cx);
+        cx.notify();
+    }
+
     /// Test accessor: how many undo steps are recorded.
     #[cfg(test)]
     pub(crate) fn undo_stack_len(&self) -> usize {

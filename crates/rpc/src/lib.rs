@@ -166,6 +166,16 @@ pub mod methods {
     /// outside-root and `.git` targets fail. The write is atomic
     /// (same-directory temp + rename) and preserves existing permissions.
     pub const SAVE_WORKSPACE_FILE: &str = "SaveWorkspaceFile";
+    /// Save As for the File sidebar: params `{chatId|spaceId, path, text,
+    /// bom}` create a NEW file at `path` (inside the root, existing parent,
+    /// never overwriting an existing name, never touching the original
+    /// file); replies `WorkspaceFileSave` with the new version token.
+    pub const WRITE_WORKSPACE_FILE_AS: &str = "WriteWorkspaceFileAs";
+    /// Coalesced filesystem-change stream under a chat/space root (File
+    /// sidebar live refresh). Params `{chatId|spaceId}`; each reply is a
+    /// `WorkspaceWatchFrame` of changed absolute paths after a ~200ms quiet
+    /// window. The stream ends when the UI drops it.
+    pub const WATCH_WORKSPACE_ENTRIES: &str = "WatchWorkspaceEntries";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

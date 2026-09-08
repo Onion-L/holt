@@ -478,6 +478,15 @@ pub enum WorkspaceLineEndings {
     None,
 }
 
+/// One coalesced `WatchWorkspaceEntries` frame: the absolute paths that
+/// changed under the watched root since the last frame (creations,
+/// modifications, renames, deletions — the UI decides what to re-read).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceWatchFrame {
+    pub paths: Vec<String>,
+}
+
 /// The `SaveWorkspaceFile` reply. A version conflict is a REPLY, not an RPC
 /// error: the UI keeps the draft and offers the resolution workflow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

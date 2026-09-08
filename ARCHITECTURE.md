@@ -92,8 +92,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `SaveWorkspaceFile` (`{chatId|spaceId, path, text, version, bom}` —
   version-checked atomic write preserving permissions; a moved disk version
   is a `versionConflict` REPLY, never an overwrite, and a missing file is
-  never silently recreated) serve the far-right file tree and its contents
-  tabs. Root containment, `.git`
+  never silently recreated), `WriteWorkspaceFileAs` (create-new destination
+  inside the root; collisions refuse, originals stay untouched), and
+  `WatchWorkspaceEntries` (coalesced ~200ms-quiet frames of changed paths
+  under the root — live tree refresh, clean-editor reload, and dirty-editor
+  conflict states; a confirmed overwrite rides `SaveWorkspaceFile`'s
+  `expectDiskVersion` against the reviewed token) serve the far-right file
+  tree and its contents tabs. Root containment, `.git`
   exclusion, and symlink fences are enforced engine-side in
   `engine::files` on every request; the UI never touches the workspace
   filesystem itself.

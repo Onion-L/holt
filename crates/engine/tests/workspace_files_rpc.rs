@@ -638,3 +638,248 @@ mod save_workspace_file {
         );
     }
 }
+
+mod live_refresh_and_resolution {
+    use super::*;
+    use holt_proto::{WorkspaceSaveStatus, WorkspaceWatchFrame};
+
+    async fn save_as(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<holt_proto::WorkspaceFileSave, RpcError> {
+        match engine
+            .handle(methods::WRITE_WORKSPACE_FILE_AS, params)
+            .await?
+        {
+            RpcReply::Value(value) => Ok(serde_json::from_value(value).unwrap()),
+            _ => panic!("WriteWorkspaceFileAs must reply with a value"),
+        }
+    }
+
+    async fn save_with(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<holt_proto::WorkspaceFileSave, RpcError> {
+        match engine.handle(methods::SAVE_WORKSPACE_FILE, params).await? {
+            RpcReply::Value(value) => Ok(serde_json::from_value(value).unwrap()),
+            _ => panic!("SaveWorkspaceFile must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_frames_deliver_coalesced_changes() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("watched.txt"), "v1\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        let mut stream = match engine
+            .handle(
+                methods::WATCH_WORKSPACE_ENTRIES,
+                json!({ "spaceId": "space-1" }),
+            )
+            .await
+            .unwrap()
+        {
+            RpcReply::Stream(stream) => stream,
+            _ => panic!("WatchWorkspaceEntries must reply with a stream"),
+        };
+
+        // Give the spawned watcher a moment to arm before writing — the
+        // subscription returns before the platform watcher registers.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // A burst of writes coalesces into one debounced frame.
+        fs::write(Path::new(&root).join("watched.txt"), "v2\n").unwrap();
+        fs::write(Path::new(&root).join("created.txt"), "new\n").unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let frame: WorkspaceWatchFrame = loop {
+            let next = tokio::time::timeout_at(deadline, stream.next()).await;
+            let Some(item) = next.expect("frame within deadline") else {
+                panic!("stream ended");
+            };
+            let frame: WorkspaceWatchFrame = serde_json::from_value(item).unwrap();
+            if !frame.paths.is_empty() {
+                break frame;
+            }
+        };
+        let joined = frame.paths.join("\n");
+        assert!(joined.contains("watched.txt"), "{joined:?}");
+        assert!(joined.contains("created.txt"), "{joined:?}");
+
+        // Dropping the stream ends the watch (the server task exits); a
+        // fresh subscription still works afterwards.
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn save_as_creates_new_files_without_touching_the_original() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("orig.txt"), "original\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        let saved = save_as(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/copy.txt"),
+                "text": "draft\n",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.status, WorkspaceSaveStatus::Saved);
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("copy.txt")).unwrap(),
+            "draft\n"
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("orig.txt")).unwrap(),
+            "original\n",
+            "the original is untouched"
+        );
+
+        // Collisions refuse; escapes and .git refuse; missing parents refuse.
+        let fault = save_as(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/copy.txt"),
+                "text": "again\n",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("already exists")),
+            "{fault:?}"
+        );
+
+        let fault = save_as(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": "/etc/evil.txt",
+                "text": "no\n",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("outside")),
+            "{fault:?}"
+        );
+
+        let fault = save_as(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/.git/hooks/new"),
+                "text": "no\n",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains(".git")),
+            "{fault:?}"
+        );
+
+        let fault = save_as(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/missing-parent/new.txt"),
+                "text": "no\n",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("does not exist")),
+            "{fault:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_overwrite_targets_the_reviewed_version_only() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("ow.txt"), "original\n").unwrap();
+        let engine = setup(&fixture).await;
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/ow.txt") }),
+        )
+        .await
+        .unwrap();
+
+        // An external change lands; the conflict reports its disk version.
+        fs::write(Path::new(&root).join("ow.txt"), "external A\n").unwrap();
+        let conflict = save_with(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/ow.txt"),
+                "text": "my draft\n",
+                "version": read.version,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(conflict.status, WorkspaceSaveStatus::VersionConflict);
+        let reviewed = conflict.disk_version.clone().unwrap();
+
+        // The user reviewed THAT version and confirmed an overwrite: the
+        // save succeeds against the reviewed token.
+        let confirmed = save_with(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/ow.txt"),
+                "text": "my draft\n",
+                "version": read.version,
+                "expectDiskVersion": reviewed,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(confirmed.status, WorkspaceSaveStatus::Saved);
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("ow.txt")).unwrap(),
+            "my draft\n"
+        );
+
+        // A SECOND intervening change invalidates the earlier decision: the
+        // stale reviewed token re-conflicts instead of overwriting.
+        fs::write(Path::new(&root).join("ow.txt"), "external B\n").unwrap();
+        let stale = save_with(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/ow.txt"),
+                "text": "my draft 2\n",
+                "version": read.version,
+                "expectDiskVersion": reviewed,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale.status, WorkspaceSaveStatus::VersionConflict);
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("ow.txt")).unwrap(),
+            "external B\n",
+            "no overwrite of the unreviewed version"
+        );
+    }
+}
+
+use futures::StreamExt as _;

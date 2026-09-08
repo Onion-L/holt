@@ -48,6 +48,7 @@ mod terminals;
 mod title_settings;
 mod title_task;
 mod tools;
+mod workspace_watch;
 
 use agent::AgentRuntime;
 use credentials::HoltCredentialStore;
