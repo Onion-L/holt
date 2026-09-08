@@ -143,6 +143,20 @@ pub mod methods {
     pub const LIST_DRIVES: &str = "ListDrives";
     /// Fuzzy relative-path search rooted in a known chat or space checkout.
     pub const SEARCH_FILES: &str = "SearchFiles";
+    /// One directory level of a Space's working directory (File sidebar).
+    /// Params `{chatId?|spaceId?, path?}` — exactly one selector; `path`
+    /// (absolute, from a prior listing) defaults to the root. Reply
+    /// `WorkspaceListing`: directories first, hidden entries included,
+    /// `.git` excluded, symlink kinds resolved against the root, `truncated`
+    /// when the per-directory cap was hit. Root containment is enforced
+    /// engine-side on every request.
+    pub const LIST_WORKSPACE_ENTRIES: &str = "ListWorkspaceEntries";
+    /// Bounded text read for the File sidebar's editor. Params
+    /// `{chatId?|spaceId?, path}`; reply `WorkspaceFileRead` carries editable
+    /// UTF-8 `text` (≤ 2 MiB) plus BOM / line-ending facts and an opaque disk
+    /// `version` token, or an `unsupportedReason` for oversized, non-UTF-8,
+    /// and binary files. Outside-root and `.git` targets fail.
+    pub const READ_WORKSPACE_FILE: &str = "ReadWorkspaceFile";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

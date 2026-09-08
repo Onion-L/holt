@@ -416,6 +416,95 @@ pub struct FileSearchMatch {
     pub is_dir: bool,
 }
 
+/// What one File-sidebar entry is, after the engine resolved its symlinks.
+/// Directory/File describe plain entries; the symlink variants carry whether
+/// the entry may be expanded/read inside the sidebar (`SymlinkInside`) or must
+/// stay a dead-end row with an external-open affordance (`SymlinkOutside`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceEntryKind {
+    Directory,
+    File,
+    /// A symlink whose resolved target stays inside the tree root.
+    /// `targetIsDir` drives the disclosure affordance; `resolvedPath` is the
+    /// canonical target the engine reads through (alias-aware tab identity).
+    SymlinkInside {
+        target_is_dir: bool,
+        resolved_path: String,
+    },
+    /// A symlink whose resolved target left the tree root — shown, never
+    /// traversed, opened, or edited by the sidebar.
+    SymlinkOutside {
+        target_is_dir: bool,
+    },
+    /// A symlink whose target does not exist.
+    SymlinkBroken,
+}
+
+/// One row of a `ListWorkspaceEntries` reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub name: String,
+    /// Absolute path of the entry itself (symlinks not resolved).
+    pub path: String,
+    pub kind: WorkspaceEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// One directory level of a Space's working directory (File sidebar).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceListing {
+    /// The canonical directory that was listed.
+    pub path: String,
+    pub entries: Vec<WorkspaceEntry>,
+    /// True when the listing hit the entry cap.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// The line-ending shape a text file was read with. Saving must reproduce
+/// what the file had; `Mixed` is reported so the editor can treat the file
+/// conservatively instead of silently normalizing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceLineEndings {
+    Lf,
+    Crlf,
+    Mixed,
+    /// No line terminator at all (empty or single-line files).
+    None,
+}
+
+/// The `ReadWorkspaceFile` reply: either editable UTF-8 `text` plus the
+/// source facts a later save must preserve, or a typed reason the file
+/// cannot be opened in the editor (with an external-open affordance).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileRead {
+    /// The canonical path the engine read (a symlink's target when the read
+    /// went through an inside-root alias).
+    pub path: String,
+    /// Disk version token at read time (size + mtime). Opaque to the UI;
+    /// later save requests echo it back for conflict detection.
+    pub version: String,
+    /// Byte length on disk.
+    pub bytes: u64,
+    /// The file's own bytes started with a UTF-8 BOM.
+    #[serde(default)]
+    pub bom: bool,
+    pub line_endings: WorkspaceLineEndings,
+    /// `None` with `unsupportedReason` set when the file cannot be edited:
+    /// over the size limit, not valid UTF-8, or binary content. Never a
+    /// lossy decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported_reason: Option<String>,
+}
+
 /// Which standard skill root an entry was discovered in (ADR-0005): the
 /// project root at the chat's cwd wins over the personal home root, which
 /// wins over holt's own data-dir root.

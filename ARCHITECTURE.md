@@ -82,6 +82,17 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   or inline quoted absolute paths for `@`) through the ordinary queue —
   existing sources are not copied or snapshotted. Image previews may read
   pixels locally; submitting the reference still sends only a path.
+- File sidebar (ADR-0020): `ListWorkspaceEntries`
+  (`{chatId|spaceId, path?}`, one directory level — dirs first, hidden
+  entries in, `.git` out, symlink kinds resolved against the root,
+  `truncated` at the per-directory cap) and `ReadWorkspaceFile`
+  (`{chatId|spaceId, path}` — editable UTF-8 up to 2 MiB plus BOM /
+  line-ending facts and an opaque disk `version` token, or a typed
+  `unsupportedReason` for oversized, non-UTF-8, and binary files) serve the
+  far-right file tree and its contents tabs. Root containment, `.git`
+  exclusion, and symlink fences are enforced engine-side in
+  `engine::files` on every request; the UI never touches the workspace
+  filesystem itself.
 - Local images: `StageImage` (`{data}` base64) validates and durably saves
   pasted pixels under `<data_dir>/images/<uuid>.<ext>`, returning a stable
   `ManagedImage` path. `ReadImage` (`{path}`) returns validated local image

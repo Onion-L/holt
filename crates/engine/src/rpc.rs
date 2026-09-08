@@ -1094,6 +1094,38 @@ struct SearchFilesParams {
     space_id: Option<String>,
 }
 
+/// Selector + path shape shared by the File-sidebar workspace methods.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspacePathParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+impl WorkspacePathParams {
+    /// Exactly one of chatId/spaceId, mirroring `SearchFiles`.
+    fn check_selector(&self) -> Result<(), RpcError> {
+        if self.chat_id.is_some() == self.space_id.is_some() {
+            return Err(RpcError::BadParams(
+                "exactly one of chatId or spaceId is required".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn as_search_root(&self) -> SearchFilesParams {
+        SearchFilesParams {
+            query: String::new(),
+            chat_id: self.chat_id.clone(),
+            space_id: self.space_id.clone(),
+        }
+    }
+}
+
 fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a str, RpcError> {
     params
         .get(field)
@@ -1395,6 +1427,42 @@ impl RpcService for EngineService {
                 .await
                 .map_err(|error| RpcError::Failed(format!("search task failed: {error}")))?;
                 RpcReply::value(&matches)
+            }
+
+            // File sidebar (ADR-0020 groundwork): one directory level and
+            // bounded text reads, fenced behind the owning space's root. The
+            // blocking FS work runs off the async workers like SearchFiles.
+            methods::LIST_WORKSPACE_ENTRIES => {
+                let params: WorkspacePathParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                params.check_selector()?;
+                let root = self.search_files_root(&params.as_search_root())?;
+                let requested = params.path.clone().unwrap_or_default();
+                let listing = tokio::task::spawn_blocking(move || {
+                    crate::files::list_directory(std::path::Path::new(&root), &requested)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("listing task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&listing)
+            }
+            methods::READ_WORKSPACE_FILE => {
+                let params: WorkspacePathParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                params.check_selector()?;
+                let path = params
+                    .path
+                    .clone()
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| RpcError::BadParams("path is required".into()))?;
+                let root = self.search_files_root(&params.as_search_root())?;
+                let read = tokio::task::spawn_blocking(move || {
+                    crate::files::read_file(std::path::Path::new(&root), &path)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("read task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&read)
             }
 
             // Git capability (ADR-0001): branch listing and safe switching

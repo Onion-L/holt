@@ -27,6 +27,7 @@ use tokio::sync::watch;
 mod agent;
 pub mod compaction;
 pub mod credentials;
+mod files;
 mod gate;
 mod git;
 mod git_watch;
