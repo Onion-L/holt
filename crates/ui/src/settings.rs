@@ -35,6 +35,10 @@ pub const RIGHT_PANE_MIN: f32 = 360.0;
 pub const RIGHT_PANE_DEFAULT: f32 = 520.0;
 /// Minimum width retained for the conversation when the right pane is open.
 pub const CHAT_PANEL_MIN: f32 = 300.0;
+/// File sidebar (far-right tree) drag-resize floor and default (px). Narrow
+/// windows hide the tree below its floor — the titlebar toggle reopens it.
+pub const FILE_TREE_MIN: f32 = 180.0;
+pub const FILE_TREE_DEFAULT: f32 = 260.0;
 
 /// Terminal panel height bounds: 160px … 55% of the viewport (§1.10). The
 /// viewport-relative cap applies at runtime; the absolute cap here only heals
@@ -227,6 +231,9 @@ pub struct UiSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space_order: Vec<String>,
     pub right_pane_width: f32,
+    /// File sidebar (far-right tree) width. The pane's open/closed flag is
+    /// session state; only the width persists.
+    pub file_tree_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, holt `sessionPanels` parity). Kept for file
     /// compatibility; no longer read or written by the shell.
@@ -234,6 +241,9 @@ pub struct UiSettings {
     pub terminal_height: f32,
     /// Legacy — see [`Self::right_pane_open`].
     pub terminal_open: bool,
+    /// Device-local external application used to open the current workspace.
+    /// macOS-only UI; retained in the shared settings file for persistence.
+    pub external_app: String,
     /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,
     /// Light/dark preference. Defaults to following the OS.
@@ -281,8 +291,10 @@ impl Default for UiSettings {
             space_order: Vec::new(),
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
+            file_tree_width: FILE_TREE_DEFAULT,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
             terminal_open: false,
+            external_app: "Zed".into(),
             keymap: KeymapConfig::default(),
             appearance: crate::appearance::AppearanceMode::default(),
             ui_font_family: crate::typography::UiFontFamily::default(),
@@ -743,6 +755,7 @@ impl UiSettings {
         // The right pane has no persisted upper bound: its live drag clamps
         // against the current window, which is unavailable while loading.
         self.right_pane_width = min_or(self.right_pane_width, RIGHT_PANE_MIN, RIGHT_PANE_DEFAULT);
+        self.file_tree_width = min_or(self.file_tree_width, FILE_TREE_MIN, FILE_TREE_DEFAULT);
         self.terminal_height = clamp_or(
             self.terminal_height,
             TERMINAL_MIN_HEIGHT,
@@ -837,6 +850,8 @@ mod tests {
             space_order: vec!["space-2".to_string(), "space-1".to_string()],
             right_pane_width: 700.0,
             right_pane_open: true,
+            file_tree_width: FILE_TREE_DEFAULT,
+            external_app: "Zed".into(),
             terminal_height: 320.0,
             terminal_open: true,
             keymap: KeymapConfig {

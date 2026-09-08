@@ -197,9 +197,7 @@ impl Shell {
         } else {
             content_left
         };
-        let trailing: Option<gpui::AnyElement> = if on_canvas {
-            None
-        } else {
+        let trailing: Option<gpui::AnyElement> = {
             let right_open = self.right_pane_open(cx);
             let mut controls = div()
                 .id("right-titlebar-controls")
@@ -224,9 +222,10 @@ impl Shell {
                 // options that used to live here moved into the pane's own
                 // second row; expand stays in this band (user request).
                 let tabs = self.render_right_tab_strip(cx);
-                // Both panel toggles stay fixed while tabs + expand reveal
-                // to their left. Reserve their two 28px slots outside the clip.
-                let animated_width = ((right_now - pr).min(avail) - 56.0).max(0.0);
+                // The panel toggles stay fixed while tabs + expand reveal
+                // to their left. Reserve their 28px slots outside the clip.
+                let toggle_slots = if on_canvas { 2.0 } else { 3.0 } * 28.0;
+                let animated_width = ((right_now - pr).min(avail) - toggle_slots).max(0.0);
                 controls = controls.child(
                     div()
                         .w(px(animated_width))
@@ -264,17 +263,38 @@ impl Shell {
                 controls
                     .child(
                         header_icon_button(
-                            "toggle-terminal",
-                            icons::PROGRAMMING_OUTLINE,
+                            "toggle-file-tree",
+                            icons::TREE_SIDEBAR,
                             &theme,
-                            cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                            cx.listener(|this, _, window, cx| this.toggle_file_tree(window, cx)),
                         )
-                        .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
+                        .when(self.file_tree_visible, |el| el.bg(theme.glass_hover()))
                         .tooltip(|_, cx| {
-                            cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle terminal".into()))
-                                .into()
+                            cx.new(|_| {
+                                crate::image_viewer::ViewerTooltip("Toggle file sidebar".into())
+                            })
+                            .into()
                         }),
                     )
+                    // Terminals are chat-scoped: the new-chat canvas carries
+                    // no working terminal to toggle.
+                    .when(!on_canvas, |cluster| {
+                        cluster.child(
+                            header_icon_button(
+                                "toggle-terminal",
+                                icons::PROGRAMMING_OUTLINE,
+                                &theme,
+                                cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                            )
+                            .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    crate::image_viewer::ViewerTooltip("Toggle terminal".into())
+                                })
+                                .into()
+                            }),
+                        )
+                    })
                     .child(
                         header_icon_button(
                             "toggle-changes",

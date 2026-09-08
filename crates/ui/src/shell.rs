@@ -11,6 +11,8 @@
 //! ghost view + `on_drag_move::<Marker>` on the root), the same idiom as Zed's
 //! dock. Double-clicking a handle resets that pane to its default width.
 
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -25,6 +27,9 @@ use holt_rpc::methods;
 
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
+use crate::files::FileStateMap;
+use crate::files::tree::{FileTreeEvent, FileTreePanel};
+use crate::files::viewer::{FileScope, FileViewerEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
@@ -35,9 +40,10 @@ use crate::settings::archived::ArchivedPage;
 use crate::settings::providers::{ProvidersPage, ProvidersPageEvent};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
-    self, CHAT_PANEL_MIN, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN,
-    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy, ShortcutId, SidebarSort,
-    TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo, jump_hints_visible, platform_combo,
+    self, CHAT_PANEL_MIN, FILE_TREE_DEFAULT, FILE_TREE_MIN, JUMP_SLOTS, KeymapConfig,
+    RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy,
+    ShortcutId, SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo, jump_hints_visible,
+    platform_combo,
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_time_ago,
@@ -55,6 +61,8 @@ mod titlebar;
 
 pub use chat_list::*;
 use chat_menu::ChatMenuState;
+mod file_sidebar;
+use file_sidebar::*;
 pub use right_pane::*;
 use spaces::{AddSpaceFlow, RenameSpaceDialog, SidebarDisclosureMotion};
 pub use titlebar::*;
@@ -102,6 +110,90 @@ fn random_mark_index() -> usize {
         .map(|d| d.subsec_nanos() as usize)
         .unwrap_or(0)
         % loaders::MARK_SHAPES.len()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExternalApp {
+    Finder,
+    VsCode,
+    Cursor,
+    Zed,
+    PyCharm,
+    Terminal,
+    Ghostty,
+}
+
+impl ExternalApp {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Finder => "Finder",
+            Self::VsCode => "VS Code",
+            Self::Cursor => "Cursor",
+            Self::Zed => "Zed",
+            Self::PyCharm => "PyCharm",
+            Self::Terminal => "Terminal",
+            Self::Ghostty => "Ghostty",
+        }
+    }
+
+    fn bundle_name(self) -> Option<&'static str> {
+        match self {
+            Self::Finder => None,
+            Self::VsCode => Some("Visual Studio Code"),
+            Self::Cursor => Some("Cursor"),
+            Self::Zed => Some("Zed"),
+            Self::PyCharm => Some("PyCharm"),
+            Self::Terminal => Some("Terminal"),
+            Self::Ghostty => Some("Ghostty"),
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Finder => icons::FOLDER,
+            Self::Terminal | Self::Ghostty => icons::TERMINAL,
+            _ => icons::PROGRAMMING_OUTLINE,
+        }
+    }
+}
+
+fn available_external_apps() -> Vec<ExternalApp> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    [
+        ExternalApp::Finder,
+        ExternalApp::VsCode,
+        ExternalApp::Cursor,
+        ExternalApp::Zed,
+        ExternalApp::PyCharm,
+        ExternalApp::Terminal,
+        ExternalApp::Ghostty,
+    ]
+    .into_iter()
+    .filter(|app| external_app_installed(*app))
+    .collect()
+}
+
+fn external_app_installed(app: ExternalApp) -> bool {
+    let candidates: &[&str] = match app {
+        ExternalApp::Finder => &["/System/Library/CoreServices/Finder.app"],
+        ExternalApp::VsCode => &["/Applications/Visual Studio Code.app"],
+        ExternalApp::Cursor => &["/Applications/Cursor.app"],
+        ExternalApp::Zed => &["/Applications/Zed.app"],
+        ExternalApp::PyCharm => &["/Applications/PyCharm.app", "/Applications/PyCharm CE.app"],
+        ExternalApp::Terminal => &["/System/Applications/Utilities/Terminal.app"],
+        ExternalApp::Ghostty => &["/Applications/Ghostty.app"],
+    };
+    candidates.iter().any(|path| Path::new(path).exists())
+        || std::env::var_os("HOME").is_some_and(|home| {
+            candidates.iter().any(|path| {
+                Path::new(path)
+                    .file_name()
+                    .map(|name| Path::new(&home).join("Applications").join(name).exists())
+                    .unwrap_or(false)
+            })
+        })
 }
 
 /// Open the session at `slot` (zero-based) of the sidebar's active list. One
@@ -485,6 +577,10 @@ pub struct Shell {
     right_terminal: Option<Entity<TerminalPanel>>,
     /// The surface-tab strip's `+` menu (Terminal / Git diff rows).
     right_plus: popover::Popup<()>,
+    /// External workspace application picker in the session titlebar.
+    external_app_menu: popover::Popup<ExternalApp>,
+    /// Applications detected on the host and offered by the picker.
+    external_apps: Vec<ExternalApp>,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
     /// scope/base pick and diff watch (multiple diff panels, user request).
     diffs: std::collections::HashMap<u64, Entity<Changes>>,
@@ -503,6 +599,23 @@ pub struct Shell {
     /// Surface-tab strip scroll (the strip overflows horizontally, t3
     /// ScrollArea-style; drag drop-math reads the offset back out).
     right_tab_scroll: gpui::ScrollHandle,
+    /// The far-right File tree panel (lazy: no entity until first shown).
+    file_tree: Option<Entity<crate::files::tree::FileTreePanel>>,
+    /// Whether the File tree column shows. Session state (the width is the
+    /// persisted part); default visible — Chat | contents | tree is the
+    /// feature's reference arrangement.
+    file_tree_visible: bool,
+    /// The File tree column's width tween.
+    file_tree_tween: Option<WidthTween>,
+    /// Space-owned file tabs (ADR-0020): open tabs, their viewers, and the
+    /// strip's selected tab, keyed by space.
+    file_state: FileStateMap,
+    /// Event hookups for open file viewers (resolved-path bookkeeping).
+    file_viewers_sub: std::collections::HashMap<u64, Subscription>,
+    /// The tree panel's open-request subscription.
+    _file_tree_events: Option<Subscription>,
+    /// Id mint for file tabs.
+    file_seq: u64,
     /// Chat outlet vs settings pages.
     route: Route,
     /// Route history behind the titlebar back/forward buttons (§ nav history).
@@ -753,6 +866,8 @@ impl Shell {
             terminal: None,
             right_terminal: None,
             right_plus: popover::Popup::default(),
+            external_app_menu: popover::Popup::default(),
+            external_apps: available_external_apps(),
             diffs: std::collections::HashMap::new(),
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
@@ -761,6 +876,13 @@ impl Shell {
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
+            file_tree: None,
+            file_tree_visible: true,
+            file_tree_tween: None,
+            file_state: FileStateMap::default(),
+            file_viewers_sub: std::collections::HashMap::new(),
+            _file_tree_events: None,
+            file_seq: 0,
             route,
             nav,
             archived_page: None,
@@ -1034,11 +1156,12 @@ impl Shell {
 
     /// Whether the right pane shows. NOT gated on git any more: the pane is
     /// a surface HOST now (terminals work in any space), so only the Git
-    /// surface rows check `space_git_detected`. Still hidden on the
-    /// new-session canvas, where the titlebar carries no toggle to close it
-    /// again (an earlier user request).
+    /// surface rows check `space_git_detected`. The new-session canvas keys
+    /// its own flag per space: the pane never pops open there by itself, but
+    /// the canvas now carries the contents/tree toggles and an explicit file
+    /// open reveals the pane (File sidebar, decision 2).
     fn right_pane_open(&self, cx: &App) -> bool {
-        !self.active_chat.is_empty() && self.panels.get(&self.panel_key(cx)).changes_open
+        self.panels.get(&self.panel_key(cx)).changes_open
     }
 
     /// The current chat's terminal flag (per-session, in-memory).
@@ -1054,12 +1177,16 @@ impl Shell {
             // intentionally consumes it completely. Both ride the sidebar
             // tween so toggling it remains seamless.
             let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+            // The tree column keeps its own budget beside the pane — the tree
+            // hides independently, never as a side effect of the contents
+            // pane growing (decision 8).
+            let tree = self.file_tree_target(cx);
             if self.right_pane_expanded {
-                right_pane_takeover_width(self.viewport_width, sidebar_now)
+                right_pane_takeover_width(self.viewport_width, sidebar_now) - tree
             } else {
                 self.settings
                     .right_pane_width
-                    .min(right_pane_max_width(self.viewport_width, sidebar_now))
+                    .min(right_pane_max_width(self.viewport_width, sidebar_now) - tree)
             }
         }
     }
@@ -1203,7 +1330,8 @@ impl Shell {
         let width = viewport - f32::from(event.event.position.x);
         // No arbitrary percentage ceiling, but retain the chat's usable 300px
         // floor instead of allowing the conversation to collapse to zero.
-        let max = right_pane_max_width(viewport, self.sidebar_target());
+        // The tree column keeps its own budget beside the pane.
+        let max = right_pane_max_width(viewport, self.sidebar_target()) - self.file_tree_target(cx);
         self.settings.right_pane_width = if max >= RIGHT_PANE_MIN {
             width.clamp(RIGHT_PANE_MIN, max)
         } else {
@@ -2774,6 +2902,7 @@ impl Render for Shell {
             .text_size(crate::typography::ui_rems(14.0))
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
+            .on_drag_move(cx.listener(Self::on_file_tree_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
             // The panel shortcuts are chat-scoped chrome: in Settings they are
             // no-ops (holt __root.tsx gates the hotkey on `!isSettings`, and
@@ -2983,6 +3112,41 @@ impl Render for Shell {
                 } else {
                     Empty.into_any_element()
                 };
+                // The far-right File tree column (ADR-0020): its own seam,
+                // resize handle, and open/close tween. It renders on chat
+                // routes and the space-keyed new-chat canvas alike, and
+                // collapses to nothing below its width floor (decision 17).
+                let tree_showing = on_chat
+                    && (self.file_tree_target(cx) > 0.0 || self.tween_active(self.file_tree_tween));
+                let tree_handle = (on_chat
+                    && self.file_tree_visible
+                    && self.file_tree_available(cx) >= FILE_TREE_MIN
+                    && !self.tween_active(self.file_tree_tween))
+                .then(|| {
+                    self.resize_handle(
+                        "file-tree-resize",
+                        || FileTreeResize,
+                        |shell, _| shell.settings.file_tree_width = FILE_TREE_DEFAULT,
+                        cx,
+                    )
+                    .left(px(-6.0))
+                });
+                let file_tree: AnyElement = if tree_showing {
+                    self.render_file_tree_pane(cx)
+                } else {
+                    Empty.into_any_element()
+                };
+                let file_tree_seam: AnyElement = if let Some(handle) = tree_handle {
+                    div()
+                        .w(px(0.0))
+                        .h_full()
+                        .flex_none()
+                        .relative()
+                        .child(handle)
+                        .into_any_element()
+                } else {
+                    Empty.into_any_element()
+                };
                 let title_bar = self.render_title_bar(cx);
                 // Sidebar tone: a slightly lighter column behind the sidebar,
                 // spanning the FULL window height (under the traffic lights,
@@ -3032,7 +3196,9 @@ impl Render for Shell {
                                             .flex()
                                             .child(card)
                                             .child(right_seam)
-                                            .child(right),
+                                            .child(right)
+                                            .child(file_tree_seam)
+                                            .child(file_tree),
                                     )
                                     .when(on_chat, |el| {
                                         el.child(self.render_terminal_container(cx))

@@ -31,6 +31,9 @@ pub enum RightSurface {
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
     /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
+    /// A Space-owned file contents tab (ADR-0020) — the handle keys
+    /// [`Shell::file_state`]'s tabs for the CURRENT space, not any chat.
+    File(u64),
 }
 
 /// Per-chat panel open flags (holt parity: `sessionPanels` — the terminal and
@@ -166,8 +169,13 @@ impl Shell {
 
     /// The right pane's surface tabs in the STORED (drag-reorderable) order —
     /// `(surface, title)`; entries whose backing tab/entity is gone are
-    /// skipped.
+    /// skipped. The Space's FILE tabs lead the strip (ADR-0020): they stay
+    /// put across Chat switches while the Chat-owned views swap.
     pub(super) fn right_surface_rows(&self, cx: &App) -> Vec<(RightSurface, SharedString)> {
+        let mut rows: Vec<(RightSurface, SharedString)> = self
+            .file_space_key(cx)
+            .and_then(|space| self.file_state_row(&space))
+            .unwrap_or_default();
         let key = self.panel_key(cx);
         let stored: &[RightSurface] = self
             .right_tabs
@@ -179,7 +187,7 @@ impl Shell {
             .as_ref()
             .map(|t| t.read(cx).tab_summaries(cx))
             .unwrap_or_default();
-        stored
+        let stored_rows: Vec<(RightSurface, SharedString)> = stored
             .iter()
             .filter_map(|surface| match surface {
                 RightSurface::Diff(id) => self
@@ -197,17 +205,48 @@ impl Shell {
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone())),
                 RightSurface::Picker => None,
+                RightSurface::File(id) => self
+                    .file_space_key(cx)
+                    .and_then(|space| {
+                        self.file_state
+                            .space(&space)
+                            .and_then(|tabs| tabs.find(*id))
+                    })
+                    .map(|tab| (*surface, tab.title().into())),
             })
-            .collect()
+            .collect();
+        rows.extend(stored_rows);
+        rows
     }
 
-    /// Drag-reorder a surface tab within this chat's strip.
+    /// Drag-reorder a surface tab within this chat's strip. File tabs are
+    /// Space-owned and private views are Chat-owned — a drag may reorder
+    /// within one owner's run, never move a tab across the boundary.
     pub(super) fn reorder_right_tabs(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let key = self.panel_key(cx);
         let rows = self.right_surface_rows(cx);
         let (Some((source, _)), Some((target, _))) = (rows.get(from), rows.get(to)) else {
             return;
         };
+        let is_file = |surface: &RightSurface| matches!(surface, RightSurface::File(_));
+        if is_file(source) != is_file(target) {
+            return;
+        }
+        if let (RightSurface::File(from_id), RightSurface::File(to_id)) = (source, target) {
+            let Some(space) = self.file_space_key(cx) else {
+                return;
+            };
+            let tabs = self.file_state.get(&space);
+            let (Some(from), Some(to)) = (tabs.position(*from_id), tabs.position(*to_id)) else {
+                return;
+            };
+            if from != to {
+                let tab = tabs.tabs.remove(from);
+                tabs.tabs.insert(to, tab);
+                cx.notify();
+            }
+            return;
+        }
         if let Some(tabs) = self.right_tabs.get_mut(&key)
             && let Some(from) = tabs.iter().position(|surface| surface == source)
             && let Some(to) = tabs.iter().position(|surface| surface == target)
@@ -282,6 +321,13 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
+            // File tabs are Space-owned: activation records the space's
+            // selected tab (the strip's duplicate-open identity).
+            RightSurface::File(id) => {
+                if let Some(space) = self.file_space_key(cx) {
+                    self.file_state.set_active(&space, id);
+                }
+            }
             RightSurface::Picker => {}
         }
         cx.notify();
@@ -484,6 +530,14 @@ impl Shell {
             tabs.retain(|s| *s != surface);
         }
         match surface {
+            RightSurface::File(id) => {
+                // Space-owned: removed from the space's tabs (dropping the
+                // viewer tears down its read task). Ticket 02 adds the
+                // modified-close confirmation here.
+                if let Some(space) = self.file_space_key(cx) {
+                    self.file_state.remove(&space, id);
+                }
+            }
             RightSurface::Diff(id) => {
                 // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
@@ -546,6 +600,64 @@ impl Shell {
                         .child(div().flex_1().min_h_0().child(changes))
                         .into_any_element()
                 }
+                RightSurface::File(id) => match self.file_space_key(cx).and_then(|space| {
+                    self.file_state
+                        .space(&space)
+                        .and_then(|tabs| tabs.find(id))
+                        .map(|tab| {
+                            (
+                                tab.viewer.clone(),
+                                tab.title().to_string(),
+                                tab.path.clone(),
+                            )
+                        })
+                }) {
+                    None => Empty.into_any_element(),
+                    Some((viewer, title, path)) => {
+                        let title: SharedString = title.into();
+                        let path: SharedString = path.into();
+                        // The file surface's own 36px header row: the entry name
+                        // with its full path as the muted companion (diff-surface
+                        // convention). The body renders the read-only viewer.
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .id("file-viewer-header")
+                                    .flex_none()
+                                    .h(px(36.0))
+                                    .px(px(8.0))
+                                    .border_b_1()
+                                    .border_color(theme.border)
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(crate::typography::ui_rems(11.5))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(theme.text)
+                                            .truncate()
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .truncate()
+                                            .text_size(crate::typography::ui_rems(10.5))
+                                            .text_color(theme.text_muted.opacity(0.7))
+                                            .child(path),
+                                    ),
+                            )
+                            .child(div().flex_1().min_h_0().child(viewer))
+                            .into_any_element()
+                    }
+                },
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -752,7 +864,7 @@ impl Shell {
             .on_drag_move::<RightTabDrag>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<RightTabDrag>, _, cx| {
                     let payload = event.drag(cx);
-                    if payload.panel_key != this.panel_key(cx) {
+                    if !this.strip_drag_key_matches(&payload.panel_key, cx) {
                         return;
                     }
                     let from = payload.from;
@@ -764,7 +876,7 @@ impl Shell {
                 },
             ))
             .on_drop::<RightTabDrag>(cx.listener(move |this, payload: &RightTabDrag, _, cx| {
-                if payload.panel_key != this.panel_key(cx) {
+                if !this.strip_drag_key_matches(&payload.panel_key, cx) {
                     this.right_tab_drag = None;
                     cx.notify();
                     return;
@@ -782,6 +894,7 @@ impl Shell {
             let icon_path = match surface {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
                 RightSurface::Subagent(_) => icons::BOT,
+                RightSurface::File(_) => icons::DOCUMENT,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working
@@ -843,7 +956,15 @@ impl Shell {
                 )
                 .on_drag(
                     RightTabDrag {
-                        panel_key: self.panel_key(cx),
+                        panel_key: match surface {
+                            // File tabs belong to the Space: the drag stays
+                            // valid across Chat switches mid-gesture.
+                            RightSurface::File(_) => self
+                                .file_space_key(cx)
+                                .map(|space| format!("file-space:{space}"))
+                                .unwrap_or_else(|| self.panel_key(cx)),
+                            _ => self.panel_key(cx),
+                        },
                         from: ix,
                         title: ghost_title,
                     },
