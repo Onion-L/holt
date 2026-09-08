@@ -134,6 +134,7 @@ pub fn run_app(config: UiConfig) {
             cx,
         );
         composer::init(cx);
+        files::editor::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
         cx.register_url_scheme("holt").detach();

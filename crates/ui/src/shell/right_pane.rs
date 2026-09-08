@@ -531,12 +531,9 @@ impl Shell {
         }
         match surface {
             RightSurface::File(id) => {
-                // Space-owned: removed from the space's tabs (dropping the
-                // viewer tears down its read task). Ticket 02 adds the
-                // modified-close confirmation here.
-                if let Some(space) = self.file_space_key(cx) {
-                    self.file_state.remove(&space, id);
-                }
+                // Space-owned, and a modified tab stops for its
+                // Save/Discard/Cancel decision first (decision 11).
+                self.request_close_file(id, window, cx);
             }
             RightSurface::Diff(id) => {
                 // Dropping the entity tears down its diff watch.
@@ -911,6 +908,14 @@ impl Shell {
                 }),
                 _ => false,
             };
+            // A modified file tab carries a dot beside its title (decision 7).
+            let file_dirty = match surface {
+                RightSurface::File(id) => self
+                    .file_space_key(cx)
+                    .and_then(|space| self.file_state.space(&space).and_then(|tabs| tabs.find(id)))
+                    .is_some_and(|tab| tab.viewer.read(cx).is_dirty()),
+                _ => false,
+            };
             // Reserve a trailing close slot so hover never shifts the title.
             let group: SharedString = format!("right-surface-tab-{ix}").into();
             let ghost_title = title.clone();
@@ -1014,6 +1019,15 @@ impl Shell {
                         })
                         .child(title),
                 )
+                .when(file_dirty, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .size(px(5.0))
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                })
                 .child(
                     div()
                         .id(("right-surface-close", ix))

@@ -7,15 +7,18 @@
 //! views stay Chat-owned. The strip in `shell::right_pane` renders the
 //! Space's file tabs ahead of the selected Chat's private views.
 
+pub mod editor;
 pub mod tree;
 pub mod viewer;
 
 use std::collections::HashMap;
 
-use gpui::Entity;
+use gpui::{Entity, actions};
 
 use crate::state::AppState;
 use viewer::FileViewer;
+
+actions!(files, [SaveFile]);
 
 /// One open file tab. Lives in [`FileTabs`] keyed by the owning Space —
 /// never per Chat (ADR-0020).
@@ -106,6 +109,19 @@ impl FileStateMap {
     /// Read-only lookup for render paths.
     pub fn space(&self, space: &str) -> Option<&FileTabs> {
         self.map.get(space)
+    }
+
+    /// Every (space, tabs) pair, arbitrary order — census walks.
+    pub fn spaces(&self) -> impl Iterator<Item = (&String, &FileTabs)> {
+        self.map.iter()
+    }
+
+    /// Drop a space's records entirely (space removal): tabs, viewers (held
+    /// by the tab entries), and the strip's selection. Called only after the
+    /// draft-close decision succeeded.
+    pub fn purge_space(&mut self, space: &str) {
+        self.map.remove(space);
+        self.active.remove(space);
     }
 
     pub fn active(&self, space: &str) -> Option<u64> {

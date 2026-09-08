@@ -157,6 +157,15 @@ pub mod methods {
     /// `version` token, or an `unsupportedReason` for oversized, non-UTF-8,
     /// and binary files. Outside-root and `.git` targets fail.
     pub const READ_WORKSPACE_FILE: &str = "ReadWorkspaceFile";
+    /// Save a text file (File sidebar editor). Params `{chatId?|spaceId?,
+    /// path, text, version, bom}` — `version` is the token from the read the
+    /// draft is based on and `bom` reproduces the original byte order mark.
+    /// Reply `WorkspaceFileSave`: `saved` with the new version token, or
+    /// `versionConflict` with the disk token (nothing was written; the
+    /// draft is untouched). Missing files are NOT silently recreated;
+    /// outside-root and `.git` targets fail. The write is atomic
+    /// (same-directory temp + rename) and preserves existing permissions.
+    pub const SAVE_WORKSPACE_FILE: &str = "SaveWorkspaceFile";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

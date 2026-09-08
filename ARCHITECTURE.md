@@ -88,8 +88,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `truncated` at the per-directory cap) and `ReadWorkspaceFile`
   (`{chatId|spaceId, path}` — editable UTF-8 up to 2 MiB plus BOM /
   line-ending facts and an opaque disk `version` token, or a typed
-  `unsupportedReason` for oversized, non-UTF-8, and binary files) serve the
-  far-right file tree and its contents tabs. Root containment, `.git`
+  `unsupportedReason` for oversized, non-UTF-8, and binary files) and
+  `SaveWorkspaceFile` (`{chatId|spaceId, path, text, version, bom}` —
+  version-checked atomic write preserving permissions; a moved disk version
+  is a `versionConflict` REPLY, never an overwrite, and a missing file is
+  never silently recreated) serve the far-right file tree and its contents
+  tabs. Root containment, `.git`
   exclusion, and symlink fences are enforced engine-side in
   `engine::files` on every request; the UI never touches the workspace
   filesystem itself.

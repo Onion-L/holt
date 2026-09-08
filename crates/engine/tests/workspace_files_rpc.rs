@@ -285,10 +285,7 @@ mod read_workspace_file {
         )
         .await
         .unwrap();
-        assert_eq!(
-            file.text.as_deref(),
-            Some("\u{FEFF}line one\r\nline two\r\n")
-        );
+        assert_eq!(file.text.as_deref(), Some("line one\r\nline two\r\n"));
         assert!(file.bom);
         assert_eq!(file.line_endings, WorkspaceLineEndings::Crlf);
         assert!(!file.version.is_empty());
@@ -401,5 +398,243 @@ mod read_workspace_file {
             .await
             .unwrap_err();
         assert!(matches!(fault, RpcError::BadParams(_)), "{fault:?}");
+    }
+}
+
+mod save_workspace_file {
+    use super::*;
+    use holt_proto::WorkspaceSaveStatus;
+
+    async fn save_file(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<holt_proto::WorkspaceFileSave, RpcError> {
+        match engine.handle(methods::SAVE_WORKSPACE_FILE, params).await? {
+            RpcReply::Value(value) => Ok(serde_json::from_value(value).unwrap()),
+            _ => panic!("SaveWorkspaceFile must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn round_trips_text_and_preserves_formatting_and_permissions() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let path = Path::new(&root).join("doc.md");
+        fs::write(&path, "\u{FEFF}line one\r\nline two\r\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let engine = setup(&fixture).await;
+
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": path.display().to_string() }),
+        )
+        .await
+        .unwrap();
+        // The buffer keeps the original terminators; the save writes them
+        // back verbatim with the BOM reattached ahead of the text.
+        let edited = format!(
+            "{}\r\n",
+            read.text.clone().unwrap().replace("line one", "LINE ONE")
+        );
+        let save = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": path.display().to_string(),
+                "text": edited,
+                "version": read.version,
+                "bom": read.bom,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(save.status, WorkspaceSaveStatus::Saved);
+        assert!(save.version.is_some() && save.version != Some(read.version.clone()));
+
+        let disk = fs::read(&path).unwrap();
+        let mut expected = vec![0xEF, 0xBB, 0xBF];
+        expected.extend_from_slice(edited.as_bytes());
+        assert_eq!(disk, expected);
+        assert!(disk.starts_with(&[0xEF, 0xBB, 0xBF]), "BOM reattached");
+        assert!(
+            disk.windows(22)
+                .any(|w| w == b"LINE ONE\r\nline two\r\n\r\n"),
+            "CRLF preserved"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o640, "permissions preserved");
+        }
+        // The new token matches a fresh read.
+        let reread = super::read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": path.display().to_string() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reread.version, save.version.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_conflicts_without_writing() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let path = Path::new(&root).join("conflict.txt");
+        fs::write(&path, "original\n").unwrap();
+        let engine = setup(&fixture).await;
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": path.display().to_string() }),
+        )
+        .await
+        .unwrap();
+
+        // External change the UI has not seen.
+        fs::write(&path, "externally changed\n").unwrap();
+        let save = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": path.display().to_string(),
+                "text": "my draft\n",
+                "version": read.version,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(save.status, WorkspaceSaveStatus::VersionConflict);
+        assert!(save.disk_version.is_some());
+        assert_ne!(save.disk_version, Some(read.version.clone()));
+        // The external version is intact — no partial write, no overwrite.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "externally changed\n");
+        // No stray temp files leaked into the tree.
+        assert!(fs::read_dir(Path::new(&root)).unwrap().count() == 1);
+
+        // A second save based on the SAME read still conflicts — the UI's
+        // interim state never adopts the unseen disk version as its
+        // baseline, so no silent overwrite path exists (ticket 02's draft
+        // guarantee ahead of ticket 04's resolution workflow).
+        let stale_disk = save.disk_version.unwrap();
+        let retry = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": path.display().to_string(),
+                "text": "my draft again\n",
+                "version": read.version,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retry.status, WorkspaceSaveStatus::VersionConflict);
+        assert_eq!(retry.disk_version, Some(stale_disk));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "externally changed\n");
+    }
+
+    #[tokio::test]
+    async fn missing_files_are_not_recreated_and_boundaries_hold() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("gone.txt"), "x\n").unwrap();
+        let engine = setup(&fixture).await;
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/gone.txt") }),
+        )
+        .await
+        .unwrap();
+        fs::remove_file(Path::new(&root).join("gone.txt")).unwrap();
+
+        let fault = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/gone.txt"),
+                "text": "recreated\n",
+                "version": read.version,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("does not exist")),
+            "{fault:?}"
+        );
+        assert!(!Path::new(&root).join("gone.txt").exists(), "not recreated");
+
+        let fault = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": "/etc/hosts",
+                "text": "no\n",
+                "version": "0:0",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("outside")),
+            "{fault:?}"
+        );
+
+        let fault = save_file(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/.git/HEAD"),
+                "text": "no\n",
+                "version": "0:0",
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains(".git")),
+            "{fault:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn saves_go_through_the_owning_space_selector() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("s.txt"), "v1\n").unwrap();
+        let engine = setup(&fixture).await;
+        let read = read(
+            &engine,
+            json!({ "chatId": "chat-1", "path": format!("{root}/s.txt") }),
+        )
+        .await
+        .unwrap();
+        // The chat may be deselected by reply time — the save still lands.
+        let save = save_file(
+            &engine,
+            json!({
+                "chatId": "chat-1",
+                "path": format!("{root}/s.txt"),
+                "text": "v2\n",
+                "version": read.version,
+                "bom": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(save.status, WorkspaceSaveStatus::Saved);
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("s.txt")).unwrap(),
+            "v2\n"
+        );
     }
 }

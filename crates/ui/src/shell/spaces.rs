@@ -2077,10 +2077,21 @@ impl Shell {
 
     pub(super) fn delete_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         self.delete_space_confirm = None;
+        // Modified file tabs stop the removal for a combined Save/Discard/
+        // Cancel decision — the space's records cannot take unsaved work
+        // with them (decision 11; multi-file closure).
+        if self.space_removal_needs_draft_decision(&space_id, cx) {
+            self.dirty_space_close = Some(space_id);
+            cx.notify();
+            return;
+        }
         self.mutate(
             serde_json::json!({ "op": "deleteSpace", "spaceId": space_id }),
             cx,
         );
+        // The space's file editing state goes with it — after the draft
+        // decision above, so no buffer is dropped while it still matters.
+        self.file_state.purge_space(&space_id);
         cx.notify();
     }
 

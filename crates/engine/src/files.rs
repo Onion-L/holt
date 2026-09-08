@@ -5,6 +5,7 @@
 //! here, engine-side, before any filesystem work.
 
 use std::cmp::Ordering;
+use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use holt_proto::{
@@ -302,6 +303,7 @@ pub(crate) fn read_file(root: &Path, requested: &str) -> Result<WorkspaceFileRea
     let bytes = std::fs::read(&canonical)
         .map_err(|error| FilesFault::Io(canonical.display().to_string(), error.to_string()))?;
     let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let bytes_len = bytes.len() as u64;
     let sniff = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
     if sniff.contains(&0) {
         return Ok(WorkspaceFileRead {
@@ -314,7 +316,11 @@ pub(crate) fn read_file(root: &Path, requested: &str) -> Result<WorkspaceFileRea
             unsupported_reason: Some("This file is binary; the editor only opens text.".into()),
         });
     }
-    let text = match String::from_utf8(bytes) {
+    // The BOM never enters the editable buffer — the flag carries it and the
+    // save reattaches it. A double-encoded mark on disk is preserved as
+    // content only when it is not the leading one.
+    let stripped = if bom { bytes[3..].to_vec() } else { bytes };
+    let text = match String::from_utf8(stripped) {
         Ok(text) => text,
         Err(_) => {
             return Ok(WorkspaceFileRead {
@@ -339,6 +345,93 @@ pub(crate) fn read_file(root: &Path, requested: &str) -> Result<WorkspaceFileRea
         line_endings: endings,
         text: Some(text),
         unsupported_reason: None,
+    })
+}
+
+/// Save an edited text file: validate the disk version the draft was based
+/// on, write atomically (same-directory temp + rename, permissions
+/// preserved), and recheck before the rename so a change that lands mid-save
+/// fails closed instead of overwriting. The text is written verbatim — the
+/// buffer preserved the original line endings — with the original BOM
+/// reattached when `bom` is set.
+pub(crate) fn save_file(
+    root: &Path,
+    requested: &str,
+    text: &str,
+    expected_version: &str,
+    bom: bool,
+) -> Result<holt_proto::WorkspaceFileSave, FilesFault> {
+    let canonical = resolve_inside_root(root, requested)?;
+    let metadata = std::fs::symlink_metadata(&canonical).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => FilesFault::NotFound(canonical.display().to_string()),
+        _ => FilesFault::Io(canonical.display().to_string(), error.to_string()),
+    })?;
+    if metadata.is_dir() {
+        return Err(FilesFault::IsDirectory(canonical.display().to_string()));
+    }
+    // A missing file must not be silently recreated by an ordinary save.
+    if !canonical.exists() {
+        return Err(FilesFault::NotFound(canonical.display().to_string()));
+    }
+    if version_token(&metadata) != expected_version {
+        return Ok(holt_proto::WorkspaceFileSave {
+            status: holt_proto::WorkspaceSaveStatus::VersionConflict,
+            version: None,
+            disk_version: Some(version_token(&metadata)),
+        });
+    }
+    let permissions = metadata.permissions();
+    let mut bytes = Vec::with_capacity(text.len() + 3);
+    if bom {
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    bytes.extend_from_slice(text.as_bytes());
+    let temp = canonical.with_extension(format!("holt-save-{}", std::process::id()));
+    // Clean up the temp file on every failure path — a stray `.holt-save-*`
+    // next to the file would show up in the tree.
+    let write = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&temp);
+        return Err(FilesFault::Io(
+            canonical.display().to_string(),
+            error.to_string(),
+        ));
+    }
+    std::fs::set_permissions(&temp, permissions).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        FilesFault::Io(canonical.display().to_string(), error.to_string())
+    })?;
+    // Recheck right before the rename: a change landing between the first
+    // check and the write still fails closed.
+    let recheck = std::fs::symlink_metadata(&canonical);
+    let conflict = match &recheck {
+        Ok(meta) => version_token(meta) != expected_version,
+        Err(_) => true,
+    };
+    if conflict {
+        let _ = std::fs::remove_file(&temp);
+        let disk_version = recheck.ok().map(|meta| version_token(&meta));
+        return Ok(holt_proto::WorkspaceFileSave {
+            status: holt_proto::WorkspaceSaveStatus::VersionConflict,
+            version: None,
+            disk_version,
+        });
+    }
+    std::fs::rename(&temp, &canonical).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        FilesFault::Io(canonical.display().to_string(), error.to_string())
+    })?;
+    let saved = std::fs::symlink_metadata(&canonical)
+        .map_err(|error| FilesFault::Io(canonical.display().to_string(), error.to_string()))?;
+    Ok(holt_proto::WorkspaceFileSave {
+        status: holt_proto::WorkspaceSaveStatus::Saved,
+        version: Some(version_token(&saved)),
+        disk_version: None,
     })
 }
 
@@ -450,7 +543,7 @@ mod tests {
             "\u{FEFF}hello\r\nworld\r\n".as_bytes(),
         );
         let read = read_file(root, "bom.txt").unwrap();
-        assert_eq!(read.text.as_deref(), Some("\u{FEFF}hello\r\nworld\r\n"));
+        assert_eq!(read.text.as_deref(), Some("hello\r\nworld\r\n"));
         assert!(read.bom);
         assert_eq!(read.line_endings, WorkspaceLineEndings::Crlf);
 

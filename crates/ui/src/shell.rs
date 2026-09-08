@@ -612,6 +612,17 @@ pub struct Shell {
     file_state: FileStateMap,
     /// Event hookups for open file viewers (resolved-path bookkeeping).
     file_viewers_sub: std::collections::HashMap<u64, Subscription>,
+    /// A modified file tab awaiting its close decision (Save/Discard/
+    /// Cancel), bound to the space it lived in when the dialog opened — a
+    /// switch mid-dialog cannot strand or misapply it.
+    dirty_file_close: Option<(String, u64)>,
+    /// A space whose removal is gated on its modified file tabs.
+    dirty_space_close: Option<String>,
+    /// Tabs whose close is held until their in-flight save settles (a failed
+    /// save keeps the tab — the draft must survive).
+    closing_after_save: std::collections::HashSet<u64>,
+    /// Whether the quit lifecycle already holds this shell's entity.
+    lifecycle_attached: bool,
     /// The tree panel's open-request subscription.
     _file_tree_events: Option<Subscription>,
     /// Id mint for file tabs.
@@ -881,6 +892,10 @@ impl Shell {
             file_tree_tween: None,
             file_state: FileStateMap::default(),
             file_viewers_sub: std::collections::HashMap::new(),
+            dirty_file_close: None,
+            dirty_space_close: None,
+            closing_after_save: std::collections::HashSet::new(),
+            lifecycle_attached: false,
             _file_tree_events: None,
             file_seq: 0,
             route,
@@ -1974,6 +1989,7 @@ impl Shell {
         if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
+        overlays.extend(self.render_file_draft_overlays(viewport, window, cx));
 
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(
@@ -2866,6 +2882,13 @@ impl Render for Shell {
                 },
             ));
         }
+        // The quit lifecycle needs the shell's file-draft census (ADR-0020);
+        // it is a global created before any window, so attach on first
+        // render.
+        if !self.lifecycle_attached {
+            self.lifecycle_attached = true;
+            crate::terminal::lifecycle::attach_shell(cx.entity(), cx);
+        }
 
         // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
         // chain — with nothing focused they go dead. Land initial focus on the
@@ -2914,6 +2937,11 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            // Cmd+S saves the ACTIVE file tab wherever focus sits (the
+            // editor, the tree, or the composer) — a no-op otherwise.
+            .on_action(cx.listener(|this, _: &crate::files::SaveFile, _, cx| {
+                this.save_active_file(cx);
+            }))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))

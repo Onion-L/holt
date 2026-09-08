@@ -1106,6 +1106,21 @@ struct WorkspacePathParams {
     path: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveWorkspaceFileParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    path: String,
+    text: String,
+    /// The disk version token the draft was based on.
+    version: String,
+    #[serde(default)]
+    bom: bool,
+}
+
 impl WorkspacePathParams {
     /// Exactly one of chatId/spaceId, mirroring `SearchFiles`.
     fn check_selector(&self) -> Result<(), RpcError> {
@@ -1463,6 +1478,35 @@ impl RpcService for EngineService {
                 .map_err(|error| RpcError::Failed(format!("read task failed: {error}")))?
                 .map_err(|fault| RpcError::Failed(fault.to_string()))?;
                 RpcReply::value(&read)
+            }
+            methods::SAVE_WORKSPACE_FILE => {
+                let params: SaveWorkspaceFileParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let (path, text, version, bom) =
+                    (params.path, params.text, params.version, params.bom);
+                let save = tokio::task::spawn_blocking(move || {
+                    crate::files::save_file(
+                        std::path::Path::new(&root),
+                        &path,
+                        &text,
+                        &version,
+                        bom,
+                    )
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("save task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&save)
             }
 
             // Git capability (ADR-0001): branch listing and safe switching

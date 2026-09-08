@@ -112,15 +112,15 @@ impl Shell {
             self.set_right_active(RightSurface::File(id), cx);
             return;
         }
-        // The next preview replaces the previous one. Ticket 02 will guard
-        // modified previews — an edit pins a tab (decision 12).
+        // The next preview replaces the previous CLEAN preview — a modified
+        // preview has pinned itself on first edit (decision 12).
         let previews: Vec<u64> = self
             .file_state
             .space(&space)
             .map(|tabs| {
                 tabs.tabs
                     .iter()
-                    .filter(|tab| !tab.pinned)
+                    .filter(|tab| !tab.pinned && !tab.viewer.read(cx).is_dirty())
                     .map(|tab| tab.id)
                     .collect()
             })
@@ -128,23 +128,38 @@ impl Shell {
         self.file_seq += 1;
         let id = self.file_seq;
         let viewer = cx.new(|cx| FileViewer::new(self.state.clone(), path.clone(), scope, cx));
-        // The Loaded reply records the engine-resolved path on the tab —
-        // future opens through an inside-root alias select this tab.
+        // Viewer events maintain the tab's bookkeeping: the resolved path
+        // (alias identity) and preview pinning on first edit (decision 12).
         let events = {
             let space = space.clone();
             cx.subscribe(
                 &viewer,
                 move |this: &mut Shell, _, event: &FileViewerEvent, cx| {
-                    let FileViewerEvent::Loaded { resolved } = event;
-                    let resolved = resolved.clone();
-                    if let Some(tab) = this
-                        .file_state
-                        .get(&space)
-                        .tabs
-                        .iter_mut()
-                        .find(|tab| tab.id == id)
-                    {
-                        tab.resolved = Some(resolved);
+                    match event {
+                        FileViewerEvent::Loaded { resolved } => {
+                            let resolved = resolved.clone();
+                            if let Some(tab) = this
+                                .file_state
+                                .get(&space)
+                                .tabs
+                                .iter_mut()
+                                .find(|tab| tab.id == id)
+                            {
+                                tab.resolved = Some(resolved);
+                            }
+                        }
+                        FileViewerEvent::PinRequested => {
+                            if let Some(tab) = this
+                                .file_state
+                                .get(&space)
+                                .tabs
+                                .iter_mut()
+                                .find(|tab| tab.id == id)
+                            {
+                                tab.pinned = true;
+                            }
+                        }
+                        FileViewerEvent::DirtyChanged { .. } => {}
                     }
                     cx.notify();
                 },
@@ -198,6 +213,223 @@ impl Shell {
             return 0.0;
         }
         self.settings.file_tree_width.min(available)
+    }
+
+    /// Cmd+S: save the file tab the contents area is showing.
+    pub(super) fn save_active_file(&mut self, cx: &mut Context<Self>) {
+        if let RightSurface::File(id) = self.resolved_right_active(cx)
+            && let Some(space) = self.file_space_key(cx)
+            && let Some(tab) = self.file_state.space(&space).and_then(|tabs| tabs.find(id))
+        {
+            let viewer = tab.viewer.clone();
+            viewer.update(cx, |viewer, cx| {
+                viewer.save(cx);
+            });
+        }
+    }
+
+    /// The modified tabs of one space (strip order).
+    fn dirty_tabs(&self, space: &str, cx: &App) -> Vec<u64> {
+        self.file_state
+            .space(space)
+            .map(|tabs| {
+                tabs.tabs
+                    .iter()
+                    .filter(|tab| tab.viewer.read(cx).is_dirty())
+                    .map(|tab| tab.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every modified file tab across all spaces — the quit gate's census.
+    pub(crate) fn dirty_file_tabs_everywhere(&self, cx: &App) -> Vec<(String, u64)> {
+        let mut dirty = Vec::new();
+        for (space, tabs) in self.file_state.spaces() {
+            for tab in &tabs.tabs {
+                if tab.viewer.read(cx).is_dirty() {
+                    dirty.push((space.clone(), tab.id));
+                }
+            }
+        }
+        dirty
+    }
+
+    /// A close request for a file tab: a clean tab closes now; a modified
+    /// one stops for the Save/Discard/Cancel decision (decision 11).
+    pub(super) fn request_close_file(
+        &mut self,
+        id: u64,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = self.file_space_key(cx) else {
+            return;
+        };
+        let dirty = self
+            .file_state
+            .space(&space)
+            .and_then(|tabs| tabs.find(id))
+            .is_some_and(|tab| tab.viewer.read(cx).is_dirty());
+        if dirty {
+            self.dirty_file_close = Some((space, id));
+            cx.notify();
+        } else {
+            self.close_file_tab(&space, id, cx);
+        }
+    }
+
+    /// Close a file tab outright (after a decision or when clean).
+    fn close_file_tab(&mut self, space: &str, id: u64, cx: &mut Context<Self>) {
+        self.closing_after_save.remove(&id);
+        if let Some(viewer) = self.file_state.remove(space, id) {
+            self.file_viewers_sub.remove(&id);
+            drop(viewer);
+        }
+        // The chat's stored pick may point at the closed surface;
+        // `resolved_right_active` heals it on the next frame.
+        let key = self.panel_key(cx);
+        self.panels.update(&key, |panels| {
+            if panels.right_active == RightSurface::File(id) {
+                panels.right_active = RightSurface::Picker;
+            }
+        });
+        cx.notify();
+    }
+
+    /// The dirty-close dialog's decision. Save runs the save and closes only
+    /// when it succeeds; Discard closes now; Cancel keeps the tab untouched.
+    pub(super) fn resolve_dirty_file_close(
+        &mut self,
+        save: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((space, id)) = self.dirty_file_close.take() else {
+            return;
+        };
+        if !save {
+            self.close_file_tab(&space, id, cx);
+            return;
+        }
+        let Some(viewer) = self
+            .file_state
+            .space(&space)
+            .and_then(|tabs| tabs.find(id))
+            .map(|tab| tab.viewer.clone())
+        else {
+            return;
+        };
+        self.dirty_file_close = None;
+        match viewer.update(cx, |viewer, cx| viewer.save(cx)) {
+            Some(task) => {
+                self.closing_after_save.insert(id);
+                let space_for_close = space.clone();
+                cx.spawn(async move |this, cx| {
+                    let saved = task.await;
+                    this.update(cx, |this, cx| {
+                        if saved {
+                            this.close_file_tab(&space_for_close, id, cx);
+                        } else {
+                            // A failed save keeps the tab and its draft.
+                            this.closing_after_save.remove(&id);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            None => {
+                // Nothing in flight and nothing to save — close.
+                self.close_file_tab(&space, id, cx);
+            }
+        }
+    }
+
+    /// Space removal gate: a space with modified tabs stops for a combined
+    /// decision before its records go (ticket 02's multi-file closure).
+    pub(super) fn space_removal_needs_draft_decision(&self, space: &str, cx: &App) -> bool {
+        !self.dirty_tabs(space, cx).is_empty()
+    }
+
+    /// The space-removal decision: Save writes every modified tab (any
+    /// failure aborts the removal), Discard drops them, then the space goes.
+    pub(super) fn resolve_dirty_space_close(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some(space) = self.dirty_space_close.take() else {
+            return;
+        };
+        if !save {
+            self.delete_space(space, cx);
+            return;
+        }
+        let viewers: Vec<Entity<FileViewer>> = self
+            .dirty_tabs(&space, cx)
+            .into_iter()
+            .filter_map(|id| {
+                self.file_state
+                    .space(&space)
+                    .and_then(|tabs| tabs.find(id))
+                    .map(|tab| tab.viewer.clone())
+            })
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let mut all_saved = true;
+            for viewer in viewers {
+                let task = viewer.update(cx, |viewer, cx| viewer.save(cx));
+                if let Some(task) = task
+                    && !task.await
+                {
+                    all_saved = false;
+                    break;
+                }
+            }
+            this.update(cx, |this, cx| {
+                if all_saved {
+                    this.delete_space(space, cx);
+                } else {
+                    this.push_holt_notice(
+                        HoltNoticeKind::Error,
+                        "Could not save every modified file — the space was kept.".into(),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Save every modified tab across all spaces; completes when every save
+    /// settled. `Ok(())` when all saved, `Err(count)` with the failure
+    /// count — the quit gate refuses to lose drafts either way.
+    pub(crate) fn save_all_dirty_files(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), usize>> {
+        let dirty = self.dirty_file_tabs_everywhere(cx);
+        let viewers: Vec<_> = dirty
+            .into_iter()
+            .filter_map(|(space, id)| {
+                self.file_state
+                    .space(&space)
+                    .and_then(|tabs| tabs.find(id))
+                    .map(|tab| tab.viewer.clone())
+            })
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let mut failures = 0usize;
+            for viewer in viewers {
+                let task = viewer.update(cx, |viewer, cx| viewer.save(cx));
+                if let Some(task) = task
+                    && !task.await
+                {
+                    failures += 1;
+                }
+            }
+            let _ = this.update(cx, |_, cx| cx.notify());
+            if failures == 0 { Ok(()) } else { Err(failures) }
+        })
     }
 
     /// Show/hide the far-right File tree column (its own toggle — independent
@@ -264,5 +496,135 @@ impl Shell {
             target,
             div().h_full().relative().child(panel).into_any_element(),
         )
+    }
+}
+
+impl Shell {
+    /// The unsaved-file decision dialogs: one modified tab closing, and one
+    /// space whose removal would take modified tabs with it. Both offer
+    /// Save / Discard / Cancel (decision 11); a failed save keeps what it
+    /// tried to close.
+    pub(super) fn render_file_draft_overlays(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let mut overlays = Vec::new();
+
+        let dirty_tab = self.dirty_file_close.clone().and_then(|(space, id)| {
+            self.file_state
+                .space(&space)
+                .and_then(|tabs| tabs.find(id))
+                .map(|tab| (id, tab.title().to_string()))
+        });
+        if let Some((_id, title)) = dirty_tab {
+            let card = popover::dialog_card(&theme)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.dirty_file_close = None;
+                        cx.notify();
+                    }
+                }))
+                .child(popover::dialog_title(&theme, "Save changes?"))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!(
+                        "\u{201C}{title}\u{201D} has unsaved changes. Save them before the tab closes?"
+                    ),
+                )))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "file-close-cancel")
+                                .id("file-close-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dirty_file_close = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            popover::btn_danger(&theme, "Discard")
+                                .id("file-close-discard")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.resolve_dirty_file_close(false, window, cx);
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(&theme, "Save")
+                                .id("file-close-save")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.resolve_dirty_file_close(true, window, cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("file-draft-close-dialog", viewport, card));
+        }
+
+        let dirty_space = self.dirty_space_close.clone();
+        if let Some(space) = dirty_space {
+            let count = self.dirty_tabs(&space, cx).len();
+            let name = self
+                .state
+                .read(cx)
+                .space_row(&space)
+                .map(|row| row.display_name().to_string())
+                .unwrap_or_else(|| "This space".into());
+            let card = popover::dialog_card(&theme)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.dirty_space_close = None;
+                        cx.notify();
+                    }
+                }))
+                .child(popover::dialog_title(&theme, "Remove space with unsaved files?"))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!(
+                        "{name} has {count} file(s) with unsaved changes. Save them before the space is removed?"
+                    ),
+                )))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "space-draft-cancel")
+                                .id("space-draft-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dirty_space_close = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            popover::btn_danger(&theme, "Discard")
+                                .id("space-draft-discard")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.resolve_dirty_space_close(false, cx);
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(&theme, "Save all")
+                                .id("space-draft-save")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.resolve_dirty_space_close(true, cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("file-draft-space-dialog", viewport, card));
+        }
+
+        overlays
     }
 }

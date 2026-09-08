@@ -478,6 +478,30 @@ pub enum WorkspaceLineEndings {
     None,
 }
 
+/// The `SaveWorkspaceFile` reply. A version conflict is a REPLY, not an RPC
+/// error: the UI keeps the draft and offers the resolution workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileSave {
+    pub status: WorkspaceSaveStatus,
+    /// The new disk version token after a successful save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The disk version that replaced the expected one on a conflict — the
+    /// baseline for a fresh decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceSaveStatus {
+    Saved,
+    /// The disk version moved since the read the save was based on. Nothing
+    /// was written; the draft is untouched.
+    VersionConflict,
+}
+
 /// The `ReadWorkspaceFile` reply: either editable UTF-8 `text` plus the
 /// source facts a later save must preserve, or a typed reason the file
 /// cannot be opened in the editor (with an external-open affordance).
