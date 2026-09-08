@@ -155,6 +155,7 @@ impl LocalEngine {
         let (spaces_tx, _) = watch::channel(spaces_value);
         let runtime = Arc::new(AgentRuntime::new(
             device_id.clone(),
+            WorkspaceScope::Local,
             config.data_dir.clone(),
             load_chats(&config.data_dir)?,
             config.stream_fn.clone(),

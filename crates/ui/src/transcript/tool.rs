@@ -146,6 +146,7 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
     let text: String = match call {
         ToolCall::Exec { command } => command.clone(),
         ToolCall::ReadFile { path } => path.clone(),
+        ToolCall::ReadChat { chat_id, title } => title.clone().unwrap_or_else(|| chat_id.clone()),
         ToolCall::WriteFile { path, content } => match content {
             Some(content) => format!("{path}\n{content}"),
             None => path.clone(),

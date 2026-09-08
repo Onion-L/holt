@@ -125,7 +125,7 @@ impl Shell {
             self.chat_copy_task = None;
             match index {
                 0 => self.copy_chat_directory(&chat_id, cx),
-                1 => self.copy_holt_conversation_link(&chat_id, cx),
+                1 => self.copy_holt_chat_link(&chat_id, cx),
                 2 => self.copy_chat_markdown(&chat_id, cx),
                 _ => {}
             }
@@ -578,9 +578,7 @@ mod tests {
         cx.update(|_, cx| {
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
             assert_eq!(
-                crate::links::parse_holt_conversation_link(&link)
-                    .unwrap()
-                    .chat_id,
+                crate::links::parse_holt_chat_link(&link).unwrap().chat_id,
                 "context-session"
             );
         });

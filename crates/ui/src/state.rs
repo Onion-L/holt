@@ -213,7 +213,7 @@ pub struct AppState {
     /// judge by the empty pre-sync lists.
     pub chats_synced: bool,
     pub spaces_synced: bool,
-    pending_deep_link: Option<crate::links::ConversationDeepLink>,
+    pending_deep_link: Option<crate::links::ChatLink>,
     deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
@@ -977,7 +977,7 @@ impl AppState {
     }
 
     pub fn open_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        match crate::links::parse_holt_conversation_link(url) {
+        match crate::links::parse_holt_chat_link(url) {
             Ok(link) => {
                 self.pending_deep_link = Some(link);
                 self.apply_pending_deep_link(cx);
@@ -1000,8 +1000,7 @@ impl AppState {
         };
         if locator != link.workspace {
             self.pending_deep_link = None;
-            self.deep_link_notice =
-                Some("This conversation link belongs to another workspace".into());
+            self.deep_link_notice = Some("This Chat link belongs to another Workspace".into());
             return;
         }
         if self.chats.iter().any(|chat| chat.id == link.chat_id) {

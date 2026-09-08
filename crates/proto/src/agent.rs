@@ -325,6 +325,12 @@ pub enum ToolCall {
     ReadFile {
         path: String,
     },
+    #[serde(rename_all = "camelCase")]
+    ReadChat {
+        chat_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
     WriteFile {
         path: String,
         /// Full content; STRIPPED by the render-parts policy before entering the doc.

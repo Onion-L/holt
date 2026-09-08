@@ -12,6 +12,7 @@ use chrono::Utc;
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
 use holt_proto::{
     Chat, PermissionMode, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall,
+    WorkspaceScope,
 };
 use pi_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
 use pi_core::{
@@ -390,6 +391,7 @@ pub(crate) struct AgentRuntime {
     pub(crate) persistence: Arc<Mutex<()>>,
     pub(crate) stopping: std::sync::atomic::AtomicBool,
     pub(crate) device_id: String,
+    pub(crate) workspace_scope: WorkspaceScope,
     pub(crate) data_dir: PathBuf,
     pub(crate) chats: RwLock<Vec<Chat>>,
     pub(crate) chats_tx: watch::Sender<serde_json::Value>,
@@ -449,6 +451,7 @@ impl AgentRuntime {
     }
     pub(crate) fn new(
         device_id: String,
+        workspace_scope: WorkspaceScope,
         data_dir: PathBuf,
         chats: Vec<Chat>,
         stream_fn: Option<pi_core::agent::types::StreamFn>,
@@ -460,6 +463,7 @@ impl AgentRuntime {
             persistence: Arc::new(Mutex::new(())),
             stopping: std::sync::atomic::AtomicBool::new(false),
             device_id,
+            workspace_scope,
             data_dir,
             chats: RwLock::new(chats),
             chats_tx,
@@ -485,6 +489,14 @@ impl AgentRuntime {
                 ))
             })
             .clone()
+    }
+
+    pub(crate) fn loaded_chat(&self, chat_id: &str) -> Option<Arc<ChatRuntime>> {
+        self.chat_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(chat_id)
+            .cloned()
     }
 
     /// Drop a chat's runtime slot and its persisted records. An in-flight
@@ -679,6 +691,14 @@ fn decode_tool_call(
         "read" => TranscriptToolCall::ReadFile {
             path: arg("path").unwrap_or_default(),
         },
+        "read_chat" => TranscriptToolCall::ReadChat {
+            chat_id: arg("url")
+                .as_deref()
+                .and_then(|url| holt_proto::parse_holt_chat_link(url).ok())
+                .map(|link| link.chat_id)
+                .unwrap_or_else(|| "invalid Chat link".into()),
+            title: None,
+        },
         "write" => TranscriptToolCall::WriteFile {
             path: arg("path").unwrap_or_default(),
             content: None,
@@ -736,6 +756,7 @@ fn resolve_tool_part(
     tool_call_id: &str,
     is_error: bool,
     output: Option<String>,
+    read_chat_title: Option<&str>,
 ) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
     let mut changed = false;
@@ -745,6 +766,7 @@ fn resolve_tool_part(
             .iter_mut()
             .find(|part| matches!(part, MessagePart::Tool { id, .. } if id == tool_call_id));
         if let Some(MessagePart::Tool {
+            call,
             resolved,
             is_error: part_error,
             output: part_output,
@@ -754,6 +776,9 @@ fn resolve_tool_part(
             *resolved = true;
             *part_error = is_error;
             *part_output = output.clone();
+            if let TranscriptToolCall::ReadChat { title, .. } = call {
+                *title = read_chat_title.map(str::to_owned);
+            }
             changed = true;
         }
         if changed {
@@ -1230,6 +1255,7 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
                     ..
                 } => {
                     let output = tool_output_full(&result);
+                    let read_chat_title = result.details["title"].as_str().map(str::to_owned);
                     for part in base_parts
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -1237,6 +1263,7 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
                     {
                         if let MessagePart::Tool {
                             id,
+                            call,
                             resolved,
                             is_error: failed,
                             output: slot,
@@ -1247,9 +1274,18 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
                             *resolved = true;
                             *failed = is_error;
                             *slot = output.clone();
+                            if let TranscriptToolCall::ReadChat { title, .. } = call {
+                                *title = read_chat_title.clone();
+                            }
                         }
                     }
-                    resolve_tool_part(&chat, &tool_call_id, is_error, output);
+                    resolve_tool_part(
+                        &chat,
+                        &tool_call_id,
+                        is_error,
+                        output,
+                        read_chat_title.as_deref(),
+                    );
                 }
                 _ => {}
             }
@@ -1452,9 +1488,18 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
     );
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
     let mut tools = crate::tools::execution_tools_for_model(&cwd, allow_images);
+    let current_chat_id = chat
+        .child
+        .as_ref()
+        .map(|child| child.parent.chat_id.clone())
+        .unwrap_or_else(|| chat_id.clone());
+    tools.push(crate::tools::create_read_chat_tool(
+        runtime.clone(),
+        current_chat_id,
+    ));
     if let Some(child) = &chat.child {
         if child.role == "explorer" {
-            tools.retain(|tool| matches!(tool.name.as_str(), "read" | "grep"));
+            tools.retain(|tool| matches!(tool.name.as_str(), "read" | "grep" | "read_chat"));
         }
     } else {
         tools.push(crate::subagents::tool(crate::subagents::Delegation {
@@ -1714,6 +1759,7 @@ mod tests {
         let prompt = system_prompt("/tmp/holt");
         assert!(prompt.contains("/tmp/holt"));
         assert!(!prompt.contains("{{cwd}}"));
+        assert!(prompt.contains("call `read_chat` immediately"));
     }
 
     /// Write a skill into a temp personal root the way the loader expects.
@@ -1821,6 +1867,18 @@ mod tests {
             transcript_tool_call(&tool_call("read", serde_json::json!({ "path": "a.rs" }))),
             TranscriptToolCall::ReadFile {
                 path: "a.rs".into()
+            }
+        );
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "read_chat",
+                serde_json::json!({
+                    "url": "holt://open/chat/chat-2?workspace=workspace"
+                })
+            )),
+            TranscriptToolCall::ReadChat {
+                chat_id: "chat-2".into(),
+                title: None,
             }
         );
         // Write content is stripped before it can reach the doc.
@@ -1978,7 +2036,13 @@ mod tests {
     fn transcript_survives_runtime_restart() {
         let dir = std::env::temp_dir().join(format!("holt-restart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let runtime = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
+        let runtime = AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.clone(),
+            Vec::new(),
+            None,
+        );
         let chat = runtime.chat("chat-1");
         chat.transcript.write().unwrap().push(SessionMessageEntry {
             id: "m1".into(),
@@ -1999,7 +2063,13 @@ mod tests {
         // With no History file beside it, this is a legacy chat: the replay
         // ends with the one written-once notice marking where the model's
         // memory begins.
-        let restarted = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
+        let restarted = AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.clone(),
+            Vec::new(),
+            None,
+        );
         let restored = restarted.chat("chat-1");
         let transcript = restored.transcript.read().unwrap();
         assert_eq!(transcript.len(), 2);
@@ -2012,7 +2082,13 @@ mod tests {
         drop(transcript);
         assert_eq!(restored.transcript_tx.borrow().len(), 2);
         // Reopening never adds a second notice.
-        let again = AgentRuntime::new("device".into(), dir.clone(), Vec::new(), None);
+        let again = AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.clone(),
+            Vec::new(),
+            None,
+        );
         assert_eq!(again.chat("chat-1").transcript.read().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2046,7 +2122,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
         });
-        resolve_tool_part(&chat, "call-9", true, Some("boom".into()));
+        resolve_tool_part(&chat, "call-9", true, Some("boom".into()), None);
         let transcript = chat.transcript.read().unwrap();
         let Some(MessagePart::Tool {
             resolved,

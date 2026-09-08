@@ -175,9 +175,10 @@ provider/model discovery, `createChat`/`renameChat`, chat/session watches, `Queu
 run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run loop mounts pi-core's
 built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
-named `grep` (ripgrep's crates in process, ADR-0004); the transcript folds their
-calls and results into `MessagePart::Tool` chips. Parent runs also mount
-the foreground `Agent` delegation tool (ADR-0016).
+named `grep` (ripgrep's crates in process, ADR-0004), and the Workspace-aware
+`read_chat` tool for another Chat's user-visible Transcript (ADR-0018); the
+transcript folds their calls and results into `MessagePart::Tool` chips. Parent
+runs also mount the foreground `Agent` delegation tool (ADR-0016).
 
 ## Subagents
 

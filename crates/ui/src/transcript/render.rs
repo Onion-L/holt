@@ -2164,6 +2164,7 @@ fn tool_icon_path(call: &ToolCall) -> &'static str {
     match call {
         ToolCall::Exec { .. } => crate::icons::COMMAND,
         ToolCall::ReadFile { .. } | ToolCall::ApplyPatch { .. } => crate::icons::DOCUMENT,
+        ToolCall::ReadChat { .. } => crate::icons::CHAT_ROUND_LINE,
         ToolCall::WriteFile { .. } => crate::icons::DOCUMENT_ADD,
         ToolCall::EditFile { .. } => crate::icons::PEN,
         ToolCall::Search { .. } => crate::icons::MAGNIFER,

@@ -262,6 +262,25 @@ impl ScriptedProvider {
     pub fn requests(&self) -> Vec<RecordedRequest> {
         self.requests.lock().unwrap().clone()
     }
+
+    /// Replace one queued scripted tool call after the engine has supplied
+    /// runtime-derived fixture data such as its Workspace locator.
+    pub fn replace_tool_arguments(&self, id: &str, arguments: serde_json::Value) {
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        let mut script = self.script.lock().unwrap();
+        for reply in script.iter_mut() {
+            let calls = match reply {
+                ScriptedReply::ToolCalls(calls)
+                | ScriptedReply::ToolCallsWithUsage { calls, .. } => calls,
+                _ => continue,
+            };
+            if let Some(call) = calls.iter_mut().find(|call| call.id == id) {
+                call.arguments = arguments;
+                return;
+            }
+        }
+        panic!("scripted tool call {id:?} was not found");
+    }
 }
 
 /// One recorded provider request.

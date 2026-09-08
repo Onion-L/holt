@@ -1178,7 +1178,7 @@ impl Shell {
         }
     }
 
-    fn copy_holt_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+    fn copy_holt_chat_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let link = {
             let state = self.state.read(cx);
             crate::links::workspace_locator(
@@ -1186,13 +1186,13 @@ impl Shell {
                 state.auth.as_ref(),
                 state.local_device_id.as_deref(),
             )
-            .map(|workspace| crate::links::holt_conversation_link(chat_id, &workspace))
+            .map(|workspace| crate::links::holt_chat_link(chat_id, &workspace))
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Holt conversation link copied".into());
+            self.sidebar_notice = Some("Holt Chat link copied".into());
         } else {
-            self.sidebar_notice = Some("Conversation link is not ready yet".into());
+            self.sidebar_notice = Some("Chat link is not ready yet".into());
         }
         self.close_chat_menu(cx);
         cx.notify();

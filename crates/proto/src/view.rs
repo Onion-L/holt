@@ -346,6 +346,10 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
     match call {
         ToolCall::Exec { command } => ("Run", command.clone()),
         ToolCall::ReadFile { path } => ("Read", path.clone()),
+        ToolCall::ReadChat { chat_id, title } => (
+            "Read chat",
+            title.clone().unwrap_or_else(|| chat_id.clone()),
+        ),
         ToolCall::WriteFile { path, .. } => ("Write", path.clone()),
         ToolCall::EditFile { path, .. } => ("Edit", path.clone()),
         ToolCall::ApplyPatch { path } => {
@@ -387,6 +391,7 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
     let mut commands = 0usize;
     let mut edited: Vec<&str> = Vec::new();
     let mut reads = 0usize;
+    let mut chats = 0usize;
     let mut searches = 0usize;
     let mut fetches = 0usize;
     let mut todos = 0usize;
@@ -410,6 +415,7 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
                 }
             }
             ToolCall::ReadFile { .. } => reads += 1,
+            ToolCall::ReadChat { .. } => chats += 1,
             ToolCall::Search { .. } | ToolCall::Glob { .. } | ToolCall::WebSearch { .. } => {
                 searches += 1
             }
@@ -427,6 +433,9 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
     }
     if reads > 0 {
         segments.push(format!("read {}", plural(reads, "file", "files")));
+    }
+    if chats > 0 {
+        segments.push(format!("read {}", plural(chats, "chat", "chats")));
     }
     if searches > 0 {
         segments.push(format!("searched {}", plural(searches, "time", "times")));

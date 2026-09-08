@@ -5,6 +5,8 @@
 - **Watch coordinator**: the internal module that owns watch subscription, frame decoding, retry, and cancellation policy.
 - **Workspace registry adapter**: a storage-specific implementation of the workspace registry interface, such as Loro or HLC/overlay storage.
 - **Space**: a synced (device, folder) pair — the unit of organization in the sidebar. A space's folder may or may not be a git work tree.
+- **Chat link**: a `holt://` reference to one Chat in a specific Workspace. Its opaque Workspace locator prevents the link from resolving against a different local or synced Workspace.
+  _Avoid_: conversation link, session link
 - **Checkout**: the canonical identity of one working copy of a git work tree, `sha256(deviceId ‖ NUL ‖ git_dir)`. Diffs are grouped per checkout, not per folder path.
 - **Turn**: one agent run of a chat — starts when its queued command begins running, ends when the run finishes or is interrupted.
 - **Pending message**: a user message or skill invocation accepted for later execution in its chat. Each pending message starts its own Turn when its turn to run arrives.

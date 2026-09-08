@@ -99,7 +99,7 @@ async fn explorer_is_independent_and_returns_a_summary_with_durable_records() {
             .unwrap()
             .contains("Project instruction sentinel")
     );
-    assert_eq!(child.tool_names, ["read", "grep"]);
+    assert_eq!(child.tool_names, ["read", "grep", "read_chat"]);
     assert_eq!(child.model, requests[1].model);
     assert_eq!(child.reasoning, requests[1].reasoning);
     let result = requests[3]
@@ -220,6 +220,11 @@ async fn worker_approval_is_visible_in_parent_and_grants_are_shared() {
     );
     common::wait_for_gate(&engine, "chat-1", "parent-write", "settled:exempted").await;
     assert!(provider.requests()[1].tool_names.contains(&"write".into()));
+    assert!(
+        provider.requests()[1]
+            .tool_names
+            .contains(&"read_chat".into())
+    );
     assert!(!provider.requests()[1].tool_names.contains(&"Agent".into()));
 }
 

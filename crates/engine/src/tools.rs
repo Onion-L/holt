@@ -5,6 +5,7 @@
 //! for — plus holt's own content search (ADR-0004) in [`grep`].
 
 mod grep;
+mod read_chat;
 
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
@@ -622,6 +623,8 @@ pub(crate) fn execution_tools_for_model(cwd: &str, allow_images: bool) -> Vec<Ag
         grep::create_grep_tool(cwd),
     ]
 }
+
+pub(crate) use read_chat::create_read_chat_tool;
 
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;
