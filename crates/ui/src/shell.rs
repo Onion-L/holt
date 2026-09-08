@@ -625,6 +625,8 @@ pub struct Shell {
     lifecycle_attached: bool,
     /// The tree panel's open-request subscription.
     _file_tree_events: Option<Subscription>,
+    /// The tree panel's expansion-persistence observation.
+    _file_tree_expansion: Option<Subscription>,
     /// Id mint for file tabs.
     file_seq: u64,
     /// Chat outlet vs settings pages.
@@ -892,6 +894,7 @@ impl Shell {
             file_tree_tween: None,
             file_state: FileStateMap::default(),
             file_viewers_sub: std::collections::HashMap::new(),
+            _file_tree_expansion: None,
             dirty_file_close: None,
             dirty_space_close: None,
             closing_after_save: std::collections::HashSet::new(),
@@ -969,6 +972,11 @@ impl Shell {
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
+        // A Space's persisted file navigation restores the first time the
+        // selection lands on it (ticket 05); later frames are no-ops.
+        if let Some(space) = self.file_space_key(cx) {
+            self.restore_file_navigation_if_needed(&space, cx);
+        }
         if let Some(notice) = state.update(cx, |state, _| state.take_deep_link_notice()) {
             self.push_holt_notice(HoltNoticeKind::Plain, notice.into(), cx);
         }

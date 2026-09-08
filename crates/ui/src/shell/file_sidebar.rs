@@ -15,6 +15,150 @@ impl Shell {
         crate::files::FileStateMap::space_key(self.state.read(cx))
     }
 
+    /// Snapshot every LIVE Space's file navigation into the persisted
+    /// settings record and schedule the debounced save. Called from every
+    /// navigation mutation (tab open/close/reorder/pin/select, expansion
+    /// changes, space removal). Contents never ride along - a restart
+    /// observes disk, it never claims a recovered draft (ticket 05).
+    pub(super) fn persist_file_navigation(&mut self, cx: &mut Context<Self>) {
+        let tree = self.file_tree.clone();
+        let live: Vec<(
+            String,
+            Vec<crate::settings::PersistedFileTab>,
+            Option<usize>,
+        )> = self
+            .file_state
+            .spaces()
+            .map(|(space, tabs)| {
+                let selected = tabs
+                    .tabs
+                    .iter()
+                    .position(|tab| Some(tab.id) == self.file_state.active(space));
+                (
+                    space.clone(),
+                    tabs.tabs
+                        .iter()
+                        .map(|tab| crate::settings::PersistedFileTab {
+                            path: tab.path.clone(),
+                            pinned: tab.pinned,
+                        })
+                        .collect(),
+                    selected,
+                )
+            })
+            .collect();
+        for (space, tabs, selected) in live {
+            // `cwd:` fallback keys are session-only — never persisted, so
+            // no unrestorable record accumulates.
+            if space.starts_with("cwd:") {
+                self.settings.file_navigation.remove(&space);
+                continue;
+            }
+            let mut record = self
+                .settings
+                .file_navigation
+                .remove(&space)
+                .unwrap_or_default();
+            record.tabs = tabs;
+            record.selected = selected;
+            // Expansion follows the tree's live view; a Space the tree has
+            // not visited this run keeps its stored expansion.
+            if let Some(tree) = &tree
+                && let Some(expanded) = tree.read(cx).expanded_for(&space)
+            {
+                record.expanded = expanded;
+            }
+            // An empty record (no tabs, no expansion) removes the entry —
+            // visited Spaces do not bloat the settings file.
+            if record.tabs.is_empty() && record.expanded.is_empty() {
+                self.settings.file_navigation.remove(&space);
+            } else {
+                self.settings.file_navigation.insert(space, record);
+            }
+        }
+        self.schedule_save(cx);
+    }
+
+    /// Restore a Space's file navigation from the persisted record, once
+    /// per run: tabs come back WITHOUT reads (each read defers until its
+    /// tab first renders), the selected tab heals by index, and no draft
+    /// state exists. A missing or unreadable path surfaces when its tab is
+    /// shown - it never blocks startup or recreates anything.
+    pub(super) fn restore_file_navigation_if_needed(
+        &mut self,
+        space: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_state.space(space).is_some() {
+            return; // already live (or already restored) this run
+        }
+        // Only real Space identities persist; `cwd:` fallback keys are
+        // session-only.
+        let record = if space.starts_with("cwd:") {
+            crate::settings::SpaceFileNavigation::default()
+        } else {
+            self.settings
+                .file_navigation
+                .get(space)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let scope = {
+            let state = self.state.read(cx);
+            state
+                .selected_chat_row()
+                .map(|chat| FileScope {
+                    chat_id: Some(chat.id.clone()),
+                    space_id: None,
+                })
+                .unwrap_or_else(|| FileScope {
+                    chat_id: None,
+                    space_id: state.selected_space.clone(),
+                })
+        };
+        let state = self.state.clone();
+        let mut restored: Vec<(u64, crate::settings::PersistedFileTab, Entity<FileViewer>)> =
+            Vec::new();
+        for persisted in record.tabs {
+            self.file_seq += 1;
+            let id = self.file_seq;
+            let viewer = cx.new(|cx| {
+                FileViewer::restored(state.clone(), persisted.path.clone(), scope.clone(), cx)
+            });
+            restored.push((id, persisted, viewer));
+        }
+        let selected_id = record
+            .selected
+            .and_then(|index| restored.get(index).map(|(id, _, _)| *id));
+        {
+            let entry = self.file_state.get(space);
+            for (id, persisted, viewer) in restored {
+                let events = Self::subscribe_viewer(space, id, &viewer, cx);
+                self.file_viewers_sub.insert(id, events);
+                entry.tabs.push(crate::files::FileTab {
+                    id,
+                    path: persisted.path,
+                    resolved: None,
+                    pinned: persisted.pinned,
+                    viewer,
+                });
+            }
+        }
+        if let Some(id) = selected_id {
+            self.file_state.set_active(space, id);
+            // Landing pick: a chat that never chose a surface shows the
+            // persisted tab when the contents pane opens (the pane itself
+            // stays closed until the user opens it).
+            let key = self.panel_key(cx);
+            self.panels.update(&key, |panels| {
+                if panels.right_active == RightSurface::Picker {
+                    panels.right_active = RightSurface::File(id);
+                }
+            });
+        }
+        cx.notify();
+    }
+
     /// The space's file tabs as strip rows (title-only; the strip adds icons).
     pub(super) fn file_state_row(&self, space: &str) -> Option<Vec<(RightSurface, SharedString)>> {
         self.file_state.space(space).map(|tabs| {
@@ -43,6 +187,12 @@ impl Shell {
         let tree = cx.new(|cx| FileTreePanel::new(self.state.clone(), cx));
         let events = cx.subscribe(&tree, Self::on_file_tree_event);
         self._file_tree_events = Some(events);
+        // Expansion and selection changes ride the panel's notifies into
+        // the persisted navigation record (debounced).
+        let expansion = cx.observe(&tree, |this: &mut Shell, _, cx| {
+            this.persist_file_navigation(cx);
+        });
+        self._file_tree_expansion = Some(expansion);
         self.file_tree = Some(tree.clone());
         tree
     }
@@ -150,54 +300,7 @@ impl Shell {
         let viewer = cx.new(|cx| FileViewer::new(self.state.clone(), path.clone(), scope, cx));
         // Viewer events maintain the tab's bookkeeping: the resolved path
         // (alias identity) and preview pinning on first edit (decision 12).
-        let events = {
-            let space = space.clone();
-            cx.subscribe(
-                &viewer,
-                move |this: &mut Shell, _, event: &FileViewerEvent, cx| {
-                    match event {
-                        FileViewerEvent::Loaded { resolved } => {
-                            let resolved = resolved.clone();
-                            if let Some(tab) = this
-                                .file_state
-                                .get(&space)
-                                .tabs
-                                .iter_mut()
-                                .find(|tab| tab.id == id)
-                            {
-                                tab.resolved = Some(resolved);
-                            }
-                        }
-                        FileViewerEvent::PinRequested => {
-                            if let Some(tab) = this
-                                .file_state
-                                .get(&space)
-                                .tabs
-                                .iter_mut()
-                                .find(|tab| tab.id == id)
-                            {
-                                tab.pinned = true;
-                            }
-                        }
-                        FileViewerEvent::DirtyChanged { .. } => {}
-                        FileViewerEvent::Moved { path } => {
-                            let path = path.clone();
-                            if let Some(tab) = this
-                                .file_state
-                                .get(&space)
-                                .tabs
-                                .iter_mut()
-                                .find(|tab| tab.id == id)
-                            {
-                                tab.path = path;
-                                tab.resolved = None;
-                            }
-                        }
-                    }
-                    cx.notify();
-                },
-            )
-        };
+        let events = Self::subscribe_viewer(&space, id, &viewer, cx);
         self.file_state
             .get(&space)
             .tabs
@@ -214,6 +317,66 @@ impl Shell {
         }
         self.reveal_contents_pane(cx);
         self.set_right_active(RightSurface::File(id), cx);
+        self.persist_file_navigation(cx);
+    }
+
+    /// The per-viewer event hookup every tab - live opens and navigation
+    /// restores alike - carries: resolved-path identity, edit-to-pin, and
+    /// Save As moves.
+    fn subscribe_viewer(
+        space: &str,
+        id: u64,
+        viewer: &Entity<FileViewer>,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        let space = space.to_string();
+        cx.subscribe(
+            viewer,
+            move |this: &mut Shell, _, event: &FileViewerEvent, cx| {
+                match event {
+                    FileViewerEvent::Loaded { resolved } => {
+                        let resolved = resolved.clone();
+                        if let Some(tab) = this
+                            .file_state
+                            .get(&space)
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id == id)
+                        {
+                            tab.resolved = Some(resolved);
+                        }
+                    }
+                    FileViewerEvent::PinRequested => {
+                        if let Some(tab) = this
+                            .file_state
+                            .get(&space)
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id == id)
+                        {
+                            tab.pinned = true;
+                        }
+                        this.persist_file_navigation(cx);
+                    }
+                    FileViewerEvent::DirtyChanged { .. } => {}
+                    FileViewerEvent::Moved { path } => {
+                        let path = path.clone();
+                        if let Some(tab) = this
+                            .file_state
+                            .get(&space)
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id == id)
+                        {
+                            tab.path = path;
+                            tab.resolved = None;
+                        }
+                        this.persist_file_navigation(cx);
+                    }
+                }
+                cx.notify();
+            },
+        )
     }
 
     /// Opening a file reveals the contents area (decision 12); the contents
@@ -319,6 +482,7 @@ impl Shell {
             self.file_viewers_sub.remove(&id);
             drop(viewer);
         }
+        self.persist_file_navigation(cx);
         // The chat's stored pick may point at the closed surface;
         // `resolved_right_active` heals it on the next frame.
         let key = self.panel_key(cx);

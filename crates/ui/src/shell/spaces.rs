@@ -2089,9 +2089,13 @@ impl Shell {
             serde_json::json!({ "op": "deleteSpace", "spaceId": space_id }),
             cx,
         );
-        // The space's file editing state goes with it — after the draft
-        // decision above, so no buffer is dropped while it still matters.
+        // The space's file editing state AND its persisted navigation
+        // record go with it — after the draft decision above, so no buffer
+        // is dropped while it still matters. Cancelling the removal never
+        // reaches here; the record stands.
         self.file_state.purge_space(&space_id);
+        self.settings.file_navigation.remove(&space_id);
+        self.schedule_save(cx);
         cx.notify();
     }
 

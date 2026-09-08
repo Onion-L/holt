@@ -293,11 +293,61 @@ impl FileTreePanel {
             .or_insert_with(SpaceTree::new);
         self.active = Some(derived);
         if switched {
+            self.restore_expansion(cx);
             self.list.reset(0);
             self.rebuild_rows();
             self.ensure_dir_loaded("", cx);
             self.start_watch(cx);
         }
+    }
+
+    /// Seed the switched-to Space's expansion from the persisted navigation
+    /// record (ticket 05) — the directories the user left open reload their
+    /// one level each; nothing else expands and the root never recurses.
+    fn restore_expansion(&mut self, cx: &mut Context<Self>) {
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        // Only real Space identities persist; `cwd:` fallback keys stay
+        // session-only. The KEY carries that (a chat-selected root still
+        // belongs to its Space).
+        if active.space_key.starts_with("cwd:") {
+            return;
+        }
+        let record = crate::settings::current(cx)
+            .file_navigation
+            .get(&active.space_key)
+            .cloned()
+            .unwrap_or_default();
+        if record.expanded.is_empty() {
+            return;
+        }
+        let Some(space) = self.spaces.get_mut(&active.space_key) else {
+            return;
+        };
+        for dir in record.expanded {
+            space.expanded.insert(dir);
+        }
+        // Render rows for the seeded expansion, then load each expanded
+        // directory's single level.
+        self.rebuild_rows();
+        let expanded: Vec<String> = self
+            .spaces
+            .get(&active.space_key)
+            .map(|space| space.expanded.iter().cloned().collect())
+            .unwrap_or_default();
+        for dir in expanded {
+            self.ensure_dir_loaded(&dir, cx);
+        }
+    }
+
+    /// The expanded directory paths recorded for one Space (persistence
+    /// reads this back; spaces never visited this run return None so their
+    /// stored record stands).
+    pub(crate) fn expanded_for(&self, space: &str) -> Option<Vec<String>> {
+        self.spaces
+            .get(space)
+            .map(|tree| tree.expanded.iter().cloned().collect())
     }
 
     /// One watch per active root. Frames re-list the affected directories
@@ -570,7 +620,13 @@ impl FileTreePanel {
             .expanded
             .remove(&expansion);
         if was_expanded {
-            // Collapse keeps the listing cached for a cheap re-expand.
+            // Collapse keeps the listing cached for a cheap re-expand, and
+            // drops the descendants' flags with it — they are invisible now
+            // and must not silently reseed (or waste a listing) on restore.
+            let prefix = format!("{expansion}/");
+            if let Some(space) = self.spaces.get_mut(&active.space_key) {
+                space.expanded.retain(|entry| !entry.starts_with(&prefix));
+            }
             self.rebuild_rows();
             cx.notify();
         } else {
@@ -1015,6 +1071,164 @@ impl FileTreePanel {
                 this.activate_row(ix, pin, cx);
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use crate::state::AppState;
+    use gpui::TestAppContext;
+
+    fn chat(id: &str, space_id: Option<&str>) -> holt_proto::Chat {
+        holt_proto::Chat {
+            id: id.into(),
+            device_id: "device".into(),
+            title: None,
+            title_source: holt_proto::TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            space_id: space_id.map(str::to_string),
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+        }
+    }
+
+    fn install_navigation(cx: &mut TestAppContext, expanded: Vec<String>) {
+        let record = crate::settings::SpaceFileNavigation {
+            tabs: Vec::new(),
+            selected: None,
+            expanded,
+        };
+        cx.update(|cx| {
+            crate::settings::init(
+                {
+                    let mut settings = crate::settings::UiSettings::default();
+                    settings.file_navigation.insert("space-1".into(), record);
+                    settings
+                },
+                std::env::temp_dir(),
+                cx,
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn expansion_restores_when_a_chat_selects_the_space(cx: &mut TestAppContext) {
+        // The mainline restart path: a chat (belonging to a real Space) is
+        // selected. The tree must seed the persisted expansion.
+        install_navigation(cx, vec!["/tmp/space-1/src".into()]);
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![chat("chat-1", Some("space-1"))];
+            state.selected_chat = Some("chat-1".into());
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            tree.read_with(cx, |tree, _| tree.expanded_for("space-1")),
+            Some(vec!["/tmp/space-1/src".to_string()]),
+            "chat-selected roots restore their Space's expansion"
+        );
+    }
+
+    #[gpui::test]
+    fn expansion_restores_on_the_canvas_and_skips_cwd_keys(cx: &mut TestAppContext) {
+        install_navigation(cx, vec!["/tmp/space-1/docs".into()]);
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            tree.read_with(cx, |tree, _| tree.expanded_for("space-1")),
+            Some(vec!["/tmp/space-1/docs".to_string()]),
+            "the canvas restores too"
+        );
+
+        // A `cwd:`-keyed root (spaceless chat) never seeds — even from a
+        // stale record stored under that exact key.
+        cx.update(|cx| {
+            let stale = crate::settings::SpaceFileNavigation {
+                tabs: Vec::new(),
+                selected: None,
+                expanded: vec!["/tmp/solo/src".into()],
+            };
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings
+                    .file_navigation
+                    .insert("cwd:/tmp/solo".into(), stale);
+            });
+        });
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![chat("solo", None)];
+            state.selected_chat = Some("solo".into());
+            state.chats[0].cwd = Some("/tmp/solo".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            tree.read_with(cx, |tree, _| tree.expanded_for("cwd:/tmp/solo")),
+            Some(Vec::new()),
+            "cwd: keys are session-only — the stale record is ignored"
+        );
+    }
+
+    #[gpui::test]
+    fn collapsing_a_directory_drops_its_descendants_flags(cx: &mut TestAppContext) {
+        // Ancestor closure: collapse removes the subtree's expansion flags
+        // so nothing reseeds invisibly after a restore.
+        install_navigation(cx, Vec::new());
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        tree.update(cx, |tree, cx| {
+            let active = tree.active.clone().expect("root");
+            let space = tree
+                .spaces
+                .entry(active.space_key)
+                .or_insert_with(SpaceTree::new);
+            space.expanded.insert("/tmp/space-1/src".into());
+            space.expanded.insert("/tmp/space-1/src/deep".into());
+            space.expanded.insert("/tmp/space-1/other".into());
+        });
+        // Rows: with no listings loaded, rows are empty; toggle works off
+        // the rows — so inject a row first.
+        tree.update(cx, |tree, _| {
+            tree.rows.push(TreeRow {
+                depth: 0,
+                name: "src".into(),
+                path: "/tmp/space-1/src".into(),
+                kind: WorkspaceEntryKind::Directory,
+                marker: None,
+            });
+        });
+        tree.update(cx, |tree, cx| tree.toggle_expansion(0, cx));
+        let remaining = tree.read_with(cx, |tree, _| tree.expanded_for("space-1"));
+        assert_eq!(
+            remaining,
+            Some(vec!["/tmp/space-1/other".to_string()]),
+            "collapse drops the subtree's flags"
+        );
     }
 }
 

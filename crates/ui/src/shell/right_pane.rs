@@ -245,6 +245,7 @@ impl Shell {
                 tabs.tabs.insert(to, tab);
                 cx.notify();
             }
+            self.persist_file_navigation(cx);
             return;
         }
         if let Some(tabs) = self.right_tabs.get_mut(&key)
@@ -326,6 +327,7 @@ impl Shell {
             RightSurface::File(id) => {
                 if let Some(space) = self.file_space_key(cx) {
                     self.file_state.set_active(&space, id);
+                    self.persist_file_navigation(cx);
                 }
             }
             RightSurface::Picker => {}

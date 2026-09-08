@@ -191,6 +191,45 @@ pub enum SidebarSort {
     Created,
 }
 
+/// One persisted file tab (ADR-0020 navigation restore): WHERE it points
+/// and whether it was pinned. Deliberately no contents, no undo, no dirty
+/// flag — a restart observes disk, it never claims a recovered draft
+/// (ticket 05).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PersistedFileTab {
+    /// Absolute path as the tab last knew it (the entry's own path, not a
+    /// resolved alias — the engine re-resolves on read).
+    pub path: String,
+    pub pinned: bool,
+}
+
+/// A Space's persisted file navigation: open tabs in strip order, the
+/// selected tab index, and the expanded directory paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SpaceFileNavigation {
+    pub tabs: Vec<PersistedFileTab>,
+    pub selected: Option<usize>,
+    pub expanded: Vec<String>,
+}
+
+impl SpaceFileNavigation {
+    /// Heal a hand-edited or partially malformed record: drop empty and
+    /// duplicate paths, clamp the selection into range, dedup expansion.
+    /// Unrelated fields and other Spaces' records are never touched.
+    pub fn sanitized(mut self) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        self.tabs
+            .retain(|tab| !tab.path.trim().is_empty() && seen.insert(tab.path.clone()));
+        self.selected = self.selected.filter(|index| *index < self.tabs.len());
+        let mut expanded_seen = std::collections::HashSet::new();
+        self.expanded
+            .retain(|dir| !dir.is_empty() && expanded_seen.insert(dir.clone()));
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
@@ -267,6 +306,11 @@ pub struct UiSettings {
     /// the identity. Device-local.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_skills: Vec<String>,
+    /// Per-Space file-sidebar navigation (ADR-0020, ticket 05): open file
+    /// tabs, the selected tab, and expanded tree directories. Contents are
+    /// never persisted — restarts observe disk.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub file_navigation: std::collections::HashMap<String, SpaceFileNavigation>,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
     /// [`Self::accent`], and never write it again.
     #[serde(default, rename = "accentColor", skip_serializing)]
@@ -304,6 +348,7 @@ impl Default for UiSettings {
             accent: holt_theme::AccentSelection::default(),
             surface: holt_theme::SurfacePreference::default(),
             disabled_skills: Vec::new(),
+            file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
         }
     }
@@ -771,7 +816,16 @@ impl UiSettings {
     pub fn load(data_dir: &Path) -> Self {
         match std::fs::read_to_string(Self::path(data_dir)) {
             Ok(text) => match serde_json::from_str::<UiSettings>(&text) {
-                Ok(settings) => settings.migrated().clamped(),
+                Ok(mut settings) => {
+                    // Each Space's navigation record heals independently —
+                    // one stale entry never costs the others or startup.
+                    settings.file_navigation = settings
+                        .file_navigation
+                        .drain()
+                        .map(|(space, record)| (space, record.sanitized()))
+                        .collect();
+                    settings.migrated().clamped()
+                }
                 Err(err) => {
                     tracing::warn!(error = %err, "ui-settings corrupt; using defaults");
                     Self::default()
@@ -828,6 +882,124 @@ fn min_or(value: f32, min: f32, default: f32) -> f32 {
 mod tests {
     use super::*;
 
+    // ---- file navigation persistence (ticket 05) ----
+
+    fn navigation_record() -> SpaceFileNavigation {
+        SpaceFileNavigation {
+            tabs: vec![
+                PersistedFileTab {
+                    path: "/tmp/space-a/src/main.rs".into(),
+                    pinned: true,
+                },
+                PersistedFileTab {
+                    path: "/tmp/space-a/notes.md".into(),
+                    pinned: false,
+                },
+            ],
+            selected: Some(1),
+            expanded: vec!["/tmp/space-a/src".into(), "/tmp/space-a/src/deep".into()],
+        }
+    }
+
+    #[test]
+    fn file_navigation_round_trips_per_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = UiSettings::default();
+        settings
+            .file_navigation
+            .insert("space-a".into(), navigation_record());
+        let mut other = SpaceFileNavigation {
+            tabs: vec![PersistedFileTab {
+                path: "/tmp/space-b/x.txt".into(),
+                pinned: false,
+            }],
+            selected: None,
+            expanded: Vec::new(),
+        };
+        other.selected = Some(0);
+        settings.file_navigation.insert("space-b".into(), other);
+        settings.save(dir.path()).unwrap();
+
+        let loaded = UiSettings::load(dir.path());
+        let record = loaded.file_navigation.get("space-a").unwrap();
+        assert_eq!(record, &navigation_record());
+        let other = loaded.file_navigation.get("space-b").unwrap();
+        assert_eq!(other.selected, Some(0));
+        // One Space's record never touches the other's.
+        assert_eq!(loaded.file_navigation.len(), 2);
+    }
+
+    #[test]
+    fn persisted_navigation_carries_no_draft_bytes() {
+        // The record's shape IS the guarantee: paths, pinning, selection,
+        // expansion — no text, no undo, no dirty flags. A crash leaves
+        // nothing that could masquerade as a recovered draft.
+        let json = serde_json::to_string(&navigation_record()).unwrap();
+        assert!(json.contains("main.rs"));
+        for forbidden in ["text", "content", "buffer", "undo", "dirty"] {
+            assert!(
+                !json.contains(&format!("\"{forbidden}\"")),
+                "{forbidden} must not appear in persisted navigation: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_records_heal_without_losing_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = UiSettings::default();
+        settings
+            .file_navigation
+            .insert("space-a".into(), navigation_record());
+        // space-b's record is malformed: out-of-range selection, duplicate
+        // and empty paths, duplicate expansion.
+        settings.file_navigation.insert(
+            "space-b".into(),
+            SpaceFileNavigation {
+                tabs: vec![
+                    PersistedFileTab {
+                        path: "  ".into(),
+                        pinned: false,
+                    },
+                    PersistedFileTab {
+                        path: "/tmp/space-b/x.txt".into(),
+                        pinned: true,
+                    },
+                    PersistedFileTab {
+                        path: "/tmp/space-b/x.txt".into(),
+                        pinned: false,
+                    },
+                ],
+                selected: Some(9),
+                expanded: vec![String::new(), "/tmp/space-b".into(), "/tmp/space-b".into()],
+            },
+        );
+        settings.save(dir.path()).unwrap();
+
+        let loaded = UiSettings::load(dir.path());
+        // The sibling record is untouched.
+        assert_eq!(
+            loaded.file_navigation.get("space-a"),
+            Some(&navigation_record())
+        );
+        // The malformed record healed: deduped, clamped, still usable.
+        let healed = loaded.file_navigation.get("space-b").unwrap();
+        assert_eq!(healed.tabs.len(), 1);
+        assert_eq!(healed.tabs[0].path, "/tmp/space-b/x.txt");
+        assert_eq!(healed.selected, None);
+        assert_eq!(healed.expanded, vec!["/tmp/space-b".to_string()]);
+    }
+
+    #[test]
+    fn a_fully_corrupt_settings_file_falls_back_to_defaults() {
+        // The existing settings convention: the file is the unit of
+        // failure, startup never blocks.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ui-settings.json"), "{ not json at all").unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded, UiSettings::default());
+    }
+
     #[test]
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -869,6 +1041,7 @@ mod tests {
             accent: holt_theme::AccentSelection::Preset(holt_theme::AccentPreset::Cyan),
             surface: holt_theme::SurfacePreference::Frosted,
             disabled_skills: vec!["grill".into()],
+            file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();

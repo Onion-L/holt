@@ -122,6 +122,9 @@ pub struct FileViewer {
     compare_open: bool,
     /// The Save As destination input (the banner's Save As… opens it).
     save_as_input: Option<Entity<crate::composer::ComposerInput>>,
+    /// A restored tab (ticket 05): the first read waits until this viewer
+    /// actually renders, so restart never eagerly reads every tab.
+    deferred_read: bool,
     /// The reviewed disk token a confirmed overwrite targets (consumed by
     /// the next `save`).
     overwrite_baseline: Option<String>,
@@ -146,6 +149,28 @@ impl FileViewer {
         scope: FileScope,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_mode(state, path, scope, false, cx)
+    }
+
+    /// A navigation-restored tab (ticket 05): starts in Loading WITHOUT a
+    /// read — the disk loads only when the tab first renders, and no draft
+    /// state ever claims recovery.
+    pub fn restored(
+        state: Entity<AppState>,
+        path: String,
+        scope: FileScope,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_mode(state, path, scope, true, cx)
+    }
+
+    fn with_mode(
+        state: Entity<AppState>,
+        path: String,
+        scope: FileScope,
+        deferred: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut viewer = Self {
             state,
             path,
@@ -166,6 +191,7 @@ impl FileViewer {
             disk_snapshot: None,
             compare_open: false,
             save_as_input: None,
+            deferred_read: deferred,
             overwrite_baseline: None,
             search_generation: 0,
             search_task: None,
@@ -356,6 +382,22 @@ impl FileViewer {
             // save settles (the DirtyChanged handler checks clean+conflict).
         }
         task
+    }
+
+    /// Test accessors for the deferral contract.
+    #[cfg(test)]
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.deferred_read
+    }
+
+    #[cfg(test)]
+    pub(crate) fn failure_message(&self) -> Option<String> {
+        match &self.view {
+            ViewerState::Failed { message } | ViewerState::Unsupported { reason: message } => {
+                Some(message.to_string())
+            }
+            _ => None,
+        }
     }
 
     /// Open (or close) the in-file search bar, focusing its input.
@@ -738,6 +780,12 @@ impl FileViewer {
 
     pub(super) fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
+        // A restored tab reads the disk the first time it is shown —
+        // "as needed", never eagerly at startup.
+        if self.deferred_read {
+            self.deferred_read = false;
+            self.load(cx);
+        }
         // A sticky save error rides above the editor (conflict, missing
         // file, io failure — the draft is untouched beneath it).
         let error_banner = self.save_error.clone().map(|message| {
@@ -1295,6 +1343,57 @@ mod diff_tests {
         let same = vec!["a", "b"];
         let rows = simple_diff_rows(&same, &same);
         assert!(rows.iter().all(|(m, _)| *m == '·'));
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use crate::state::AppState;
+    use gpui::TestAppContext;
+
+    fn scope() -> FileScope {
+        FileScope {
+            chat_id: None,
+            space_id: Some("space-1".into()),
+        }
+    }
+
+    fn read_viewer<T>(
+        cx: &TestAppContext,
+        viewer: &Entity<FileViewer>,
+        f: impl Fn(&FileViewer) -> T,
+    ) -> T {
+        cx.read(|cx| f(viewer.read(cx)))
+    }
+
+    #[gpui::test]
+    fn restored_viewers_defer_their_first_read_until_render(cx: &mut TestAppContext) {
+        // No engine attached: an EAGER viewer would settle Failed right
+        // away; a restored one must stay quiet (nothing read) until its
+        // tab first renders.
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer = cx.new(|cx| FileViewer::restored(state, "/tmp/notes.md".into(), scope(), cx));
+        cx.run_until_parked();
+        assert!(
+            read_viewer(cx, &viewer, |v| v.is_deferred()),
+            "restore must not read the file"
+        );
+
+        // First render consumes the deferral and starts the (here failing)
+        // read — proving reads happen only when shown.
+        viewer.update(cx, |viewer, cx| {
+            drop(viewer.render_body(cx));
+        });
+        cx.run_until_parked();
+        assert!(!read_viewer(cx, &viewer, |v| v.is_deferred()));
+        assert!(
+            read_viewer(cx, &viewer, |v| v.failure_message()).is_some(),
+            "the deferred read ran (no engine: it failed)"
+        );
+        // And no draft was fabricated anywhere in between.
+        assert!(!read_viewer(cx, &viewer, |v| v.is_dirty()));
     }
 }
 
