@@ -31,14 +31,6 @@ pub(super) fn cycle_target(
     Some(order[next].clone())
 }
 
-pub(super) fn right_pane_expand_icon(expanded: bool) -> &'static str {
-    if expanded {
-        icons::COLLAPSE_ARROWS
-    } else {
-        icons::EXPAND_ARROWS
-    }
-}
-
 impl Shell {
     /// Ctrl+Tab / Ctrl+Shift+Tab: step through the sidebar's Sessions list in
     /// the order it is drawn. Selection is immediate (no MRU overlay held open
@@ -201,97 +193,39 @@ impl Shell {
         } else {
             content_left
         };
-        let trailing: Option<gpui::AnyElement> = {
-            let right_open = self.right_pane_open(cx);
-            let external_picker = if cfg!(target_os = "macos") && !self.external_apps.is_empty() {
-                Some(self.render_external_app_picker(cx))
-            } else {
-                None
-            };
-            let mut controls = div()
-                .id("right-titlebar-controls")
-                .flex_none()
-                .h_full()
-                .flex()
-                .flex_row()
-                .items_center();
-            if right_open {
-                let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
-                let pr = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);
-                // The row's own left padding is part of its content box: a strip
-                // wider than what's left after it overflows and clips at the right
-                // edge (flex_none never shrinks) — cap to the available width. The
-                // row's 8px child gaps sit OUTSIDE the strip's width (one before
-                // the strip in takeover, two with the title row present): without
-                // budgeting them the capped strip overflows by exactly one gap and
-                // the buttons slide right on expand (user report).
-                let gap_budget = if takeover { 8.0 } else { 16.0 };
-                let avail = self.viewport_width - row_left - pr - gap_budget;
-                // The right pane's SURFACE TABS (t3 RightPanelTabs) — the diff
-                // options that used to live here moved into the pane's own
-                // second row; the expand + close controls reveal with them.
-                // The only fixed control right of the band is the external-app
-                // picker (its 100px trigger) — the three panel-toggle buttons
-                // that used to sit there are gone (ticket 11): the surface
-                // picker owns those entries now, and their 28px slots no
-                // longer reserve layout space.
-                let fixed_slots = if external_picker.is_some() {
-                    100.0
-                } else {
-                    0.0
-                };
-                let animated_width = ((right_now - pr).min(avail) - fixed_slots).max(0.0);
-                let tabs = self.render_right_tab_strip(cx);
-                controls = controls.child(
-                    div()
-                        .w(px(animated_width))
-                        .h_full()
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .overflow_hidden()
-                        // 8 + the trigger's own 8px pad = the pane's 16px
-                        // text gutter. The 4px right padding is the stable
-                        // gap before the fixed controls.
-                        .pl(px(8.0))
-                        .pr(px(4.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .overflow_hidden()
-                                .child(tabs),
-                        )
-                        .child(header_icon_button(
-                            "expand-changes",
-                            right_pane_expand_icon(self.right_pane_expanded),
-                            &theme,
-                            cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
-                        ))
-                        // The pane's own hide control (ticket 11): the former
-                        // titlebar toggle-changes button, living in the band
-                        // with the surface tabs. Reopening rides the per-chat
-                        // panel state (⌘⌥B / ToggleChanges or an explicit
-                        // surface open) and restores the selected surface.
-                        .child(
-                            header_icon_button(
-                                "close-right-pane",
-                                icons::SIDEBAR_MINIMALISTIC,
-                                &theme,
-                                cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                            )
-                            .tooltip(|_, cx| {
-                                cx.new(|_| crate::image_viewer::ViewerTooltip("Hide panel".into()))
-                                    .into()
-                            }),
-                        ),
-                );
-            }
-            Some(controls.children(external_picker).into_any_element())
-        };
+        // Stable right-side actions: open-with, Terminal, then the shared
+        // right-pane toggle. These stay visible even while the pane is closed.
+        let trailing = div()
+            .id("right-titlebar-controls")
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .when(
+                cfg!(target_os = "macos") && !self.external_apps.is_empty(),
+                |el| el.child(self.render_external_app_picker(cx)),
+            )
+            .child(header_icon_button(
+                "open-terminal-surface",
+                icons::TERMINAL,
+                &theme,
+                cx.listener(|this, _, _, cx| this.add_terminal_surface(cx)),
+            ))
+            .child(
+                header_icon_button(
+                    "toggle-right-pane",
+                    icons::SIDEBAR_MINIMALISTIC,
+                    &theme,
+                    cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                )
+                .tooltip(|_, cx| {
+                    cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle right panel".into()))
+                        .into()
+                }),
+            )
+            .into_any_element();
 
         let inner = div()
             .size_full()
@@ -350,7 +284,7 @@ impl Shell {
                 )
             })
             .child(div().flex_1())
-            .children(trailing);
+            .child(trailing);
 
         // The unified window titlebar: full-width on the glass shell, ABOVE
         // the inset card. No bottom border — the card's own hairline is the

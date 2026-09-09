@@ -639,17 +639,6 @@ impl Shell {
         })
     }
 
-    /// Show/hide the far-right File tree column (its own toggle — independent
-    /// of the contents pane per decision 2).
-    pub(super) fn toggle_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let visible = !self.file_tree_visible;
-        self.set_file_tree_visible(visible, cx);
-        if visible {
-            // Landing focus in the tree makes its keyboard navigation live.
-            self.focus_file_tree(window, cx);
-        }
-    }
-
     /// The width flip + tween behind the tree column's visibility. Focus (and
     /// therefore `Window`) is the caller's concern.
     pub(super) fn set_file_tree_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -706,6 +695,17 @@ impl Shell {
     /// search row (ticket 09) heads the column — the find-file palette's
     /// click affordance next to its ⌘P key.
     pub(super) fn render_file_tree_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let target = self.file_tree_target(cx);
+        let surface = self.render_file_tree_surface(cx);
+        self.pane_container(
+            self.file_tree_tween,
+            target,
+            div().h_full().relative().child(surface).into_any_element(),
+        )
+    }
+
+    /// File browsing surface hosted by the shared right pane.
+    pub(super) fn render_file_tree_surface(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let bg = theme.bg;
         let panel_bg = if theme.is_glass() {
@@ -782,9 +782,9 @@ impl Shell {
                         cx.new(|_| crate::image_viewer::ViewerTooltip("Hide file sidebar".into()))
                             .into()
                     })
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_file_tree(window, cx);
+                        this.toggle_right_pane(cx);
                     }))
                     .child(
                         icon(crate::icons::TREE_SIDEBAR)
@@ -792,7 +792,7 @@ impl Shell {
                             .text_color(theme.text_muted.opacity(0.8)),
                     ),
             );
-        let panel = div()
+        div()
             .size_full()
             .flex()
             .flex_col()
@@ -800,17 +800,9 @@ impl Shell {
             .border_color(theme.border)
             .bg(panel_bg)
             .overflow_hidden()
-            // The titlebar overlays the full-height column; content starts
-            // below it (the right pane's own convention).
-            .pt(px(Theme::TITLEBAR_HEIGHT))
             .child(header)
-            .child(content);
-        let target = self.file_tree_target(cx);
-        self.pane_container(
-            self.file_tree_tween,
-            target,
-            div().h_full().relative().child(panel).into_any_element(),
-        )
+            .child(content)
+            .into_any_element()
     }
 }
 

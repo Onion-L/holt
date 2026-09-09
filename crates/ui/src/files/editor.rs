@@ -864,8 +864,11 @@ impl CodeEditor {
         let delta = event.delta.pixel_delta(px(EDITOR_LINE_HEIGHT));
         let dy = f32::from(delta.y);
         let dx = f32::from(delta.x);
+        // GPUI reports a positive wheel delta for motion toward the top
+        // (the same convention used by the terminal surface). Our offset is
+        // measured from the document top, so invert the vertical delta.
         let next_top =
-            (self.scroll_top + dy).clamp(0.0, self.max_scroll_top(f32::from(bounds.size.height)));
+            (self.scroll_top - dy).clamp(0.0, self.max_scroll_top(f32::from(bounds.size.height)));
         let next_left =
             (self.scroll_left + dx).clamp(0.0, self.max_scroll_left(f32::from(bounds.size.width)));
         if next_top == self.scroll_top && next_left == self.scroll_left {

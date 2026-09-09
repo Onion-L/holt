@@ -63,7 +63,6 @@ pub use chat_list::*;
 use chat_menu::ChatMenuState;
 mod file_lookup;
 mod file_sidebar;
-use file_sidebar::*;
 pub use right_pane::*;
 use spaces::{AddSpaceFlow, RenameSpaceDialog, SidebarDisclosureMotion};
 pub use titlebar::*;
@@ -1296,13 +1295,12 @@ impl Shell {
             // The tree column keeps its own budget beside the pane — the tree
             // hides independently, never as a side effect of the contents
             // pane growing (decision 8).
-            let tree = self.file_tree_target(cx);
             if self.right_pane_expanded {
-                right_pane_takeover_width(self.viewport_width, sidebar_now) - tree
+                right_pane_takeover_width(self.viewport_width, sidebar_now)
             } else {
                 self.settings
                     .right_pane_width
-                    .min(right_pane_max_width(self.viewport_width, sidebar_now) - tree)
+                    .min(right_pane_max_width(self.viewport_width, sidebar_now))
             }
         }
     }
@@ -3317,41 +3315,6 @@ impl Render for Shell {
                 } else {
                     Empty.into_any_element()
                 };
-                // The far-right File tree column (ADR-0020): its own seam,
-                // resize handle, and open/close tween. It renders on chat
-                // routes and the space-keyed new-chat canvas alike, and
-                // collapses to nothing below its width floor (decision 17).
-                let tree_showing = on_chat
-                    && (self.file_tree_target(cx) > 0.0 || self.tween_active(self.file_tree_tween));
-                let tree_handle = (on_chat
-                    && self.file_tree_visible
-                    && self.file_tree_available(cx) >= FILE_TREE_MIN
-                    && !self.tween_active(self.file_tree_tween))
-                .then(|| {
-                    self.resize_handle(
-                        "file-tree-resize",
-                        || FileTreeResize,
-                        |shell, _| shell.settings.file_tree_width = FILE_TREE_DEFAULT,
-                        cx,
-                    )
-                    .left(px(-6.0))
-                });
-                let file_tree: AnyElement = if tree_showing {
-                    self.render_file_tree_pane(cx)
-                } else {
-                    Empty.into_any_element()
-                };
-                let file_tree_seam: AnyElement = if let Some(handle) = tree_handle {
-                    div()
-                        .w(px(0.0))
-                        .h_full()
-                        .flex_none()
-                        .relative()
-                        .child(handle)
-                        .into_any_element()
-                } else {
-                    Empty.into_any_element()
-                };
                 let title_bar = self.render_title_bar(cx);
                 // Sidebar tone: a slightly lighter column behind the sidebar,
                 // spanning the FULL window height (under the traffic lights,
@@ -3401,9 +3364,7 @@ impl Render for Shell {
                                             .flex()
                                             .child(card)
                                             .child(right_seam)
-                                            .child(right)
-                                            .child(file_tree_seam)
-                                            .child(file_tree),
+                                            .child(right),
                                     )
                                     .when(on_chat, |el| {
                                         el.child(self.render_terminal_container(cx))

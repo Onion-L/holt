@@ -3132,7 +3132,8 @@ unsafe fn remove_layer_background(layer: id) {
                 let hit: BOOL = msg_send![description, containsString: blur_test];
                 if hit == YES {
                     let radius: id = msg_send![class!(NSNumber), numberWithDouble: 60.0f64];
-                    let _: () = msg_send![filter, setValue: radius forKey: ns_string("inputRadius")];
+                    let _: () =
+                        msg_send![filter, setValue: radius forKey: ns_string("inputRadius")];
                     let _: () = msg_send![layer, setFilters: filters];
                     break;
                 }

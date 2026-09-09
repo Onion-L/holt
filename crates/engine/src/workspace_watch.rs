@@ -22,39 +22,6 @@ const DEBOUNCE_QUIET: Duration = Duration::from_millis(200);
 /// rewrites thousands of files collapses into one frame with a cap.
 const FRAME_PATH_CAP: usize = 512;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures::StreamExt as _;
-
-    /// End-to-end within the crate: writes after the watcher arms arrive
-    /// as coalesced frames.
-    #[tokio::test]
-    async fn writes_arrive_as_one_debounced_frame() {
-        let dir = tempfile::tempdir().unwrap();
-        let raw = dir.path().to_path_buf();
-        // The RPC layer canonicalizes before subscribing — same spelling.
-        let root = raw.canonicalize().unwrap();
-        std::fs::write(root.join("a.txt"), b"1").unwrap();
-        let mut stream = subscribe(root.clone()).unwrap();
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        // One burst; the frame(s) that follow must mention the written file.
-        std::fs::write(root.join("a.txt"), b"2").unwrap();
-        std::fs::write(root.join("b.txt"), b"new").unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-        let mut saw_a = false;
-        let mut saw_b = false;
-        while !(saw_a && saw_b) {
-            let frame = tokio::time::timeout_at(deadline, stream.next())
-                .await
-                .expect("frame within deadline")
-                .expect("stream stays open");
-            saw_a |= frame.to_string().contains("a.txt");
-            saw_b |= frame.to_string().contains("b.txt");
-        }
-    }
-}
-
 /// One watched root: the pending changed-path set plus its quiet deadline.
 struct WatchedRoot {
     pending: Vec<String>,
@@ -146,4 +113,37 @@ pub(crate) fn subscribe(
         }
     });
     Ok(out_rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt as _;
+
+    /// End-to-end within the crate: writes after the watcher arms arrive
+    /// as coalesced frames.
+    #[tokio::test]
+    async fn writes_arrive_as_one_debounced_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().to_path_buf();
+        // The RPC layer canonicalizes before subscribing — same spelling.
+        let root = raw.canonicalize().unwrap();
+        std::fs::write(root.join("a.txt"), b"1").unwrap();
+        let mut stream = subscribe(root.clone()).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        // One burst; the frame(s) that follow must mention the written file.
+        std::fs::write(root.join("a.txt"), b"2").unwrap();
+        std::fs::write(root.join("b.txt"), b"new").unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let mut saw_a = false;
+        let mut saw_b = false;
+        while !(saw_a && saw_b) {
+            let frame = tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .expect("frame within deadline")
+                .expect("stream stays open");
+            saw_a |= frame.to_string().contains("a.txt");
+            saw_b |= frame.to_string().contains("b.txt");
+        }
+    }
 }

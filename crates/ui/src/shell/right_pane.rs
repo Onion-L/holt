@@ -408,6 +408,9 @@ impl Shell {
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
     /// opens a fresh embedded terminal tab.
     pub(super) fn add_terminal_surface(&mut self, cx: &mut Context<Self>) {
+        if !self.right_pane_open(cx) {
+            self.toggle_right_pane(cx);
+        }
         let panel = self.right_terminal_panel(cx);
         let opened = panel.update(cx, |panel, cx| panel.open_tab_for_selected(cx));
         if let Some(tab) = opened {
@@ -656,71 +659,54 @@ impl Shell {
                         div()
                             .size_full()
                             .flex()
-                            .flex_col()
+                            .flex_row()
                             .child(
                                 div()
-                                    .id("file-viewer-header")
-                                    .flex_none()
-                                    .h(px(36.0))
-                                    .px(px(8.0))
-                                    .border_b_1()
-                                    .border_color(theme.border)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
                                     .flex()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .overflow_hidden()
+                                    .flex_col()
                                     .child(
                                         div()
+                                            .id("file-viewer-header")
                                             .flex_none()
-                                            .text_size(crate::typography::ui_rems(11.5))
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .text_color(theme.text)
-                                            .truncate()
-                                            .child(title),
+                                            .h(px(36.0))
+                                            .px(px(8.0))
+                                            .border_b_1()
+                                            .border_color(theme.border)
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .overflow_hidden()
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_size(crate::typography::ui_rems(11.5))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .text_color(theme.text)
+                                                    .truncate()
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .flex_1()
+                                                    .truncate()
+                                                    .text_size(crate::typography::ui_rems(10.5))
+                                                    .text_color(theme.text_muted.opacity(0.7))
+                                                    .child(path),
+                                            )
+                                            .children(mode_controls),
                                     )
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .truncate()
-                                            .text_size(crate::typography::ui_rems(10.5))
-                                            .text_color(theme.text_muted.opacity(0.7))
-                                            .child(path),
-                                    )
-                                    .children(mode_controls),
+                                    .child(div().flex_1().min_h_0().child(viewer)),
                             )
-                            .child(div().flex_1().min_h_0().child(viewer))
+                            .child(self.render_file_tree_pane(cx))
                             .into_any_element()
                     }
                 },
-                // The File surface with no live tab (resolved normalization
-                // maps it to the Space's tab when one exists): point at the
-                // tree column, the surface's browser.
-                RightSurface::Files => div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(px(16.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                icon(icons::DOCUMENT)
-                                    .size(px(18.0))
-                                    .text_color(theme.text_muted.opacity(0.6)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(12.0))
-                                    .text_color(theme.text_muted)
-                                    .child("Choose a file from the sidebar"),
-                            ),
-                    )
-                    .into_any_element(),
+                // File browsing shares this host with Git and Terminal.
+                RightSurface::Files => self.render_file_tree_surface(cx),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -772,6 +758,28 @@ impl Shell {
             }
         } else {
             gpui::Empty.into_any_element()
+        };
+        let content = if self.right_pane_open(cx) {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("right-surface-tabs-row")
+                        .flex_none()
+                        .h(px(36.0))
+                        .px(px(8.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .flex()
+                        .items_center()
+                        .child(self.render_right_tab_strip(cx)),
+                )
+                .child(div().flex_1().min_h_0().child(content))
+                .into_any_element()
+        } else {
+            content
         };
         // Flush panel (user request — the inset card is gone): full window
         // height with a left hairline, glass-friendly like the terminal dock
@@ -1316,26 +1324,6 @@ impl Shell {
             region.into_any_element()
         }
     }
-
-    /// Toggle the changes-panel takeover (the header's expand button, t3code
-    /// parity): the panel grows to fill everything right of the sidebar,
-    /// hiding the conversation column; toggling back restores the saved
-    /// width. Rides the same width tween as open/close so the jump glides.
-    pub(super) fn toggle_right_pane_expand(&mut self, cx: &mut Context<Self>) {
-        let from = self.right_target(cx);
-        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-        let from_main = conversation_width(self.viewport_width, sidebar_now, from);
-        self.right_pane_expanded = !self.right_pane_expanded;
-        let to = self.right_target(cx);
-        let right_transition = WidthTween::new(from, to);
-        self.right_tween = Some(right_transition);
-        self.right_takeover_content_tween = Some(right_transition);
-        self.main_takeover_tween = Some(WidthTween::new(
-            from_main,
-            conversation_width(self.viewport_width, sidebar_now, to),
-        ));
-        cx.notify();
-    }
 }
 
 #[cfg(test)]
@@ -1356,12 +1344,6 @@ mod tests {
     fn right_pane_takeover_consumes_the_chat_column() {
         assert_eq!(right_pane_takeover_width(1200.0, 256.0), 944.0);
         assert_eq!(1200.0 - 256.0 - 944.0, 0.0);
-    }
-
-    #[test]
-    fn right_pane_takeover_control_reverses_direction() {
-        assert_eq!(tabs::right_pane_expand_icon(false), icons::EXPAND_ARROWS);
-        assert_eq!(tabs::right_pane_expand_icon(true), icons::COLLAPSE_ARROWS);
     }
 
     // ---- per-session panel flags (§1.10/1.11 parity: holt sessionPanels) ----

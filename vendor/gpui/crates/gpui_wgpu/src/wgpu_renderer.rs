@@ -409,9 +409,7 @@ impl WgpuRenderer {
 
         // COPY_SRC lets the backdrop blur snapshot framebuffer regions;
         // without it (rare compositor restrictions) blurs are skipped.
-        let surface_supports_copy_src = surface_caps
-            .usages
-            .contains(wgpu::TextureUsages::COPY_SRC);
+        let surface_supports_copy_src = surface_caps.usages.contains(wgpu::TextureUsages::COPY_SRC);
         let surface_usage = if surface_supports_copy_src {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
         } else {
@@ -1796,8 +1794,12 @@ impl WgpuRenderer {
                             continue;
                         }
                         drop(pass);
-                        let blurred =
-                            self.process_backdrop_blur(&mut encoder, &frame.texture, blur, blur_index);
+                        let blurred = self.process_backdrop_blur(
+                            &mut encoder,
+                            &frame.texture,
+                            blur,
+                            blur_index,
+                        );
                         pass = Self::continue_main_pass(&mut encoder, &frame_view);
                         if blurred {
                             self.draw_backdrop_composite(blur_index, &mut pass);

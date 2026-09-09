@@ -10,8 +10,8 @@
 //! anything reaches this surface.
 
 use gpui::{
-    AnyElement, Bounds, Context, EventEmitter, MouseButton, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Size, Window, canvas, div, img, point, prelude::*, px, size,
+    AnyElement, Bounds, Context, EventEmitter, MouseButton, Pixels, Render, ScrollWheelEvent,
+    SharedString, Size, Window, canvas, div, img, point, prelude::*, px, size,
 };
 
 use crate::image_viewer::{
@@ -50,6 +50,12 @@ pub struct FileImageSurface {
 }
 
 impl EventEmitter<FileImageSurfaceEvent> for FileImageSurface {}
+
+impl Default for FileImageSurface {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl FileImageSurface {
     pub fn new() -> Self {

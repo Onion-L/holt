@@ -354,8 +354,7 @@ impl Element for Img {
                             if matches!(style.size.width, Length::Auto)
                                 || matches!(style.size.height, Length::Auto)
                             {
-                                style.aspect_ratio =
-                                    Some(image_size.width / image_size.height);
+                                style.aspect_ratio = Some(image_size.width / image_size.height);
                             }
 
                             if let Length::Auto = style.size.width {

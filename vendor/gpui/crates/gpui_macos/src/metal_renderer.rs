@@ -486,9 +486,13 @@ impl MetalRenderer {
             self.path_intermediate_msaa_texture = None;
             return;
         }
-        if self.path_intermediate_texture.as_ref().is_some_and(|texture| {
-            texture.width() == size.width.0 as u64 && texture.height() == size.height.0 as u64
-        }) {
+        if self
+            .path_intermediate_texture
+            .as_ref()
+            .is_some_and(|texture| {
+                texture.width() == size.width.0 as u64 && texture.height() == size.height.0 as u64
+            })
+        {
             return;
         }
 
@@ -1193,9 +1197,7 @@ impl MetalRenderer {
         self.stats_last_log = Some(now);
 
         let texture_bytes = |texture: &Option<metal::Texture>| {
-            texture
-                .as_ref()
-                .map_or(0, |t| t.width() * t.height() * 4)
+            texture.as_ref().map_or(0, |t| t.width() * t.height() * 4)
         };
         let backdrop_bytes =
             texture_bytes(&self.backdrop_scratch) + texture_bytes(&self.backdrop_blurred);
@@ -1382,8 +1384,7 @@ impl MetalRenderer {
             }
         }
         let kernel: *mut objc::runtime::Object = unsafe {
-            let alloc: *mut objc::runtime::Object =
-                msg_send![class!(MPSImageGaussianBlur), alloc];
+            let alloc: *mut objc::runtime::Object = msg_send![class!(MPSImageGaussianBlur), alloc];
             let kernel: *mut objc::runtime::Object = msg_send![
                 alloc,
                 initWithDevice: self.device.as_ptr() as *mut objc::runtime::Object
@@ -1441,8 +1442,10 @@ impl MetalRenderer {
             mem::size_of_val(&source_rect) as u64,
             source_rect.as_ptr() as *const _,
         );
-        command_encoder
-            .set_fragment_texture(BackdropBlurInputIndex::SourceTexture as u64, Some(source_texture));
+        command_encoder.set_fragment_texture(
+            BackdropBlurInputIndex::SourceTexture as u64,
+            Some(source_texture),
+        );
 
         let blur_bytes_len = mem::size_of_val(blurs);
         let buffer_contents =
@@ -2452,7 +2455,10 @@ mod backdrop_blur_tests {
         let b = render(&mut scene);
 
         let diff = max_abs_diff(&a, &b, 0, 168, 152, 312);
-        assert!(diff <= 3, "vignette or shift at window edge: max diff {diff}");
+        assert!(
+            diff <= 3,
+            "vignette or shift at window edge: max diff {diff}"
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@
 use crate::Inspector;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
-    Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+    AsyncWindowContext, AvailableSpace, BackdropBlur, Background, BorderStyle, Bounds, BoxShadow,
+    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
@@ -12,7 +12,7 @@ use crate::{
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
     Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
     RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, BackdropBlur, ScaledPixels, Scene, Shadow, SharedString, Size,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
     StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
     TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
@@ -3561,8 +3561,7 @@ impl Window {
         let band = fade.band.0.max(1.0);
         let mut ramp: f32 = 1.0;
         if fade.top {
-            ramp = ramp
-                .min(((center.y.0 - fade.bounds.top().0) / fade.top_band()).clamp(0.0, 1.0));
+            ramp = ramp.min(((center.y.0 - fade.bounds.top().0) / fade.top_band()).clamp(0.0, 1.0));
         }
         if fade.bottom {
             ramp = ramp
@@ -3601,8 +3600,7 @@ impl Window {
         }
         if fade.bottom {
             ramp = ramp.min(
-                ((fade.bounds.bottom().0 - bounds.bottom().0) / fade.bottom_band())
-                    .clamp(0.0, 1.0),
+                ((fade.bounds.bottom().0 - bounds.bottom().0) / fade.bottom_band()).clamp(0.0, 1.0),
             );
         }
         if fade.left {
