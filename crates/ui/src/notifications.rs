@@ -1,14 +1,21 @@
-//! OS banner notifications for background Turn completion (ADR-0019; issue
-//! 03). One application-scoped [`TurnNotificationController`] consumes the
-//! engine's `WatchTurnTerminalEvents` stream for the life of the process —
-//! it is created during UI bootstrap and is never tied to a window or Shell
+//! OS banner notifications for background Turn completion (ADR-0019). One
+//! application-scoped [`TurnNotificationController`] consumes the engine's
+//! `WatchTurnTerminalEvents` stream for the life of the process — it is
+//! created during UI bootstrap and is never tied to a window or Shell
 //! instance, so closing and reopening the main window neither duplicates the
-//! listener nor silences it.
+//! listener nor the response handler.
+//!
+//! Interaction: banners are tagged by Chat id (same-Chat replacement,
+//! cross-Chat retention). A body click retracts the banner, activates Holt
+//! (rebuilding the main window when none is open), and selects the Chat when
+//! it still exists; a stale tag only activates Holt and retracts. Opening
+//! and marking a Chat seen through the normal UI also retracts its banner
+//! (see [`crate::state::AppState::mark_chat_seen`]).
 //!
 //! Delivery is best-effort and silent: denied OS permission, missing
-//! bundle/package support, and unavailable notification services produce no
-//! in-app toast, modal, Transcript notice, or fallback audio (the platform
-//! layer no-ops).
+//! bundle/package support, unavailable notification services, and retraction
+//! limits produce no in-app toast, modal, Transcript notice, or fallback
+//! audio (the platform layer no-ops).
 
 use std::collections::{HashSet, VecDeque};
 
@@ -62,10 +69,8 @@ impl TurnNotificationController {
             }
         });
         // The one process-wide response handler, owned here rather than by
-        // any window. Issue 03 defines no click behavior — the operating
-        // system activates Holt on its own; issue 04 extends
-        // [`Self::handle_response`] to dismiss the banner, reopen a window,
-        // and select the Chat the tag names.
+        // any window: closing and reopening the main window never touches
+        // this registration.
         let weak = controller.downgrade();
         cx.on_system_notification_response(move |response, cx| {
             weak.update(cx, |this, cx| this.handle_response(response, cx))
@@ -207,11 +212,46 @@ impl TurnNotificationController {
     }
 
     /// Process-wide notification response entry point (registered once in
-    /// [`Self::init`]). Deliberately behavior-free for issue 03: the OS
-    /// activation is sufficient and nothing needs cleanup. Issue 04 routes
-    /// `response.tag` (the Chat id) to dismiss + select here.
+    /// [`Self::init`]). Holt posts no action buttons, so every response is a
+    /// body click. The tag is the Chat id the banner was posted for.
     fn handle_response(&mut self, response: SystemNotificationResponse, cx: &mut Context<Self>) {
-        let _ = (response, cx);
+        let chat_id = response.tag.to_string();
+        // The click always retracts its own banner first — even a stale tag
+        // must leave Notification Center. Best-effort: platforms that cannot
+        // retract a delivered notification no-op and let it age out.
+        cx.dismiss_system_notification(&chat_id);
+        // Bring Holt forward at the OS level; raising an actual window
+        // happens below (a live process can have no window at all).
+        cx.activate(true);
+        let chat_exists = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .any(|chat| chat.id == chat_id);
+        if !chat_exists {
+            // Deleted or otherwise unresolvable Chat: activate + retract
+            // only. No data recreation, no error dialog.
+            return;
+        }
+        // ⌘W on macOS keeps the process alive with no window: rebuild the
+        // normal main window before selecting into it.
+        if cx.windows().is_empty()
+            && let Some(open) = cx
+                .try_global::<MainWindowProvider>()
+                .map(|provider| provider.open)
+        {
+            open(cx);
+        }
+        if let Some(window) = cx.windows().first().copied() {
+            window
+                .update(cx, |_, window, _| window.activate_window())
+                .ok();
+        }
+        // Normal selection semantics: this lands in the Chat's space and
+        // marks it seen (which re-requests dismissal — idempotent).
+        self.state
+            .update(cx, |state, cx| state.select_chat(Some(chat_id), cx));
     }
 }
 
@@ -222,6 +262,22 @@ struct TurnNotificationsGlobal {
 }
 
 impl gpui::Global for TurnNotificationsGlobal {}
+
+/// How the controller rebuilds the normal main window when a notification
+/// click arrives with no window open. A plain fn pointer (not a closure) so
+/// it can be copied out of the global before `&mut App` is handed back;
+/// `run_app` installs the real window opener, tests install their own.
+struct MainWindowProvider {
+    open: fn(&mut App),
+}
+
+impl gpui::Global for MainWindowProvider {}
+
+/// Register the main-window opener used by notification navigation. Called
+/// once from `run_app` during bootstrap.
+pub fn set_main_window_provider(open: fn(&mut App), cx: &mut App) {
+    cx.set_global(MainWindowProvider { open });
+}
 
 /// Create the controller and anchor it to the process. Called once from
 /// `run_app` during UI bootstrap, before the main window opens.
@@ -236,7 +292,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use futures::StreamExt as _;
-    use gpui::{IntoElement, Render, TestAppContext, Window, div};
+    use gpui::{
+        Bounds, IntoElement, Render, TestAppContext, Window, WindowBounds, WindowOptions, div,
+    };
     use holt_rpc::turns::TurnOutcome;
     use holt_rpc::{RpcError, RpcReply, RpcService};
 
@@ -372,7 +430,8 @@ mod tests {
 
     /// Boot the controller against the fake engine: settings store seeded by
     /// `configure`, identity set (the test platform refuses notifications
-    /// for an unidentified process, like the real ones).
+    /// for an unidentified process, like the real ones), and the main-window
+    /// provider wired the way `run_app` wires it.
     fn harness(cx: &mut TestAppContext, configure: impl FnOnce(&mut UiSettings)) -> Harness {
         let engine = FakeEngineHandle {
             engine: Arc::new(FakeEngine {
@@ -391,6 +450,7 @@ mod tests {
             configure(&mut settings);
             settings::init(settings, data_dir.path(), cx);
             cx.set_app_identity(APP_IDENTITY, APP_DISPLAY_NAME);
+            set_main_window_provider(open_blank_main_window, cx);
         });
         let state = cx.new(|_| AppState::new());
         let controller = cx.update(|cx| TurnNotificationController::init(state.clone(), cx));
@@ -411,8 +471,23 @@ mod tests {
         cx.shown_system_notifications()
     }
 
+    fn delivered(cx: &TestAppContext) -> Vec<SystemNotification> {
+        cx.delivered_system_notifications()
+    }
+
+    fn dismissed(cx: &TestAppContext) -> Vec<String> {
+        cx.dismissed_system_notifications()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     fn chats_len(harness: &Harness, cx: &TestAppContext) -> usize {
         cx.read(|cx| harness.state.read(cx).chats.len())
+    }
+
+    fn selected_chat(harness: &Harness, cx: &TestAppContext) -> Option<String> {
+        cx.read(|cx| harness.state.read(cx).selected_chat.clone())
     }
 
     struct BlankView;
@@ -421,6 +496,31 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    /// Stand-in for the main-window opener `run_app` registers: builds a
+    /// blank window where production rebuilds the Shell.
+    fn open_blank_main_window(cx: &mut App) {
+        if !cx.windows().is_empty() {
+            return;
+        }
+        let bounds = Bounds::maximized(None, cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            },
+            |_, cx| cx.new(|_| BlankView),
+        )
+        .unwrap();
+    }
+
+    fn respond(cx: &TestAppContext, tag: &str) {
+        cx.simulate_system_notification_response(SystemNotificationResponse {
+            tag: tag.into(),
+            action_id: None,
+        });
+        cx.run_until_parked();
     }
 
     /// Open a window and drive the platform's active-window state explicitly.
@@ -641,19 +741,128 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_response_is_safe_without_click_behavior(cx: &mut TestAppContext) {
+    async fn response_selects_existing_chat_and_retracts_banner(cx: &mut TestAppContext) {
         let harness = harness(cx, |_| {});
+        harness.engine.push_chats(serde_json::json!([chat_json(
+            "chat-1",
+            Some("Fix the flake")
+        )]));
+        harness.wait_until(cx, |cx| chats_len(&harness, cx) == 1);
+        // A window is open but in the background, so the banner posts.
+        let _window = cx.add_window(|_window, _cx| BlankView);
+        cx.run_until_parked();
         harness
             .engine
             .push_event(event("event-1", "chat-1", TurnOutcome::Succeeded));
         harness.wait_until(cx, |cx| !shown(cx).is_empty());
-        // Issue 03: the handler exists and a click does nothing harmful —
-        // the delivered banner is left to the OS (issue 04 adds dismissal).
-        cx.simulate_system_notification_response(gpui::SystemNotificationResponse {
-            tag: "chat-1".into(),
-            action_id: None,
-        });
+        assert_eq!(delivered(cx).len(), 1);
+
+        respond(cx, "chat-1");
+
+        assert_eq!(selected_chat(&harness, cx).as_deref(), Some("chat-1"));
+        assert!(delivered(cx).is_empty());
+        assert!(dismissed(cx).contains(&"chat-1".to_string()));
+        // The click raised the open window.
+        assert!(cx.read(|cx| cx.active_window().is_some()));
+    }
+
+    #[gpui::test]
+    async fn response_with_no_window_reopens_main_window_then_selects(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        harness.engine.push_chats(serde_json::json!([chat_json(
+            "chat-1",
+            Some("Fix the flake")
+        )]));
+        harness.wait_until(cx, |cx| chats_len(&harness, cx) == 1);
+        harness
+            .engine
+            .push_event(event("event-1", "chat-1", TurnOutcome::Succeeded));
+        harness.wait_until(cx, |cx| !shown(cx).is_empty());
+        assert!(cx.read(|cx| cx.windows().is_empty()));
+
+        respond(cx, "chat-1");
+
+        assert_eq!(cx.read(|cx| cx.windows().len()), 1);
+        assert_eq!(selected_chat(&harness, cx).as_deref(), Some("chat-1"));
+        assert!(delivered(cx).is_empty());
+        assert!(cx.read(|cx| cx.active_window().is_some()));
+    }
+
+    #[gpui::test]
+    async fn response_for_deleted_chat_only_activates_and_retracts(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        // No Chat rows: the tag names a deleted conversation. The banner was
+        // posted before the deletion reached this device.
+        harness
+            .engine
+            .push_event(event("event-1", "chat-gone", TurnOutcome::Succeeded));
+        harness.wait_until(cx, |cx| !shown(cx).is_empty());
+
+        respond(cx, "chat-gone");
+
+        assert!(delivered(cx).is_empty());
+        assert_eq!(dismissed(cx), vec!["chat-gone".to_string()]);
+        // No data recreation, no window, no selection.
+        assert_eq!(chats_len(&harness, cx), 0);
+        assert_eq!(selected_chat(&harness, cx), None);
+        assert!(cx.read(|cx| cx.windows().is_empty()));
+    }
+
+    #[gpui::test]
+    async fn one_response_handler_survives_window_close_and_reopen(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        harness.engine.push_chats(serde_json::json!([chat_json(
+            "chat-1",
+            Some("Fix the flake")
+        )]));
+        harness.wait_until(cx, |cx| chats_len(&harness, cx) == 1);
+
+        // Close and reopen the main window; the handler must not duplicate.
+        let window = cx.add_window(|_window, _cx| BlankView);
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
         cx.run_until_parked();
-        assert_eq!(cx.delivered_system_notifications().len(), 1);
+        assert!(cx.read(|cx| cx.windows().is_empty()));
+        let _reopened = cx.add_window(|_window, _cx| BlankView);
+        cx.run_until_parked();
+
+        // A stale tag counts handler invocations exactly: the stale path
+        // dismisses once per invocation and touches nothing else.
+        respond(cx, "chat-gone");
+        assert_eq!(dismissed(cx), vec!["chat-gone".to_string()]);
+
+        // …and the same single handler still navigates.
+        respond(cx, "chat-1");
+        assert_eq!(selected_chat(&harness, cx).as_deref(), Some("chat-1"));
+    }
+
+    #[gpui::test]
+    async fn opening_and_marking_seen_retracts_outstanding_banner(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        // A Turn just finished, so the Chat is unseen (lastMessageAt newer
+        // than any seen marker).
+        let mut chat = chat_json("chat-1", Some("Fix the flake"));
+        chat["lastMessageAt"] = serde_json::json!("2026-09-07T01:00:00Z");
+        harness.engine.push_chats(serde_json::json!([chat]));
+        harness.wait_until(cx, |cx| chats_len(&harness, cx) == 1);
+        harness
+            .engine
+            .push_event(event("event-1", "chat-1", TurnOutcome::Succeeded));
+        harness.wait_until(cx, |cx| !shown(cx).is_empty());
+        assert_eq!(delivered(cx).len(), 1);
+
+        // The user opens the Chat through the normal UI instead of clicking
+        // the banner.
+        harness.state.update(cx, |state, cx| {
+            state.select_chat(Some("chat-1".into()), cx);
+        });
+        harness.flush(cx);
+
+        assert!(delivered(cx).is_empty());
+        assert!(dismissed(cx).contains(&"chat-1".to_string()));
+        // Seen semantics are unchanged: the open still marked the Chat seen.
+        let unseen = cx.read(|cx| harness.state.read(cx).chats[0].unseen());
+        assert!(!unseen);
     }
 }

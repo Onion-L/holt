@@ -175,7 +175,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   consumer is one application-scoped notification controller
   (`ui::notifications`): created during bootstrap, independent of any
   window, it dedups by `eventId` and posts device-local OS banners
-  (Chat title + outcome only) when no Holt window is active.
+  (Chat title + outcome only) when no Holt window is active. Banners are
+  tagged by Chat id; a click retracts the banner, activates Holt (reopening
+  the main window when none is open), and selects the Chat when it still
+  exists, and marking a Chat seen retracts its banner — all best-effort.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local

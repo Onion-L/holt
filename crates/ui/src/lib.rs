@@ -101,14 +101,7 @@ pub fn run_app(config: UiConfig) {
     // Dock-icon click with no window (⌘W closed it): rebuild the main window
     // around the still-running engine — zed does the same via `on_reopen`
     // (crates/zed/src/main.rs `app.on_reopen`).
-    app.on_reopen(|cx| {
-        if cx.windows().is_empty()
-            && let Some(reopen) = cx.try_global::<ReopenState>()
-        {
-            let (state, boot) = (reopen.state.clone(), reopen.boot.clone());
-            open_main_window(state, boot, cx);
-        }
-    });
+    app.on_reopen(reopen_main_window);
     app.run(move |cx: &mut App| {
         // Dock/⌘-Tab icon before the first frame paints.
         app_icon::install();
@@ -148,6 +141,9 @@ pub fn run_app(config: UiConfig) {
         // owns the terminal-event subscription and the response handler for
         // the process lifetime, independent of any window.
         notifications::install(state.clone(), cx);
+        // Notification clicks with no open window rebuild the same main
+        // window the dock reopen path uses.
+        notifications::set_main_window_provider(reopen_main_window, cx);
         terminal::lifecycle::init(state.clone(), cx);
         let url_state = state.clone();
         cx.spawn(async move |cx| {
@@ -190,6 +186,20 @@ pub fn run_app(config: UiConfig) {
         cx.set_menus(app_menus::app_menus());
         cx.activate(true);
     });
+}
+
+/// Rebuild the main window after ⌘W left the process windowless. Registered
+/// for the dock-icon reopen (`on_reopen`) and for notification clicks
+/// ([`notifications::set_main_window_provider`]). No-op when a window exists
+/// or the reopen state was never installed.
+fn reopen_main_window(cx: &mut App) {
+    if !cx.windows().is_empty() {
+        return;
+    }
+    if let Some(reopen) = cx.try_global::<ReopenState>() {
+        let (state, boot) = (reopen.state.clone(), reopen.boot.clone());
+        open_main_window(state, boot, cx);
+    }
 }
 
 /// Open the 1320×880 main window (min 900×600) with [`shell::Shell`] as the

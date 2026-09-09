@@ -1178,6 +1178,11 @@ impl AppState {
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
         };
+        // Opening and reading a notified Chat retracts its outstanding
+        // completion banner (ADR-0019). Best-effort: platforms that cannot
+        // retract a delivered notification no-op here and let it age out —
+        // nothing surfaces in Holt either way.
+        cx.dismiss_system_notification(chat_id);
         if !chat.unseen() {
             return;
         }
