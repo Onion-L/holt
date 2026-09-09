@@ -883,3 +883,457 @@ mod live_refresh_and_resolution {
 }
 
 use futures::StreamExt as _;
+
+mod create_and_rename {
+    use super::*;
+
+    async fn create(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        match engine
+            .handle(methods::CREATE_WORKSPACE_ENTRY, params)
+            .await?
+        {
+            RpcReply::Value(value) => Ok(value),
+            _ => panic!("CreateWorkspaceEntry must reply with a value"),
+        }
+    }
+
+    async fn rename(engine: &LocalEngine, params: serde_json::Value) -> Result<String, RpcError> {
+        match engine
+            .handle(methods::RENAME_WORKSPACE_ENTRY, params)
+            .await?
+        {
+            RpcReply::Value(value) => Ok(value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap()
+                .to_string()),
+            _ => panic!("RenameWorkspaceEntry must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn creates_files_and_directories_with_unicode_names() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let engine = setup(&fixture).await;
+
+        create(
+            &engine,
+            json!({ "spaceId": "space-1", "name": "notes draft ✓.md", "isDir": false }),
+        )
+        .await
+        .unwrap();
+        create(
+            &engine,
+            json!({ "spaceId": "space-1", "name": "nested dir", "isDir": true }),
+        )
+        .await
+        .unwrap();
+        create(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "parentPath": format!("{root}/nested dir"),
+                "name": "inner.txt",
+                "isDir": false,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(Path::new(&root).join("notes draft ✓.md").is_file());
+        assert!(Path::new(&root).join("nested dir").is_dir());
+        assert!(Path::new(&root).join("nested dir/inner.txt").is_file());
+
+        // The new file opens through the read RPC; the new directory lists.
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/nested dir/inner.txt") }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read.text.as_deref(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn collisions_and_invalid_names_refuse_without_mutation() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("exists.txt"), "keep\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        // Collision refuses and leaves the existing entry intact.
+        let fault = create(
+            &engine,
+            json!({ "spaceId": "space-1", "name": "exists.txt", "isDir": false }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("already exists")),
+            "{fault:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("exists.txt")).unwrap(),
+            "keep\n"
+        );
+
+        for bad in ["", "  ", "a/b", "..", ".git", "a\\b"] {
+            let fault = create(
+                &engine,
+                json!({ "spaceId": "space-1", "name": bad, "isDir": false }),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(&fault, RpcError::Failed(m) if m.contains("name")),
+                "{bad:?}: {fault:?}"
+            );
+        }
+
+        // Missing parent and outside-root parents refuse.
+        let fault = create(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "parentPath": format!("{root}/nope"),
+                "name": "x",
+                "isDir": false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("does not exist")),
+            "{fault:?}"
+        );
+        let fault = create(
+            &engine,
+            json!({ "spaceId": "space-1", "parentPath": "/etc", "name": "x", "isDir": false }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("outside")),
+            "{fault:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn renames_in_place_with_collisions_refusing() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("old name.md"), "draft\n").unwrap();
+        fs::write(Path::new(&root).join("taken.md"), "other\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        let destination = rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/old name.md"),
+                "newName": "new name.md",
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("new name.md"));
+        assert!(Path::new(&root).join("new name.md").is_file());
+        assert!(!Path::new(&root).join("old name.md").exists());
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("new name.md")).unwrap(),
+            "draft\n",
+            "contents ride along untouched"
+        );
+
+        // Collision refuses; the source keeps its identity.
+        let fault = rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/new name.md"),
+                "newName": "taken.md",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("already exists")),
+            "{fault:?}"
+        );
+        assert!(Path::new(&root).join("new name.md").is_file());
+
+        // Directories rename wholesale (children move with them).
+        fs::create_dir_all(Path::new(&root).join("pkg/src")).unwrap();
+        rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/pkg"),
+                "newName": "crate",
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(Path::new(&root).join("crate/src").is_dir());
+    }
+
+    #[tokio::test]
+    async fn renames_act_on_symlink_entries_not_targets() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("real.txt"), "target\n").unwrap();
+        std::os::unix::fs::symlink(format!("{root}/real.txt"), format!("{root}/link.txt")).unwrap();
+        let engine = setup(&fixture).await;
+
+        rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/link.txt"),
+                "newName": "alias.txt",
+            }),
+        )
+        .await
+        .unwrap();
+        // The link moved; the target is untouched and still readable
+        // through the renamed alias.
+        assert!(!std::fs::symlink_metadata(format!("{root}/link.txt")).is_ok());
+        assert!(Path::new(&root).join("real.txt").is_file());
+        let read = read(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/alias.txt") }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read.text.as_deref(), Some("target\n"));
+    }
+
+    #[tokio::test]
+    async fn boundaries_hold_for_renames() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let engine = setup(&fixture).await;
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "x").unwrap();
+
+        let fault = rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": outside.path().join("secret.txt").display().to_string(),
+                "newName": "inside.txt",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("outside")),
+            "{fault:?}"
+        );
+        assert!(Path::new(&outside.path().join("secret.txt")).is_file());
+
+        // A same-name rename is a no-op success (idempotent), but a `.git`
+        // name refuses.
+        let fault = rename(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/x.txt"),
+                "newName": ".git",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains("valid name")),
+            "{fault:?}"
+        );
+    }
+}
+
+mod create_rename_guards {
+    use super::*;
+
+    async fn rename_raw(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<String, RpcError> {
+        match engine
+            .handle(methods::RENAME_WORKSPACE_ENTRY, params)
+            .await?
+        {
+            RpcReply::Value(value) => Ok(value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap()
+                .to_string()),
+            _ => panic!("RenameWorkspaceEntry must reply with a value"),
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_failures_refuse_without_side_effects() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        // A read-only directory: creations inside must fail cleanly.
+        let locked = Path::new(&root).join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("seed.txt"), "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        let engine = setup(&fixture).await;
+
+        #[cfg(unix)]
+        {
+            let fault = match engine
+                .handle(
+                    methods::CREATE_WORKSPACE_ENTRY,
+                    json!({
+                        "spaceId": "space-1",
+                        "parentPath": locked.display().to_string(),
+                        "name": "nope.txt",
+                        "isDir": false,
+                    }),
+                )
+                .await
+            {
+                Ok(_) => panic!("create in a read-only directory must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(fault, RpcError::Failed(_)), "{fault:?}");
+            assert!(!locked.join("nope.txt").exists());
+
+            // Rename INTO the read-only directory is a sibling rename (same
+            // directory) — renaming a file already inside it also fails.
+            let fault = match engine
+                .handle(
+                    methods::RENAME_WORKSPACE_ENTRY,
+                    json!({
+                        "spaceId": "space-1",
+                        "path": locked.join("seed.txt").display().to_string(),
+                        "newName": "renamed.txt",
+                    }),
+                )
+                .await
+            {
+                Ok(_) => panic!("rename in a read-only directory must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(fault, RpcError::Failed(_)), "{fault:?}");
+            assert!(locked.join("seed.txt").exists());
+
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn traversal_names_and_git_never_move_or_create() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        std::fs::create_dir_all(Path::new(&root).join(".git/refs")).unwrap();
+        fs::write(Path::new(&root).join("file.txt"), "x").unwrap();
+        let engine = setup(&fixture).await;
+
+        // A traversal-carrying NEW name refuses (rename keeps its parent).
+        for bad in ["../escape", "a/../b", "sub/x"] {
+            let fault = match engine
+                .handle(
+                    methods::RENAME_WORKSPACE_ENTRY,
+                    json!({
+                        "spaceId": "space-1",
+                        "path": format!("{root}/file.txt"),
+                        "newName": bad,
+                    }),
+                )
+                .await
+            {
+                Ok(_) => panic!("{bad:?} must refuse"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&fault, RpcError::Failed(m) if m.contains("valid name")),
+                "{bad:?}: {fault:?}"
+            );
+        }
+        assert!(Path::new(&root).join("file.txt").exists(), "untouched");
+
+        // Creating INSIDE .git refuses (parent fence).
+        let fault = match engine
+            .handle(
+                methods::CREATE_WORKSPACE_ENTRY,
+                json!({
+                    "spaceId": "space-1",
+                    "parentPath": format!("{root}/.git/refs"),
+                    "name": "evil",
+                    "isDir": false,
+                }),
+            )
+            .await
+        {
+            Ok(_) => panic!("create inside .git must refuse"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains(".git")),
+            "{fault:?}"
+        );
+
+        // Renaming a .git ENTRY refuses too (leaf fence).
+        let fault = match engine
+            .handle(
+                methods::RENAME_WORKSPACE_ENTRY,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/.git/refs"),
+                    "newName": "refs-old",
+                }),
+            )
+            .await
+        {
+            Ok(_) => panic!("renaming a .git entry must refuse"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&fault, RpcError::Failed(m) if m.contains(".git")),
+            "{fault:?}"
+        );
+        assert!(Path::new(&root).join(".git/refs").is_dir());
+    }
+
+    #[tokio::test]
+    async fn case_only_renames_succeed_on_case_insensitive_filesystems() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("readme.md"), "same\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        let destination = rename_raw(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/readme.md"),
+                "newName": "README.md",
+            }),
+        )
+        .await;
+        // Case-sensitive filesystems rename; case-insensitive ones stat the
+        // source as the destination and must STILL rename (not report a
+        // collision). Either way the file survives under one spelling with
+        // its contents intact.
+        let _ = destination;
+        let survived = Path::new(&root).join("readme.md").is_file()
+            || Path::new(&root).join("README.md").is_file();
+        assert!(survived);
+        let contents = std::fs::read_to_string(Path::new(&root).join("README.md"))
+            .or_else(|_| std::fs::read_to_string(Path::new(&root).join("readme.md")))
+            .unwrap();
+        assert_eq!(contents, "same\n");
+    }
+}

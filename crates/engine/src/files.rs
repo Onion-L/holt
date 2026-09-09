@@ -39,6 +39,10 @@ pub(crate) enum FilesFault {
     IsDirectory(String),
     #[error("{0} is not a directory")]
     NotDirectory(String),
+    #[error("{0}")]
+    BadName(String),
+    #[error("{0} already exists")]
+    Collision(String),
     #[error("could not read {0}: {1}")]
     Io(String, String),
 }
@@ -508,6 +512,203 @@ pub(crate) fn write_file_as(
         version: Some(version_token(&saved)),
         disk_version: None,
     })
+}
+
+/// A legal entry name: non-empty, no separators, not a `.`/`..`/`.git`
+/// traversal, no NUL. Unicode and spaces are welcome.
+fn valid_entry_name(name: &str) -> Result<(), FilesFault> {
+    if name.trim().is_empty() {
+        return Err(FilesFault::BadName("the name must not be empty".into()));
+    }
+    if name.contains('/')
+        || name.contains('\\')
+        || name == "."
+        || name == ".."
+        || name == ".git"
+        || name.contains('\0')
+    {
+        return Err(FilesFault::BadName(format!("{name:?} is not a valid name")));
+    }
+    Ok(())
+}
+
+/// Create a file or directory under an EXISTING parent inside the root
+/// (ticket 06). Collisions refuse; nothing is overwritten; `.git` and
+/// root escapes never land.
+pub(crate) fn create_entry(
+    root: &Path,
+    parent: &str,
+    name: &str,
+    is_dir: bool,
+) -> Result<(), FilesFault> {
+    valid_entry_name(name)?;
+    let parent_canonical = if parent.trim().is_empty() {
+        root.canonicalize()
+            .map_err(|error| FilesFault::Io(root.display().to_string(), error.to_string()))?
+    } else {
+        resolve_inside_root(root, parent)?
+    };
+    let parent_metadata =
+        std::fs::symlink_metadata(&parent_canonical).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                FilesFault::NotFound(parent_canonical.display().to_string())
+            }
+            _ => FilesFault::Io(parent_canonical.display().to_string(), error.to_string()),
+        })?;
+    if parent_metadata.is_symlink() {
+        // Creating through a symlinked parent is fine only when its target
+        // stays inside the root — resolve_inside_root already fenced it.
+    }
+    if !parent_canonical.is_dir() {
+        return Err(FilesFault::NotDirectory(
+            parent_canonical.display().to_string(),
+        ));
+    }
+    let destination = parent_canonical.join(name);
+    if destination.exists() || std::fs::symlink_metadata(&destination).is_ok() {
+        return Err(FilesFault::Collision(destination.display().to_string()));
+    }
+    let created = if is_dir {
+        std::fs::create_dir(&destination)
+    } else {
+        // create_new refuses to touch an existing name — a racing creator
+        // can never be clobbered as a side effect.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map(|_| ())
+    };
+    created
+        .map_err(|error| FilesFault::Io(destination.display().to_string(), error.to_string()))?;
+    Ok(())
+}
+
+/// Resolve an ENTRY address inside the root WITHOUT following the final
+/// component: management operations (rename, move, delete) act on the
+/// entry itself — a symlink renames as a symlink, never as its target.
+/// Symlinks in the DIRECTORY part still resolve (and must stay in root).
+fn resolve_entry_inside_root(root: &Path, requested: &str) -> Result<PathBuf, FilesFault> {
+    let expanded = crate::local_fs::expand_tilde(requested);
+    let candidate = Path::new(&expanded);
+    let joined: PathBuf = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let display = joined.display().to_string();
+    let Some(leaf) = joined
+        .file_name()
+        .map(|leaf| leaf.to_string_lossy().to_string())
+    else {
+        return Err(FilesFault::BadName(display));
+    };
+    if leaf == ".git" {
+        return Err(FilesFault::GitExcluded(display));
+    }
+    let parent = joined.parent().unwrap_or_else(|| Path::new(""));
+    let parent_canonical = parent
+        .canonicalize()
+        .map_err(|_| FilesFault::NotFound(joined.display().to_string()))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| FilesFault::Io(root.display().to_string(), error.to_string()))?;
+    if !parent_canonical.starts_with(&canonical_root) {
+        return Err(FilesFault::OutsideRoot(display));
+    }
+    exclude_git(&parent_canonical, &canonical_root)?;
+    Ok(parent_canonical.join(leaf))
+}
+
+/// Same file, different letter case (`a.md` vs `A.md`) in the same
+/// directory — the case-insensitive-filesystem rename the exists-check
+/// cannot classify as a collision because stat sees the source itself.
+fn same_entry_case_insensitive(source: &Path, destination: &Path) -> bool {
+    let (Some(from_parent), Some(to_parent)) = (source.parent(), destination.parent()) else {
+        return false;
+    };
+    let (Some(from_name), Some(to_name)) = (
+        source.file_name().and_then(|n| n.to_str()),
+        destination.file_name().and_then(|n| n.to_str()),
+    ) else {
+        return false;
+    };
+    from_parent == to_parent && from_name.eq_ignore_ascii_case(to_name) && from_name != to_name
+}
+
+/// Rename refusing to replace an existing destination. macOS offers
+/// `renamex_np(RENAME_EXCL)`; elsewhere the pre-checked std rename stands
+/// (its residual race is documented, not widened).
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        const RENAME_EXCL: u64 = 0x0000_0004;
+        // SAFETY: renamex_np takes NUL-terminated paths and returns -1 with
+        // errno on failure; the CStrings outlive the call. Declared locally
+        // because the libc crate does not export this Darwin entry point.
+        #[allow(improper_ctypes)]
+        unsafe extern "C" {
+            fn renamex_np(
+                from: *const std::os::raw::c_char,
+                to: *const std::os::raw::c_char,
+                flags: u64,
+            ) -> std::os::raw::c_int;
+        }
+        let from = CString::new(source.as_os_str().as_bytes())?;
+        let to = CString::new(destination.as_os_str().as_bytes())?;
+        let rc = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), RENAME_EXCL) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::fs::rename(source, destination)
+    }
+}
+
+/// Rename an entry IN PLACE (same directory, new name — ticket 06; cross-
+/// directory moves are ticket 07). `fs::rename` renames a symlink entry
+/// itself, never its target. Collisions refuse; drafts are the UI's to
+/// carry. On failure the original identity is untouched.
+pub(crate) fn rename_entry(root: &Path, from: &str, new_name: &str) -> Result<String, FilesFault> {
+    valid_entry_name(new_name)?;
+    let source = resolve_entry_inside_root(root, from)?;
+    // The source must exist under its own name (a broken symlink still
+    // renames — it is an entry).
+    if std::fs::symlink_metadata(&source).is_err() {
+        return Err(FilesFault::NotFound(source.display().to_string()));
+    }
+    let destination = source
+        .parent()
+        .and_then(|parent| {
+            std::fs::canonicalize(parent)
+                .ok()
+                .map(|parent| parent.join(new_name))
+        })
+        .ok_or_else(|| FilesFault::NotFound(source.display().to_string()))?;
+    // Case-insensitive filesystems stat the source itself for a case-only
+    // rename (`readme` → `README`): the destination exists check cannot see
+    // a third party there, and the rename is inherently collision-free.
+    let case_only = same_entry_case_insensitive(&source, &destination);
+    if !case_only
+        && destination != source
+        && (destination.exists() || std::fs::symlink_metadata(&destination).is_ok())
+    {
+        return Err(FilesFault::Collision(destination.display().to_string()));
+    }
+    // Noreplace semantics where the platform offers them, so a racing
+    // creator at the destination can never be silently replaced.
+    if case_only {
+        std::fs::rename(&source, &destination)
+    } else {
+        rename_noreplace(&source, &destination)
+    }
+    .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
+    Ok(destination.display().to_string())
 }
 
 #[cfg(test)]

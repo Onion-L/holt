@@ -176,6 +176,14 @@ pub mod methods {
     /// `WorkspaceWatchFrame` of changed absolute paths after a ~200ms quiet
     /// window. The stream ends when the UI drops it.
     pub const WATCH_WORKSPACE_ENTRIES: &str = "WatchWorkspaceEntries";
+    /// Create a file or directory under an existing in-root parent (File
+    /// sidebar, ticket 06). Params `{chatId|spaceId, parentPath?, name,
+    /// isDir}`; collisions refuse, `.git`/escapes never land.
+    pub const CREATE_WORKSPACE_ENTRY: &str = "CreateWorkspaceEntry";
+    /// Rename an entry in place (same directory, new name). Params
+    /// `{chatId|spaceId, path, newName}`; renames a symlink entry itself;
+    /// collisions refuse; replies with the destination path.
+    pub const RENAME_WORKSPACE_ENTRY: &str = "RenameWorkspaceEntry";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

@@ -384,6 +384,18 @@ impl FileViewer {
         task
     }
 
+    /// A rename/move (ticket 06): the tab's identity changes, the draft,
+    /// dirty state, and read baseline ride along — the next save writes the
+    /// NEW location (rename leaves mtime/size, so the version token still
+    /// matches).
+    pub fn move_to(&mut self, new_path: String) {
+        self.path = new_path;
+        self.resolved = None;
+        self.conflicted = false;
+        self.compare_open = false;
+        self.disk_snapshot = None;
+    }
+
     /// Test accessors for the deferral contract.
     #[cfg(test)]
     pub(crate) fn is_deferred(&self) -> bool {

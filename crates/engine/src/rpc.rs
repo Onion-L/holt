@@ -1127,6 +1127,31 @@ struct SaveWorkspaceFileParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateEntryParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    #[serde(default)]
+    parent_path: Option<String>,
+    name: String,
+    #[serde(default)]
+    is_dir: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameEntryParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    path: String,
+    new_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WriteFileAsParams {
     #[serde(default)]
     chat_id: Option<String>,
@@ -1564,6 +1589,54 @@ impl RpcService for EngineService {
                 let stream =
                     crate::workspace_watch::subscribe(canonical).map_err(RpcError::Failed)?;
                 Ok(RpcReply::Stream(Box::pin(stream)))
+            }
+            methods::CREATE_WORKSPACE_ENTRY => {
+                let params: CreateEntryParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let (parent, name, is_dir) = (
+                    params.parent_path.unwrap_or_default(),
+                    params.name,
+                    params.is_dir,
+                );
+                tokio::task::spawn_blocking(move || {
+                    crate::files::create_entry(std::path::Path::new(&root), &parent, &name, is_dir)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("create task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::RENAME_WORKSPACE_ENTRY => {
+                let params: RenameEntryParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let (path, new_name) = (params.path, params.new_name);
+                let destination = tokio::task::spawn_blocking(move || {
+                    crate::files::rename_entry(std::path::Path::new(&root), &path, &new_name)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("rename task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "path": destination }))
             }
 
             // Git capability (ADR-0001): branch listing and safe switching

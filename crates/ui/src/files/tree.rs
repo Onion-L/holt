@@ -67,12 +67,26 @@ struct ActiveRoot {
     generation: u64,
 }
 
+/// A context-menu request (ticket 06): where it opened (window position),
+/// the directory new entries land in, and the row a Rename targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMenuTarget {
+    pub position: gpui::Point<gpui::Pixels>,
+    /// The parent for New file / New directory ("" = the root).
+    pub parent: String,
+    /// The entry a Rename acts on: (absolute path, current name).
+    pub rename: Option<(String, String)>,
+}
+
 /// Events up to the shell: the tree never owns tabs, it just asks for opens.
 pub enum FileTreeEvent {
     /// Coalesced disk changes under the active root (ticket 04) — the shell
     /// fans these out to the space's open viewers (clean ones reload; dirty
     /// ones enter the conflict state).
     DiskChanged { paths: Vec<String> },
+    /// A context menu opened (right-click): the shell owns the menu and the
+    /// create/rename dialogs it leads to (ticket 06).
+    ContextMenu { target: FileMenuTarget },
     /// Open a file — `pin` marks the double-click path; single clicks ask
     /// for a replaceable preview. `resolved` carries the engine-resolved
     /// path for inside-root symlink aliases when the tree already knows it.
@@ -338,6 +352,71 @@ impl FileTreePanel {
             .unwrap_or_default();
         for dir in expanded {
             self.ensure_dir_loaded(&dir, cx);
+        }
+    }
+
+    /// Direct refresh for one directory (ticket 06: successful mutations
+    /// update the tree without waiting for the watch). "" = the root; the
+    /// root's canonical spelling maps onto that key.
+    pub(crate) fn refresh_dir(&mut self, dir: &str, cx: &mut Context<Self>) {
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        let dir = self
+            .spaces
+            .get(&active.space_key)
+            .and_then(|space| match space.dirs.get("") {
+                Some(DirState::Loaded(listing)) => Some(listing.path.clone()),
+                _ => None,
+            })
+            .filter(|root| root == dir)
+            .map(|_| String::new())
+            .unwrap_or_else(|| dir.to_string());
+        let shown = dir.is_empty()
+            || self
+                .spaces
+                .get(&active.space_key)
+                .map(|space| space.expanded.contains(&dir))
+                .unwrap_or(false);
+        if let Some(space) = self.spaces.get_mut(&active.space_key) {
+            space.dirs.remove(&dir);
+            space.dir_requests.remove(&dir);
+        }
+        if shown {
+            self.ensure_dir_loaded(&dir, cx);
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// A renamed directory keeps its expansion subtree under the new name
+    /// (ticket 06): every expanded key under `from` rewrites to `to`.
+    pub(crate) fn carry_expansion_over_rename(&mut self, from: &str, to: &str) {
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        let Some(space) = self.spaces.get_mut(&active.space_key) else {
+            return;
+        };
+        let prefix = format!("{}/", from.trim_end_matches('/'));
+        let rewritten: Vec<String> = space
+            .expanded
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .strip_prefix(&prefix)
+                    .map(|rest| format!("{}/{}", to.trim_end_matches('/'), rest))
+            })
+            .collect();
+        space.expanded.retain(|entry| !entry.starts_with(&prefix));
+        // The renamed directory's own listing key follows it.
+        if let Some(listing) = space.dirs.remove(from) {
+            space.dir_requests.remove(from);
+            space.dirs.insert(to.to_string(), listing);
+        }
+        space.expanded.insert(to.to_string());
+        for entry in rewritten {
+            space.expanded.insert(entry);
         }
     }
 
@@ -836,6 +915,20 @@ impl FileTreePanel {
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
+            // Right-click on empty tree space offers creates at the root.
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|_this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(FileTreeEvent::ContextMenu {
+                        target: FileMenuTarget {
+                            position: event.position,
+                            parent: String::new(),
+                            rename: None,
+                        },
+                    });
+                }),
+            )
             // Clicking anywhere in the tree lands keyboard focus so its
             // navigation keys (arrows/enter) go to the tree, not the composer.
             .on_mouse_down(
@@ -1063,6 +1156,40 @@ impl FileTreePanel {
         }
 
         row_el
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |_this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    let (parent, rename) = match &row.kind {
+                        WorkspaceEntryKind::Directory => (row.path.clone(), None),
+                        // A file row creates in its parent; a symlinked
+                        // directory row creates inside the resolved target.
+                        WorkspaceEntryKind::SymlinkInside {
+                            target_is_dir: true,
+                            resolved_path,
+                        } => (resolved_path.clone(), None),
+                        _ => {
+                            let parent = row
+                                .path
+                                .trim_end_matches('/')
+                                .rsplit_once('/')
+                                .map(|(parent, _)| parent.to_string())
+                                .unwrap_or_default();
+                            (parent, Some((row.path.clone(), row.name.to_string())))
+                        }
+                    };
+                    let rename = rename.or_else(|| {
+                        expandable(&row.kind).then(|| (row.path.clone(), row.name.to_string()))
+                    });
+                    cx.emit(FileTreeEvent::ContextMenu {
+                        target: FileMenuTarget {
+                            position: event.position,
+                            parent,
+                            rename,
+                        },
+                    });
+                }),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 // Files: single click previews, double-click pins (decision

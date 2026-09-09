@@ -28,7 +28,7 @@ use holt_rpc::methods;
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::files::FileStateMap;
-use crate::files::tree::{FileTreeEvent, FileTreePanel};
+use crate::files::tree::{FileMenuTarget, FileTreeEvent, FileTreePanel};
 use crate::files::viewer::{FileScope, FileViewerEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
@@ -627,6 +627,14 @@ pub struct Shell {
     _file_tree_events: Option<Subscription>,
     /// The tree panel's expansion-persistence observation.
     _file_tree_expansion: Option<Subscription>,
+    /// The File tree's context menu (ticket 06): the menu target plus the
+    /// owning Space it opened under.
+    file_menu: popover::Popup<(FileMenuTarget, String)>,
+    /// The create/rename dialog opened from that menu.
+    file_op_dialog: Option<file_sidebar::FileOpDialog>,
+    /// Bumped whenever a new file-op dialog opens — stale in-flight errors
+    /// from a previous dialog never land in the current one.
+    file_op_epoch: u64,
     /// Id mint for file tabs.
     file_seq: u64,
     /// Chat outlet vs settings pages.
@@ -895,6 +903,9 @@ impl Shell {
             file_state: FileStateMap::default(),
             file_viewers_sub: std::collections::HashMap::new(),
             _file_tree_expansion: None,
+            file_menu: popover::Popup::default(),
+            file_op_dialog: None,
+            file_op_epoch: 0,
             dirty_file_close: None,
             dirty_space_close: None,
             closing_after_save: std::collections::HashSet::new(),
@@ -1998,6 +2009,7 @@ impl Shell {
             overlays.push(overlay);
         }
         overlays.extend(self.render_file_draft_overlays(viewport, window, cx));
+        overlays.extend(self.render_file_menu_overlay(viewport, window, cx));
 
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(

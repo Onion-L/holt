@@ -211,6 +211,15 @@ impl Shell {
             } => {
                 self.open_file(path.clone(), resolved.clone(), *pin, cx);
             }
+            FileTreeEvent::ContextMenu { target } => {
+                let Some(space) = self.file_space_key(cx) else {
+                    return;
+                };
+                let mut menu = popover::Popup::default();
+                menu.open((target.clone(), space));
+                self.file_menu = menu;
+                cx.notify();
+            }
             FileTreeEvent::DiskChanged { paths } => {
                 // Live refresh (ticket 04): clean viewers reload from disk;
                 // dirty ones enter the conflict state — the notification
@@ -696,6 +705,302 @@ impl Shell {
     }
 }
 
+/// A create/rename dialog in flight (ticket 06).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum FileOpKind {
+    NewFile { parent: String },
+    NewDirectory { parent: String },
+    Rename { path: String },
+}
+
+pub(super) struct FileOpDialog {
+    kind: FileOpKind,
+    /// The owning Space, bound when the dialog opened — pending results
+    /// apply to it even if the user switches Chats mid-flight.
+    space: String,
+    input: Entity<crate::composer::ComposerInput>,
+    /// Validation or operation error, shown inline. A failure keeps the
+    /// dialog (and the name) for correction.
+    error: Option<SharedString>,
+    /// Suppresses submit while an RPC is in flight.
+    pending: bool,
+    focus_pending: bool,
+    _events: Option<Subscription>,
+}
+
+impl Shell {
+    /// Open a create/rename dialog from the tree's context menu.
+    pub(super) fn open_file_op_dialog(&mut self, kind: FileOpKind, cx: &mut Context<Self>) {
+        let Some(space) = self.file_space_key(cx) else {
+            return;
+        };
+        let (title, initial) = match &kind {
+            FileOpKind::NewFile { .. } => ("New file", ""),
+            FileOpKind::NewDirectory { .. } => ("New directory", ""),
+            FileOpKind::Rename { path } => (
+                "Rename",
+                path.trim_end_matches('/').rsplit('/').next().unwrap_or(""),
+            ),
+        };
+        let _ = title;
+        let input =
+            cx.new(|cx| crate::composer::ComposerInput::with_context("Name", "PaletteSearch", cx));
+        input.update(cx, |input, cx| input.set_text(initial, cx));
+        let events = cx.subscribe(
+            &input,
+            |this: &mut Shell, _, event: &crate::composer::ComposerInputEvent, cx| {
+                if matches!(event, crate::composer::ComposerInputEvent::Submitted) {
+                    this.submit_file_op(cx);
+                }
+            },
+        );
+        self.file_op_dialog = Some(FileOpDialog {
+            kind,
+            space,
+            input,
+            error: None,
+            pending: false,
+            focus_pending: true,
+            _events: Some(events),
+        });
+        cx.notify();
+    }
+
+    fn close_file_op_dialog(&mut self, cx: &mut Context<Self>) {
+        self.file_op_dialog = None;
+        cx.notify();
+    }
+
+    /// Client-side name validation — the engine re-validates (its fence is
+    /// authoritative); this just fails fast without a round trip.
+    fn validate_entry_name(name: &str) -> Result<(), String> {
+        if name.trim().is_empty() {
+            return Err("The name must not be empty.".into());
+        }
+        if name.contains('/') || name == "." || name == ".." || name == ".git" {
+            return Err(format!("{name:?} is not a valid name."));
+        }
+        Ok(())
+    }
+
+    /// Submit the dialog: create the entry or apply the rename. On success
+    /// the tree refreshes that directory DIRECTLY (no reliance on the
+    /// watch), and a rename carries every affected tab and draft to the new
+    /// identity.
+    pub(super) fn submit_file_op(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(dialog) = &mut self.file_op_dialog else {
+            return;
+        };
+        if dialog.pending {
+            return;
+        }
+        let name = dialog.input.read(cx).text().trim().to_string();
+        if let Err(message) = Self::validate_entry_name(&name) {
+            dialog.error = Some(message.into());
+            cx.notify();
+            return;
+        }
+        let space = dialog.space.clone();
+        let kind = dialog.kind.clone();
+        // The scope binds to the OWNING space's selector shape: the dialog
+        // opened from the tree, whose selector follows the current chat.
+        let scope = {
+            let state = self.state.read(cx);
+            state
+                .selected_chat_row()
+                .map(|chat| FileScope {
+                    chat_id: Some(chat.id.clone()),
+                    space_id: None,
+                })
+                .unwrap_or_else(|| FileScope {
+                    chat_id: None,
+                    space_id: Some(space.clone()),
+                })
+        };
+        let mut params = serde_json::Map::new();
+        if let Some(chat_id) = &scope.chat_id {
+            params.insert("chatId".into(), serde_json::json!(chat_id));
+        } else if let Some(space_id) = &scope.space_id {
+            params.insert("spaceId".into(), serde_json::json!(space_id));
+        }
+        let (method, refresh_dir, rename_from): (&str, String, Option<String>) = match &kind {
+            FileOpKind::NewFile { parent } => {
+                params.insert("parentPath".into(), serde_json::json!(parent));
+                params.insert("name".into(), serde_json::json!(name));
+                params.insert("isDir".into(), serde_json::json!(false));
+                (
+                    holt_rpc::methods::CREATE_WORKSPACE_ENTRY,
+                    parent.clone(),
+                    None,
+                )
+            }
+            FileOpKind::NewDirectory { parent } => {
+                params.insert("parentPath".into(), serde_json::json!(parent));
+                params.insert("name".into(), serde_json::json!(name));
+                params.insert("isDir".into(), serde_json::json!(true));
+                (
+                    holt_rpc::methods::CREATE_WORKSPACE_ENTRY,
+                    parent.clone(),
+                    None,
+                )
+            }
+            FileOpKind::Rename { path } => {
+                params.insert("path".into(), serde_json::json!(path));
+                params.insert("newName".into(), serde_json::json!(name));
+                (
+                    holt_rpc::methods::RENAME_WORKSPACE_ENTRY,
+                    std::path::Path::new(path)
+                        .parent()
+                        .map(|parent| parent.display().to_string())
+                        .unwrap_or_default(),
+                    Some(path.clone()),
+                )
+            }
+        };
+        dialog.pending = true;
+        dialog.error = None;
+        self.file_op_epoch += 1;
+        let epoch = self.file_op_epoch;
+        let params = serde_json::Value::Object(params);
+        cx.spawn(async move |this, cx| {
+            let reply = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                method,
+                params,
+                std::time::Duration::from_secs(10),
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                // The dialog may have been cancelled or replaced after the
+                // RPC fired. A SUCCESSFUL outcome still happened on disk:
+                // tabs and the tree follow it either way. Failures surface
+                // only where a matching dialog can still show them — a
+                // stale one never poisons the current dialog (epoch).
+                let same_dialog = this
+                    .file_op_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.space == space && dialog.kind == kind)
+                    .unwrap_or(false);
+                let current_epoch = this.file_op_epoch;
+                if same_dialog && let Some(dialog) = &mut this.file_op_dialog {
+                    dialog.pending = false;
+                }
+                match reply {
+                    Ok(value) => {
+                        if same_dialog {
+                            this.close_file_op_dialog(cx);
+                        }
+                        if let Some(from) = rename_from {
+                            // The engine reports the canonical destination;
+                            // the reconstructed hint is only a fallback for
+                            // older spellings.
+                            let destination = value
+                                .get("path")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| {
+                                    this.rename_destination_hint(&name, &refresh_dir)
+                                });
+                            this.carry_tabs_over_rename(&space, &from, &destination, cx);
+                            if let Some(tree) = &this.file_tree {
+                                tree.update(cx, |tree, _| {
+                                    tree.carry_expansion_over_rename(&from, &destination);
+                                });
+                            }
+                        }
+                        this.refresh_tree_dir(&refresh_dir, cx);
+                        this.persist_file_navigation(cx);
+                    }
+                    Err(message) => {
+                        if same_dialog && current_epoch == epoch {
+                            if let Some(dialog) = &mut this.file_op_dialog {
+                                dialog.error = Some(message.into());
+                                cx.notify();
+                            }
+                        } else {
+                            this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx);
+                        }
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The renamed entry's absolute destination (same directory, new name) —
+    /// mirrors the engine's sibling-rename rule for tab bookkeeping.
+    fn rename_destination_hint(&self, new_name: &str, parent: &str) -> String {
+        let parent = parent.trim_end_matches('/');
+        if parent.is_empty() {
+            format!("/{new_name}")
+        } else {
+            format!("{parent}/{new_name}")
+        }
+    }
+
+    /// A rename moves tabs for the SAME file and every file under a renamed
+    /// directory: paths rewrite, drafts and modified state ride along
+    /// untouched, and later saves reach the renamed location.
+    fn carry_tabs_over_rename(
+        &mut self,
+        space: &str,
+        from: &str,
+        to: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let tabs: Vec<(u64, String)> = self
+            .file_state
+            .space(space)
+            .map(|tabs| {
+                tabs.tabs
+                    .iter()
+                    .map(|tab| (tab.id, tab.path.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (id, path) in tabs {
+            let Some(new_path) = rewritten_path(from, to, &path) else {
+                continue;
+            };
+            if let Some(tab) = self
+                .file_state
+                .get(space)
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id == id)
+            {
+                tab.path = new_path.clone();
+                tab.resolved = None;
+                let viewer = tab.viewer.clone();
+                viewer.update(cx, |viewer, _| viewer.move_to(new_path));
+            }
+        }
+    }
+
+    /// Direct tree refresh for one directory ("" = the root) — successful
+    /// mutations update the visible tree without waiting for the watch.
+    fn refresh_tree_dir(&mut self, dir: &str, cx: &mut Context<Self>) {
+        if let Some(tree) = &self.file_tree {
+            tree.update(cx, |tree, cx| tree.refresh_dir(dir, cx));
+        }
+    }
+}
+
+/// A rename's path rewrite: the entry itself, or a descendant under a
+/// renamed ancestor. Pure — unit-tested.
+fn rewritten_path(from: &str, to: &str, path: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_string());
+    }
+    let prefix = format!("{}/", from.trim_end_matches('/'));
+    path.strip_prefix(&prefix)
+        .map(|rest| format!("{}/{}", to.trim_end_matches('/'), rest))
+}
+
 impl Shell {
     /// The unsaved-file decision dialogs: one modified tab closing, and one
     /// space whose removal would take modified tabs with it. Both offer
@@ -823,5 +1128,239 @@ impl Shell {
         }
 
         overlays
+    }
+}
+
+impl Shell {
+    /// The File tree's context menu (ticket 06): New file / New
+    /// directory / Rename, positioned where the right-click landed.
+    pub(super) fn render_file_menu_overlay(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let mut overlays = Vec::new();
+        if let Some((target, _space)) = self.file_menu.get().cloned() {
+            let closing = self.file_menu.closing_since();
+            let parent_new_file = target.parent.clone();
+            let parent_new_dir = target.parent.clone();
+            let rename_target = target.rename.clone();
+            let menu = popover::popover_card(&theme)
+                .w(px(180.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.file_menu.begin_close() {
+                        popover::reap_popup(cx, |shell: &mut Self| &mut shell.file_menu);
+                    }
+                    cx.notify();
+                }))
+                .flex()
+                .flex_col()
+                .child(
+                    popover::menu_row(&theme, false, "file-menu-new-file")
+                        .id("file-menu-new-file")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_file_menu(cx);
+                            this.open_file_op_dialog(
+                                file_sidebar_kind_new_file(&parent_new_file),
+                                cx,
+                            );
+                        }))
+                        .child(
+                            icon(icons::DOCUMENT_ADD)
+                                .size(px(15.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("New file")),
+                )
+                .child(
+                    popover::menu_row(&theme, false, "file-menu-new-dir")
+                        .id("file-menu-new-dir")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_file_menu(cx);
+                            this.open_file_op_dialog(
+                                file_sidebar_kind_new_dir(&parent_new_dir),
+                                cx,
+                            );
+                        }))
+                        .child(
+                            icon(icons::FOLDER_WITH_FILES)
+                                .size(px(15.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("New directory")),
+                )
+                .when(rename_target.is_some(), |menu| {
+                    let (path, _name) = rename_target.clone().unwrap();
+                    menu.child(popover::menu_separator()).child(
+                        popover::menu_row(&theme, false, "file-menu-rename")
+                            .id("file-menu-rename")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_file_menu(cx);
+                                this.open_file_op_dialog(
+                                    FileOpKind::Rename { path: path.clone() },
+                                    cx,
+                                );
+                            }))
+                            .child(icon(icons::PEN).size(px(15.0)).text_color(theme.text_muted))
+                            .child(SharedString::from("Rename…")),
+                    )
+                })
+                .into_any_element();
+            overlays.push(popover::menu_at(
+                "file-context-menu",
+                target.position,
+                menu,
+                closing,
+            ));
+        }
+
+        if let Some(dialog) = &mut self.file_op_dialog {
+            if std::mem::take(&mut dialog.focus_pending) {
+                let handle = gpui::Focusable::focus_handle(dialog.input.read(cx), cx).clone();
+                window.focus(&handle, cx);
+            }
+            let theme = theme.clone();
+            let (title, hint) = match &dialog.kind {
+                FileOpKind::NewFile { parent } => ("New file", destination_hint(parent)),
+                FileOpKind::NewDirectory { parent } => ("New directory", destination_hint(parent)),
+                FileOpKind::Rename { .. } => ("Rename", String::new()),
+            };
+            let error = dialog.error.clone();
+            let pending = dialog.pending;
+            let input = dialog.input.clone();
+            let card = popover::dialog_card(&theme)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.close_file_op_dialog(cx);
+                    }
+                }))
+                .child(popover::dialog_title(&theme, title))
+                .when(!hint.is_empty(), |card| {
+                    card.child(
+                        div().mt(px(4.0)).child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_muted)
+                                .child(hint),
+                        ),
+                    )
+                })
+                .child(
+                    div()
+                        .mt(px(10.0))
+                        .child(popover::dialog_field(input.into_any_element())),
+                )
+                .when_some(error, |card, message| {
+                    card.child(
+                        div().mt(px(8.0)).child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.danger_muted)
+                                .child(message),
+                        ),
+                    )
+                })
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "file-op-cancel")
+                                .id("file-op-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.close_file_op_dialog(cx);
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(
+                                &theme,
+                                if pending {
+                                    "Working…"
+                                } else if matches!(dialog.kind, FileOpKind::Rename { .. }) {
+                                    "Rename"
+                                } else {
+                                    "Create"
+                                },
+                            )
+                            .id("file-op-submit")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.submit_file_op(cx);
+                            })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("file-op-dialog", viewport, card));
+        }
+
+        overlays
+    }
+
+    fn close_file_menu(&mut self, cx: &mut Context<Self>) {
+        if self.file_menu.begin_close() {
+            popover::reap_popup(cx, |shell: &mut Self| &mut shell.file_menu);
+        }
+        cx.notify();
+    }
+}
+
+fn file_sidebar_kind_new_file(parent: &str) -> FileOpKind {
+    FileOpKind::NewFile {
+        parent: parent.to_string(),
+    }
+}
+
+fn file_sidebar_kind_new_dir(parent: &str) -> FileOpKind {
+    FileOpKind::NewDirectory {
+        parent: parent.to_string(),
+    }
+}
+
+/// The muted "lands in …" hint under a create dialog's title.
+fn destination_hint(parent: &str) -> String {
+    if parent.is_empty() {
+        String::new()
+    } else {
+        format!("In {}", parent)
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn renamed_paths_rewrite_for_entries_and_descendants() {
+        // The entry itself.
+        assert_eq!(
+            rewritten_path("/r/old.rs", "/r/new.rs", "/r/old.rs"),
+            Some("/r/new.rs".to_string())
+        );
+        // A descendant of a renamed directory keeps its tail.
+        assert_eq!(
+            rewritten_path("/r/pkg", "/r/crate", "/r/pkg/src/main.rs"),
+            Some("/r/crate/src/main.rs".to_string())
+        );
+        // Unrelated paths and near-miss prefixes stay untouched.
+        assert_eq!(rewritten_path("/r/pkg", "/r/crate", "/r/pkgx/a"), None);
+        assert_eq!(rewritten_path("/r/pkg", "/r/crate", "/r/other"), None);
+        // Trailing separators normalize.
+        assert_eq!(
+            rewritten_path("/r/pkg/", "/r/crate", "/r/pkg/deep/x"),
+            Some("/r/crate/deep/x".to_string())
+        );
+    }
+
+    #[test]
+    fn entry_names_validate_like_the_engine() {
+        assert!(Shell::validate_entry_name("notes draft ✓.md").is_ok());
+        assert!(Shell::validate_entry_name("a/b").is_err());
+        assert!(Shell::validate_entry_name(".git").is_err());
+        assert!(Shell::validate_entry_name("..").is_err());
+        assert!(Shell::validate_entry_name("  ").is_err());
     }
 }
