@@ -34,3 +34,9 @@ preserves source detail, while model input may be resized to 2048 pixels
 on its longest edge. Pasted images referenced by accepted messages survive
 restart. Custom model vision support stays marked unknown, and image
 requests are attempted without automatically switching models.
+
+## Credits
+
+The beautiful UI comes from: https://github.com/zeronsh/comet ❤️
+
+![Holt UI](docs/assets/screenshot.png)
