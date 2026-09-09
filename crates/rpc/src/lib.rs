@@ -184,6 +184,17 @@ pub mod methods {
     /// `WorkspaceWatchFrame` of changed absolute paths after a ~200ms quiet
     /// window. The stream ends when the UI drops it.
     pub const WATCH_WORKSPACE_ENTRIES: &str = "WatchWorkspaceEntries";
+    /// Working-tree Git status stream for the File sidebar's decorations
+    /// (ticket 10). Params `{chatId?|spaceId?}` — exactly one selector; the
+    /// first reply is the current `WorkspaceGitStatus` snapshot, then a
+    /// fresh snapshot after each change (edits, staging, branch switches,
+    /// external writes) once a ~200ms quiet window passes. Status is
+    /// computed fresh against the live working tree — never inherited from
+    /// a checkout-diff scope. Untracked and ignored directories are
+    /// reported whole, so a large ignored directory costs one entry. A
+    /// non-Git root replies `{workdir: null}` — no decorations, no error.
+    /// The stream ends when the UI drops it.
+    pub const WATCH_WORKSPACE_GIT_STATUS: &str = "WatchWorkspaceGitStatus";
     /// Create a file or directory under an existing in-root parent (File
     /// sidebar, ticket 06). Params `{chatId|spaceId, parentPath?, name,
     /// isDir}`; collisions refuse, `.git`/escapes never land.

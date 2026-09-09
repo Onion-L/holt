@@ -206,6 +206,91 @@ impl Git {
         .await
     }
 
+    /// The File sidebar's working-tree status snapshot (file-sidebar ticket
+    /// 10): one `statuses()` pass over the checkout — untracked and ignored
+    /// directories reported whole, never recursed into — classified into
+    /// the concise marker set. Computed fresh against the live working
+    /// tree; deliberately NOT one of the checkout-diff family's scoped
+    /// captures (working-tree/branch/turn/commit), which key on a chosen
+    /// base and must not be inherited as the tree's status.
+    pub(crate) async fn workspace_status(&self, repo_path: &str) -> holt_proto::WorkspaceGitStatus {
+        // Discover separately from the status pass: a folder outside any
+        // work tree is the non-Git Space case (no decorations, no error),
+        // while a discovered repository that then fails its pass reports
+        // the failure through `error`.
+        let discover = tokio::task::spawn_blocking({
+            let path = repo_path.to_string();
+            move || {
+                Repository::discover(&path)
+                    .ok()
+                    .and_then(|repo| repo.workdir().map(|dir| dir.to_path_buf()))
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(workdir) = discover else {
+            return holt_proto::WorkspaceGitStatus {
+                workdir: None,
+                entries: Vec::new(),
+                error: None,
+            };
+        };
+        // Canonical spelling: the tree's row paths arrive canonicalized by
+        // the listing, so the prefix the UI strips must be too.
+        let workdir = workdir.canonicalize().unwrap_or(workdir);
+        let display = workdir.display().to_string();
+        let workdir_out = display.clone();
+        match self
+            .with_repo(repo_path, move |repo| {
+                let mut options = git2::StatusOptions::new();
+                options
+                    .include_untracked(true)
+                    .recurse_untracked_dirs(false)
+                    .include_ignored(true)
+                    .recurse_ignored_dirs(false);
+                // Rename detection stays off on purpose: libgit2 keys a
+                // detected rename at the OLD path, which a live tree cannot
+                // show — the marker would vanish. Without detection the new
+                // name reports Untracked/Added and stays visible.
+                let statuses = repo.statuses(Some(&mut options)).map_err(git_message)?;
+                let mut entries = Vec::new();
+                for index in 0..statuses.len() {
+                    let Some(entry) = statuses.get(index) else {
+                        continue;
+                    };
+                    let Ok(path) = entry.path() else { continue };
+                    let Some(kind) = classify_status(entry.status()) else {
+                        continue;
+                    };
+                    entries.push(holt_proto::WorkspaceGitStatusEntry {
+                        // libgit2 spells wholly-untracked/ignored
+                        // directories with a trailing `/`; strip it so one
+                        // key matches the directory row and, through the
+                        // UI's ancestor walk, its descendants.
+                        path: path.trim_end_matches('/').to_string(),
+                        kind,
+                    });
+                }
+                entries.sort_by(|a, b| a.path.cmp(&b.path));
+                entries.dedup_by(|a, b| a.path == b.path);
+                Ok::<_, String>(holt_proto::WorkspaceGitStatus {
+                    workdir: Some(display),
+                    entries,
+                    error: None,
+                })
+            })
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(message) => holt_proto::WorkspaceGitStatus {
+                workdir: Some(workdir_out),
+                entries: Vec::new(),
+                error: Some(message),
+            },
+        }
+    }
+
     /// Capture a turn baseline (ADR-0003): `(HEAD sha, uncommitted patch)`
     /// for a checkout, the patch under the shared 3 MiB cap.
     pub(crate) async fn turn_baseline(&self, repo_path: &str) -> Result<TurnBaseline, String> {
@@ -597,6 +682,36 @@ fn create_and_switch(
 
 fn git_message(error: git2::Error) -> String {
     error.message().to_string()
+}
+
+/// One status entry's concise classification for the File sidebar's
+/// markers (ticket 10). `None` for entries that carry no working-tree
+/// signal (clean files). Conflicted files report as `Modified` — the
+/// marker set stays at git's concise alphabet; conflict detail belongs to
+/// a merge UI, not the tree.
+fn classify_status(status: git2::Status) -> Option<holt_proto::WorkspaceGitStatusKind> {
+    use holt_proto::WorkspaceGitStatusKind as Kind;
+    if status.contains(git2::Status::IGNORED) {
+        Some(Kind::Ignored)
+    } else if status.contains(git2::Status::INDEX_NEW) {
+        Some(Kind::Added)
+    } else if status.contains(git2::Status::WT_NEW) {
+        Some(Kind::Untracked)
+    } else if status.intersects(git2::Status::INDEX_DELETED | git2::Status::WT_DELETED) {
+        Some(Kind::Deleted)
+    } else if status.intersects(
+        git2::Status::INDEX_MODIFIED
+            | git2::Status::INDEX_RENAMED
+            | git2::Status::INDEX_TYPECHANGE
+            | git2::Status::WT_MODIFIED
+            | git2::Status::WT_RENAMED
+            | git2::Status::WT_TYPECHANGE
+            | git2::Status::CONFLICTED,
+    ) {
+        Some(Kind::Modified)
+    } else {
+        None
+    }
 }
 
 /// Collapse a git dir to its component form so `.git/` and `.git` hash as
@@ -1601,8 +1716,8 @@ fn history_page(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PATCH_BYTES, checkout_identity, default_branch, diff_checksum, filter_turn_patch,
-        truncate_patch, turn_start_content,
+        MAX_PATCH_BYTES, checkout_identity, classify_status, default_branch, diff_checksum,
+        filter_turn_patch, truncate_patch, turn_start_content,
     };
 
     fn names(values: &[&str]) -> Vec<String> {
@@ -1748,6 +1863,46 @@ mod tests {
             "beta"
         );
         assert_eq!(default_branch(&[], None), None);
+    }
+
+    // ---- working-tree status classification (file-sidebar ticket 10) ----
+
+    #[test]
+    fn classify_status_maps_git_flags_to_the_marker_set() {
+        use holt_proto::WorkspaceGitStatusKind as Kind;
+        assert_eq!(classify_status(git2::Status::IGNORED), Some(Kind::Ignored));
+
+        let staged_new = git2::Status::INDEX_NEW | git2::Status::WT_MODIFIED;
+        assert_eq!(classify_status(staged_new), Some(Kind::Added));
+
+        assert_eq!(classify_status(git2::Status::WT_NEW), Some(Kind::Untracked));
+
+        assert_eq!(
+            classify_status(git2::Status::WT_MODIFIED),
+            Some(Kind::Modified)
+        );
+        assert_eq!(
+            classify_status(git2::Status::INDEX_MODIFIED),
+            Some(Kind::Modified)
+        );
+        // A conflicted file is modified content for the tree's purposes.
+        assert_eq!(
+            classify_status(git2::Status::CONFLICTED),
+            Some(Kind::Modified)
+        );
+        // Removals report Deleted — invisible rows in a live tree, but the
+        // kind keeps the snapshot honest.
+        assert_eq!(
+            classify_status(git2::Status::WT_DELETED),
+            Some(Kind::Deleted)
+        );
+        assert_eq!(
+            classify_status(git2::Status::INDEX_DELETED),
+            Some(Kind::Deleted)
+        );
+
+        // Clean and bare index states carry no marker.
+        assert_eq!(classify_status(git2::Status::CURRENT), None);
     }
 
     // ---- turn net-change filter ----

@@ -465,6 +465,63 @@ pub struct WorkspaceListing {
     pub truncated: bool,
 }
 
+/// The working-tree Git status of one path, as the File sidebar's
+/// decorations render it (ticket 10). Computed fresh against the live
+/// working tree — never inherited from a checkout-diff scope
+/// (working-tree/branch/turn/commit), which keys on a chosen base.
+///
+/// Rename detection is deliberately off: libgit2 keys detected renames at
+/// the OLD path, which a live tree cannot show. A moved file surfaces
+/// under its new name as `Untracked` (unstaged) or `Added` (staged), and
+/// the vacated old name reports `Deleted` — invisible to the tree, where
+/// the file is simply gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceGitStatusKind {
+    /// Matches git's ignore rules (or lives inside an ignored directory).
+    /// Drives subdued styling, not a marker letter.
+    Ignored,
+    /// On disk, untracked by git, and not ignored.
+    Untracked,
+    /// Newly created and staged (`git add` of a new file).
+    Added,
+    /// Content changes against HEAD or the index — staged, unstaged, or
+    /// conflicted.
+    Modified,
+    /// Tracked but missing from the working tree.
+    Deleted,
+}
+
+/// One row of a [`WorkspaceGitStatus`] snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitStatusEntry {
+    /// Repo-relative path, libgit2's trailing `/` on whole untracked or
+    /// ignored directories stripped. A directory entry classifies its
+    /// descendants too: a row under it inherits the directory's kind when
+    /// nothing more specific matches.
+    pub path: String,
+    pub kind: WorkspaceGitStatusKind,
+}
+
+/// One `WatchWorkspaceGitStatus` frame: the working-tree status list for a
+/// watched root. Untracked and ignored directories are reported whole
+/// (never recursed), so a large ignored directory costs one entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitStatus {
+    /// The canonical absolute workdir the entry paths are relative to.
+    /// `None` when the watched root is not inside a git work tree (a
+    /// non-Git Space): decorations off, not an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    pub entries: Vec<WorkspaceGitStatusEntry>,
+    /// A git failure, distinguishable from a clean tree: the frame carries
+    /// no entries and the tree stays usable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// The line-ending shape a text file was read with. Saving must reproduce
 /// what the file had; `Mixed` is reported so the editor can treat the file
 /// conservatively instead of silently normalizing it.

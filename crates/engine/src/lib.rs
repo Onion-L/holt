@@ -30,6 +30,7 @@ pub mod credentials;
 mod files;
 mod gate;
 mod git;
+mod git_status_watch;
 mod git_watch;
 mod history;
 pub mod images;

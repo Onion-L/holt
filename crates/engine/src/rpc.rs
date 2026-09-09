@@ -1640,6 +1640,22 @@ impl RpcService for EngineService {
                     crate::workspace_watch::subscribe(canonical).map_err(RpcError::Failed)?;
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
+            // Working-tree Git status decorations (file-sidebar ticket 10):
+            // a focused extension of the git watch — a fresh snapshot after
+            // every change under the selector's space root (working tree or
+            // `.git`), keyed to that Space's folder, never a diff scope.
+            methods::WATCH_WORKSPACE_GIT_STATUS => {
+                let params: WorkspacePathParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                params.check_selector()?;
+                let root = self.search_files_root(&params.as_search_root())?;
+                let canonical = std::path::Path::new(&root)
+                    .canonicalize()
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let stream = crate::git_status_watch::subscribe(canonical, self.git.clone())
+                    .map_err(RpcError::Failed)?;
+                Ok(RpcReply::Stream(Box::pin(stream)))
+            }
             methods::CREATE_WORKSPACE_ENTRY => {
                 let params: CreateEntryParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::BadParams(error.to_string()))?;
