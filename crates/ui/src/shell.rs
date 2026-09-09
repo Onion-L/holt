@@ -793,7 +793,7 @@ pub struct Shell {
 
 /// The `UiSettings` fields the Shell owns and publishes through
 /// [`Shell::schedule_save`]. Everything else in the record (notification
-/// toggles, disabled skills, file navigation, diff layout, …) belongs to
+/// toggles, disabled skills, diff layout, …) belongs to
 /// other writers and must survive a Shell save untouched.
 struct ShellSettingsFields {
     sidebar_width: f32,
@@ -811,6 +811,7 @@ struct ShellSettingsFields {
     surface: holt_theme::SurfacePreference,
     ui_font_family: crate::typography::UiFontFamily,
     ui_font_size: crate::typography::UiFontSize,
+    file_navigation: std::collections::HashMap<String, settings::SpaceFileNavigation>,
 }
 
 impl ShellSettingsFields {
@@ -831,6 +832,7 @@ impl ShellSettingsFields {
             surface: settings.surface,
             ui_font_family: settings.ui_font_family.clone(),
             ui_font_size: settings.ui_font_size,
+            file_navigation: settings.file_navigation.clone(),
         }
     }
 
@@ -850,6 +852,7 @@ impl ShellSettingsFields {
         current.surface = self.surface;
         current.ui_font_family = self.ui_font_family;
         current.ui_font_size = self.ui_font_size;
+        current.file_navigation = self.file_navigation;
     }
 }
 
@@ -3499,6 +3502,17 @@ mod tests {
         });
         shell.update(cx, |shell, cx| {
             shell.settings.sidebar_width = 300.0;
+            shell.settings.file_navigation.insert(
+                "space-a".into(),
+                settings::SpaceFileNavigation {
+                    tabs: vec![settings::PersistedFileTab {
+                        path: "/tmp/space-a/src/main.rs".into(),
+                        pinned: true,
+                    }],
+                    selected: Some(0),
+                    expanded: vec!["/tmp/space-a/src".into()],
+                },
+            );
             shell.schedule_save(cx);
         });
         cx.update(|cx| {
@@ -3507,6 +3521,7 @@ mod tests {
             assert!(!current.completion_notifications);
             assert!(!current.completion_notification_sound);
             assert_eq!(current.disabled_skills, ["grill".to_string()]);
+            assert!(current.file_navigation.contains_key("space-a"));
             crate::settings::flush(cx);
         });
         let reloaded = UiSettings::load(dir.path());
@@ -3514,6 +3529,10 @@ mod tests {
         assert!(!reloaded.completion_notifications);
         assert!(!reloaded.completion_notification_sound);
         assert_eq!(reloaded.disabled_skills, ["grill".to_string()]);
+        let navigation = &reloaded.file_navigation["space-a"];
+        assert_eq!(navigation.tabs.len(), 1);
+        assert_eq!(navigation.selected, Some(0));
+        assert_eq!(navigation.expanded, ["/tmp/space-a/src".to_string()]);
     }
 
     #[gpui::test]

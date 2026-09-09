@@ -304,6 +304,67 @@ async fn an_interrupted_turn_publishes_an_interrupted_event() {
 }
 
 #[tokio::test]
+async fn a_steered_turn_publishes_interrupted_then_the_new_turns_event() {
+    let fixture = Fixture::new();
+    let observed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let finish = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::Cancelling {
+            observed: observed.clone(),
+            finish: finish.clone(),
+        },
+        ScriptedReply::text("answer D"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(&engine, "chat-1", &fixture.cwd(), "m-1", "A").await;
+    common::wait_for_requests(&provider, 1).await;
+    // Steer interrupts the active Turn and starts its own message as a new
+    // Turn ahead of ordinary pending work (ADR-0015).
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            json!({
+                "chatId": "chat-1",
+                "command": {
+                    "kind": "steer",
+                    "prompt": "D",
+                    "request": {
+                        "prompt": "D",
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": fixture.cwd(),
+                        "sandbox": "workspace-write"
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), observed.notified())
+        .await
+        .unwrap();
+    finish.notify_one();
+
+    let interrupted = common::next_frame(&mut events).await;
+    assert_eq!(interrupted["messageId"], "m-1");
+    assert_eq!(interrupted["outcome"], "interrupted");
+
+    // The steered message settles as its own Turn with its own identity.
+    common::wait_for_requests(&provider, 2).await;
+    let steered = common::next_frame(&mut events).await;
+    assert_eq!(steered["outcome"], "succeeded");
+    assert_eq!(steered["chatId"], "chat-1");
+    assert_ne!(steered["messageId"], "m-1");
+    assert_ne!(steered["eventId"], interrupted["eventId"]);
+    assert_no_event(&mut events).await;
+}
+
+#[tokio::test]
 async fn sequential_queue_items_publish_one_event_each() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
