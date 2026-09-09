@@ -398,7 +398,8 @@ impl Shell {
 
     /// Width budget for the tree column: the space left of the conversation
     /// floor after the right pane's own minimum. Below the tree's floor the
-    /// tree collapses entirely (decision 17) — the titlebar toggle reopens.
+    /// tree collapses entirely (decision 17) — the surface picker's File row
+    /// reopens it once the width allows (ticket 11: one entry point).
     pub(super) fn file_tree_available(&self, cx: &App) -> f32 {
         let sidebar = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let right_reservation = if self.right_pane_open(cx) {
@@ -641,16 +642,44 @@ impl Shell {
     /// Show/hide the far-right File tree column (its own toggle — independent
     /// of the contents pane per decision 2).
     pub(super) fn toggle_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = !self.file_tree_visible;
+        self.set_file_tree_visible(visible, cx);
+        if visible {
+            // Landing focus in the tree makes its keyboard navigation live.
+            self.focus_file_tree(window, cx);
+        }
+    }
+
+    /// The width flip + tween behind the tree column's visibility. Focus (and
+    /// therefore `Window`) is the caller's concern.
+    pub(super) fn set_file_tree_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         let from = self.file_tree_target(cx);
-        self.file_tree_visible = !self.file_tree_visible;
+        self.file_tree_visible = visible;
         let to = self.file_tree_target(cx);
         self.file_tree_tween = Some(WidthTween::new(from, to));
-        if self.file_tree_visible {
-            // Landing focus in the tree makes its keyboard navigation live.
-            let tree = self.file_tree_panel(cx);
-            window.focus(&tree.read(cx).focus_handle(cx), cx);
-        }
         cx.notify();
+    }
+
+    /// Land keyboard focus in the tree so its navigation keys go live.
+    pub(super) fn focus_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tree = self.file_tree_panel(cx);
+        window.focus(&tree.read(cx).focus_handle(cx), cx);
+    }
+
+    /// The surface picker's File card / the `+` menu's File row (ticket 11):
+    /// the File surface — the far-right tree for the current Space plus its
+    /// file tabs in the shared contents area. Reveals the tree column and the
+    /// contents pane when either is hidden, and activates the surface (the
+    /// Space's live tab, or the pick-a-file empty state). Returns whether the
+    /// tree column was newly revealed, so the caller can land focus in it.
+    pub(super) fn add_file_surface(&mut self, cx: &mut Context<Self>) -> bool {
+        let tree_was_hidden = !self.file_tree_visible;
+        if tree_was_hidden {
+            self.set_file_tree_visible(true, cx);
+        }
+        self.reveal_contents_pane(cx);
+        self.set_right_active(RightSurface::Files, cx);
+        tree_was_hidden
     }
 
     pub(super) fn on_file_tree_drag(
@@ -734,6 +763,34 @@ impl Shell {
                     .font_family(theme.font_mono.clone())
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(crate::settings::badge_combo("mod-p")),
+            )
+            // The column's own hide control (ticket 11): the top-right
+            // file-tree button is gone, so the panel carries its collapse —
+            // reopening is the surface picker's File row.
+            .child(
+                div()
+                    .id("hide-file-tree")
+                    .flex_none()
+                    .size(px(20.0))
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(crate::theme::ink(0.09)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::image_viewer::ViewerTooltip("Hide file sidebar".into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.toggle_file_tree(window, cx);
+                    }))
+                    .child(
+                        icon(crate::icons::TREE_SIDEBAR)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted.opacity(0.8)),
+                    ),
             );
         let panel = div()
             .size_full()
@@ -1971,6 +2028,207 @@ mod rename_tests {
         assert!(Shell::validate_entry_name(".git").is_err());
         assert!(Shell::validate_entry_name("..").is_err());
         assert!(Shell::validate_entry_name("  ").is_err());
+    }
+}
+
+/// Ticket 11: File as a right-pane surface — the picker choice reveals the
+/// tree column and the contents pane, resolves to the Space's live tab, and
+/// the Chat-owned surfaces never move the tree column.
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use crate::files::FileTab;
+    use crate::files::viewer::FileViewer;
+
+    #[gpui::test]
+    fn file_surface_choice_reveals_tree_and_contents(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = crate::state::AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell
+        });
+
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                // The reference launch arrangement shows the tree already;
+                // hide it so the reveal is observable.
+                assert!(shell.file_tree_visible);
+                shell.set_file_tree_visible(false, cx);
+                assert!(!shell.file_tree_visible);
+                assert!(!shell.right_pane_open(cx));
+
+                // Choosing File reveals BOTH the tree column and the shared
+                // contents area, and lands on the File surface.
+                assert!(shell.add_file_surface(cx));
+                assert!(shell.file_tree_visible);
+                assert!(shell.right_pane_open(cx));
+                assert_eq!(
+                    shell.panels.get(&shell.panel_key(cx)).right_active,
+                    RightSurface::Files
+                );
+
+                // With no live tab the surface resolves to its own empty
+                // state — never a dead tab or the surface picker.
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Files);
+
+                // Choosing File again is not a fresh reveal (no focus steal).
+                assert!(!shell.add_file_surface(cx));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn file_surface_shows_the_space_selected_tab(cx: &mut gpui::TestAppContext) {
+        // `open_file` persists navigation: give the debounced settings store
+        // a real home for this test app.
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| {
+            let mut state = crate::state::AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell
+        });
+
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.add_file_surface(cx);
+
+                // The tree-open path (`open_file`) stores the TAB as the
+                // chat's pick, and closing it heals to the surface picker —
+                // the pane's add-a-surface state (no rows left).
+                shell.open_file("/tmp/space-1/notes.md".into(), None, true, cx);
+                assert_eq!(
+                    shell.panels.get(&shell.panel_key(cx)).right_active,
+                    RightSurface::File(1)
+                );
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::File(1));
+                shell.close_file_tab("space-1", 1, cx);
+                assert_eq!(
+                    shell.panels.get(&shell.panel_key(cx)).right_active,
+                    RightSurface::Picker
+                );
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Picker);
+
+                // The File SURFACE pick (the picker card, chosen with no tabs
+                // open) is different: it renders the Space's live selection.
+                let viewer = cx.new(|cx| {
+                    FileViewer::new(
+                        shell.state.clone(),
+                        "/tmp/space-1/notes.md".into(),
+                        FileScope {
+                            chat_id: None,
+                            space_id: Some("space-1".into()),
+                        },
+                        cx,
+                    )
+                });
+                shell.file_state.get("space-1").tabs.push(FileTab {
+                    id: 4,
+                    path: "/tmp/space-1/notes.md".into(),
+                    resolved: None,
+                    pinned: true,
+                    viewer,
+                });
+                shell.file_state.set_active("space-1", 4);
+                shell.set_right_active(RightSurface::Files, cx);
+
+                // The strip highlights that chip and the surface actions
+                // (Cmd+S etc.) address it.
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::File(4));
+
+                // Closing it heals to the File surface's own empty state —
+                // the pick never points at a dead tab.
+                shell.close_file_tab("space-1", 4, cx);
+                assert_eq!(
+                    shell.panels.get(&shell.panel_key(cx)).right_active,
+                    RightSurface::Files
+                );
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Files);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn chat_owned_surfaces_leave_the_tree_column_alone(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = crate::state::AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell
+        });
+
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.set_file_tree_visible(false, cx);
+
+                // A Git surface opens the contents area only — the tree
+                // column follows its own visibility, never the surface. (The
+                // picker lives inside the pane, so the UI path finds it
+                // open; mirror that here.)
+                shell.toggle_right_pane(cx);
+                shell.add_diff_surface(cx);
+                assert!(!shell.file_tree_visible);
+                assert!(shell.right_pane_open(cx));
+                assert!(matches!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Diff(_)
+                ));
+
+                // The tree and the Chat-owned surfaces coexist when the user
+                // opens the column beside them.
+                shell.set_file_tree_visible(true, cx);
+                assert!(shell.file_tree_visible);
+                assert!(matches!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Diff(_)
+                ));
+
+                // A Terminal choice (no engine here, so no tab opens) also
+                // leaves the column exactly as it was.
+                shell.add_terminal_surface(cx);
+                assert!(shell.file_tree_visible);
+            });
+        });
     }
 }
 

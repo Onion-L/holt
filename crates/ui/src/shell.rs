@@ -580,7 +580,7 @@ pub struct Shell {
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
-    /// The surface-tab strip's `+` menu (Terminal / Git diff rows).
+    /// The surface-tab strip's `+` menu (File / Terminal / Git rows).
     right_plus: popover::Popup<()>,
     /// External workspace application picker in the session titlebar.
     external_app_menu: popover::Popup<ExternalApp>,
@@ -1274,8 +1274,8 @@ impl Shell {
     /// a surface HOST now (terminals work in any space), so only the Git
     /// surface rows check `space_git_detected`. The new-session canvas keys
     /// its own flag per space: the pane never pops open there by itself, but
-    /// the canvas now carries the contents/tree toggles and an explicit file
-    /// open reveals the pane (File sidebar, decision 2).
+    /// an explicit surface open — a file open from the tree, or a File /
+    /// Terminal / Git choice in the surface picker — reveals it.
     fn right_pane_open(&self, cx: &App) -> bool {
         self.panels.get(&self.panel_key(cx)).changes_open
     }

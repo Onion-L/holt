@@ -113,10 +113,13 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [provider icon + session title] … [file tree] [open with]
-    /// [terminal] [changes]`.
+    /// `[new-session +] [provider icon + session title] … [surface tabs ·
+    /// expand · close] [open with]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
-    /// animated left inset, the toggle-changes button on git projects).
+    /// animated left inset). The old file-tree/terminal/changes toggle
+    /// buttons are gone (ticket 11): the right pane's own surface picker is
+    /// the single entry point for File/Terminal/Git, and the File tree
+    /// column carries its hide control in the tree itself.
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         // The canvas titles as NOTHING (user request — a "New session"
@@ -200,6 +203,11 @@ impl Shell {
         };
         let trailing: Option<gpui::AnyElement> = {
             let right_open = self.right_pane_open(cx);
+            let external_picker = if cfg!(target_os = "macos") && !self.external_apps.is_empty() {
+                Some(self.render_external_app_picker(cx))
+            } else {
+                None
+            };
             let mut controls = div()
                 .id("right-titlebar-controls")
                 .flex_none()
@@ -221,12 +229,19 @@ impl Shell {
                 let avail = self.viewport_width - row_left - pr - gap_budget;
                 // The right pane's SURFACE TABS (t3 RightPanelTabs) — the diff
                 // options that used to live here moved into the pane's own
-                // second row; expand stays in this band (user request).
+                // second row; the expand + close controls reveal with them.
+                // The only fixed control right of the band is the external-app
+                // picker (its 100px trigger) — the three panel-toggle buttons
+                // that used to sit there are gone (ticket 11): the surface
+                // picker owns those entries now, and their 28px slots no
+                // longer reserve layout space.
+                let fixed_slots = if external_picker.is_some() {
+                    100.0
+                } else {
+                    0.0
+                };
+                let animated_width = ((right_now - pr).min(avail) - fixed_slots).max(0.0);
                 let tabs = self.render_right_tab_strip(cx);
-                // The panel toggles stay fixed while tabs + expand reveal
-                // to their left. Reserve their 28px slots outside the clip.
-                let toggle_slots = if on_canvas { 2.0 } else { 3.0 } * 28.0;
-                let animated_width = ((right_now - pr).min(avail) - toggle_slots).max(0.0);
                 controls = controls.child(
                     div()
                         .w(px(animated_width))
@@ -239,7 +254,7 @@ impl Shell {
                         .overflow_hidden()
                         // 8 + the trigger's own 8px pad = the pane's 16px
                         // text gutter. The 4px right padding is the stable
-                        // gap before the fixed toggle.
+                        // gap before the fixed controls.
                         .pl(px(8.0))
                         .pr(px(4.0))
                         .child(
@@ -255,64 +270,27 @@ impl Shell {
                             right_pane_expand_icon(self.right_pane_expanded),
                             &theme,
                             cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
-                        )),
+                        ))
+                        // The pane's own hide control (ticket 11): the former
+                        // titlebar toggle-changes button, living in the band
+                        // with the surface tabs. Reopening rides the per-chat
+                        // panel state (⌘⌥B / ToggleChanges or an explicit
+                        // surface open) and restores the selected surface.
+                        .child(
+                            header_icon_button(
+                                "close-right-pane",
+                                icons::SIDEBAR_MINIMALISTIC,
+                                &theme,
+                                cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                            )
+                            .tooltip(|_, cx| {
+                                cx.new(|_| crate::image_viewer::ViewerTooltip("Hide panel".into()))
+                                    .into()
+                            }),
+                        ),
                 );
             }
-            // Keep the trigger mounted at one fixed position while the pane
-            // controls reveal to its left.
-            let external_picker = if cfg!(target_os = "macos") && !self.external_apps.is_empty() {
-                Some(self.render_external_app_picker(cx))
-            } else {
-                None
-            };
-            Some(
-                controls
-                    .child(
-                        header_icon_button(
-                            "toggle-file-tree",
-                            icons::TREE_SIDEBAR,
-                            &theme,
-                            cx.listener(|this, _, window, cx| this.toggle_file_tree(window, cx)),
-                        )
-                        .when(self.file_tree_visible, |el| el.bg(theme.glass_hover()))
-                        .tooltip(|_, cx| {
-                            cx.new(|_| {
-                                crate::image_viewer::ViewerTooltip("Toggle file sidebar".into())
-                            })
-                            .into()
-                        }),
-                    )
-                    .children(external_picker)
-                    // Terminals are chat-scoped: the new-chat canvas carries
-                    // no working terminal to toggle.
-                    .when(!on_canvas, |cluster| {
-                        cluster.child(
-                            header_icon_button(
-                                "toggle-terminal",
-                                icons::PROGRAMMING_OUTLINE,
-                                &theme,
-                                cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
-                            )
-                            .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
-                            .tooltip(|_, cx| {
-                                cx.new(|_| {
-                                    crate::image_viewer::ViewerTooltip("Toggle terminal".into())
-                                })
-                                .into()
-                            }),
-                        )
-                    })
-                    .child(
-                        header_icon_button(
-                            "toggle-changes",
-                            icons::SIDEBAR_MINIMALISTIC,
-                            &theme,
-                            cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                        )
-                        .when(right_open, |el| el.bg(theme.glass_hover())),
-                    )
-                    .into_any_element(),
-            )
+            Some(controls.children(external_picker).into_any_element())
         };
 
         let inner = div()

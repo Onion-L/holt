@@ -34,6 +34,11 @@ pub enum RightSurface {
     /// A Space-owned file contents tab (ADR-0020) — the handle keys
     /// [`Shell::file_state`]'s tabs for the CURRENT space, not any chat.
     File(u64),
+    /// The File surface itself (picker card / `+` row): the far-right tree
+    /// plus the Space's file tabs in the shared contents area. Never a strip
+    /// chip — [`Shell::resolved_right_active`] shows it as the Space's live
+    /// tab when one exists, and as the pick-a-file empty state when not.
+    Files,
 }
 
 /// Per-chat panel open flags (holt parity: `sessionPanels` — the terminal and
@@ -213,6 +218,8 @@ impl Shell {
                             .and_then(|tabs| tabs.find(*id))
                     })
                     .map(|tab| (*surface, tab.title().into())),
+                // Not a strip chip — the Space's file tabs represent it.
+                RightSurface::Files => None,
             })
             .collect();
         rows.extend(stored_rows);
@@ -290,11 +297,29 @@ impl Shell {
     /// The surface that actually renders: the stored pick when it still
     /// exists, else the first remaining tab, else the picker. Terminal keys
     /// go stale when their tab closes/exits — never render a dead surface.
+    /// The File surface normalizes to the Space's live selected tab so the
+    /// strip highlights the chip that is actually showing; with no live tab
+    /// it stays [`RightSurface::Files`] (the pick-a-file empty state).
     pub(super) fn resolved_right_active(&self, cx: &App) -> RightSurface {
-        let picked = self.panels.get(&self.panel_key(cx)).right_active;
+        let picked = match self.panels.get(&self.panel_key(cx)).right_active {
+            RightSurface::Files => self
+                .file_space_key(cx)
+                .and_then(|space| {
+                    let id = self.file_state.active(&space)?;
+                    self.file_state
+                        .space(&space)
+                        .and_then(|tabs| tabs.find(id))
+                        .map(|tab| RightSurface::File(tab.id))
+                })
+                .unwrap_or(RightSurface::Files),
+            picked => picked,
+        };
         let rows = self.right_surface_rows(cx);
         let exists = match picked {
             RightSurface::Picker => false,
+            // The bare File surface is always renderable (its empty state
+            // points at the tree); every other surface must still exist.
+            RightSurface::Files => true,
             surface => rows.iter().any(|(s, _)| *s == surface),
         };
         if exists {
@@ -330,6 +355,10 @@ impl Shell {
                     self.persist_file_navigation(cx);
                 }
             }
+            // The File surface shows the Space's own selection; there is no
+            // per-tab bookkeeping. Opening the tree column is the caller's
+            // (the picker action) — a restored pick must not pop the tree.
+            RightSurface::Files => {}
             RightSurface::Picker => {}
         }
         cx.notify();
@@ -554,7 +583,8 @@ impl Shell {
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
-            RightSurface::Picker => {}
+            // Never a strip chip, so never closed through here.
+            RightSurface::Files | RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
             if p.right_active == surface {
@@ -663,6 +693,34 @@ impl Shell {
                             .into_any_element()
                     }
                 },
+                // The File surface with no live tab (resolved normalization
+                // maps it to the Space's tab when one exists): point at the
+                // tree column, the surface's browser.
+                RightSurface::Files => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(16.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                icon(icons::DOCUMENT)
+                                    .size(px(18.0))
+                                    .text_color(theme.text_muted.opacity(0.6)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .text_color(theme.text_muted)
+                                    .child("Choose a file from the sidebar"),
+                            ),
+                    )
+                    .into_any_element(),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -795,6 +853,17 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
+                    // File first — the tree + file tabs are the browsing
+                    // surface (ticket 11), a peer of Terminal and Git.
+                    .child(
+                        row("surface-card-file", icons::DOCUMENT, "File").on_click(cx.listener(
+                            |this, _, window, cx| {
+                                if this.add_file_surface(cx) {
+                                    this.focus_file_tree(window, cx);
+                                }
+                            },
+                        )),
+                    )
                     .child(
                         row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
                             cx.listener(|this, _, _, cx| {
@@ -1084,7 +1153,7 @@ impl Shell {
             };
             strip = strip.child(wrapped);
         }
-        // The `+` — a small menu offering the two surfaces (t3 "Add panel
+        // The `+` — a small menu offering the three surfaces (t3 "Add panel
         // surface"); mirrors the picker cards.
         let plus_open = self.right_plus.get().is_some();
         let plus_fade = "right-surface-add-fade";
@@ -1135,6 +1204,22 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
+                        .child(
+                            popover::menu_row(&theme, false, "right-plus-file")
+                                .id("right-plus-file-row")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.add_file_surface(cx) {
+                                        this.focus_file_tree(window, cx);
+                                    }
+                                    this.close_right_plus(cx);
+                                }))
+                                .child(
+                                    icon(icons::DOCUMENT)
+                                        .size(px(13.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("File")),
+                        )
                         .child(
                             popover::menu_row(&theme, false, "right-plus-terminal")
                                 .id("right-plus-terminal-row")

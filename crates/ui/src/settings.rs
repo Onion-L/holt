@@ -36,7 +36,8 @@ pub const RIGHT_PANE_DEFAULT: f32 = 520.0;
 /// Minimum width retained for the conversation when the right pane is open.
 pub const CHAT_PANEL_MIN: f32 = 300.0;
 /// File sidebar (far-right tree) drag-resize floor and default (px). Narrow
-/// windows hide the tree below its floor — the titlebar toggle reopens it.
+/// windows hide the tree below its floor — the surface picker's File row
+/// reopens it once the width allows (ticket 11).
 pub const FILE_TREE_MIN: f32 = 180.0;
 pub const FILE_TREE_DEFAULT: f32 = 260.0;
 
