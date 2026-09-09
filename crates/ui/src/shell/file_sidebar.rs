@@ -908,7 +908,7 @@ impl Shell {
                             this.carry_tabs_over_rename(&space, &from, &destination, cx);
                             if let Some(tree) = &this.file_tree {
                                 tree.update(cx, |tree, _| {
-                                    tree.carry_expansion_over_rename(&from, &destination);
+                                    tree.carry_tree_over_rename(&from, &destination);
                                 });
                             }
                         }
@@ -944,7 +944,10 @@ impl Shell {
 
     /// A rename moves tabs for the SAME file and every file under a renamed
     /// directory: paths rewrite, drafts and modified state ride along
-    /// untouched, and later saves reach the renamed location.
+    /// untouched, and later saves reach the renamed location. A tab whose
+    /// RESOLVED target lives under the moved directory (opened through an
+    /// alias) keeps its entry spelling and follows with its resolved
+    /// identity only (ticket 07).
     fn carry_tabs_over_rename(
         &mut self,
         space: &str,
@@ -952,18 +955,33 @@ impl Shell {
         to: &str,
         cx: &mut Context<Self>,
     ) {
-        let tabs: Vec<(u64, String)> = self
+        let tabs: Vec<(u64, String, Option<String>)> = self
             .file_state
             .space(space)
             .map(|tabs| {
                 tabs.tabs
                     .iter()
-                    .map(|tab| (tab.id, tab.path.clone()))
+                    .map(|tab| (tab.id, tab.path.clone(), tab.resolved.clone()))
                     .collect()
             })
             .unwrap_or_default();
-        for (id, path) in tabs {
+        for (id, path, resolved) in tabs {
             let Some(new_path) = rewritten_path(from, to, &path) else {
+                // The entry spelling didn't move; a resolved target under
+                // the moved directory still has to follow.
+                if let Some(resolved) = resolved
+                    && let Some(new_resolved) = rewritten_path(from, to, &resolved)
+                    && let Some(tab) = self
+                        .file_state
+                        .get(space)
+                        .tabs
+                        .iter_mut()
+                        .find(|tab| tab.id == id)
+                {
+                    tab.resolved = Some(new_resolved.clone());
+                    let viewer = tab.viewer.clone();
+                    viewer.update(cx, |viewer, _| viewer.move_resolved_to(new_resolved));
+                }
                 continue;
             };
             if let Some(tab) = self
@@ -987,6 +1005,376 @@ impl Shell {
         if let Some(tree) = &self.file_tree {
             tree.update(cx, |tree, cx| tree.refresh_dir(dir, cx));
         }
+    }
+}
+
+/// A pending cut (ticket 07): paste moves the entry into a chosen directory
+/// within the SAME Space — the binding is what keeps a navigation away from
+/// turning a paste into a cross-Space mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FileCut {
+    pub space: String,
+    pub path: String,
+    pub name: String,
+}
+
+/// A trash request held for its Save-all / Discard-all / Cancel decision
+/// (ticket 07). `scope` is the RPC selector bound when the request started —
+/// the decision may land after the user navigated, and the trash must still
+/// act on the owning Space, never the newly selected one.
+pub(super) struct FileTrashConfirm {
+    pub space: String,
+    pub path: String,
+    /// The affected modified tabs whose drafts must resolve before the
+    /// entry may leave — including another Chat's shared drafts (ADR-0020),
+    /// hidden or not.
+    pub dirty: Vec<u64>,
+    pub scope: FileScope,
+}
+
+/// Does a management operation on `entry` (the entry itself or its whole
+/// subtree) touch a tab opened at `path` — or through an alias resolving
+/// into the subtree? Pure; unit-tested.
+fn entry_affects(tab_path: &str, tab_resolved: Option<&str>, entry: &str) -> bool {
+    fn under(path: &str, entry: &str) -> bool {
+        path == entry || path.starts_with(&format!("{}/", entry.trim_end_matches('/')))
+    }
+    under(tab_path, entry) || tab_resolved.is_some_and(|resolved| under(resolved, entry))
+}
+
+/// Why a paste of the cut entry into `destination_dir` cannot work, if any.
+/// Same-directory no-ops and pasting into the entry's own subtree are
+/// refused here for an immediate, actionable message; the engine re-raises
+/// them (and everything else) behind its own fence. Pure; unit-tested.
+fn paste_invalid_reason(cut_path: &str, destination_dir: &str) -> Option<&'static str> {
+    let cut = cut_path.trim_end_matches('/');
+    let dir = destination_dir.trim_end_matches('/');
+    let parent = cut.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+    if dir == parent {
+        return Some("It is already in that directory.");
+    }
+    if dir == cut || dir.starts_with(&format!("{cut}/")) {
+        return Some("An entry can't be pasted into itself or its own descendant.");
+    }
+    None
+}
+
+impl Shell {
+    /// The RPC selector for a file mutation bound to `space` (ticket 06's
+    /// dialog rule): the selected Chat when one exists (its working
+    /// directory IS the Space's root), else the Space itself.
+    fn file_op_scope(&self, space: &str, cx: &App) -> FileScope {
+        let state = self.state.read(cx);
+        state
+            .selected_chat_row()
+            .map(|chat| FileScope {
+                chat_id: Some(chat.id.clone()),
+                space_id: None,
+            })
+            .unwrap_or_else(|| FileScope {
+                chat_id: None,
+                space_id: Some(space.to_string()),
+            })
+    }
+
+    /// Cut an entry (ticket 07): it becomes the pending paste source for
+    /// its Space and its tree row dims until it is pasted, re-cut, or gone.
+    pub(super) fn cut_file_entry(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(space) = self.file_space_key(cx) else {
+            return;
+        };
+        let name = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or(path)
+            .to_string();
+        self.file_cut = Some(FileCut {
+            space: space.clone(),
+            path: path.to_string(),
+            name,
+        });
+        self.sync_cut_marker(cx);
+        cx.notify();
+    }
+
+    /// Mirror the cut state into the tree's per-Space markers (rendering
+    /// only — the shell's state is the authority). One cut at a time:
+    /// every marker clears, then the current one lands.
+    fn sync_cut_marker(&mut self, cx: &mut Context<Self>) {
+        let cut = self.file_cut.clone();
+        if let Some(tree) = &self.file_tree {
+            tree.update(cx, |tree, _| {
+                tree.clear_all_cuts();
+                if let Some(cut) = &cut {
+                    tree.set_cut(&cut.space, Some(&cut.path));
+                }
+            });
+        }
+    }
+
+    /// Paste the pending cut into `destination_dir` (ticket 07): a move
+    /// within the active Space's root. The engine revalidates everything;
+    /// a failure keeps the cut and the source identities for a deliberate
+    /// retry, and a success carries every affected tab, draft, and the
+    /// tree's expansion/selection to the new identity.
+    pub(super) fn paste_file_into(&mut self, destination_dir: &str, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(space) = self.file_space_key(cx) else {
+            return;
+        };
+        let Some(cut) = self.file_cut.clone() else {
+            return;
+        };
+        // A cut never acts on a different Space after navigation.
+        if space != cut.space {
+            return;
+        }
+        let destination_dir = destination_dir.to_string();
+        if let Some(reason) = paste_invalid_reason(&cut.path, &destination_dir) {
+            self.push_holt_notice(HoltNoticeKind::Error, reason.into(), cx);
+            return;
+        }
+        let scope = self.file_op_scope(&cut.space, cx);
+        // FileScope::params emits the selector + path envelope; the move
+        // adds the destination directory.
+        let mut params = scope.params(&cut.path);
+        params["destinationDirectory"] = serde_json::json!(destination_dir);
+        cx.spawn(async move |this, cx| {
+            let reply = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                holt_rpc::methods::MOVE_WORKSPACE_ENTRY,
+                params,
+                std::time::Duration::from_secs(10),
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                match reply {
+                    Ok(value) => {
+                        let destination = value
+                            .get("path")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| {
+                                // Only a fallback for older spellings — the
+                                // engine's canonical reply wins above.
+                                let name = cut
+                                    .path
+                                    .trim_end_matches('/')
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or("");
+                                format!("{}/{}", destination_dir.trim_end_matches('/'), name)
+                            });
+                        this.carry_tabs_over_rename(&cut.space, &cut.path, &destination, cx);
+                        if let Some(tree) = &this.file_tree {
+                            tree.update(cx, |tree, _| {
+                                tree.carry_tree_over_rename(&cut.path, &destination);
+                            });
+                        }
+                        // Both ends refresh directly — the watch supplements.
+                        let old_parent = cut
+                            .path
+                            .rsplit_once('/')
+                            .map(|(parent, _)| parent.to_string())
+                            .unwrap_or_default();
+                        this.refresh_tree_dir(&old_parent, cx);
+                        this.refresh_tree_dir(&destination_dir, cx);
+                        // The cut is consumed; its marker goes with it.
+                        this.file_cut = None;
+                        this.clear_cut_markers(cx);
+                        this.persist_file_navigation(cx);
+                    }
+                    Err(message) => {
+                        // The source is untouched — the cut stays for a
+                        // deliberate retry (or a paste elsewhere).
+                        this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Every open tab in `space` a management operation on `entry` would
+    /// take with it (the entry itself or a descendant, entry path or
+    /// resolved alias).
+    fn affected_tab_ids(&self, space: &str, entry: &str) -> Vec<u64> {
+        self.file_state
+            .space(space)
+            .map(|tabs| {
+                tabs.tabs
+                    .iter()
+                    .filter(|tab| entry_affects(&tab.path, tab.resolved.as_deref(), entry))
+                    .map(|tab| tab.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Start a trash request (ticket 07). Every affected modified buffer —
+    /// including another Chat's shared drafts, hidden or not — resolves
+    /// first: clean trees go straight to the trash RPC, dirty ones stop for
+    /// the Save-all / Discard-all / Cancel decision.
+    pub(super) fn request_trash_entry(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(space) = self.file_space_key(cx) else {
+            return;
+        };
+        let scope = self.file_op_scope(&space, cx);
+        let dirty: Vec<u64> = self
+            .affected_tab_ids(&space, path)
+            .into_iter()
+            .filter(|id| {
+                self.file_state
+                    .space(&space)
+                    .and_then(|tabs| tabs.find(*id))
+                    .is_some_and(|tab| tab.viewer.read(cx).is_dirty())
+            })
+            .collect();
+        if dirty.is_empty() {
+            self.trash_entry_now(&space, path, &scope, cx);
+        } else {
+            self.file_trash_confirm = Some(FileTrashConfirm {
+                space,
+                path: path.to_string(),
+                dirty,
+                scope,
+            });
+            cx.notify();
+        }
+    }
+
+    /// Cancel the pending trash decision (ticket 07): nothing is deleted,
+    /// every draft keeps its state, and the tree is untouched.
+    pub(super) fn cancel_trash_confirm(&mut self, cx: &mut Context<Self>) {
+        self.file_trash_confirm = None;
+        cx.notify();
+    }
+
+    /// The trash-decision dialog's verdict. Save runs every affected draft
+    /// through its save first — any failure (or conflict) keeps the entry
+    /// exactly where it is; Discard proceeds; Cancel keeps everything.
+    pub(super) fn resolve_trash_confirm(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some(pending) = self.file_trash_confirm.take() else {
+            return;
+        };
+        if !save {
+            let scope = pending.scope.clone();
+            self.trash_entry_now(&pending.space, &pending.path, &scope, cx);
+            return;
+        }
+        let viewers: Vec<Entity<FileViewer>> = pending
+            .dirty
+            .iter()
+            .filter_map(|id| {
+                self.file_state
+                    .space(&pending.space)
+                    .and_then(|tabs| tabs.find(*id))
+                    .map(|tab| tab.viewer.clone())
+            })
+            .collect();
+        let (space, path, scope) = (pending.space, pending.path, pending.scope);
+        cx.spawn(async move |this, cx| {
+            let mut all_saved = true;
+            for viewer in viewers {
+                let task = viewer.update(cx, |viewer, cx| viewer.save(cx));
+                if let Some(task) = task
+                    && !task.await
+                {
+                    all_saved = false;
+                    break;
+                }
+            }
+            this.update(cx, |this, cx| {
+                if all_saved {
+                    this.trash_entry_now(&space, &path, &scope, cx);
+                } else {
+                    // A failed (or conflicting) save prevents the deletion.
+                    this.push_holt_notice(
+                        HoltNoticeKind::Error,
+                        "Could not save every modified file — nothing was moved to the Trash."
+                            .into(),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Run the trash RPC for a resolved request. Success closes every
+    /// affected tab (drafts were resolved before the RPC fired), refreshes
+    /// the parent directory, and drops a cut that pointed into the entry —
+    /// a trashed entry is no longer pasteable. Failure reports and leaves
+    /// the entry, its tabs, and any cut state exactly as they were.
+    fn trash_entry_now(
+        &mut self,
+        space: &str,
+        path: &str,
+        scope: &FileScope,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let params = scope.params(path);
+        let space = space.to_string();
+        let path = path.to_string();
+        cx.spawn(async move |this, cx| {
+            let reply = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                holt_rpc::methods::TRASH_WORKSPACE_ENTRY,
+                params,
+                std::time::Duration::from_secs(15),
+            )
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                match reply {
+                    Ok(_) => {
+                        // The entry left the tree for the Trash: every
+                        // affected tab closes (drafts were resolved before
+                        // the RPC fired; clean tabs die with their file).
+                        for id in this.affected_tab_ids(&space, &path) {
+                            this.close_file_tab(&space, id, cx);
+                        }
+                        // A cut entry that just left is no longer pasteable.
+                        if this.file_cut.as_ref().is_some_and(|cut| {
+                            cut.space == space && entry_affects(&cut.path, None, &path)
+                        }) {
+                            this.file_cut = None;
+                            this.clear_cut_markers(cx);
+                        }
+                        let parent = path
+                            .rsplit_once('/')
+                            .map(|(parent, _)| parent.to_string())
+                            .unwrap_or_default();
+                        this.refresh_tree_dir(&parent, cx);
+                        this.persist_file_navigation(cx);
+                    }
+                    Err(message) => {
+                        // The tree and tabs keep their identities; a
+                        // deliberate retry stays possible.
+                        this.push_holt_notice(HoltNoticeKind::Error, message.into(), cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Clear the cut markers in EVERY visited Space tree (the shell's cut
+    /// state is already gone by the time this runs).
+    fn clear_cut_markers(&mut self, cx: &mut Context<Self>) {
+        if let Some(tree) = &self.file_tree {
+            tree.update(cx, |tree, _| tree.clear_all_cuts());
+        }
+        cx.notify();
     }
 }
 
@@ -1127,13 +1515,79 @@ impl Shell {
             overlays.push(popover::modal("file-draft-space-dialog", viewport, card));
         }
 
+        // Ticket 07: trashing an entry with affected modified buffers.
+        // Every draft under the entry resolves first — Save all (any
+        // failure aborts the deletion), Discard all, or Cancel.
+        let trash_confirm = self
+            .file_trash_confirm
+            .as_ref()
+            .map(|pending| (pending.path.clone(), pending.dirty.len()));
+        if let Some((path, count)) = trash_confirm {
+            let name = path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(path.as_str())
+                .to_string();
+            let card = popover::dialog_card(&theme)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.cancel_trash_confirm(cx);
+                    }
+                }))
+                .child(popover::dialog_title(
+                    &theme,
+                    "Move to Trash with unsaved files?",
+                ))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!(
+                        "{count} open file(s) under \u{201C}{name}\u{201D} have unsaved changes. Save them before the Trash move? Discarding loses them with the move."
+                    ),
+                )))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "file-trash-cancel")
+                                .id("file-trash-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cancel_trash_confirm(cx);
+                                })),
+                        )
+                        .child(
+                            popover::btn_danger(&theme, "Discard all")
+                                .id("file-trash-discard")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.resolve_trash_confirm(false, cx);
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(&theme, "Save all")
+                                .id("file-trash-save")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.resolve_trash_confirm(true, cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("file-trash-confirm-dialog", viewport, card));
+        }
+
         overlays
     }
 }
 
 impl Shell {
-    /// The File tree's context menu (ticket 06): New file / New
-    /// directory / Rename, positioned where the right-click landed.
+    /// The File tree's context menu (tickets 06 + 07): Paste (when a cut is
+    /// pending in this Space), New file / New directory, and — on entry
+    /// rows — Cut, Rename…, and Move to Trash, positioned where the
+    /// right-click landed.
     pub(super) fn render_file_menu_overlay(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -1142,13 +1596,13 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let theme = Theme::of(cx).clone();
         let mut overlays = Vec::new();
-        if let Some((target, _space)) = self.file_menu.get().cloned() {
+        if let Some((target, menu_space)) = self.file_menu.get().cloned() {
             let closing = self.file_menu.closing_since();
             let parent_new_file = target.parent.clone();
             let parent_new_dir = target.parent.clone();
-            let rename_target = target.rename.clone();
-            let menu = popover::popover_card(&theme)
-                .w(px(180.0))
+            let entry_target = target.rename.clone();
+            let mut menu = popover::popover_card(&theme)
+                .w(px(196.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     if this.file_menu.begin_close() {
                         popover::reap_popup(cx, |shell: &mut Self| &mut shell.file_menu);
@@ -1156,7 +1610,45 @@ impl Shell {
                     cx.notify();
                 }))
                 .flex()
-                .flex_col()
+                .flex_col();
+
+            // Paste (ticket 07): only when the pending cut belongs to THIS
+            // Space — a navigation to another Space never offers it. An
+            // invalid destination (the entry's own subtree, its current
+            // directory) renders the row disabled with the reason.
+            let cut = self.file_cut.clone().filter(|cut| cut.space == menu_space);
+            if let Some(cut) = cut {
+                let destination = target.parent.clone();
+                let invalid = paste_invalid_reason(&cut.path, &destination);
+                let mut row =
+                    popover::menu_row(&theme, false, "file-menu-paste").id("file-menu-paste");
+                row = match invalid {
+                    Some(reason) => row.opacity(0.45).tooltip(move |_, cx| {
+                        cx.new(|_| {
+                            crate::image_viewer::ViewerTooltip(
+                                format!("Can't paste here: {reason}").into(),
+                            )
+                        })
+                        .into()
+                    }),
+                    None => row.on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_file_menu(cx);
+                        this.paste_file_into(&destination, cx);
+                    })),
+                };
+                menu = menu
+                    .child(
+                        row.child(
+                            icon(icons::CLIPBOARD_PASTE)
+                                .size(px(15.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from(format!("Paste “{}”", cut.name))),
+                    )
+                    .child(popover::menu_separator());
+            }
+
+            menu = menu
                 .child(
                     popover::menu_row(&theme, false, "file-menu-new-file")
                         .id("file-menu-new-file")
@@ -1190,24 +1682,60 @@ impl Shell {
                                 .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("New directory")),
-                )
-                .when(rename_target.is_some(), |menu| {
-                    let (path, _name) = rename_target.clone().unwrap();
-                    menu.child(popover::menu_separator()).child(
-                        popover::menu_row(&theme, false, "file-menu-rename")
-                            .id("file-menu-rename")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.close_file_menu(cx);
-                                this.open_file_op_dialog(
-                                    FileOpKind::Rename { path: path.clone() },
-                                    cx,
-                                );
-                            }))
-                            .child(icon(icons::PEN).size(px(15.0)).text_color(theme.text_muted))
-                            .child(SharedString::from("Rename…")),
-                    )
-                })
-                .into_any_element();
+                );
+
+            // Entry operations: cut/paste-move, rename, and trash (ticket
+            // 06 + 07). The whole section is row-bound — the background
+            // menu offers creates and pastes only.
+            if let Some((path, _name)) = entry_target {
+                let cut_path = path.clone();
+                menu = menu.child(popover::menu_separator()).child(
+                    popover::menu_row(&theme, false, "file-menu-cut")
+                        .id("file-menu-cut")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_file_menu(cx);
+                            this.cut_file_entry(&cut_path, cx);
+                        }))
+                        .child(
+                            icon(icons::SCISSORS_CUT)
+                                .size(px(15.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("Cut")),
+                );
+                let rename_path = path.clone();
+                let trash_path = path.clone();
+                menu = menu.child(
+                    popover::menu_row(&theme, false, "file-menu-rename")
+                        .id("file-menu-rename")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_file_menu(cx);
+                            this.open_file_op_dialog(
+                                FileOpKind::Rename {
+                                    path: rename_path.clone(),
+                                },
+                                cx,
+                            );
+                        }))
+                        .child(icon(icons::PEN).size(px(15.0)).text_color(theme.text_muted))
+                        .child(SharedString::from("Rename…")),
+                );
+                menu = menu.child(popover::menu_separator()).child(
+                    popover::menu_row(&theme, false, "file-menu-trash")
+                        .id("file-menu-trash")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_file_menu(cx);
+                            this.request_trash_entry(&trash_path, cx);
+                        }))
+                        .child(
+                            icon(icons::TRASH_BIN_MINIMALISTIC)
+                                .size(px(15.0))
+                                .text_color(theme.danger),
+                        )
+                        .child(SharedString::from("Move to Trash")),
+                );
+            }
+            let menu = menu.into_any_element();
             overlays.push(popover::menu_at(
                 "file-context-menu",
                 target.position,
@@ -1362,5 +1890,135 @@ mod rename_tests {
         assert!(Shell::validate_entry_name(".git").is_err());
         assert!(Shell::validate_entry_name("..").is_err());
         assert!(Shell::validate_entry_name("  ").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cut_paste_trash_tests {
+    use super::*;
+    use crate::files::FileTab;
+    #[test]
+    fn entry_affects_matches_entries_descendants_and_alias_resolved_tabs() {
+        // The entry itself and a true descendant.
+        assert!(entry_affects("/r/pkg", None, "/r/pkg"));
+        assert!(entry_affects("/r/pkg/src/main.rs", None, "/r/pkg"));
+        // Near-miss prefixes do not match.
+        assert!(!entry_affects("/r/pkgx/a", None, "/r/pkg"));
+        assert!(!entry_affects("/r/other", None, "/r/pkg"));
+        // A tab opened through an alias that resolves INTO the subtree is
+        // affected even though its entry path says otherwise.
+        assert!(entry_affects(
+            "/r/alias.md",
+            Some("/r/pkg/real.md"),
+            "/r/pkg"
+        ));
+        // An alias pointing elsewhere is not.
+        assert!(!entry_affects("/r/alias.md", Some("/r/other.md"), "/r/pkg"));
+        // Trailing separators on the entry normalize.
+        assert!(entry_affects("/r/pkg/a", None, "/r/pkg/"));
+    }
+
+    #[test]
+    fn paste_destinations_validate_like_the_engine() {
+        // Pasting into the entry's current directory is a no-op.
+        assert_eq!(
+            paste_invalid_reason("/r/src/main.rs", "/r/src"),
+            Some("It is already in that directory.")
+        );
+        // Trailing slashes and root-relative shapes normalize the same way.
+        assert_eq!(
+            paste_invalid_reason("/r/src/main.rs", "/r/src/"),
+            Some("It is already in that directory.")
+        );
+        // A top-level entry pasted into the root's canonical spelling is
+        // caught here; the root's "" spelling needs the engine's canonical
+        // comparison (it refuses as a same-directory no-op).
+        assert_eq!(
+            paste_invalid_reason("/r/pkg", "/r"),
+            Some("It is already in that directory.")
+        );
+        assert_eq!(paste_invalid_reason("/r/pkg", ""), None);
+        // Into itself and into its own descendant.
+        assert!(paste_invalid_reason("/r/pkg", "/r/pkg").is_some());
+        assert!(paste_invalid_reason("/r/pkg", "/r/pkg/inner").is_some());
+        // Near-miss prefixes are fine; ordinary destinations are fine.
+        assert_eq!(paste_invalid_reason("/r/pkg", "/r/pkgx"), None);
+        assert_eq!(paste_invalid_reason("/r/pkg", "/r/docs"), None);
+        assert_eq!(paste_invalid_reason("/r/src/main.rs", ""), None);
+    }
+
+    /// Ticket 07's draft gate at the Shell seam: trashing a directory that
+    /// carries a modified buffer (a descendant — another Chat's shared
+    /// draft counts the same, ADR-0020) holds for the Save/Discard/Cancel
+    /// decision, Cancel deletes nothing, and a clean tree raises no dialog.
+    #[gpui::test]
+    fn trash_holds_for_dirty_descendants_and_cancel_deletes_nothing(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell
+        });
+
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                // One modified tab two levels under the entry being trashed.
+                let viewer = cx.new(|cx| {
+                    FileViewer::new(
+                        shell.state.clone(),
+                        "/tmp/space-1/pkg/deep/dirty.rs".into(),
+                        FileScope {
+                            chat_id: None,
+                            space_id: Some("space-1".into()),
+                        },
+                        cx,
+                    )
+                });
+                viewer.update(cx, |viewer, cx| viewer.mark_dirty_for_test(cx));
+                shell.file_state.get("space-1").tabs.push(FileTab {
+                    id: 7,
+                    path: "/tmp/space-1/pkg/deep/dirty.rs".into(),
+                    resolved: None,
+                    pinned: true,
+                    viewer,
+                });
+
+                // Trashing the ancestor directory stops for the draft.
+                shell.request_trash_entry("/tmp/space-1/pkg", cx);
+                let pending = shell
+                    .file_trash_confirm
+                    .as_ref()
+                    .expect("held for the dirty descendant");
+                assert_eq!(pending.dirty, vec![7]);
+                assert_eq!(pending.space, "space-1");
+
+                // Cancel prevents the deletion entirely: the decision state
+                // clears and the tab (with its draft) stays.
+                shell.cancel_trash_confirm(cx);
+                assert!(shell.file_trash_confirm.is_none());
+                assert_eq!(shell.file_state.space("space-1").unwrap().tabs.len(), 1);
+
+                // An entry with no affected modified buffers never raises
+                // the dialog — it goes straight to the trash attempt (no
+                // engine in this test, so the attempt itself no-ops).
+                shell.request_trash_entry("/tmp/space-1/elsewhere", cx);
+                assert!(
+                    shell.file_trash_confirm.is_none(),
+                    "a clean tree raises no draft decision"
+                );
+            });
+        });
     }
 }

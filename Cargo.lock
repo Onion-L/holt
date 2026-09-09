@@ -3110,6 +3110,7 @@ dependencies = [
  "libc",
  "notify",
  "nucleo-matcher",
+ "objc2-foundation 0.3.2",
  "pi-core-rs",
  "png 0.18.1",
  "portable-pty",

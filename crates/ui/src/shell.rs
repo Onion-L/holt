@@ -635,6 +635,13 @@ pub struct Shell {
     /// Bumped whenever a new file-op dialog opens — stale in-flight errors
     /// from a previous dialog never land in the current one.
     file_op_epoch: u64,
+    /// The File tree's pending cut (ticket 07): the entry, its display
+    /// name, and the Space it was cut in. A paste never acts on a
+    /// different Space after navigation.
+    file_cut: Option<file_sidebar::FileCut>,
+    /// A trash request held for its Save-all/Discard-all/Cancel decision
+    /// (ticket 07), bound to the Space it came from.
+    file_trash_confirm: Option<file_sidebar::FileTrashConfirm>,
     /// Id mint for file tabs.
     file_seq: u64,
     /// Chat outlet vs settings pages.
@@ -906,6 +913,8 @@ impl Shell {
             file_menu: popover::Popup::default(),
             file_op_dialog: None,
             file_op_epoch: 0,
+            file_cut: None,
+            file_trash_confirm: None,
             dirty_file_close: None,
             dirty_space_close: None,
             closing_after_save: std::collections::HashSet::new(),

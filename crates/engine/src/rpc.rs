@@ -1152,6 +1152,28 @@ struct RenameEntryParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MoveEntryParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    path: String,
+    #[serde(default)]
+    destination_directory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashEntryParams {
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WriteFileAsParams {
     #[serde(default)]
     chat_id: Option<String>,
@@ -1637,6 +1659,54 @@ impl RpcService for EngineService {
                 .map_err(|error| RpcError::Failed(format!("rename task failed: {error}")))?
                 .map_err(|fault| RpcError::Failed(fault.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "path": destination }))
+            }
+            methods::MOVE_WORKSPACE_ENTRY => {
+                let params: MoveEntryParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let (path, destination_directory) = (params.path, params.destination_directory);
+                let destination = tokio::task::spawn_blocking(move || {
+                    crate::files::move_entry(
+                        std::path::Path::new(&root),
+                        &path,
+                        &destination_directory,
+                    )
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("move task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "path": destination }))
+            }
+            methods::TRASH_WORKSPACE_ENTRY => {
+                let params: TrashEntryParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if params.chat_id.is_some() == params.space_id.is_some() {
+                    return Err(RpcError::BadParams(
+                        "exactly one of chatId or spaceId is required".into(),
+                    ));
+                }
+                let root = self.search_files_root(&SearchFilesParams {
+                    query: String::new(),
+                    chat_id: params.chat_id,
+                    space_id: params.space_id,
+                })?;
+                let path = params.path;
+                tokio::task::spawn_blocking(move || {
+                    crate::files::trash_entry(std::path::Path::new(&root), &path)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("trash task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
             }
 
             // Git capability (ADR-0001): branch listing and safe switching

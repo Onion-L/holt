@@ -184,6 +184,19 @@ pub mod methods {
     /// `{chatId|spaceId, path, newName}`; renames a symlink entry itself;
     /// collisions refuse; replies with the destination path.
     pub const RENAME_WORKSPACE_ENTRY: &str = "RenameWorkspaceEntry";
+    /// Move an entry into an existing in-root directory (cut/paste, ticket
+    /// 07). Params `{chatId|spaceId, path, destinationDirectory}` — the
+    /// entry keeps its name; `destinationDirectory` may be empty for the
+    /// root. Outside-root, `.git`, collisions, pasting into the entry's own
+    /// subtree, and no-op pastes refuse; a move is one rename — never a
+    /// copy/delete pair. Replies with the destination path.
+    pub const MOVE_WORKSPACE_ENTRY: &str = "MoveWorkspaceEntry";
+    /// Move an entry to the operating system's trash (ticket 07). Params
+    /// `{chatId|spaceId, path}`; acts on a symlink entry itself, target
+    /// untouched. A trash that is unavailable or refuses fails — there is
+    /// no permanent-delete fallback, so a failure leaves the entry in
+    /// place. Replies `{}`.
+    pub const TRASH_WORKSPACE_ENTRY: &str = "TrashWorkspaceEntry";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

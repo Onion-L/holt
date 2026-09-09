@@ -98,13 +98,22 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   under the root — live tree refresh, clean-editor reload, and dirty-editor
   conflict states; a confirmed overwrite rides `SaveWorkspaceFile`'s
   `expectDiskVersion` against the reviewed token), plus the entry
-  management pair `CreateWorkspaceEntry` (`{chatId|spaceId, parentPath?,
-  name, isDir}` — existing in-root parents only, atomic no-clobber creation)
-  and `RenameWorkspaceEntry` (`{chatId|spaceId, path, newName}` — in-place
+  management group `CreateWorkspaceEntry` (`{chatId|spaceId, parentPath?,
+  name, isDir}` — existing in-root parents only, atomic no-clobber creation),
+  `RenameWorkspaceEntry` (`{chatId|spaceId, path, newName}` — in-place
   sibling rename acting on the ENTRY itself: a symlink renames as a link,
   never as its target; noreplace semantics where the platform offers them,
-  case-only renames pass) serve the far-right file tree and its contents
-  tabs. Root containment, `.git`
+  case-only renames pass), `MoveWorkspaceEntry`
+  (`{chatId|spaceId, path, destinationDirectory}` — cut/paste into an
+  existing in-root directory, keeping the name; the engine revalidates both
+  ends and refuses outside-root, `.git`, collisions, pastes into the
+  entry's own subtree, and same-directory no-ops — one rename, never a
+  copy/delete pair, so a cross-device move fails instead of degrading), and
+  `TrashWorkspaceEntry` (`{chatId|spaceId, path}` — the OS trash via
+  `NSFileManager trashItemAtURL` on macOS, entry-level like rename; a
+  trash that is unavailable or refuses fails and nothing is ever
+  permanently deleted as a fallback). These serve the far-right file tree
+  and its contents tabs. Root containment, `.git`
   exclusion, and symlink fences are enforced engine-side in
   `engine::files` on every request; the UI never touches the workspace
   filesystem itself.

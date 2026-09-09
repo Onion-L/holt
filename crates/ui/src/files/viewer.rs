@@ -396,6 +396,24 @@ impl FileViewer {
         self.disk_snapshot = None;
     }
 
+    /// A rename/move of a directory the viewer's RESOLVED target lives in
+    /// (ticket 07): the entry spelling (possibly an alias) stays, only the
+    /// resolved bookkeeping follows the moved subtree.
+    pub fn move_resolved_to(&mut self, new_resolved: String) {
+        self.resolved = Some(new_resolved);
+    }
+
+    /// Test seam: a loaded file with unsaved edits — the editor's typing
+    /// path is not reachable from unit tests, and the draft-protection
+    /// flows need a dirty viewer.
+    #[cfg(test)]
+    pub(crate) fn mark_dirty_for_test(&mut self, cx: &mut Context<Self>) {
+        self.saved_text = Some("disk\n".into());
+        self.buffer_text = Some("disk\nwith edits\n".into());
+        cx.emit(FileViewerEvent::DirtyChanged { dirty: true });
+        cx.notify();
+    }
+
     /// Test accessors for the deferral contract.
     #[cfg(test)]
     pub(crate) fn is_deferred(&self) -> bool {

@@ -40,6 +40,10 @@ struct SpaceTree {
     dir_requests: HashMap<String, u64>,
     expanded: HashSet<String>,
     selection: Option<String>,
+    /// The Space's pending-cut entry (ticket 07): its row renders dimmed
+    /// until the entry is pasted, re-cut, or gone. Visual only — the
+    /// authoritative cut state lives on the shell.
+    cut: Option<String>,
 }
 
 impl SpaceTree {
@@ -49,6 +53,7 @@ impl SpaceTree {
             dir_requests: HashMap::new(),
             expanded: HashSet::new(),
             selection: None,
+            cut: None,
         }
     }
 }
@@ -389,9 +394,11 @@ impl FileTreePanel {
         cx.notify();
     }
 
-    /// A renamed directory keeps its expansion subtree under the new name
-    /// (ticket 06): every expanded key under `from` rewrites to `to`.
-    pub(crate) fn carry_expansion_over_rename(&mut self, from: &str, to: &str) {
+    /// A renamed/moved directory keeps its tree state under the new name
+    /// (tickets 06 + 07): every expanded key under `from` rewrites to `to`,
+    /// and the selection rides the same rewrite — a moved or renamed row
+    /// stays selected.
+    pub(crate) fn carry_tree_over_rename(&mut self, from: &str, to: &str) {
         let Some(active) = self.active.clone() else {
             return;
         };
@@ -417,6 +424,36 @@ impl FileTreePanel {
         space.expanded.insert(to.to_string());
         for entry in rewritten {
             space.expanded.insert(entry);
+        }
+        // The selection rides along when it pointed at the entry or a
+        // descendant — same prefix rewrite as the expansion keys.
+        if let Some(selection) = space.selection.clone() {
+            let carried = if selection == from {
+                Some(to.to_string())
+            } else {
+                selection
+                    .strip_prefix(&prefix)
+                    .map(|rest| format!("{}/{}", to.trim_end_matches('/'), rest))
+            };
+            if let Some(carried) = carried {
+                space.selection = Some(carried);
+            }
+        }
+    }
+
+    /// Set (or clear) a Space's pending-cut marker — the shell owns the
+    /// cut state; this only drives the dimmed-row rendering.
+    pub(crate) fn set_cut(&mut self, space_key: &str, path: Option<&str>) {
+        if let Some(space) = self.spaces.get_mut(space_key) {
+            space.cut = path.map(str::to_string);
+        }
+    }
+
+    /// Drop every Space's cut marker (one cut exists at a time; the shell
+    /// clears before setting the next).
+    pub(crate) fn clear_all_cuts(&mut self) {
+        for space in self.spaces.values_mut() {
+            space.cut = None;
         }
     }
 
@@ -956,6 +993,11 @@ impl FileTreePanel {
             return div().into_any_element();
         };
         let selected = self.selection_path().as_deref() == Some(row.path.as_str());
+        // The Space's pending-cut entry renders dimmed until pasted or
+        // re-cut (ticket 07) — the visible half of the cut state.
+        let is_cut = self
+            .with_active_space(|space| space.cut.as_deref() == Some(row.path.as_str()))
+            .unwrap_or(false);
         let expand = expandable(&row.kind);
         let expanded = self
             .with_active_space(|space| {
@@ -1038,6 +1080,7 @@ impl FileTreePanel {
             .when(!selected, |el| {
                 el.hover(|state| state.bg(crate::theme::wash(0.05)))
             })
+            .when(is_cut, |el| el.opacity(0.55))
             .child(
                 div()
                     .id(("file-tree-disclosure", ix))
@@ -1328,7 +1371,7 @@ mod restore_tests {
         });
         let tree = cx.new(|cx| FileTreePanel::new(state, cx));
         cx.run_until_parked();
-        tree.update(cx, |tree, cx| {
+        tree.update(cx, |tree, _| {
             let active = tree.active.clone().expect("root");
             let space = tree
                 .spaces
@@ -1355,6 +1398,69 @@ mod restore_tests {
             remaining,
             Some(vec!["/tmp/space-1/other".to_string()]),
             "collapse drops the subtree's flags"
+        );
+    }
+
+    #[gpui::test]
+    fn cut_markers_are_per_space_and_clearable(cx: &mut TestAppContext) {
+        install_navigation(cx, Vec::new());
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        tree.update(cx, |tree, _| {
+            tree.set_cut("space-1", Some("/tmp/space-1/a.rs"));
+            tree.set_cut("space-2", Some("/tmp/space-2/b.rs")); // never visited: no-op
+        });
+        assert_eq!(
+            tree.read_with(cx, |tree, _| tree
+                .with_active_space(|space| space.cut.clone()))
+                .flatten(),
+            Some("/tmp/space-1/a.rs".to_string()),
+            "the active Space's cut marks its row"
+        );
+        tree.update(cx, |tree, _| tree.clear_all_cuts());
+        assert_eq!(
+            tree.read_with(cx, |tree, _| tree
+                .with_active_space(|space| space.cut.clone()))
+                .flatten(),
+            None,
+            "clearing drops every marker — the cut is consumed"
+        );
+    }
+
+    #[gpui::test]
+    fn a_move_or_rename_carries_the_tree_selection(cx: &mut TestAppContext) {
+        // Ticket 07: the entry's path rewrite carries the selection — a
+        // moved (or renamed) row stays selected, including descendants.
+        install_navigation(cx, vec!["/tmp/space-1/src".into()]);
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        cx.run_until_parked();
+        tree.update(cx, |tree, _| {
+            if let Some(active) = tree.active.clone() {
+                let space = tree
+                    .spaces
+                    .entry(active.space_key)
+                    .or_insert_with(SpaceTree::new);
+                space.selection = Some("/tmp/space-1/src/main.rs".into());
+            }
+        });
+        tree.update(cx, |tree, _| {
+            tree.carry_tree_over_rename("/tmp/space-1/src", "/tmp/space-1/source");
+        });
+        let selection = tree.read_with(cx, |tree, _| tree.selection_path());
+        assert_eq!(
+            selection,
+            Some("/tmp/space-1/source/main.rs".to_string()),
+            "the selected descendant follows the move"
         );
     }
 }

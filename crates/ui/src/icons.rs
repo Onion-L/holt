@@ -182,6 +182,10 @@ icon_assets![
     // Hand-drawn file-tree glyph (spine + indented rows) in the same linear
     // family — the File sidebar's toggle.
     (TREE_SIDEBAR, "tree-sidebar"),
+    // Hand-drawn scissors and clipboard-with-arrow in the Solar Linear style
+    // (the embedded set has neither) — the File tree's cut/paste rows.
+    (SCISSORS_CUT, "scissors-cut"),
+    (CLIPBOARD_PASTE, "clipboard-paste"),
     (WIFI_OFF, "wifi-off"),
     (CLOSE_CIRCLE, "close-circle"),
     // Hand-drawn info glyph in the Solar Linear style (like the terminal/

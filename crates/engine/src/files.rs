@@ -43,6 +43,8 @@ pub(crate) enum FilesFault {
     BadName(String),
     #[error("{0} already exists")]
     Collision(String),
+    #[error("{0}")]
+    InvalidDestination(String),
     #[error("could not read {0}: {1}")]
     Io(String, String),
 }
@@ -709,6 +711,75 @@ pub(crate) fn rename_entry(root: &Path, from: &str, new_name: &str) -> Result<St
     }
     .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
     Ok(destination.display().to_string())
+}
+
+/// Move an entry into an EXISTING directory inside the root (ticket 07's
+/// cut/paste). The entry itself moves — a symlink travels as a link and its
+/// target is untouched. The source, the destination directory, and the
+/// resulting path are all revalidated here: outside-root, `.git`, missing
+/// source, collision, pasting into the entry's own subtree, and a no-op
+/// paste into the current directory all refuse. There is no copy/delete
+/// fallback: one `rename_noreplace`, and an `Io` fault (including
+/// cross-device EXDEV) leaves the source exactly where it was.
+pub(crate) fn move_entry(
+    root: &Path,
+    from: &str,
+    destination_dir: &str,
+) -> Result<String, FilesFault> {
+    let source = resolve_entry_inside_root(root, from)?;
+    if std::fs::symlink_metadata(&source).is_err() {
+        return Err(FilesFault::NotFound(source.display().to_string()));
+    }
+    let destination_directory = if destination_dir.trim().is_empty() {
+        root.canonicalize()
+            .map_err(|error| FilesFault::Io(root.display().to_string(), error.to_string()))?
+    } else {
+        let dir = resolve_inside_root(root, destination_dir)?;
+        if !dir.is_dir() {
+            return Err(FilesFault::NotDirectory(dir.display().to_string()));
+        }
+        dir
+    };
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| FilesFault::BadName(source.display().to_string()))?;
+    let destination = destination_directory.join(&name);
+    if destination == source {
+        return Err(FilesFault::InvalidDestination(format!(
+            "{} is already in that directory",
+            source.display()
+        )));
+    }
+    // Pasting a directory into itself or one of its own descendants would
+    // swallow its own subtree. The equal case already refused above, so a
+    // component-wise `starts_with` here means a strict descendant.
+    if destination.starts_with(&source) {
+        return Err(FilesFault::InvalidDestination(format!(
+            "cannot move {} into itself or its own descendant",
+            source.display()
+        )));
+    }
+    if destination.exists() || std::fs::symlink_metadata(&destination).is_ok() {
+        return Err(FilesFault::Collision(destination.display().to_string()));
+    }
+    rename_noreplace(&source, &destination)
+        .map_err(|error| FilesFault::Io(source.display().to_string(), error.to_string()))?;
+    Ok(destination.display().to_string())
+}
+
+/// Move an entry to the operating system's trash (ticket 07). The ENTRY
+/// goes — a symlink is trashed as a link, never its target — and a trash
+/// that is unavailable or refuses reports the failure. There is no
+/// permanent-delete fallback: the entry is either in the trash or still in
+/// place.
+pub(crate) fn trash_entry(root: &Path, from: &str) -> Result<(), FilesFault> {
+    let entry = resolve_entry_inside_root(root, from)?;
+    if std::fs::symlink_metadata(&entry).is_err() {
+        return Err(FilesFault::NotFound(entry.display().to_string()));
+    }
+    crate::trash::move_to_trash(&entry)
+        .map_err(|message| FilesFault::Io(entry.display().to_string(), message))
 }
 
 #[cfg(test)]

@@ -33,6 +33,19 @@ tokio-util.workspace = true
 chrono.workspace = true
 tiktoken-rs = "0.7"
 
+# System-trash deletion (ticket 07): the same objc2-foundation the vendored
+# gpui already carries, so the lockfile gains nothing. NSFileManager's
+# trashItemAtURL is synchronous and reports failures — no nil-handler
+# fire-and-forget, and never a permanent-delete fallback.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "alloc",
+    "NSError",
+    "NSFileManager",
+    "NSString",
+    "NSURL",
+] }
+
 [dev-dependencies]
 png = "0.18"
 tempfile.workspace = true

@@ -1337,3 +1337,482 @@ mod create_rename_guards {
         assert_eq!(contents, "same\n");
     }
 }
+
+mod move_and_trash {
+    use super::*;
+
+    async fn move_entry(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<String, RpcError> {
+        match engine.handle(methods::MOVE_WORKSPACE_ENTRY, params).await? {
+            RpcReply::Value(value) => Ok(value
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap()
+                .to_string()),
+            _ => panic!("MoveWorkspaceEntry must reply with a value"),
+        }
+    }
+
+    async fn trash(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        match engine
+            .handle(methods::TRASH_WORKSPACE_ENTRY, params)
+            .await?
+        {
+            RpcReply::Value(value) => Ok(value),
+            _ => panic!("TrashWorkspaceEntry must reply with a value"),
+        }
+    }
+
+    fn fault_of<T>(result: Result<T, RpcError>) -> String {
+        match result {
+            Ok(_) => panic!("expected a failure"),
+            Err(RpcError::Failed(message)) => message,
+            Err(other) => panic!("unexpected error shape: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn moves_entries_between_directories_keeping_names_and_contents() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("src/deep")).unwrap();
+        fs::create_dir_all(Path::new(&root).join("docs")).unwrap();
+        fs::write(Path::new(&root).join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(Path::new(&root).join("src/deep/notes.md"), "# notes\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        // A file moves, keeping its name; the reply carries the destination.
+        let destination = move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/main.rs"),
+                "destinationDirectory": format!("{root}/docs"),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("docs/main.rs"), "{destination}");
+        assert!(!Path::new(&root).join("src/main.rs").exists());
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("docs/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+
+        // A directory moves WITH its subtree — one rename, no copy/delete.
+        let destination = move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/src/deep"),
+                "destinationDirectory": format!("{root}/docs"),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("docs/deep"), "{destination}");
+        assert!(!Path::new(&root).join("src/deep").exists());
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("docs/deep/notes.md")).unwrap(),
+            "# notes\n"
+        );
+
+        // An empty destination directory means the root.
+        fs::write(Path::new(&root).join("docs/main.rs"), "back\n").unwrap();
+        let destination = move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/docs/main.rs"),
+                "destinationDirectory": "",
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("main.rs"), "{destination}");
+        assert!(Path::new(&root).join("main.rs").is_file());
+    }
+
+    #[tokio::test]
+    async fn move_collisions_and_no_ops_refuse_leaving_everything_in_place() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("a")).unwrap();
+        fs::create_dir_all(Path::new(&root).join("b")).unwrap();
+        fs::write(Path::new(&root).join("a/file.txt"), "from\n").unwrap();
+        fs::write(Path::new(&root).join("b/file.txt"), "to\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        // Destination already holds that name.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/a/file.txt"),
+                    "destinationDirectory": format!("{root}/b"),
+                }),
+            )
+            .await,
+        );
+        assert!(fault.contains("already exists"), "{fault}");
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("a/file.txt")).unwrap(),
+            "from\n"
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("b/file.txt")).unwrap(),
+            "to\n"
+        );
+
+        // Pasting into the entry's current directory is a no-op, not a move.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/a/file.txt"),
+                    "destinationDirectory": format!("{root}/a"),
+                }),
+            )
+            .await,
+        );
+        assert!(fault.contains("already in that directory"), "{fault}");
+        assert!(Path::new(&root).join("a/file.txt").is_file());
+
+        // Into itself and into its own descendant both refuse.
+        for destination in ["a", "a/inner"] {
+            fs::create_dir_all(Path::new(&root).join("a/inner")).unwrap();
+            let fault = fault_of(
+                move_entry(
+                    &engine,
+                    json!({
+                        "spaceId": "space-1",
+                        "path": format!("{root}/a"),
+                        "destinationDirectory": format!("{root}/{destination}"),
+                    }),
+                )
+                .await,
+            );
+            assert!(fault.contains("own descendant"), "{destination}: {fault}");
+            assert!(Path::new(&root).join("a/file.txt").is_file());
+        }
+    }
+
+    #[tokio::test]
+    async fn move_boundaries_hold_for_source_and_destination() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(Path::new(&root).join("src")).unwrap();
+        fs::create_dir_all(Path::new(&root).join(".git/refs")).unwrap();
+        fs::write(Path::new(&root).join("src/file.txt"), "x").unwrap();
+        fs::write(outside.path().join("outside.txt"), "x").unwrap();
+        let engine = setup(&fixture).await;
+
+        // Outside-root destination directory.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/src/file.txt"),
+                    "destinationDirectory": outside.path().display().to_string(),
+                }),
+            )
+            .await,
+        );
+        assert!(fault.contains("outside"), "{fault}");
+        assert!(Path::new(&root).join("src/file.txt").is_file());
+
+        // Traversal destination resolves outside and refuses.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/src/file.txt"),
+                    "destinationDirectory": "..",
+                }),
+            )
+            .await,
+        );
+        assert!(fault.contains("outside"), "{fault}");
+
+        // .git as destination — and as the source entry.
+        for (path, destination) in [
+            (format!("{root}/src/file.txt"), format!("{root}/.git/refs")),
+            (format!("{root}/.git/refs"), format!("{root}/src")),
+        ] {
+            let fault = fault_of(
+                move_entry(
+                    &engine,
+                    json!({
+                        "spaceId": "space-1",
+                        "path": path,
+                        "destinationDirectory": destination,
+                    }),
+                )
+                .await,
+            );
+            assert!(fault.contains(".git"), "{fault}");
+        }
+        assert!(Path::new(&root).join("src/file.txt").is_file());
+        assert!(Path::new(&root).join(".git/refs").is_dir());
+
+        // The root itself is not an entry: moving it refuses.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": root.clone(),
+                    "destinationDirectory": format!("{root}/src"),
+                }),
+            )
+            .await,
+        );
+        assert!(
+            fault.contains("outside") || fault.contains("not"),
+            "{fault}"
+        );
+
+        // Missing source and non-directory destinations refuse.
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/nope.txt"),
+                    "destinationDirectory": format!("{root}/src"),
+                }),
+            )
+            .await,
+        );
+        assert!(fault.contains("does not exist"), "{fault}");
+        let fault = fault_of(
+            move_entry(
+                &engine,
+                json!({
+                    "spaceId": "space-1",
+                    "path": format!("{root}/src/file.txt"),
+                    "destinationDirectory": format!("{root}/src/file.txt"),
+                }),
+            )
+            .await,
+        );
+        assert!(
+            fault.contains("not a directory") || fault.contains("own descendant"),
+            "{fault}"
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_act_on_symlink_entries_and_honor_alias_destinations() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("real")).unwrap();
+        fs::create_dir_all(Path::new(&root).join("dest")).unwrap();
+        fs::write(Path::new(&root).join("target.txt"), "target\n").unwrap();
+        // An inside-root directory alias, a file alias, and an outside link.
+        std::os::unix::fs::symlink(
+            Path::new(&root).join("real"),
+            Path::new(&root).join("alias-dir"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            Path::new(&root).join("target.txt"),
+            Path::new(&root).join("alias.txt"),
+        )
+        .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("precious.txt"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("precious.txt"),
+            Path::new(&root).join("outside.txt"),
+        )
+        .unwrap();
+        let engine = setup(&fixture).await;
+
+        // Moving a symlink moves the LINK — its target is untouched.
+        let destination = move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/alias.txt"),
+                "destinationDirectory": format!("{root}/dest"),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("dest/alias.txt"), "{destination}");
+        assert!(
+            fs::symlink_metadata(Path::new(&root).join("dest/alias.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_link(Path::new(&root).join("dest/alias.txt")).unwrap(),
+            Path::new(&root).join("target.txt")
+        );
+        assert!(Path::new(&root).join("target.txt").is_file());
+
+        // An outside-pointing link is a legal in-root ENTRY: moving it never
+        // touches the target on the other side of the fence.
+        move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/outside.txt"),
+                "destinationDirectory": format!("{root}/dest"),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(outside.path().join("precious.txt")).unwrap(),
+            "keep\n"
+        );
+
+        // Pasting INTO an inside-root alias lands in the aliased directory.
+        let destination = move_entry(
+            &engine,
+            json!({
+                "spaceId": "space-1",
+                "path": format!("{root}/dest/alias.txt"),
+                "destinationDirectory": format!("{root}/alias-dir"),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(destination.ends_with("real/alias.txt"), "{destination}");
+        assert!(
+            fs::symlink_metadata(Path::new(&root).join("real/alias.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn trashing_removes_entries_through_the_system_trash() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join("dir")).unwrap();
+        fs::write(
+            Path::new(&root).join("dir/holt-trash-test-file.txt"),
+            "gone\n",
+        )
+        .unwrap();
+        fs::write(Path::new(&root).join("target.txt"), "target\n").unwrap();
+        std::os::unix::fs::symlink(
+            Path::new(&root).join("target.txt"),
+            Path::new(&root).join("link.txt"),
+        )
+        .unwrap();
+        let engine = setup(&fixture).await;
+
+        // A directory (with contents) and a symlink both go through the
+        // trash RPC; the link's target survives.
+        trash(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/dir") }),
+        )
+        .await
+        .unwrap();
+        assert!(!Path::new(&root).join("dir").exists());
+
+        trash(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/link.txt") }),
+        )
+        .await
+        .unwrap();
+        assert!(!Path::new(&root).join("link.txt").exists());
+        assert!(Path::new(&root).join("target.txt").is_file());
+        assert_eq!(
+            fs::read_to_string(Path::new(&root).join("target.txt")).unwrap(),
+            "target\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn trash_refusals_fail_without_deleting_anything() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::create_dir_all(Path::new(&root).join(".git/refs")).unwrap();
+        fs::write(Path::new(&root).join("keep.txt"), "keep\n").unwrap();
+        let engine = setup(&fixture).await;
+
+        // Missing entry.
+        let fault = fault_of(
+            trash(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/nope.txt") }),
+            )
+            .await,
+        );
+        assert!(fault.contains("does not exist"), "{fault}");
+
+        // .git entry and outside-root paths refuse at the fence.
+        let fault = fault_of(
+            trash(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/.git/refs") }),
+            )
+            .await,
+        );
+        assert!(fault.contains(".git"), "{fault}");
+        let fault = fault_of(
+            trash(
+                &engine,
+                json!({ "spaceId": "space-1", "path": "/etc/hosts" }),
+            )
+            .await,
+        );
+        assert!(fault.contains("outside"), "{fault}");
+
+        assert!(Path::new(&root).join("keep.txt").is_file());
+        assert!(Path::new(&root).join(".git/refs").is_dir());
+    }
+
+    /// A simulated trash FAILURE (the parent directory denies the write the
+    /// trash move needs): the entry must stay exactly where it was — a
+    /// failed trash never becomes a permanent delete.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn trash_failure_leaves_the_entry_in_place() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        let locked = Path::new(&root).join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("survivor.txt"), "still here\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let engine = setup(&fixture).await;
+
+        let fault = fault_of(
+            trash(
+                &engine,
+                json!({ "spaceId": "space-1", "path": locked.join("survivor.txt").display().to_string() }),
+            )
+            .await,
+        );
+        assert!(fault.to_lowercase().contains("trash"), "{fault}");
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            fs::read_to_string(locked.join("survivor.txt")).unwrap(),
+            "still here\n",
+            "a failed trash must not delete the entry"
+        );
+    }
+}
