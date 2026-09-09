@@ -16,7 +16,7 @@ use holt_rpc::methods;
 use crate::{
     composer::ComposerInput,
     popover::{self, Loadable, Popup},
-    settings::widgets,
+    settings::{self, SavePolicy, widgets},
     state::AppState,
     theme::Theme,
 };
@@ -203,6 +203,99 @@ impl GeneralPage {
             })
             .ok();
         }));
+    }
+
+    /// The device-local Notifications group (issue 03). Independent of the
+    /// engine-backed title settings above: it renders and works even when
+    /// that load fails. Toggles persist immediately through the settings
+    /// store, which the notification controller reads at event time.
+    fn render_notifications(theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let ui_settings = settings::current(cx);
+        let master_on = ui_settings.completion_notifications;
+        let sound_on = ui_settings.completion_notification_sound;
+
+        let sound_switch = div()
+            .id("completion-notification-sound-toggle")
+            .debug_selector(|| "completion-notification-sound-toggle".into())
+            .flex_none()
+            .child(widgets::toggle_switch(theme, sound_on));
+        // While the master is off the control is visually non-interactive;
+        // the stored sound choice is untouched and honored again on
+        // re-enable.
+        let sound_switch = if master_on {
+            sound_switch
+                .cursor_pointer()
+                .on_click(cx.listener(|_, _, _, cx| {
+                    settings::update(SavePolicy::Immediate, cx, |settings| {
+                        settings.completion_notification_sound =
+                            !settings.completion_notification_sound;
+                    });
+                    cx.notify();
+                }))
+        } else {
+            sound_switch.opacity(0.4)
+        };
+
+        div()
+            .mt(px(24.0))
+            .child(widgets::field_label(theme, "Notifications"))
+            .child(div().mt(px(4.0)).child(widgets::row_description(
+                theme,
+                "Device-local. Banners appear only while no Holt window is active.",
+            )))
+            .child(
+                div().mt(px(8.0)).child(
+                    widgets::section_card(theme)
+                        .child(
+                            widgets::card_row(theme, true)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(widgets::row_title(theme, "Completion notifications"))
+                                        .child(widgets::row_description(
+                                            theme,
+                                            "Show a system banner when a background Turn succeeds or fails.",
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id("completion-notifications-toggle")
+                                        .debug_selector(|| "completion-notifications-toggle".into())
+                                        .flex_none()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            settings::update(SavePolicy::Immediate, cx, |settings| {
+                                                settings.completion_notifications =
+                                                    !settings.completion_notifications;
+                                            });
+                                            cx.notify();
+                                        }))
+                                        .child(widgets::toggle_switch(theme, master_on)),
+                                ),
+                        )
+                        .child(
+                            widgets::card_row(theme, false)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(widgets::row_title(theme, "Play sound"))
+                                        .child(widgets::row_description(
+                                            theme,
+                                            "Play the system notification sound with each banner.",
+                                        )),
+                                )
+                                .child(sound_switch),
+                        ),
+                ),
+            )
     }
 
     fn close_model_menu(&mut self, cx: &mut Context<Self>) {
@@ -498,7 +591,8 @@ impl Render for GeneralPage {
                              background request to this model can replace it. Your manual \
                              renames always win.",
                     )))
-                    .child(body),
+                    .child(body)
+                    .child(Self::render_notifications(&theme, cx)),
             )
     }
 }
@@ -507,6 +601,75 @@ impl Render for GeneralPage {
 mod tests {
     use super::*;
     use holt_proto::{Provider, ProviderId, ProviderVariant};
+
+    /// The Notifications group is device-local: it must render and work even
+    /// when the engine-backed automatic-title settings fail to load (here the
+    /// state has no engine at all, so the title group lands in its Error
+    /// state), and the sound control must be non-interactive — without
+    /// changing its stored value — while the master toggle is off.
+    #[gpui::test]
+    fn notifications_group_survives_title_settings_failure(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| AppState::new());
+        let (page, visual) = cx.add_window_view(|_window, cx| GeneralPage::new(state.clone(), cx));
+        // Force the first frame: a window only paints after a notify.
+        page.update(&mut *visual, |_page, cx| cx.notify());
+        visual.run_until_parked();
+
+        let current = |visual: &gpui::VisualTestContext| visual.read(settings::current);
+
+        // Both controls exist despite the title group's load failure.
+        let master = visual
+            .debug_bounds("completion-notifications-toggle")
+            .expect("master toggle renders without engine-backed settings");
+        assert!(
+            visual
+                .debug_bounds("completion-notification-sound-toggle")
+                .is_some(),
+            "sound toggle renders without engine-backed settings"
+        );
+        assert!(current(visual).completion_notifications);
+        assert!(current(visual).completion_notification_sound);
+
+        // Master off: the sound control goes non-interactive but keeps its
+        // stored value.
+        visual.simulate_click(master.center(), Default::default());
+        visual.run_until_parked();
+        assert!(!current(visual).completion_notifications);
+        let sound = visual
+            .debug_bounds("completion-notification-sound-toggle")
+            .expect("sound toggle still renders while disabled");
+        visual.simulate_click(sound.center(), Default::default());
+        visual.run_until_parked();
+        assert!(
+            current(visual).completion_notification_sound,
+            "a disabled sound control must not change its stored value"
+        );
+
+        // Master back on: the sound choice was retained and is editable again.
+        let master = visual
+            .debug_bounds("completion-notifications-toggle")
+            .unwrap();
+        visual.simulate_click(master.center(), Default::default());
+        visual.run_until_parked();
+        assert!(current(visual).completion_notifications);
+        assert!(current(visual).completion_notification_sound);
+        let sound = visual
+            .debug_bounds("completion-notification-sound-toggle")
+            .unwrap();
+        visual.simulate_click(sound.center(), Default::default());
+        visual.run_until_parked();
+        assert!(!current(visual).completion_notification_sound);
+
+        // Explicit toggles persist immediately.
+        let reloaded = crate::settings::UiSettings::load(dir.path());
+        assert!(reloaded.completion_notifications);
+        assert!(!reloaded.completion_notification_sound);
+    }
 
     fn model(id: &str, label: &str) -> Model {
         Model {

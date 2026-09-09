@@ -791,6 +791,68 @@ pub struct Shell {
     _transcript_events: Subscription,
 }
 
+/// The `UiSettings` fields the Shell owns and publishes through
+/// [`Shell::schedule_save`]. Everything else in the record (notification
+/// toggles, disabled skills, file navigation, diff layout, …) belongs to
+/// other writers and must survive a Shell save untouched.
+struct ShellSettingsFields {
+    sidebar_width: f32,
+    sidebar_collapsed: bool,
+    terminal_height: f32,
+    right_pane_width: f32,
+    file_tree_width: f32,
+    last_space_id: Option<String>,
+    space_filter: Option<String>,
+    keymap: settings::KeymapConfig,
+    external_app: String,
+    appearance: crate::appearance::AppearanceMode,
+    theme_selection: holt_theme::ThemeSelection,
+    accent: holt_theme::AccentSelection,
+    surface: holt_theme::SurfacePreference,
+    ui_font_family: crate::typography::UiFontFamily,
+    ui_font_size: crate::typography::UiFontSize,
+}
+
+impl ShellSettingsFields {
+    fn capture(settings: &UiSettings) -> Self {
+        Self {
+            sidebar_width: settings.sidebar_width,
+            sidebar_collapsed: settings.sidebar_collapsed,
+            terminal_height: settings.terminal_height,
+            right_pane_width: settings.right_pane_width,
+            file_tree_width: settings.file_tree_width,
+            last_space_id: settings.last_space_id.clone(),
+            space_filter: settings.space_filter.clone(),
+            keymap: settings.keymap.clone(),
+            external_app: settings.external_app.clone(),
+            appearance: settings.appearance,
+            theme_selection: settings.theme_selection.clone(),
+            accent: settings.accent,
+            surface: settings.surface,
+            ui_font_family: settings.ui_font_family.clone(),
+            ui_font_size: settings.ui_font_size,
+        }
+    }
+
+    fn apply(self, current: &mut UiSettings) {
+        current.sidebar_width = self.sidebar_width;
+        current.sidebar_collapsed = self.sidebar_collapsed;
+        current.terminal_height = self.terminal_height;
+        current.right_pane_width = self.right_pane_width;
+        current.file_tree_width = self.file_tree_width;
+        current.last_space_id = self.last_space_id;
+        current.space_filter = self.space_filter;
+        current.keymap = self.keymap;
+        current.external_app = self.external_app;
+        current.appearance = self.appearance;
+        current.theme_selection = self.theme_selection;
+        current.accent = self.accent;
+        current.surface = self.surface;
+        current.ui_font_family = self.ui_font_family;
+        current.ui_font_size = self.ui_font_size;
+    }
+}
+
 impl Shell {
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
@@ -1397,6 +1459,9 @@ impl Shell {
 
     /// Publish this view's working copy to the central settings store. The
     /// store owns the single debounce task and the only production writer.
+    /// Merge ONLY the fields this view owns — a whole-record replace would
+    /// let a stale Shell snapshot roll back choices another writer persisted
+    /// seconds ago (notification toggles, disabled skills, file navigation).
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         self.settings.appearance = crate::appearance::mode(cx);
         self.settings.theme_selection = crate::appearance::themes(cx);
@@ -1404,7 +1469,10 @@ impl Shell {
         self.settings.surface = crate::appearance::surface(cx);
         self.settings.ui_font_family = crate::typography::requested(cx);
         self.settings.ui_font_size = crate::typography::font_size(cx);
-        settings::replace(self.settings.clone(), SavePolicy::Debounced, cx);
+        let owned = ShellSettingsFields::capture(&self.settings);
+        settings::update(SavePolicy::Debounced, cx, move |current| {
+            owned.apply(current);
+        });
     }
 
     fn retry_engine(&mut self, cx: &mut Context<Self>) {
@@ -3404,6 +3472,49 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The merge-ownership invariant: a Shell layout save must merge only the
+    /// fields the Shell owns, so a stale working copy cannot roll back
+    /// another writer's choices (notification toggles, disabled skills).
+    #[gpui::test]
+    fn schedule_save_merges_only_shell_owned_fields(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            let mut seeded = UiSettings::default();
+            seeded.completion_notifications = false;
+            seeded.completion_notification_sound = false;
+            seeded.disabled_skills = vec!["grill".into()];
+            crate::settings::init(seeded, dir.path(), cx);
+        });
+        let state = cx.new(|_| AppState::new());
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        shell.update(cx, |shell, cx| {
+            shell.settings.sidebar_width = 300.0;
+            shell.schedule_save(cx);
+        });
+        cx.update(|cx| {
+            let current = crate::settings::current(cx);
+            assert_eq!(current.sidebar_width, 300.0);
+            assert!(!current.completion_notifications);
+            assert!(!current.completion_notification_sound);
+            assert_eq!(current.disabled_skills, ["grill".to_string()]);
+            crate::settings::flush(cx);
+        });
+        let reloaded = UiSettings::load(dir.path());
+        assert_eq!(reloaded.sidebar_width, 300.0);
+        assert!(!reloaded.completion_notifications);
+        assert!(!reloaded.completion_notification_sound);
+        assert_eq!(reloaded.disabled_skills, ["grill".to_string()]);
+    }
 
     #[gpui::test]
     fn terminal_hosts_coexist_below_and_beside_the_chat(cx: &mut gpui::TestAppContext) {

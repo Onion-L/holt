@@ -994,6 +994,34 @@ impl AppState {
         cx.notify();
     }
 
+    #[cfg(test)]
+    /// Attach a fake engine over the in-memory transport so application-level
+    /// tests can drive the typed-RPC contract (watch streams, replies)
+    /// directly instead of assembling a `LocalEngine`.
+    pub fn attach_test_engine(&mut self, client: RpcClient, cx: &mut Context<Self>) {
+        struct TestBackend {
+            client: RpcClient,
+        }
+        #[async_trait]
+        impl EngineBackend for TestBackend {
+            fn client(&self) -> &RpcClient {
+                &self.client
+            }
+            fn mode(&self) -> EngineMode {
+                EngineMode::InProcess
+            }
+            async fn shutdown(&self) {}
+        }
+        let handle = EngineHandle {
+            inner: Arc::new(TestBackend { client }),
+            engine_info: EngineInfo {
+                device_id: "test-device".into(),
+                workspace_scope: WorkspaceScope::Local,
+            },
+        };
+        self.attach_engine(handle, cx);
+    }
+
     fn reconcile_change_request_watches(&mut self, cx: &mut Context<Self>) {
         let Some(handle) = self.engine.clone() else {
             self.change_request_tasks.clear();

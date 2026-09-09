@@ -698,12 +698,7 @@ impl Changes {
     /// indices do not survive the re-pairing).
     pub(super) fn toggle_mode(&mut self, cx: &mut Context<Self>) {
         self.mode = self.mode.toggled();
-        if let Some(dir) = self.state.read(cx).data_dir.clone() {
-            let split = self.mode.is_split();
-            cx.background_executor()
-                .spawn(async move { persist_split(split, &dir) })
-                .detach();
-        }
+        persist_split(self.mode.is_split(), cx);
         // A draft's `+` sits in a column that may not exist after the swap.
         self.hover = None;
         self.reflatten(cx);

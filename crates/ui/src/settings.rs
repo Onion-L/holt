@@ -120,10 +120,6 @@ pub fn update(policy: SavePolicy, cx: &mut App, mutate: impl FnOnce(&mut UiSetti
     true
 }
 
-pub fn replace(settings: UiSettings, policy: SavePolicy, cx: &mut App) -> bool {
-    update(policy, cx, |current| *current = settings)
-}
-
 fn schedule(policy: SavePolicy, cx: &mut App) {
     let old_task = cx.global_mut::<SettingsStore>().save_task.take();
     drop(old_task);
@@ -296,6 +292,16 @@ pub struct UiSettings {
     pub theme_selection: holt_theme::ThemeSelection,
     /// Changes pane: side-by-side diffs instead of the unified stack.
     pub diff_split: bool,
+    /// Device-local master switch for OS banner notifications when a
+    /// background main-chat Turn completes (ADR-0019; issue 03). Explicit
+    /// default so a pre-notifications file loads with the feature on.
+    #[serde(default = "default_true")]
+    pub completion_notifications: bool,
+    /// Whether completion notifications request the OS default sound.
+    /// Subordinate to [`Self::completion_notifications`] — the stored value is
+    /// retained while the master is off and honored again when it returns.
+    #[serde(default = "default_true")]
+    pub completion_notification_sound: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
     pub accent: holt_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
@@ -345,6 +351,8 @@ impl Default for UiSettings {
             ui_font_size: crate::typography::UiFontSize::default(),
             theme_selection: holt_theme::ThemeSelection::default(),
             diff_split: false,
+            completion_notifications: true,
+            completion_notification_sound: true,
             accent: holt_theme::AccentSelection::default(),
             surface: holt_theme::SurfacePreference::default(),
             disabled_skills: Vec::new(),
@@ -862,6 +870,10 @@ impl UiSettings {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn clamp_or(value: f32, min: f32, max: f32, default: f32) -> f32 {
     if value.is_finite() {
         value.clamp(min, max)
@@ -1038,6 +1050,8 @@ mod tests {
                 dark: "catppuccin-mocha".into(),
             },
             diff_split: true,
+            completion_notifications: false,
+            completion_notification_sound: false,
             accent: holt_theme::AccentSelection::Preset(holt_theme::AccentPreset::Cyan),
             surface: holt_theme::SurfacePreference::Frosted,
             disabled_skills: vec!["grill".into()],
@@ -1077,6 +1091,60 @@ mod tests {
             reloaded.ui_font_family,
             crate::typography::UiFontFamily::Installed("Arial".into())
         );
+    }
+
+    #[test]
+    fn completion_notification_settings_default_on() {
+        let d = UiSettings::default();
+        assert!(d.completion_notifications);
+        assert!(d.completion_notification_sound);
+    }
+
+    /// A settings file written before notifications existed has neither key;
+    /// it must load with both on — no migration error, no silent opt-out.
+    #[test]
+    fn old_file_without_notification_keys_loads_with_both_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"sidebarWidth": 300, "soundEnabled": false}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert!(loaded.completion_notifications);
+        assert!(loaded.completion_notification_sound);
+        assert_eq!(loaded.sidebar_width, 300.0);
+    }
+
+    #[test]
+    fn notification_choices_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = UiSettings {
+            completion_notifications: false,
+            completion_notification_sound: false,
+            ..UiSettings::default()
+        };
+        settings.save(dir.path()).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert!(!loaded.completion_notifications);
+        assert!(!loaded.completion_notification_sound);
+        // The sound choice is independent of the master: off-master keeps it.
+        let settings = UiSettings {
+            completion_notifications: false,
+            completion_notification_sound: true,
+            ..UiSettings::default()
+        };
+        settings.save(dir.path()).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert!(!loaded.completion_notifications);
+        assert!(loaded.completion_notification_sound);
+    }
+
+    #[test]
+    fn notification_keys_use_camel_case_names() {
+        let json = serde_json::to_string(&UiSettings::default()).unwrap();
+        assert!(json.contains("\"completionNotifications\""));
+        assert!(json.contains("\"completionNotificationSound\""));
     }
 
     #[test]

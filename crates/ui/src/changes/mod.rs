@@ -34,7 +34,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Context, Entity, FocusHandle, ListAlignment, ListState, SharedString, Subscription, Task, px,
+    App, Context, Entity, FocusHandle, ListAlignment, ListState, SharedString, Subscription, Task,
+    px,
 };
 
 use holt_proto::{CheckoutDiff, GitHistoryCommit};
@@ -118,16 +119,13 @@ impl DiffMode {
     }
 }
 
-/// Read-modify-write `ui-settings.json` for just the split-diff key — a fresh
-/// load, for the reason [`crate::appearance`] documents: the shell holds its
-/// own `UiSettings` and saves it debounced, so writing a cached snapshot from
-/// here would roll back a pane resize made seconds earlier.
-fn persist_split(split: bool, data_dir: &std::path::Path) {
-    let mut settings = crate::settings::UiSettings::load(data_dir);
-    settings.diff_split = split;
-    if let Err(err) = settings.save(data_dir) {
-        tracing::warn!(error = %err, "could not persist diff layout");
-    }
+/// The changes pane's own settings field (`diffSplit`), persisted through the
+/// central store — the sole owner of `ui-settings.json` — so the write merges
+/// with every other writer's fields instead of racing a whole-file snapshot.
+fn persist_split(split: bool, cx: &mut App) {
+    crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+        settings.diff_split = split;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -295,13 +293,7 @@ impl gpui::EventEmitter<ChangesEvent> for Changes {}
 impl Changes {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
-        let mode = DiffMode::from_split(
-            state
-                .read(cx)
-                .data_dir
-                .as_deref()
-                .is_some_and(|dir| crate::settings::UiSettings::load(dir).diff_split),
-        );
+        let mode = DiffMode::from_split(crate::settings::current(cx).diff_split);
         Self {
             state,
             mode,

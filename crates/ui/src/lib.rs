@@ -32,6 +32,7 @@ pub mod links;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
+pub mod notifications;
 pub mod path_refs;
 pub mod pickers;
 pub mod popover;
@@ -113,6 +114,9 @@ pub fn run_app(config: UiConfig) {
         app_icon::install();
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
+        // Application identity before any window opens or notification posts
+        // (platforms that can't identify the process stay silent otherwise).
+        cx.set_app_identity(notifications::APP_IDENTITY, notifications::APP_DISPLAY_NAME);
         let data_dir = config.boot().data_dir.clone();
         let ui_settings = settings::UiSettings::load(&data_dir);
         settings::init(ui_settings.clone(), data_dir.clone(), cx);
@@ -140,6 +144,10 @@ pub fn run_app(config: UiConfig) {
         cx.register_url_scheme("holt").detach();
 
         let state = cx.new(|_| state::AppState::new());
+        // Application-scoped Turn completion notifications: the controller
+        // owns the terminal-event subscription and the response handler for
+        // the process lifetime, independent of any window.
+        notifications::install(state.clone(), cx);
         terminal::lifecycle::init(state.clone(), cx);
         let url_state = state.clone();
         cx.spawn(async move |cx| {

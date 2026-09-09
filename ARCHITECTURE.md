@@ -171,7 +171,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   live-only — no synthetic initial event, no persistence or replay across
   restart — and publishing is fire-and-forget, so a closed or lagging
   consumer can never fail a Turn or delay the queue. Subagents, manual
-  Compaction, Title tasks, and admission failures never appear here.
+  Compaction, Title tasks, and admission failures never appear here. The UI
+  consumer is one application-scoped notification controller
+  (`ui::notifications`): created during bootstrap, independent of any
+  window, it dedups by `eventId` and posts device-local OS banners
+  (Chat title + outcome only) when no Holt window is active.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
