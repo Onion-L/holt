@@ -800,14 +800,7 @@ impl Render for Composer {
         }
         self.last_rendered_height = pill_height;
 
-        let send_button = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .when(self.run_live(cx) && mode != SendButtonMode::Stop, |el| {
-                el.child(self.render_send_button(SendButtonMode::Stop, cx))
-            })
-            .child(self.render_send_button(mode, cx));
+        let send_button = self.render_send_button(mode, cx);
         // Attach button — opens the native image picker (the original's hidden
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. The parent action cluster owns the spacing: adding a
