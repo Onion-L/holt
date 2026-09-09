@@ -5,6 +5,7 @@
 # from git.
 [workspace]
 resolver = "2"
+exclude = ["vendor"]
 members = [
     "crates/collections",
     "crates/gpui",
@@ -190,7 +191,9 @@ raw-window-handle = "0.6"
 rayon = "1.8"
 refineable = { path = "crates/refineable" }
 regex = "1.5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# The vendored `reqwest_client` uses zed's reqwest patches (`redirect_policy`,
+# `use_preconfigured_tls`); the fork is published on crates.io as `zed-reqwest`.
+reqwest = { version = "0.12.15-zed", default-features = false, features = ["rustls-tls", "json", "stream", "http2"], package = "zed-reqwest" }
 reqwest_client = { path = "crates/reqwest_client" }
 resvg = { version = "0.46.0", default-features = false, features = [
     "text",

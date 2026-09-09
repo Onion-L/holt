@@ -53,6 +53,7 @@ impl Render for SystemNotificationExample {
                                         label: "Snooze".into(),
                                     },
                                 ],
+                                sound: true,
                             });
                             this.status = format!("Posted notification revision {revision}").into();
                             cx.notify();

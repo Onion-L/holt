@@ -182,7 +182,14 @@ fn toast_document(notification: &SystemNotification) -> windows::core::Result<Xm
     }
 
     let audio = document.CreateElement(h!("audio"))?;
-    audio.SetAttribute(h!("silent"), h!("true"))?;
+    audio.SetAttribute(
+        h!("silent"),
+        if notification.sound {
+            h!("false")
+        } else {
+            h!("true")
+        },
+    )?;
     toast.AppendChild(&audio)?;
     Ok(document)
 }

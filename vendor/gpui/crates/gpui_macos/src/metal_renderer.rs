@@ -2318,6 +2318,7 @@ mod backdrop_blur_tests {
             border_color: transparent_black(),
             corner_radii: Corners::default(),
             border_widths: Edges::default(),
+            fade: Default::default(),
         });
     }
 

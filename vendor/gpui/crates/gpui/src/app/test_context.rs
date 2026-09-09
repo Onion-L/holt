@@ -1160,6 +1160,7 @@ mod tests {
                 title: "Task started".into(),
                 body: "Running tests".into(),
                 actions: Vec::new(),
+                sound: true,
             });
         });
         assert!(cx.shown_system_notifications().is_empty());
@@ -1172,6 +1173,7 @@ mod tests {
                 title: "Task started".into(),
                 body: "Running tests".into(),
                 actions: Vec::new(),
+                sound: true,
             });
             cx.show_system_notification(SystemNotification {
                 tag: "thread-1".into(),
@@ -1181,6 +1183,7 @@ mod tests {
                     id: "open".into(),
                     label: "Open".into(),
                 }],
+                sound: true,
             });
         });
 
@@ -1199,6 +1202,7 @@ mod tests {
                     id: "open".into(),
                     label: "Open".into(),
                 }],
+                sound: true,
             }]
         );
 
@@ -1275,6 +1279,7 @@ mod tests {
                 title: "Task finished".into(),
                 body: "All tests passed".into(),
                 actions: Vec::new(),
+                sound: true,
             });
             cx.on_system_notification_response(|response, cx| {
                 cx.dismiss_system_notification(&response.tag);
@@ -1288,6 +1293,53 @@ mod tests {
 
         assert!(cx.delivered_system_notifications().is_empty());
         assert_eq!(cx.dismissed_system_notifications(), ["thread-1"]);
+    }
+
+    #[gpui::test]
+    async fn test_system_notifications_retain_the_sound_choice(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_app_identity("com.example.tasks", "Tasks");
+            cx.show_system_notification(SystemNotification {
+                tag: "audible".into(),
+                title: "Noisy task finished".into(),
+                body: "All tests passed".into(),
+                actions: Vec::new(),
+                sound: true,
+            });
+            cx.show_system_notification(SystemNotification {
+                tag: "silent".into(),
+                title: "Quiet task finished".into(),
+                body: "All tests passed".into(),
+                actions: Vec::new(),
+                sound: false,
+            });
+        });
+
+        let shown = cx.shown_system_notifications();
+        assert_eq!(shown.len(), 2);
+        assert!(
+            shown
+                .iter()
+                .any(|notification| notification.tag == "audible" && notification.sound)
+        );
+        assert!(
+            shown
+                .iter()
+                .any(|notification| notification.tag == "silent" && !notification.sound)
+        );
+
+        let delivered = cx.delivered_system_notifications();
+        assert_eq!(delivered.len(), 2);
+        assert!(
+            delivered
+                .iter()
+                .any(|notification| notification.tag == "audible" && notification.sound)
+        );
+        assert!(
+            delivered
+                .iter()
+                .any(|notification| notification.tag == "silent" && !notification.sound)
+        );
     }
 
     #[gpui::test]

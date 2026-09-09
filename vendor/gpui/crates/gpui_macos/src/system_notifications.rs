@@ -24,7 +24,7 @@ use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
     UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
+    UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
 };
 
@@ -164,9 +164,7 @@ impl NotificationCenter {
     fn show(&self, notification: SystemNotification) {
         self.request_authorization();
 
-        let content = UNMutableNotificationContent::new();
-        content.setTitle(&NSString::from_str(&notification.title));
-        content.setBody(&NSString::from_str(&notification.body));
+        let content = notification_content(&notification);
         if !notification.actions.is_empty() {
             let category_identifier = self.register_category(&notification.actions);
             content.setCategoryIdentifier(&NSString::from_str(&category_identifier));
@@ -239,6 +237,20 @@ impl NotificationCenter {
     }
 }
 
+/// Builds the notification content without touching the notification center,
+/// so the request payload can be inspected in tests.
+fn notification_content(
+    notification: &SystemNotification,
+) -> Retained<UNMutableNotificationContent> {
+    let content = UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(&notification.title));
+    content.setBody(&NSString::from_str(&notification.body));
+    if notification.sound {
+        content.setSound(Some(&UNNotificationSound::defaultSound()));
+    }
+    content
+}
+
 struct DelegateIvars {
     sender: mpsc::UnboundedSender<SystemNotificationResponse>,
 }
@@ -305,5 +317,32 @@ impl NotificationResponseDelegate {
         let this = Self::alloc().set_ivars(DelegateIvars { sender });
         // SAFETY: `NSObject`'s `init` is its designated initializer.
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notification(sound: bool) -> SystemNotification {
+        SystemNotification {
+            tag: "thread-1".into(),
+            title: "Task finished".into(),
+            body: "All tests passed".into(),
+            actions: Vec::new(),
+            sound,
+        }
+    }
+
+    #[test]
+    fn sound_enabled_requests_the_default_notification_sound() {
+        let content = notification_content(&notification(true));
+        assert!(content.sound().is_some());
+    }
+
+    #[test]
+    fn sound_disabled_delivers_without_a_notification_sound() {
+        let content = notification_content(&notification(false));
+        assert!(content.sound().is_none());
     }
 }

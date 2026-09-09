@@ -43,6 +43,9 @@ impl SystemNotificationState {
         builder
             .summary(&notification.title)
             .body(&notification.body)
+            // The XDG `suppress-sound` hint is the only portable sound
+            // control; servers without sound support ignore it.
+            .hint(notify_rust::Hint::SuppressSound(!notification.sound))
             .action(DEFAULT_ACTION, DEFAULT_ACTION);
         let mut action_ids = HashMap::new();
         for (index, action) in notification.actions.iter().enumerate() {
