@@ -14,7 +14,9 @@ use gpui::{
     AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     ListState, SharedString, Task, WeakEntity, div, list, px,
 };
-use holt_proto::{WorkspaceEntryKind, WorkspaceListing};
+use holt_proto::{
+    WorkspaceEntryKind, WorkspaceGitStatus, WorkspaceGitStatusKind, WorkspaceListing,
+};
 
 use crate::icons::{self, icon};
 use crate::loaders;
@@ -32,6 +34,88 @@ enum DirState {
     Failed(SharedString),
 }
 
+/// The prebuilt lookup for one working-tree Git status snapshot (ticket
+/// 10): the canonical workdir the tree's row paths strip down to repo-
+/// relative keys, plus the normalized path → kind map. `workdir: None`
+/// (a non-Git Space) or a carried `error` means decorations off — never
+/// tree failure.
+#[derive(Clone)]
+struct GitStatusIndex {
+    workdir: Option<String>,
+    error: Option<String>,
+    map: HashMap<String, WorkspaceGitStatusKind>,
+}
+
+impl From<&WorkspaceGitStatus> for GitStatusIndex {
+    fn from(snapshot: &WorkspaceGitStatus) -> Self {
+        Self {
+            workdir: snapshot.workdir.clone(),
+            error: snapshot.error.clone(),
+            map: snapshot
+                .entries
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.kind))
+                .collect(),
+        }
+    }
+}
+
+/// A row's Git decoration (ticket 10): the exact repo-relative match, else
+/// the nearest untracked-or-ignored ancestor directory — a wholly
+/// untracked/ignored directory classifies every descendant. `None` is a
+/// clean entry (or no repository): no marker, no subdued styling. A failed
+/// snapshot never decorates — its empty entries are a git failure, not a
+/// clean tree.
+fn git_kind_for(index: &GitStatusIndex, path: &str) -> Option<WorkspaceGitStatusKind> {
+    if index.error.is_some() {
+        return None;
+    }
+    let workdir = index.workdir.as_deref()?;
+    let rel = path.strip_prefix(workdir)?.trim_start_matches('/');
+    if let Some(kind) = index.map.get(rel) {
+        return Some(*kind);
+    }
+    let mut ancestor = rel;
+    while let Some((parent, _)) = ancestor.rsplit_once('/') {
+        ancestor = parent;
+        match index.map.get(ancestor) {
+            Some(kind @ WorkspaceGitStatusKind::Ignored)
+            | Some(kind @ WorkspaceGitStatusKind::Untracked) => return Some(*kind),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The marker letter and its tooltip text. `Ignored` renders no letter —
+/// subdued styling is its whole treatment.
+fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str, SharedString)> {
+    use WorkspaceGitStatusKind as Kind;
+    match kind {
+        Kind::Untracked => Some((
+            "U",
+            SharedString::from("Untracked — new file, not yet in git"),
+        )),
+        Kind::Added => Some(("A", SharedString::from("Added — staged new file"))),
+        Kind::Modified => Some(("M", SharedString::from("Modified — uncommitted changes"))),
+        Kind::Deleted => Some(("D", SharedString::from("Deleted from the working tree"))),
+        Kind::Ignored => None,
+    }
+}
+
+/// The marker's color: new content green, changes amber, removals red.
+/// `Ignored` never carries a letter (see [`marker_parts`]); the arm keeps
+/// the match exhaustive.
+fn marker_color(kind: WorkspaceGitStatusKind, theme: &Theme) -> gpui::Hsla {
+    use WorkspaceGitStatusKind as Kind;
+    match kind {
+        Kind::Untracked | Kind::Added => theme.success,
+        Kind::Modified => theme.warning,
+        Kind::Deleted => theme.danger,
+        Kind::Ignored => theme.text_muted,
+    }
+}
+
 /// Per-Space browsing state — kept alive across Chat switches (ADR-0020).
 struct SpaceTree {
     dirs: HashMap<String, DirState>,
@@ -44,6 +128,9 @@ struct SpaceTree {
     /// until the entry is pasted, re-cut, or gone. Visual only — the
     /// authoritative cut state lives on the shell.
     cut: Option<String>,
+    /// Latest working-tree Git status (ticket 10): None until the first
+    /// frame lands; a non-Git root stores a `workdir: None` index.
+    git_status: Option<GitStatusIndex>,
 }
 
 impl SpaceTree {
@@ -54,6 +141,7 @@ impl SpaceTree {
             expanded: HashSet::new(),
             selection: None,
             cut: None,
+            git_status: None,
         }
     }
 }
@@ -195,6 +283,9 @@ pub struct FileTreePanel {
     /// The live watch task for the active root (replaced on switch — the
     /// old stream drops, ending the engine-side watch with it).
     watch_task: Option<Task<()>>,
+    /// The working-tree Git status stream for the active root (ticket 10),
+    /// replaced on switch the same way.
+    status_task: Option<Task<()>>,
 }
 
 impl Focusable for FileTreePanel {
@@ -309,6 +400,7 @@ impl FileTreePanel {
             rows: Vec::new(),
             pending_reveal: None,
             watch_task: None,
+            status_task: None,
         };
         panel.sync_root(cx);
         // Re-derive the root whenever the selection moves — switching Chats
@@ -378,6 +470,7 @@ impl FileTreePanel {
             self.rebuild_rows();
             self.ensure_dir_loaded("", cx);
             self.start_watch(cx);
+            self.start_status_watch(cx);
         }
     }
 
@@ -694,6 +787,60 @@ impl FileTreePanel {
                 });
             }
         }));
+    }
+
+    /// One Git status stream per active root (ticket 10). Frames refresh
+    /// the OWNING Space's decoration index — keyed by generation, so a
+    /// reply that lands after a switch is dropped, not applied to the new
+    /// Space. The rows read the index at render; no per-row Git work.
+    fn start_status_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        let params = self.selector_params("");
+        let generation = active.generation;
+        let space_key = active.space_key;
+        self.status_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(mut frames) = engine
+                .client()
+                .subscribe(holt_rpc::methods::WATCH_WORKSPACE_GIT_STATUS, params)
+                .await
+            else {
+                return;
+            };
+            while let Some(frame) = frames.recv().await {
+                let Ok(snapshot) = serde_json::from_value::<WorkspaceGitStatus>(frame) else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.apply_status_frame(generation, &space_key, snapshot);
+                    cx.notify();
+                });
+            }
+        }));
+    }
+
+    /// Store one status frame on its owning Space — unless the panel moved
+    /// on (a Space switch bumped the generation) and the frame is stale.
+    /// A stale frame is dropped, never applied to the new Space.
+    fn apply_status_frame(
+        &mut self,
+        generation: u64,
+        space_key: &str,
+        snapshot: WorkspaceGitStatus,
+    ) {
+        let Some(current) = self.active.clone() else {
+            return;
+        };
+        if current.generation != generation || current.space_key != space_key {
+            return;
+        }
+        if let Some(space) = self.spaces.get_mut(space_key) {
+            space.git_status = Some(GitStatusIndex::from(&snapshot));
+        }
     }
 
     /// Drop the cached listings for the directories that changed (and for
@@ -1182,6 +1329,18 @@ impl FileTreePanel {
         let is_cut = self
             .with_active_space(|space| space.cut.as_deref() == Some(row.path.as_str()))
             .unwrap_or(false);
+        // Working-tree Git decoration (ticket 10): a marker letter for
+        // changed entries, subdued styling for ignored ones. Read from the
+        // Space's latest status index — never a Git call per row.
+        let git_kind = self
+            .with_active_space(|space| {
+                space
+                    .git_status
+                    .as_ref()
+                    .and_then(|index| git_kind_for(index, &row.path))
+            })
+            .flatten();
+        let ignored = git_kind == Some(WorkspaceGitStatusKind::Ignored);
         let expand = expandable(&row.kind);
         let expanded = self
             .with_active_space(|space| {
@@ -1302,7 +1461,11 @@ impl FileTreePanel {
                 icon(kind_icon)
                     .size(px(13.0))
                     .flex_none()
-                    .text_color(theme.text_muted.opacity(0.8)),
+                    .text_color(if ignored {
+                        theme.text_muted.opacity(0.45)
+                    } else {
+                        theme.text_muted.opacity(0.8)
+                    }),
             )
             .child(
                 div()
@@ -1312,10 +1475,41 @@ impl FileTreePanel {
                     .text_size(crate::typography::ui_rems(12.0))
                     .text_color(if selected {
                         theme.text
+                    } else if ignored {
+                        // Subdued, but readable enough to browse a large
+                        // ignored directory; selection keeps full contrast.
+                        theme.text_muted.opacity(0.6)
                     } else {
                         theme.text.opacity(0.85)
                     })
                     .child(row.name.clone()),
+            )
+            // The status marker (ticket 10): one fixed-width letter at the
+            // row's trailing edge — names never reflow when it appears.
+            .when_some(
+                git_kind.and_then(|kind| marker_parts(kind).map(|parts| (kind, parts))),
+                |el, (kind, (letter, label))| {
+                    el.child(
+                        div()
+                            .id(("file-tree-git-status", ix))
+                            .flex_none()
+                            .w(px(10.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(marker_color(kind, &theme).opacity(if selected {
+                                1.0
+                            } else {
+                                0.9
+                            }))
+                            .child(letter)
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| crate::image_viewer::ViewerTooltip(label.clone()))
+                                    .into()
+                            }),
+                    )
+                },
             )
             .tooltip({
                 let path = row.path.clone();
@@ -1458,6 +1652,170 @@ impl FileTreePanel {
             });
         }
         row_el.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod git_status_tests {
+    use super::*;
+    use holt_proto::{WorkspaceGitStatus, WorkspaceGitStatusEntry, WorkspaceGitStatusKind as Kind};
+
+    fn index(workdir: Option<&str>, entries: &[(&str, Kind)]) -> GitStatusIndex {
+        GitStatusIndex::from(&WorkspaceGitStatus {
+            workdir: workdir.map(str::to_string),
+            entries: entries
+                .iter()
+                .map(|(path, kind)| WorkspaceGitStatusEntry {
+                    path: (*path).to_string(),
+                    kind: *kind,
+                })
+                .collect(),
+            error: None,
+        })
+    }
+
+    #[test]
+    fn exact_matches_and_clean_entries_classify_directly() {
+        let index = index(
+            Some("/repo"),
+            &[
+                ("README.md", Kind::Modified),
+                ("debug.log", Kind::Ignored),
+                ("staged.rs", Kind::Added),
+            ],
+        );
+        assert_eq!(
+            git_kind_for(&index, "/repo/README.md"),
+            Some(Kind::Modified)
+        );
+        assert_eq!(git_kind_for(&index, "/repo/debug.log"), Some(Kind::Ignored));
+        assert_eq!(git_kind_for(&index, "/repo/staged.rs"), Some(Kind::Added));
+        // A tracked, unchanged file: nothing in the map, no ancestors —
+        // clean rows carry no decoration.
+        assert_eq!(git_kind_for(&index, "/repo/src/lib.rs"), None);
+    }
+
+    #[test]
+    fn untracked_and_ignored_directories_classify_descendants() {
+        // git reports wholly-untracked/ignored directories as one entry.
+        let index = index(
+            Some("/repo"),
+            &[
+                ("node_modules", Kind::Ignored),
+                ("prototype", Kind::Untracked),
+                ("node_modules/edge", Kind::Modified), // more specific wins
+            ],
+        );
+        assert_eq!(
+            git_kind_for(&index, "/repo/node_modules"),
+            Some(Kind::Ignored)
+        );
+        assert_eq!(
+            git_kind_for(&index, "/repo/node_modules/react/index.js"),
+            Some(Kind::Ignored)
+        );
+        // An exact deeper match overrides the ancestor's classification.
+        assert_eq!(
+            git_kind_for(&index, "/repo/node_modules/edge"),
+            Some(Kind::Modified)
+        );
+        assert_eq!(
+            git_kind_for(&index, "/repo/prototype/main.rs"),
+            Some(Kind::Untracked)
+        );
+    }
+
+    #[test]
+    fn non_git_and_outside_workdir_paths_have_no_decoration() {
+        // A non-Git Space: decorations off, never an error state.
+        let non_git = index(None, &[]);
+        assert_eq!(git_kind_for(&non_git, "/anywhere/file.rs"), None);
+
+        // Paths outside the workdir (outside-root symlink entries spell a
+        // different tree) never classify.
+        let index = index(Some("/repo"), &[("a.txt", Kind::Untracked)]);
+        assert_eq!(git_kind_for(&index, "/elsewhere/a.txt"), None);
+    }
+
+    #[test]
+    fn a_failed_snapshot_never_decorates() {
+        // A git failure is not a clean tree: whatever entries the frame
+        // happened to carry, the rows stay plain and the tree usable.
+        let failed = GitStatusIndex::from(&WorkspaceGitStatus {
+            workdir: Some("/repo".into()),
+            entries: vec![WorkspaceGitStatusEntry {
+                path: "a.txt".into(),
+                kind: Kind::Untracked,
+            }],
+            error: Some("corrupt index".into()),
+        });
+        assert_eq!(git_kind_for(&failed, "/repo/a.txt"), None);
+    }
+
+    #[test]
+    fn hidden_is_not_ignored_and_marker_letters_cover_the_kinds() {
+        // The engine classifies hidden-but-untracked entries as plain
+        // untracked; the map carries no implicit hidden rule.
+        let index = index(Some("/repo"), &[(".env", Kind::Untracked)]);
+        assert_eq!(git_kind_for(&index, "/repo/.env"), Some(Kind::Untracked));
+
+        for (kind, letter) in [
+            (Kind::Untracked, "U"),
+            (Kind::Added, "A"),
+            (Kind::Modified, "M"),
+            (Kind::Deleted, "D"),
+        ] {
+            assert_eq!(
+                marker_parts(kind).map(|(letter, _)| letter),
+                Some(letter),
+                "{kind:?} keeps its marker letter"
+            );
+        }
+        // Ignored has no letter — subdued styling is its whole treatment.
+        assert_eq!(marker_parts(Kind::Ignored), None);
+    }
+
+    #[gpui::test]
+    fn status_snapshots_land_on_the_owning_space_only(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| AppState::new());
+        let tree = cx.new(|cx| FileTreePanel::new(state, cx));
+        let snapshot = WorkspaceGitStatus {
+            workdir: Some("/repo".into()),
+            entries: vec![WorkspaceGitStatusEntry {
+                path: "notes.md".into(),
+                kind: Kind::Modified,
+            }],
+            error: None,
+        };
+
+        tree.update(cx, |tree, _| {
+            tree.active = Some(ActiveRoot {
+                space_key: "space-1".into(),
+                chat_id: None,
+                space_id: Some("space-1".into()),
+                generation: 3,
+            });
+            tree.spaces
+                .entry("space-1".into())
+                .or_insert_with(SpaceTree::new);
+            tree.spaces
+                .entry("space-2".into())
+                .or_insert_with(SpaceTree::new);
+
+            // The live frame's key: applied to its owning Space.
+            tree.apply_status_frame(3, "space-1", snapshot.clone());
+            assert!(tree.spaces.get("space-1").unwrap().git_status.is_some());
+            assert!(tree.spaces.get("space-2").unwrap().git_status.is_none());
+
+            // A frame from a previous generation (the Space switched away
+            // and back) is stale — dropped, never applied.
+            tree.apply_status_frame(2, "space-1", snapshot.clone());
+            assert!(tree.spaces.get("space-1").unwrap().git_status.is_some());
+
+            // A frame for another Space's key never lands here either.
+            tree.apply_status_frame(3, "space-2", snapshot);
+            assert!(tree.spaces.get("space-2").unwrap().git_status.is_none());
+        });
     }
 }
 
