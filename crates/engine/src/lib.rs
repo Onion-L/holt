@@ -50,6 +50,7 @@ mod title_settings;
 mod title_task;
 mod tools;
 mod trash;
+mod turn_events;
 mod workspace_watch;
 
 use agent::AgentRuntime;
@@ -133,6 +134,9 @@ struct EngineService {
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
     terminals: Arc<terminals::Terminals>,
+    /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
+    /// fan-out of durably settled main-chat Turn outcomes.
+    turn_events: turn_events::TurnEvents,
 }
 
 impl LocalEngine {
@@ -196,6 +200,7 @@ impl LocalEngine {
                 title_settings,
                 mode_default,
                 terminals: Arc::new(terminals::Terminals::default()),
+                turn_events: turn_events::TurnEvents::new(),
             },
             _instance_lock: lock,
         })

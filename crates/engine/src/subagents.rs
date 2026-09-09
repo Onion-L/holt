@@ -376,23 +376,26 @@ async fn execute(
     {
         false
     } else {
-        crate::agent::run_agent_command(AgentRun {
-            runtime: d.runtime.clone(),
-            chat_id: id.clone(),
-            chat: child.clone(),
-            prompt,
-            cwd: d.cwd,
-            reasoning: d.reasoning,
-            model: d.model.clone(),
-            api_key: d.api_key,
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            cancel: cancel.clone(),
-            skills: d.skills,
-            invocation: None,
-            permission_mode: d.permission_mode,
-            stream_fn: Some(stream_fn),
-        })
-        .await
+        matches!(
+            crate::agent::run_agent_command(AgentRun {
+                runtime: d.runtime.clone(),
+                chat_id: id.clone(),
+                chat: child.clone(),
+                prompt,
+                cwd: d.cwd,
+                reasoning: d.reasoning,
+                model: d.model.clone(),
+                api_key: d.api_key,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                cancel: cancel.clone(),
+                skills: d.skills,
+                invocation: None,
+                permission_mode: d.permission_mode,
+                stream_fn: Some(stream_fn),
+            })
+            .await,
+            crate::agent::TurnEnd::Succeeded
+        )
     };
     let bills = std::mem::take(&mut *billing.lock().unwrap_or_else(|e| e.into_inner()));
     let mut usage = Usage::default();

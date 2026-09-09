@@ -11,15 +11,24 @@ use std::{
 
 use holt_doc::MessagePart;
 use holt_proto::{MessageQueue, PendingKind, PendingMessage, RunRequest, SessionStatus};
-use holt_rpc::RpcError;
+use holt_rpc::{RpcError, turns::TurnTerminalEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     EngineService,
-    agent::{ChatRuntime, run_agent_command},
+    agent::{ChatRuntime, TurnEnd, run_agent_command},
 };
+
+/// What one driver iteration produced: a real main-chat Turn's terminal
+/// outcome (terminal-event eligible, ADR-0019), or work outside the Turn
+/// model — a manual Compaction or a pre-Turn admission failure — as its
+/// plain settle pair.
+enum DriverOutcome {
+    Turn(TurnEnd),
+    Settled((bool, Option<String>)),
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct StartedMessage {
@@ -366,7 +375,12 @@ impl Queue {
         result.map(|()| started)
     }
 
-    fn finish(&mut self, success: bool, error: Option<String>) {
+    /// Settle the active work. The returned Result reports whether the
+    /// completion was durably recorded: the queue/session error behavior on
+    /// a persistence failure is unchanged, but callers publishing downstream
+    /// signals (the Turn terminal event, ADR-0019) must only fire after a
+    /// successful commit.
+    fn finish(&mut self, success: bool, error: Option<String>) -> Result<(), RpcError> {
         let mut next = self.record.clone();
         let was_started = next.started.take().is_some();
         next.paused |= !success || next.priority_only;
@@ -376,14 +390,18 @@ impl Queue {
         if !was_started && let Some(head) = next.pending.first_mut() {
             head.error = error.clone();
         }
-        if let Err(error) = self.commit(next) {
+        if let Err(commit_error) = self.commit(next) {
             self.record.paused = true;
             self.unreadable |= self.record.started.is_some();
-            self.error = Some(error.to_string());
+            self.error = Some(commit_error.to_string());
             self.publish();
-        } else if was_started && let Some(error) = error {
-            self.error = Some(error);
-            self.publish();
+            Err(commit_error)
+        } else {
+            if was_started && let Some(error) = error {
+                self.error = Some(error);
+                self.publish();
+            }
+            Ok(())
         }
     }
 }
@@ -553,12 +571,12 @@ impl EngineService {
                     heartbeat_stop.clone(),
                 ));
                 worker_chat.track_task(&heartbeat);
-                let (success, error) = match kind {
-                    PendingKind::Compact => {
+                let outcome = match kind {
+                    PendingKind::Compact => DriverOutcome::Settled(
                         service
                             .run_queued_compaction(&worker_chat, &message, &cancel)
-                            .await
-                    }
+                            .await,
+                    ),
                     PendingKind::Ordinary | PendingKind::Skill => {
                         // A queued skill resolves against a fresh catalog at
                         // admission (rule 16): an unknown or invalid name
@@ -582,7 +600,7 @@ impl EngineService {
                             Ok(None)
                         };
                         match skill {
-                            Err(outcome) => outcome,
+                            Err(outcome) => DriverOutcome::Settled(outcome),
                             Ok(skill) => {
                                 let prompt = message.request.prompt.clone();
                                 let prepared = service
@@ -605,14 +623,26 @@ impl EngineService {
                                     )
                                     .await;
                                 match prepared {
-                                    Ok(run) => (run_agent_command(run).await, None),
-                                    Err(error) => {
-                                        (false, (!cancel.is_cancelled()).then(|| error.to_string()))
-                                    }
+                                    Ok(run) => DriverOutcome::Turn(run_agent_command(run).await),
+                                    Err(error) => DriverOutcome::Settled((
+                                        false,
+                                        (!cancel.is_cancelled()).then(|| error.to_string()),
+                                    )),
                                 }
                             }
                         }
                     }
+                };
+                // A failed Turn pauses the queue without a queue-level error,
+                // as before — its reason rides only the terminal event's
+                // internal diagnostic field.
+                let (success, error, turn_end) = match outcome {
+                    DriverOutcome::Turn(end) => (
+                        matches!(end, crate::agent::TurnEnd::Succeeded),
+                        None,
+                        Some(end),
+                    ),
+                    DriverOutcome::Settled((success, error)) => (success, error, None),
                 };
                 // Wait for the heartbeat to stop before publishing the final
                 // status so a last tick cannot revive an idle session.
@@ -642,14 +672,16 @@ impl EngineService {
                         .pending
                         .iter()
                         .all(|m| m.message_id != picked_id);
-                if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                let settled = if !vanished && !worker_chat.is_removed() && !queue.unreadable {
                     // Stop already changed the pause state. A subsequent
                     // Continue must survive the canceled Turn's cleanup.
-                    queue.finish(
+                    Some(queue.finish(
                         (success || cancel.is_cancelled()) && persistence_error.is_none(),
-                        persistence_error.or(error),
-                    );
-                }
+                        persistence_error.clone().or(error),
+                    ))
+                } else {
+                    None
+                };
                 if started {
                     // A failed or interrupted Compaction settles Idle like a
                     // successful one: it was never a Turn, so there is no
@@ -663,6 +695,34 @@ impl EngineService {
                             SessionStatus::Errored
                         },
                     );
+                }
+                // The Turn terminal event (ADR-0019): exactly one per real
+                // main-chat Turn, only AFTER Transcript and History settled
+                // and queue completion was durably recorded. A completion
+                // that could not be persisted keeps the queue/session error
+                // and emits nothing; failed conversation writes likewise
+                // leave the durable prerequisite false. Publishing is
+                // fire-and-forget — a closed or lagging consumer changes
+                // nothing about the settled Turn or the next queued item.
+                if let Some(end) = turn_end
+                    && matches!(settled, Some(Ok(())))
+                    && persistence_error.is_none()
+                {
+                    let (outcome, reason) = match end {
+                        TurnEnd::Succeeded => (holt_rpc::turns::TurnOutcome::Succeeded, None),
+                        TurnEnd::Failed { reason } => {
+                            (holt_rpc::turns::TurnOutcome::Failed, Some(reason))
+                        }
+                        TurnEnd::Interrupted => (holt_rpc::turns::TurnOutcome::Interrupted, None),
+                    };
+                    service.turn_events.publish(TurnTerminalEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        chat_id: worker_chat.chat_id.clone(),
+                        message_id: picked_id,
+                        outcome,
+                        finished_at: chrono::Utc::now().timestamp_millis(),
+                        internal_reason: reason,
+                    });
                 }
             }
         });
@@ -763,7 +823,7 @@ mod tests {
         assert!(!Queue::load(dir.path(), "chat-1").snapshot().paused);
         enqueue_ordinary(&mut queue, "hi", "openai/gpt-5.4", "m-hi");
         queue.start("m-hi", 1).unwrap();
-        queue.finish(true, None);
+        queue.finish(true, None).unwrap();
         assert!(
             !queue.snapshot().paused,
             "a deleted priority item must not re-pause the queue"
@@ -778,7 +838,7 @@ mod tests {
         queue.delete("m-c").unwrap();
         assert!(queue.snapshot().paused);
         assert_eq!(queue.snapshot().active_message_id.as_deref(), Some("m-b"));
-        queue.finish(true, None);
+        queue.finish(true, None).unwrap();
         assert!(queue.snapshot().paused);
     }
 

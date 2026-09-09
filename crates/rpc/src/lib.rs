@@ -23,6 +23,7 @@ mod client;
 pub mod images;
 mod server;
 pub mod terminals;
+pub mod turns;
 
 pub use client::{RpcClient, RpcSubscription};
 pub use server::serve_connection;
@@ -54,6 +55,13 @@ pub mod methods {
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     /// Per-chat `holt_proto::MessageQueue` snapshots. Params `{chatId}`.
     pub const WATCH_MESSAGE_QUEUE: &str = "WatchMessageQueue";
+    /// Live Turn terminal events (ADR-0019): one typed
+    /// `holt_rpc::turns::TurnTerminalEvent` per real main-chat Turn,
+    /// published only after its Transcript, History, and queue completion
+    /// are durably settled. No params, no synthetic initial event, no
+    /// persistence or replay across restart — a subscriber sees only Turns
+    /// that finish after it subscribed.
+    pub const WATCH_TURN_TERMINAL_EVENTS: &str = "WatchTurnTerminalEvents";
     /// Resume automatic queue execution after Stop, failure, or restart.
     /// Params `{chatId}`; replies with the accepted `MessageQueue` snapshot.
     pub const CONTINUE_MESSAGE_QUEUE: &str = "ContinueMessageQueue";

@@ -1129,11 +1129,21 @@ pub(crate) struct AgentRun {
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
 
-pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, bool> {
+/// The terminal outcome of one run (ADR-0019). Cancellation (Stop / Steer)
+/// is `Interrupted`; provider, model, context-overflow, and every other
+/// execution failure is `Failed` (its reason rides the terminal event's
+/// internal diagnostic field); an ordinary clean end is `Succeeded`.
+pub(crate) enum TurnEnd {
+    Succeeded,
+    Failed { reason: String },
+    Interrupted,
+}
+
+pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, TurnEnd> {
     Box::pin(run_agent_command_inner(run))
 }
 
-async fn run_agent_command_inner(run: AgentRun) -> bool {
+async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let AgentRun {
         runtime,
         chat_id,
@@ -1593,7 +1603,7 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
     )
     .await;
 
-    let errored = match result {
+    let failure_reason = match result {
         Ok(messages) => {
             let errored = messages
                 .iter()
@@ -1683,9 +1693,19 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
                     },
                 );
             }
-            errored
+            errored.then(|| {
+                messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| match message {
+                        AgentMessage::Assistant(assistant) => assistant.error_message.clone(),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "Turn failed".into())
+            })
         }
         Err(error) => {
+            let reason = error.clone();
             {
                 let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
                 if !chat.is_removed()
@@ -1726,12 +1746,18 @@ async fn run_agent_command_inner(run: AgentRun) -> bool {
             }
             drop(transcript);
             chat.publish();
-            true
+            Some(reason)
         }
     };
     settle_unresolved_tools(&chat);
     *chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    !errored && !cancel.is_cancelled()
+    if cancel.is_cancelled() {
+        TurnEnd::Interrupted
+    } else if let Some(reason) = failure_reason {
+        TurnEnd::Failed { reason }
+    } else {
+        TurnEnd::Succeeded
+    }
 }
 
 #[cfg(test)]

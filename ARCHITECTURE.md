@@ -161,6 +161,17 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   replaced and reply with the accepted snapshot; a started item refuses both
   instead of touching the active Turn. Admission errors arrive through the
   Watch.
+- Turn terminal events (ADR-0019): `WatchTurnTerminalEvents` emits one typed
+  `TurnTerminalEvent` (`holt_rpc::turns` — `eventId`, `chatId`, `messageId`,
+  `outcome` of `succeeded` / `failed` / `interrupted`, `finishedAt`, plus an
+  internal-only failure reason consumers never display) per real main-chat
+  Turn, published only after the Turn's Transcript, History, and queue
+  completion are durably settled; a completion that cannot be persisted
+  keeps the existing queue/session error and emits nothing. The stream is
+  live-only — no synthetic initial event, no persistence or replay across
+  restart — and publishing is fire-and-forget, so a closed or lagging
+  consumer can never fail a Turn or delay the queue. Subagents, manual
+  Compaction, Title tasks, and admission failures never appear here.
 - Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local

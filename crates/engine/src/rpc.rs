@@ -1331,6 +1331,31 @@ impl RpcService for EngineService {
                     .subscribe();
                 Ok(Self::watch_value(receiver))
             }
+            methods::WATCH_TURN_TERMINAL_EVENTS => {
+                let stream = futures::stream::unfold(
+                    self.turn_events.subscribe(),
+                    |mut receiver| async move {
+                        loop {
+                            match receiver.recv().await {
+                                Ok(event) => match serde_json::to_value(&event) {
+                                    Ok(value) => return Some((value, receiver)),
+                                    Err(_) => continue,
+                                },
+                                // A lagging subscriber drops what it missed —
+                                // a consumer failure, never a Turn failure —
+                                // and keeps receiving new events.
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    return None;
+                                }
+                            }
+                        }
+                    },
+                );
+                Ok(RpcReply::Stream(Box::pin(stream)))
+            }
             methods::CONTINUE_MESSAGE_QUEUE => {
                 let chat_id = required_string(&params, "chatId")?;
                 if !crate::store::chat_id_is_path_safe(chat_id) {
