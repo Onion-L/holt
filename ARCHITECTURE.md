@@ -89,6 +89,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`{chatId|spaceId, path}` — editable UTF-8 up to 2 MiB plus BOM /
   line-ending facts and an opaque disk `version` token, or a typed
   `unsupportedReason` for oversized, non-UTF-8, and binary files) and
+  `ReadWorkspaceImage` (`{chatId|spaceId, path}` — the bounded sniffed
+  image read for the sidebar's image tabs, fenced behind the same root
+  containment, `.git` exclusion, and symlink-landing rules as every other
+  workspace read even though the general `ReadImage` reads any local path;
+  replies `WorkspaceImageData` with the canonical resolved path) and
   `SaveWorkspaceFile` (`{chatId|spaceId, path, text, version, bom}` —
   version-checked atomic write preserving permissions; a moved disk version
   is a `versionConflict` REPLY, never an overwrite, and a missing file is

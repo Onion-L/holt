@@ -615,6 +615,11 @@ impl Shell {
                     Some((viewer, title, path)) => {
                         let title: SharedString = title.into();
                         let path: SharedString = path.into();
+                        // The Markdown mode control (ticket 08), when this
+                        // tab offers one — same convention as the Diff
+                        // surface's header controls row.
+                        let mode_controls =
+                            viewer.update(cx, |viewer, cx| viewer.render_header_controls(cx));
                         // The file surface's own 36px header row: the entry name
                         // with its full path as the muted companion (diff-surface
                         // convention). The body renders the read-only viewer.
@@ -651,7 +656,8 @@ impl Shell {
                                             .text_size(crate::typography::ui_rems(10.5))
                                             .text_color(theme.text_muted.opacity(0.7))
                                             .child(path),
-                                    ),
+                                    )
+                                    .children(mode_controls),
                             )
                             .child(div().flex_1().min_h_0().child(viewer))
                             .into_any_element()

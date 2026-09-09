@@ -3,9 +3,11 @@
 //! `SaveWorkspaceFile`. The viewer owns the draft state — the buffer mirror,
 //! the saved baseline, the disk version the draft is based on, and the
 //! in-flight save — so a reply applies to the Space/Chat that opened the
-//! file, never to whichever chat is selected when it lands. Unsupported
-//! content (oversized, non-UTF-8, binary) stays read-only with an
-//! external-open action.
+//! file, never to whichever chat is selected when it lands. Markdown files
+//! additionally switch between source and a rendered preview in the same
+//! tab (ticket 08); image files open read-only through the workspace-fenced
+//! `ReadWorkspaceImage`; unsupported content (oversized, non-UTF-8, binary)
+//! stays read-only with an external-open action.
 
 use std::ops::Range;
 
@@ -17,6 +19,8 @@ use gpui::{
 };
 
 use super::editor::{CodeEditor, EDITOR_LINE_HEIGHT, EDITOR_TEXT_SIZE, EditorEvent};
+use super::image_surface::{FileImageSurface, FileImageSurfaceEvent};
+use super::preview::{MarkdownPreview, is_markdown_path};
 use crate::icons::{self, icon};
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -71,8 +75,19 @@ pub enum FileViewerEvent {
 enum ViewerState {
     Loading,
     Editable { editor: Entity<CodeEditor> },
+    Image { surface: Entity<FileImageSurface> },
     Unsupported { reason: SharedString },
     Failed { message: SharedString },
+}
+
+/// A Markdown tab's mode (ticket 08): the same tab shows either the source
+/// editor or the rendered preview of the CURRENT buffer. Switching modes
+/// touches no draft state — the editor entity, its undo stack, the dirty
+/// flag, and the save baseline all survive round trips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MdMode {
+    Source,
+    Preview,
 }
 
 /// The in-flight save: the generation that invalidates a stale
@@ -132,6 +147,13 @@ pub struct FileViewer {
     /// dropped, never applied.
     search_generation: u64,
     search_task: Option<Task<()>>,
+    /// The Markdown mode (ticket 08): only meaningful for an editable
+    /// Markdown path; every other tab renders source alone.
+    md_mode: MdMode,
+    /// The preview entity behind `MdMode::Preview` — created on first use,
+    /// reused after. Rendering reflects the buffer submitted on entry (and
+    /// on clean reloads while the preview is showing).
+    preview: Option<Entity<MarkdownPreview>>,
 }
 
 impl EventEmitter<FileViewerEvent> for FileViewer {}
@@ -195,6 +217,8 @@ impl FileViewer {
             overwrite_baseline: None,
             search_generation: 0,
             search_task: None,
+            md_mode: MdMode::Source,
+            preview: None,
         };
         viewer.load(cx);
         viewer
@@ -414,6 +438,80 @@ impl FileViewer {
         cx.notify();
     }
 
+    /// Test seam: a successfully read editable file — the same editor +
+    /// mirror wiring `load_with`'s success path builds, minus the engine.
+    #[cfg(test)]
+    pub(crate) fn hydrate_editable_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        let buffer = text.to_string();
+        let path = self.path.clone();
+        let editor = cx.new(|cx| {
+            let mut editor = CodeEditor::new(cx);
+            editor.load(buffer, cx);
+            editor.set_path(path, cx);
+            editor
+        });
+        cx.subscribe(
+            &editor,
+            |viewer: &mut FileViewer, _, event: &EditorEvent, cx| {
+                viewer.on_editor_event(event, cx);
+            },
+        )
+        .detach();
+        self.view = ViewerState::Editable { editor };
+        self.buffer_text = Some(text.to_string());
+        self.saved_text = Some(text.to_string());
+        cx.notify();
+    }
+
+    /// Test seam: an unsaved edit to the buffer mirror (what an editor
+    /// Edited event would leave behind) — the preview's "current buffer"
+    /// source, without the typing path.
+    #[cfg(test)]
+    pub(crate) fn revise_buffer_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.buffer_text = Some(text.to_string());
+        cx.emit(FileViewerEvent::DirtyChanged {
+            dirty: self.is_dirty(),
+        });
+        cx.notify();
+    }
+
+    /// Test seam: what a successful fenced image read leaves behind — the
+    /// pixels on the surface, the resolved identity, the Loaded event.
+    #[cfg(test)]
+    pub(crate) fn hydrate_image_pixels_for_test(
+        &mut self,
+        pixels: crate::images::ViewerPixels,
+        resolved: String,
+        cx: &mut Context<Self>,
+    ) {
+        let surface = match &self.view {
+            ViewerState::Image { surface } => surface.clone(),
+            _ => panic!("not an image tab"),
+        };
+        surface.update(cx, |surface, cx| surface.set_pixels(pixels, cx));
+        self.resolved = Some(resolved.clone());
+        cx.emit(FileViewerEvent::Loaded { resolved });
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn md_preview_is_active(&self) -> bool {
+        self.md_mode == MdMode::Preview
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preview_entity(&self) -> Option<Entity<MarkdownPreview>> {
+        self.preview.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_surface(&self) -> Option<Entity<FileImageSurface>> {
+        match &self.view {
+            ViewerState::Image { surface } => Some(surface.clone()),
+            _ => None,
+        }
+    }
+
     /// Test accessors for the deferral contract.
     #[cfg(test)]
     pub(crate) fn is_deferred(&self) -> bool {
@@ -430,8 +528,12 @@ impl FileViewer {
         }
     }
 
-    /// Open (or close) the in-file search bar, focusing its input.
+    /// Open (or close) the in-file search bar, focusing its input. Source
+    /// mode only — the preview renders, it does not match.
     pub fn toggle_search(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if self.preview_active() {
+            return;
+        }
         if self.search_open {
             self.close_search(cx);
             return;
@@ -567,6 +669,14 @@ impl FileViewer {
     }
 
     fn load_with(&mut self, cx: &mut Context<Self>, mode: LoadMode) {
+        // Image files never take the text path (ticket 08): their tabs are
+        // read-only pixel views fed by the workspace-fenced image read.
+        // Every entry point — first open, restore, clean reload — lands here,
+        // so the routing holds for all of them.
+        if crate::images::is_image_path(&self.path) {
+            self.load_image(cx);
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.view = ViewerState::Failed {
                 message: "The engine is not available.".into(),
@@ -639,6 +749,12 @@ impl FileViewer {
                             viewer.saved_text = Some(text);
                         }
                         viewer.facts = Some(read);
+                        // A clean reload while the preview is showing feeds
+                        // it the fresh buffer — the preview reflects the
+                        // tab's current content, saved or not.
+                        if viewer.md_mode == MdMode::Preview {
+                            viewer.refresh_preview_from_buffer(cx);
+                        }
                         cx.emit(FileViewerEvent::Loaded { resolved });
                         cx.emit(FileViewerEvent::DirtyChanged { dirty: false });
                     }
@@ -652,6 +768,187 @@ impl FileViewer {
             });
         })
         .detach();
+    }
+
+    /// Load an image tab's pixels through the workspace-fenced read. The
+    /// request is bound to this viewer's scope and generation; a stale reply
+    /// is dropped before it can reach the surface, and a file that changed
+    /// mid-flight re-loads instead of painting a stale decode.
+    fn load_image(&mut self, cx: &mut Context<Self>) {
+        // The surface exists from the first routed load — engine or not —
+        // so the tab kind, its error state, and its retry survive anything.
+        // It persists across reloads; its view state resets inside it
+        // whenever new pixels arrive.
+        let surface = match &self.view {
+            ViewerState::Image { surface } => surface.clone(),
+            _ => {
+                let surface = cx.new(|_| FileImageSurface::new());
+                cx.subscribe(
+                    &surface,
+                    |viewer: &mut FileViewer, _, event: &FileImageSurfaceEvent, cx| {
+                        match event {
+                            FileImageSurfaceEvent::Retry
+                                if matches!(viewer.view, ViewerState::Image { .. }) =>
+                            {
+                                viewer.load_image(cx);
+                            }
+                            // A failed image read still has its deliberate
+                            // external escape hatch — the same action every
+                            // other unsupported file offers.
+                            FileImageSurfaceEvent::OpenExternal => {
+                                super::tree::open_externally(&viewer.path, cx);
+                            }
+                            FileImageSurfaceEvent::Retry => {}
+                        }
+                    },
+                )
+                .detach();
+                self.view = ViewerState::Image {
+                    surface: surface.clone(),
+                };
+                surface
+            }
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            surface.update(cx, |surface, cx| {
+                surface.set_failed("The engine is not available.".into(), cx);
+            });
+            cx.notify();
+            return;
+        };
+        self.generation += 1;
+        let generation = self.generation;
+        surface.update(cx, |surface, cx| surface.begin_load(cx));
+        let params = self.scope.params(&self.path);
+        let fingerprint_at_request = crate::images::fingerprint(&self.path);
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let result =
+                crate::images::load_workspace_pixels(&engine, params, cx.background_executor())
+                    .await;
+            let _ = this.update(cx, |viewer, cx| {
+                if viewer.generation != generation {
+                    return; // a superseding read/reload owns the surface now
+                }
+                if crate::images::fingerprint(&viewer.path) != fingerprint_at_request {
+                    // Changed (or deleted) mid-flight: never paint stale
+                    // pixels — re-read; a missing file fails honestly.
+                    viewer.load_image(cx);
+                    return;
+                }
+                match result {
+                    Ok((pixels, resolved)) => {
+                        viewer.resolved = Some(resolved.clone());
+                        surface.update(cx, |surface, cx| surface.set_pixels(pixels, cx));
+                        cx.emit(FileViewerEvent::Loaded { resolved });
+                    }
+                    Err(cause) => {
+                        surface.update(cx, |surface, cx| surface.set_failed(cause, cx));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Does this tab offer a rendered preview at all (editable Markdown)?
+    pub fn preview_available(&self) -> bool {
+        matches!(self.view, ViewerState::Editable { .. }) && is_markdown_path(&self.path)
+    }
+
+    /// Is the preview mode showing right now?
+    pub fn preview_active(&self) -> bool {
+        self.md_mode == MdMode::Preview
+    }
+
+    /// Switch to the rendered preview: submit the CURRENT buffer — unsaved
+    /// edits included — and never touch the draft doing it.
+    pub fn select_preview_mode(&mut self, cx: &mut Context<Self>) {
+        if !self.preview_available() || self.md_mode == MdMode::Preview {
+            return;
+        }
+        self.md_mode = MdMode::Preview;
+        // The search bar is source-mode chrome; leaving it open over a
+        // preview would paint matches into a hidden editor.
+        if self.search_open {
+            self.close_search(cx);
+        }
+        self.refresh_preview_from_buffer(cx);
+        cx.notify();
+    }
+
+    /// Return to source: the editor kept its buffer, cursor, undo stack,
+    /// dirty flag, and save baseline the whole time — nothing to restore.
+    pub fn select_source_mode(&mut self, cx: &mut Context<Self>) {
+        if self.md_mode == MdMode::Source {
+            return;
+        }
+        self.md_mode = MdMode::Source;
+        cx.notify();
+    }
+
+    /// Toggle (the header control and the Cmd+Shift+P action).
+    pub fn toggle_preview(&mut self, cx: &mut Context<Self>) {
+        if self.md_mode == MdMode::Preview {
+            self.select_source_mode(cx);
+        } else {
+            self.select_preview_mode(cx);
+        }
+    }
+
+    /// Point the preview at the current buffer. The preview entity's own
+    /// generation guard makes an in-flight parse for an older revision
+    /// unappliable.
+    fn refresh_preview_from_buffer(&mut self, cx: &mut Context<Self>) {
+        let text = self.buffer_text.clone().unwrap_or_default();
+        match &self.preview {
+            Some(preview) => {
+                preview.update(cx, |preview, cx| preview.set_text(text, cx));
+            }
+            None => {
+                let key: SharedString = format!("file-preview-{}", cx.entity_id().as_u64()).into();
+                let preview = cx.new(|cx| MarkdownPreview::new(key, cx));
+                preview.update(cx, |preview, cx| preview.set_text(text, cx));
+                self.preview = Some(preview);
+            }
+        }
+    }
+
+    /// The file surface header's mode control (ticket 08): a segmented
+    /// Source | Preview chip pair, offered only for editable Markdown.
+    pub fn render_header_controls(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.preview_available() {
+            return None;
+        }
+        let theme = Theme::of(cx).clone();
+        let source_active = !self.preview_active();
+        Some(
+            div()
+                .id("file-md-mode")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .p(px(2.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(theme.border)
+                .child(mode_chip(
+                    &theme,
+                    "file-md-source",
+                    "Source",
+                    source_active,
+                    cx.listener(|this, _, _, cx| this.select_source_mode(cx)),
+                ))
+                .child(mode_chip(
+                    &theme,
+                    "file-md-preview-toggle",
+                    "Preview",
+                    !source_active,
+                    cx.listener(|this, _, _, cx| this.select_preview_mode(cx)),
+                ))
+                .into_any_element(),
+        )
     }
 
     /// Editor events: refresh the buffer mirror, pin previews, mark dirty,
@@ -1083,6 +1380,20 @@ impl FileViewer {
             ViewerState::Failed { message } => {
                 unsupported_state(&self.path, message.clone(), &theme, cx)
             }
+            ViewerState::Image { surface } => div()
+                .id("file-image-host")
+                .size_full()
+                .flex_1()
+                .min_h_0()
+                .child(surface.clone())
+                .into_any_element(),
+            ViewerState::Editable { editor } if self.md_mode == MdMode::Preview => div()
+                .id("file-preview-host")
+                .size_full()
+                .flex_1()
+                .min_h_0()
+                .children(self.preview.clone())
+                .into_any_element(),
             ViewerState::Editable { editor } => div()
                 .id("file-editor-surface")
                 .size_full()
@@ -1215,6 +1526,36 @@ fn conflict_action(
             div()
                 .text_size(crate::typography::ui_rems(10.5))
                 .text_color(theme.text)
+                .child(label),
+        )
+}
+
+/// One half of the Source | Preview segmented control (ticket 08): the
+/// active half reads as selected (washed fill, brighter text); both halves
+/// stay clickable so the mode is one click away in either direction.
+fn mode_chip(
+    theme: &Theme,
+    id: &'static str,
+    label: &'static str,
+    active: bool,
+    handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(22.0))
+        .px(px(8.0))
+        .rounded(px(5.0))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .when(active, |el| el.bg(crate::theme::wash(0.10)))
+        .hover(|state| state.bg(crate::theme::wash(0.06)))
+        .on_click(handler)
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(if active { theme.text } else { theme.text_muted })
                 .child(label),
         )
 }
@@ -1438,5 +1779,234 @@ mod search_tests {
         // A query's newlines are ignored, so no match can cross a line.
         assert!(find_matches("a\nb", "a\nb").is_empty());
         assert!(find_matches("anything", "").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod preview_mode_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn scope() -> FileScope {
+        FileScope {
+            chat_id: None,
+            space_id: Some("space-1".into()),
+        }
+    }
+
+    /// The ticket 08 contract: switching modes renders the CURRENT buffer
+    /// (unsaved edits included) without saving, discarding, or replacing the
+    /// draft — the editor, its undo history, the dirty flag, and both
+    /// baselines survive the round trip untouched.
+    #[gpui::test]
+    fn mode_switches_render_the_draft_and_preserve_everything(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer =
+            cx.new(|cx| FileViewer::new(state, "/tmp/space-1/notes.md".into(), scope(), cx));
+        cx.run_until_parked();
+        // No engine: hydrate the loaded state directly (the read path's
+        // editor + mirrors, minus the RPC).
+        viewer.update(cx, |viewer, cx| {
+            viewer.hydrate_editable_for_test("# Title\n\ndisk body\n", cx);
+        });
+        let editor_before = viewer.read_with(cx, |viewer, _| viewer.editor());
+        let undo_before = viewer.read_with(cx, |viewer, _| {
+            viewer
+                .editor()
+                .map(|editor| editor.read_with(cx, |editor, _| editor.undo_stack_len()))
+        });
+
+        // An unsaved edit lands in the buffer mirror.
+        viewer.update(cx, |viewer, cx| {
+            viewer.revise_buffer_for_test("# Title\n\ndisk body WITH EDITS\n", cx);
+        });
+        assert!(viewer.read_with(cx, |viewer, _| viewer.is_dirty()));
+
+        // DirtyChanged must NOT fire for the mode switches themselves — only
+        // edits and saves move that flag.
+        let emissions = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let counted = emissions.clone();
+        cx.update(|cx| {
+            cx.subscribe(&viewer, move |_, event: &FileViewerEvent, _| {
+                if matches!(event, FileViewerEvent::DirtyChanged { .. }) {
+                    counted.set(counted.get() + 1);
+                }
+            })
+            .detach();
+        });
+
+        // Preview reflects the edited buffer.
+        viewer.update(cx, |viewer, cx| viewer.select_preview_mode(cx));
+        cx.run_until_parked();
+        assert!(viewer.read_with(cx, |viewer, _| viewer.md_preview_is_active()));
+        let preview = viewer
+            .read_with(cx, |viewer, _| viewer.preview_entity())
+            .expect("preview entity");
+        preview.read_with(cx, |preview, _| {
+            assert_eq!(
+                preview.first_paragraph().as_deref(),
+                Some("disk body WITH EDITS"),
+                "the preview renders the unsaved draft"
+            );
+        });
+
+        // Back to source: everything the editor owned is intact.
+        viewer.update(cx, |viewer, cx| viewer.select_source_mode(cx));
+        cx.run_until_parked();
+        assert!(!viewer.read_with(cx, |viewer, _| viewer.md_preview_is_active()));
+        assert!(viewer.read_with(cx, |viewer, _| viewer.is_dirty()));
+        let editor_after = viewer.read_with(cx, |viewer, _| viewer.editor());
+        assert_eq!(
+            editor_before.map(|e| e.entity_id()),
+            editor_after.map(|e| e.entity_id()),
+            "the source editor entity survives the round trip"
+        );
+        let undo_after = viewer.read_with(cx, |viewer, _| {
+            viewer
+                .editor()
+                .map(|editor| editor.read_with(cx, |editor, _| editor.undo_stack_len()))
+        });
+        assert_eq!(undo_before, undo_after, "undo/redo history is untouched");
+        viewer.read_with(cx, |viewer, _| {
+            assert_eq!(
+                viewer.buffer_text.as_deref(),
+                Some("# Title\n\ndisk body WITH EDITS\n")
+            );
+            assert_eq!(viewer.saved_text.as_deref(), Some("# Title\n\ndisk body\n"));
+        });
+        assert_eq!(emissions.get(), 0, "mode switches never emit DirtyChanged");
+    }
+
+    /// Non-Markdown tabs never offer the preview mode, and a Markdown tab
+    /// that has not loaded offers nothing either.
+    #[gpui::test]
+    fn only_loaded_markdown_tabs_offer_preview(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let rust =
+            cx.new(|cx| FileViewer::new(state.clone(), "/tmp/space-1/main.rs".into(), scope(), cx));
+        let md = cx.new(|cx| FileViewer::new(state, "/tmp/space-1/notes.md".into(), scope(), cx));
+        cx.run_until_parked();
+
+        assert!(rust.read_with(cx, |viewer, _| !viewer.preview_available()));
+        // Not loaded (no engine): a Markdown path offers nothing yet.
+        assert!(md.read_with(cx, |viewer, _| !viewer.preview_available()));
+        md.update(cx, |viewer, cx| {
+            viewer.hydrate_editable_for_test("# hi\n", cx);
+        });
+        assert!(md.read_with(cx, |viewer, _| viewer.preview_available()));
+        // The toggle is a no-op without availability.
+        rust.update(cx, |viewer, cx| viewer.toggle_preview(cx));
+        assert!(rust.read_with(cx, |viewer, _| !viewer.md_preview_is_active()));
+    }
+
+    /// A clean reload while the preview shows feeds it the fresh buffer —
+    /// the preview is a live view of the tab's content, not a snapshot of
+    /// the first entry into preview mode.
+    #[gpui::test]
+    fn reload_refreshes_an_active_preview(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer =
+            cx.new(|cx| FileViewer::new(state, "/tmp/space-1/notes.md".into(), scope(), cx));
+        viewer.update(cx, |viewer, cx| {
+            viewer.hydrate_editable_for_test("first body\n", cx);
+            viewer.select_preview_mode(cx);
+        });
+        cx.run_until_parked();
+        // The reload path's preview re-kick (clean viewers only).
+        viewer.update(cx, |viewer, cx| {
+            viewer.buffer_text = Some("reloaded body\n".into());
+            viewer.saved_text = Some("reloaded body\n".into());
+            viewer.refresh_preview_from_buffer(cx);
+        });
+        cx.run_until_parked();
+        let preview = viewer
+            .read_with(cx, |viewer, _| viewer.preview_entity())
+            .unwrap();
+        preview.read_with(cx, |preview, _| {
+            assert_eq!(preview.first_paragraph().as_deref(), Some("reloaded body"));
+        });
+    }
+}
+
+#[cfg(test)]
+mod image_tab_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn pixels() -> crate::images::ViewerPixels {
+        crate::images::ViewerPixels {
+            pixels: std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                image::Frame::new(image::RgbaImage::new(3, 2))
+            ])),
+            width: 3,
+            height: 2,
+        }
+    }
+
+    fn scope() -> FileScope {
+        FileScope {
+            chat_id: None,
+            space_id: Some("space-1".into()),
+        }
+    }
+
+    /// Image files route to the read-only pixel surface on EVERY load path —
+    /// never to a text editor, never to the binary unsupported state — and
+    /// the tab is never a draft. (The fence itself is the engine's contract,
+    /// covered in crates/engine/tests/workspace_files_rpc.rs.)
+    #[gpui::test]
+    fn image_files_route_to_the_pixel_surface(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer =
+            cx.new(|cx| FileViewer::new(state, "/tmp/space-1/shot.png".into(), scope(), cx));
+        cx.run_until_parked();
+        let surface = viewer
+            .read_with(cx, |viewer, _| viewer.image_surface())
+            .expect("image tabs route to the pixel surface");
+        // No engine attached: the surface carries the failure (and its
+        // retry), not a fake viewer.
+        surface.read_with(cx, |surface, _| {
+            let cause = surface.failure_cause().expect("honest failure state");
+            assert!(cause.contains("engine"), "{cause}");
+        });
+        viewer.read_with(cx, |viewer, _| {
+            assert!(
+                viewer.editor().is_none(),
+                "no text editor is built for an image"
+            );
+            assert!(!viewer.is_dirty(), "an image tab is never a draft");
+        });
+    }
+
+    /// What a successful fenced read leaves behind: decoded pixels on the
+    /// surface and the engine-resolved identity for alias-aware duplicate
+    /// opens. A stale decode can never land — the load's generation guard
+    /// drops superseded replies before this seam's real counterpart runs.
+    #[gpui::test]
+    fn landed_pixels_carry_the_resolved_identity(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer =
+            cx.new(|cx| FileViewer::new(state, "/tmp/space-1/shot.png".into(), scope(), cx));
+        cx.run_until_parked();
+        viewer.update(cx, |viewer, cx| {
+            viewer.hydrate_image_pixels_for_test(pixels(), "/tmp/space-1/real/shot.png".into(), cx);
+        });
+        let surface = viewer
+            .read_with(cx, |viewer, _| viewer.image_surface())
+            .unwrap();
+        surface.read_with(cx, |surface, _| {
+            assert_eq!(surface.natural_size(), Some((3, 2)));
+        });
+        viewer.read_with(cx, |viewer, _| {
+            assert_eq!(
+                viewer.resolved.as_deref(),
+                Some("/tmp/space-1/real/shot.png")
+            );
+        });
     }
 }

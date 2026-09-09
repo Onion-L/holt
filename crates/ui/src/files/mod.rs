@@ -8,6 +8,8 @@
 //! Space's file tabs ahead of the selected Chat's private views.
 
 pub mod editor;
+pub mod image_surface;
+pub mod preview;
 pub mod tree;
 pub mod viewer;
 
@@ -18,7 +20,7 @@ use gpui::{Entity, actions};
 use crate::state::AppState;
 use viewer::FileViewer;
 
-actions!(files, [SaveFile, FindInFile]);
+actions!(files, [SaveFile, FindInFile, TogglePreview]);
 
 /// One open file tab. Lives in [`FileTabs`] keyed by the owning Space —
 /// never per Chat (ADR-0020).

@@ -1816,3 +1816,131 @@ mod move_and_trash {
         );
     }
 }
+
+mod read_workspace_image {
+    use super::*;
+    use base64::Engine as _;
+    use holt_rpc::images::WorkspaceImageData;
+
+    fn png_bytes() -> Vec<u8> {
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        output.into_inner()
+    }
+
+    async fn read_image(
+        engine: &LocalEngine,
+        params: serde_json::Value,
+    ) -> Result<WorkspaceImageData, RpcError> {
+        match engine.handle(methods::READ_WORKSPACE_IMAGE, params).await? {
+            RpcReply::Value(value) => Ok(serde_json::from_value(value).unwrap()),
+            _ => panic!("ReadWorkspaceImage must reply with a value"),
+        }
+    }
+
+    fn fault_of<T>(result: Result<T, RpcError>) -> String {
+        match result {
+            Ok(_) => panic!("expected a fault"),
+            Err(RpcError::Failed(message)) => message,
+            Err(error) => panic!("unexpected error shape: {error:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_validated_bytes_and_reports_the_resolved_path() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("shot.png"), png_bytes()).unwrap();
+        // An inside-root alias resolves to its target — the reply's path is
+        // the canonical file, so the opening tab shares identity with a
+        // direct open.
+        std::os::unix::fs::symlink(
+            Path::new(&root).join("shot.png"),
+            Path::new(&root).join("alias.png"),
+        )
+        .unwrap();
+        let engine = setup(&fixture).await;
+
+        let read = read_image(
+            &engine,
+            json!({ "spaceId": "space-1", "path": format!("{root}/alias.png") }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read.mime_type, "image/png");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(read.data.as_bytes())
+            .unwrap();
+        assert_eq!(decoded, png_bytes());
+        assert!(read.path.ends_with("shot.png"), "{}", read.path);
+        assert!(!read.path.ends_with("alias.png"), "{}", read.path);
+    }
+
+    #[tokio::test]
+    async fn the_fence_holds_where_the_general_image_rpc_would_read() {
+        let fixture = Fixture::new();
+        let _outside = build_tree(fixture.project_dir.path());
+        let root = fixture.cwd();
+        // A real PNG outside the root, linked in: the general ReadImage would
+        // happily serve it; the workspace read must refuse at the fence.
+        let outside_png = _outside.path().join("secret.png");
+        fs::write(&outside_png, png_bytes()).unwrap();
+        std::os::unix::fs::symlink(&outside_png, Path::new(&root).join("escape.png")).unwrap();
+        let engine = setup(&fixture).await;
+
+        let fault = fault_of(
+            read_image(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/escape.png") }),
+            )
+            .await,
+        );
+        assert!(fault.contains("outside"), "{fault}");
+
+        let fault = fault_of(
+            read_image(
+                &engine,
+                json!({ "spaceId": "space-1", "path": outside_png.display().to_string() }),
+            )
+            .await,
+        );
+        assert!(fault.contains("outside"), "{fault}");
+
+        let fault = fault_of(
+            read_image(
+                &engine,
+                json!({ "chatId": "chat-1", "path": format!("{root}/.git/HEAD") }),
+            )
+            .await,
+        );
+        assert!(fault.contains(".git"), "{fault}");
+
+        let fault = fault_of(
+            read_image(
+                &engine,
+                json!({ "chatId": "chat-1", "path": format!("{root}/src") }),
+            )
+            .await,
+        );
+        assert!(fault.contains("directory"), "{fault}");
+    }
+
+    #[tokio::test]
+    async fn unsupported_images_fail_honestly() {
+        let fixture = Fixture::new();
+        let root = fixture.cwd();
+        fs::write(Path::new(&root).join("fake.png"), b"definitely not pixels").unwrap();
+        let engine = setup(&fixture).await;
+
+        let fault = fault_of(
+            read_image(
+                &engine,
+                json!({ "spaceId": "space-1", "path": format!("{root}/fake.png") }),
+            )
+            .await,
+        );
+        assert!(fault.contains("read"), "{fault}");
+    }
+}

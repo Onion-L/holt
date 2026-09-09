@@ -27,10 +27,10 @@ const TOOLBAR_SPACE: f32 = 64.0;
 /// Zoom bounds: never smaller than fit (computed per frame), never past 16×.
 const MAX_SCALE: f32 = 16.0;
 /// Button zoom step (wheel zoom is continuous).
-const ZOOM_STEP: f32 = 1.25;
+pub(crate) const ZOOM_STEP: f32 = 1.25;
 /// A drag must exceed this many px before a press counts as a pan rather
 /// than a click.
-const DRAG_SLOP: f32 = 4.0;
+pub(crate) const DRAG_SLOP: f32 = 4.0;
 /// While panning, at least this much of the image stays inside the viewport.
 const TOUCH_PX: f32 = 48.0;
 
@@ -55,9 +55,9 @@ enum LoadState {
 }
 
 #[derive(Clone, Copy)]
-struct DragPan {
-    start: gpui::Point<Pixels>,
-    origin: gpui::Point<Pixels>,
+pub(crate) struct DragPan {
+    pub(crate) start: gpui::Point<Pixels>,
+    pub(crate) origin: gpui::Point<Pixels>,
 }
 
 /// The open viewer. Owned as an entity by whoever opened it (the composer or
@@ -261,10 +261,7 @@ impl ImageViewer {
     }
 
     fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let factor = match event.delta {
-            ScrollDelta::Pixels(delta) => (-delta.y.to_f64() as f32 / 400.0).exp(),
-            ScrollDelta::Lines(delta) => (-delta.y * 0.08).exp(),
-        };
+        let factor = wheel_zoom_factor(&event.delta);
         self.apply_zoom(factor, event.position, window.viewport_size());
         cx.stop_propagation();
         cx.notify();
@@ -724,9 +721,19 @@ impl Render for ImageViewer {
 // Pure geometry — the seam the unit tests exercise.
 // ---------------------------------------------------------------------------
 
+/// Wheel/trackpad scroll delta → multiplicative zoom factor. Shared by the
+/// modal lightbox and the file tab's embedded surface so the two surfaces
+/// zoom identically under the same gesture.
+pub(crate) fn wheel_zoom_factor(delta: &ScrollDelta) -> f32 {
+    match delta {
+        ScrollDelta::Pixels(delta) => (-delta.y.to_f64() as f32 / 400.0).exp(),
+        ScrollDelta::Lines(delta) => (-delta.y * 0.08).exp(),
+    }
+}
+
 /// Scale that shows the WHOLE image inside the fit area, never upscaling
 /// past actual size (small images display complete at 1:1).
-fn fit_scale(viewport: Size<Pixels>, natural: Option<Size<f32>>) -> f32 {
+pub(crate) fn fit_scale(viewport: Size<Pixels>, natural: Option<Size<f32>>) -> f32 {
     let Some(natural) = natural else { return 1.0 };
     let area_w = (viewport.width - px(VIEW_MARGIN * 2.0)).max(px(1.0));
     let area_h = (viewport.height - px(VIEW_MARGIN * 2.0 + TOOLBAR_SPACE)).max(px(1.0));
@@ -738,7 +745,7 @@ fn fit_scale(viewport: Size<Pixels>, natural: Option<Size<f32>>) -> f32 {
 /// Zoom by `factor` keeping the image point under `anchor` stationary, with
 /// the scale clamped to [min_scale, MAX_SCALE] and the pan clamped so the
 /// image cannot wander out of reach.
-fn zoom_around(
+pub(crate) fn zoom_around(
     scale: f32,
     pan: gpui::Point<Pixels>,
     anchor: gpui::Point<Pixels>,
@@ -765,7 +772,7 @@ fn zoom_around(
 
 /// Keep at least a sliver ([`TOUCH_PX`]) of the image inside the viewport so
 /// it can always be dragged back and the controls stay reachable.
-fn clamped_pan(
+pub(crate) fn clamped_pan(
     pan: gpui::Point<Pixels>,
     viewport: Size<Pixels>,
     natural: Option<Size<f32>>,

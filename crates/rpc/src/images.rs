@@ -20,6 +20,17 @@ pub struct ImageData {
     pub data: String,
 }
 
+/// `ReadWorkspaceImage` reply: the validated image bytes plus the
+/// engine-resolved canonical path (symlinks resolved), so the opening tab's
+/// alias identity matches a text read's.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceImageData {
+    pub path: String,
+    pub mime_type: String,
+    pub data: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedImage {

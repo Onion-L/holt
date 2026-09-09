@@ -424,6 +424,29 @@ pub async fn load_viewer_pixels(
     })
 }
 
+/// Load viewer pixels through the workspace-fenced image read (File-sidebar
+/// image tabs): `ReadWorkspaceImage` enforces the owning root's containment,
+/// `.git`, and symlink boundaries engine-side before any bytes move. Returns
+/// the decoded pixels plus the engine-resolved canonical path (alias
+/// identity). The file-sidebar surface must never call the general
+/// [`load_viewer_pixels`] — that path reads any local path.
+pub async fn load_workspace_pixels(
+    engine: &EngineHandle,
+    params: serde_json::Value,
+    executor: &gpui::BackgroundExecutor,
+) -> Result<(ViewerPixels, String), gpui::SharedString> {
+    let reply = engine
+        .client()
+        .call(holt_rpc::methods::READ_WORKSPACE_IMAGE, params)
+        .await
+        .map_err(|error| gpui::SharedString::from(error.to_string()))?;
+    let payload: holt_rpc::images::WorkspaceImageData = serde_json::from_value(reply)
+        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))?;
+    let path = payload.path.clone();
+    let pixels = decode_reply_pixels(&payload.data, None, executor).await?;
+    Ok((pixels, path))
+}
+
 async fn load_pixels(
     engine: &EngineHandle,
     path: &str,
@@ -431,11 +454,33 @@ async fn load_pixels(
     executor: &gpui::BackgroundExecutor,
 ) -> Result<(Arc<RenderImage>, u32, u32), gpui::SharedString> {
     let reply = read_original(engine, path).await?;
+    decode_reply_data(reply.data, max_edge, executor).await
+}
+
+/// Decode the base64 `data` of an image reply under the shared decode guard.
+async fn decode_reply_pixels(
+    data: &str,
+    max_edge: Option<u32>,
+    executor: &gpui::BackgroundExecutor,
+) -> Result<ViewerPixels, gpui::SharedString> {
+    let (render, width, height) = decode_reply_data(data.to_string(), max_edge, executor).await?;
+    Ok(ViewerPixels {
+        pixels: render,
+        width,
+        height,
+    })
+}
+
+async fn decode_reply_data(
+    data: String,
+    max_edge: Option<u32>,
+    executor: &gpui::BackgroundExecutor,
+) -> Result<(Arc<RenderImage>, u32, u32), gpui::SharedString> {
     executor
         .spawn(async move {
             static DECODE: futures::lock::Mutex<()> = futures::lock::Mutex::new(());
             let _guard = DECODE.lock().await;
-            let bytes = original_bytes(reply)?;
+            let bytes = original_bytes(&data)?;
             decode_to_render(&bytes, max_edge)
         })
         .await
@@ -444,25 +489,24 @@ async fn load_pixels(
 async fn read_original(
     engine: &EngineHandle,
     path: &str,
-) -> Result<serde_json::Value, gpui::SharedString> {
-    engine
+) -> Result<holt_rpc::images::ImageData, gpui::SharedString> {
+    let reply = engine
         .client()
         .call(
             holt_rpc::methods::READ_IMAGE,
             serde_json::json!({ "path": path }),
         )
         .await
-        .map_err(|error| error.to_string().into())
+        .map_err(|error| gpui::SharedString::from(error.to_string()))?;
+    serde_json::from_value(reply)
+        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))
 }
-
-fn original_bytes(reply: serde_json::Value) -> Result<Vec<u8>, gpui::SharedString> {
-    let reply: holt_rpc::images::ImageData = serde_json::from_value(reply)
-        .map_err(|error| gpui::SharedString::from(format!("Invalid image reply: {error}")))?;
-    if reply.data.len() > (25usize * 1024 * 1024).div_ceil(3) * 4 {
+fn original_bytes(data: &str) -> Result<Vec<u8>, gpui::SharedString> {
+    if data.len() > (25usize * 1024 * 1024).div_ceil(3) * 4 {
         return Err("Image exceeds the 25 MiB limit.".into());
     }
     base64::engine::general_purpose::STANDARD
-        .decode(reply.data.as_bytes())
+        .decode(data.as_bytes())
         .map_err(|error| error.to_string().into())
 }
 
@@ -475,16 +519,13 @@ pub async fn save_original(
 ) -> Result<(), gpui::SharedString> {
     let reply = read_original(engine, path).await?;
     executor
-        .spawn(async move { save_original_reply(reply, &destination) })
+        .spawn(async move { save_original_reply(&reply.data, &destination) })
         .await
 }
 
-fn save_original_reply(
-    reply: serde_json::Value,
-    destination: &Path,
-) -> Result<(), gpui::SharedString> {
+fn save_original_reply(data: &str, destination: &Path) -> Result<(), gpui::SharedString> {
     use std::io::Write;
-    let bytes = original_bytes(reply)?;
+    let bytes = original_bytes(data)?;
     let write = || -> std::io::Result<()> {
         let mut file =
             tempfile::NamedTempFile::new_in(destination.parent().unwrap_or(Path::new(".")))?;
@@ -579,16 +620,15 @@ mod tests {
             "data": base64::engine::general_purpose::STANDARD.encode(original),
         });
         std::fs::write(&destination, b"previous contents").unwrap();
-        save_original_reply(reply.clone(), &destination).unwrap();
+        save_original_reply(reply["data"].as_str().unwrap(), &destination).unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), original);
 
-        let invalid = serde_json::json!({"mimeType":"image/webp", "data":"not base64"});
-        assert!(save_original_reply(invalid, &destination).is_err());
+        assert!(save_original_reply("not base64", &destination).is_err());
         assert_eq!(std::fs::read(&destination).unwrap(), original);
 
         let blocked = dir.path().join("existing-directory");
         std::fs::create_dir(&blocked).unwrap();
-        assert!(save_original_reply(reply, &blocked).is_err());
+        assert!(save_original_reply(reply["data"].as_str().unwrap(), &blocked).is_err());
         assert!(blocked.is_dir());
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),

@@ -1196,6 +1196,14 @@ impl WorkspacePathParams {
         Ok(())
     }
 
+    /// The non-empty path the read family (text and image) requires.
+    fn require_path(&self) -> Result<String, RpcError> {
+        self.path
+            .clone()
+            .filter(|path| !path.trim().is_empty())
+            .ok_or_else(|| RpcError::BadParams("path is required".into()))
+    }
+
     fn as_search_root(&self) -> SearchFilesParams {
         SearchFilesParams {
             query: String::new(),
@@ -1529,11 +1537,7 @@ impl RpcService for EngineService {
                 let params: WorkspacePathParams = serde_json::from_value(params)
                     .map_err(|error| RpcError::BadParams(error.to_string()))?;
                 params.check_selector()?;
-                let path = params
-                    .path
-                    .clone()
-                    .filter(|path| !path.trim().is_empty())
-                    .ok_or_else(|| RpcError::BadParams("path is required".into()))?;
+                let path = params.require_path()?;
                 let root = self.search_files_root(&params.as_search_root())?;
                 let read = tokio::task::spawn_blocking(move || {
                     crate::files::read_file(std::path::Path::new(&root), &path)
@@ -1542,6 +1546,30 @@ impl RpcService for EngineService {
                 .map_err(|error| RpcError::Failed(format!("read task failed: {error}")))?
                 .map_err(|fault| RpcError::Failed(fault.to_string()))?;
                 RpcReply::value(&read)
+            }
+            methods::READ_WORKSPACE_IMAGE => {
+                let params: WorkspacePathParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                params.check_selector()?;
+                let path = params.require_path()?;
+                let root = self.search_files_root(&params.as_search_root())?;
+                // The fence (root containment, `.git`, symlink landing paths)
+                // runs before any bytes move; the bounded sniffed read itself
+                // is the images store's, under the same limits as ReadImage.
+                let canonical = tokio::task::spawn_blocking(move || {
+                    crate::files::resolve_image_target(std::path::Path::new(&root), &path)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(format!("image read task failed: {error}")))?
+                .map_err(|fault| RpcError::Failed(fault.to_string()))?;
+                let display = canonical.display().to_string();
+                let (mime_type, data) =
+                    self.images.read(&display).await.map_err(RpcError::Failed)?;
+                RpcReply::value(&holt_rpc::images::WorkspaceImageData {
+                    path: display,
+                    mime_type,
+                    data,
+                })
             }
             methods::SAVE_WORKSPACE_FILE => {
                 let params: SaveWorkspaceFileParams = serde_json::from_value(params)

@@ -157,6 +157,14 @@ pub mod methods {
     /// `version` token, or an `unsupportedReason` for oversized, non-UTF-8,
     /// and binary files. Outside-root and `.git` targets fail.
     pub const READ_WORKSPACE_FILE: &str = "ReadWorkspaceFile";
+    /// Bounded image read for the File sidebar's image tabs (ticket 08).
+    /// Params `{chatId?|spaceId?, path}`; reply `WorkspaceImageData` carries
+    /// the engine-resolved canonical `path` plus sniffed `mimeType` and
+    /// base64 `data` under the same limits as `ReadImage`. Unlike
+    /// `ReadImage`, the target is fenced behind the selector's root —
+    /// root containment, `.git` exclusion, and symlink boundaries are judged
+    /// on the resolved landing path, engine-side, before any bytes move.
+    pub const READ_WORKSPACE_IMAGE: &str = "ReadWorkspaceImage";
     /// Save a text file (File sidebar editor). Params `{chatId?|spaceId?,
     /// path, text, version, bom}` — `version` is the token from the read the
     /// draft is based on and `bom` reproduces the original byte order mark.

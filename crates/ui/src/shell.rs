@@ -2986,6 +2986,19 @@ impl Render for Shell {
                     }
                 }),
             )
+            // Cmd+Shift+P toggles the active Markdown tab's source/preview
+            // mode (ticket 08) — a no-op for every other file tab.
+            .on_action(cx.listener(|this, _: &crate::files::TogglePreview, _, cx| {
+                if let RightSurface::File(id) = this.resolved_right_active(cx)
+                    && let Some(space) = this.file_space_key(cx)
+                    && let Some(tab) = this.file_state.space(&space).and_then(|tabs| tabs.find(id))
+                {
+                    let viewer = tab.viewer.clone();
+                    viewer.update(cx, |viewer, cx| {
+                        viewer.toggle_preview(cx);
+                    });
+                }
+            }))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(cx)))

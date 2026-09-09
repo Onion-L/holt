@@ -134,6 +134,13 @@ pub(crate) fn init(cx: &mut App) {
         .map(|prefix| KeyBinding::new(&format!("{prefix}-s"), super::SaveFile, None))
         .collect();
     cx.bind_keys(save_bindings);
+    // Source ⇄ preview for the active Markdown tab (ticket 08) — the file
+    // surface's own mode switch, like Cmd+S/Cmd+F.
+    let preview_bindings: Vec<KeyBinding> = ["cmd", "ctrl"]
+        .iter()
+        .map(|prefix| KeyBinding::new(&format!("{prefix}-shift-p"), super::TogglePreview, None))
+        .collect();
+    cx.bind_keys(preview_bindings);
     let word_edit_prefix = if cfg!(target_os = "macos") {
         "alt"
     } else {

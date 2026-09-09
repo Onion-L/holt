@@ -354,6 +354,24 @@ pub(crate) fn read_file(root: &Path, requested: &str) -> Result<WorkspaceFileRea
     })
 }
 
+/// Resolve an image-read target behind the sidebar's full fence: the same
+/// root containment, `.git` exclusion, and judged-on-the-resolved-landing-path
+/// symlink rules every other workspace read follows, plus an existing-file
+/// check. The general `ReadImage` RPC may read any local path — the file
+/// sidebar's image tabs (and anything preview rendering resolves to) come
+/// through here, never through the unfenced surface.
+pub(crate) fn resolve_image_target(root: &Path, requested: &str) -> Result<PathBuf, FilesFault> {
+    let canonical = resolve_inside_root(root, requested)?;
+    let metadata = std::fs::symlink_metadata(&canonical).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => FilesFault::NotFound(canonical.display().to_string()),
+        _ => FilesFault::Io(canonical.display().to_string(), error.to_string()),
+    })?;
+    if metadata.is_dir() {
+        return Err(FilesFault::IsDirectory(canonical.display().to_string()));
+    }
+    Ok(canonical)
+}
+
 /// Save an edited text file: validate the disk version the draft was based
 /// on, write atomically (same-directory temp + rename, permissions
 /// preserved), and recheck before the rename so a change that lands mid-save
@@ -999,5 +1017,37 @@ mod tests {
         let listing = list_directory(dir.path(), "many").unwrap();
         assert!(listing.truncated);
         assert_eq!(listing.entries.len(), ENTRY_CAP);
+    }
+
+    #[test]
+    fn image_targets_fence_like_every_other_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("shot.png"), b"\x89PNG\r\n\x1a\n");
+        // The plain in-root file resolves to its canonical self.
+        let resolved = resolve_image_target(root, "shot.png").unwrap();
+        assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        // An inside-root file alias reads its target, not the entry spelling.
+        std::os::unix::fs::symlink(root.join("shot.png"), root.join("alias.png")).unwrap();
+        let resolved = resolve_image_target(root, "alias.png").unwrap();
+        assert_eq!(resolved, root.join("shot.png").canonicalize().unwrap());
+        // Directories are not images.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let fault = resolve_image_target(root, "src").unwrap_err();
+        assert!(matches!(fault, FilesFault::IsDirectory(_)));
+        // Missing files are not found.
+        let fault = resolve_image_target(root, "nope.png").unwrap_err();
+        assert!(matches!(fault, FilesFault::NotFound(_)));
+        // The .git exclusion holds for image-shaped names too.
+        write(&root.join(".git/shot.png"), b"\x89PNG");
+        let fault = resolve_image_target(root, ".git/shot.png").unwrap_err();
+        assert!(matches!(fault, FilesFault::GitExcluded(_)));
+        // An outside-root symlink target never escapes the fence.
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("secret.png"), b"\x89PNG");
+        std::os::unix::fs::symlink(outside.path().join("secret.png"), root.join("escape.png"))
+            .unwrap();
+        let fault = resolve_image_target(root, "escape.png").unwrap_err();
+        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
     }
 }
