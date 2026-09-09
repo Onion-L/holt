@@ -113,7 +113,8 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [provider icon + session title] … [terminal] [changes]`.
+    /// `[new-session +] [provider icon + session title] … [file tree] [open with]
+    /// [terminal] [changes]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
     /// animated left inset, the toggle-changes button on git projects).
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -259,6 +260,11 @@ impl Shell {
             }
             // Keep the trigger mounted at one fixed position while the pane
             // controls reveal to its left.
+            let external_picker = if cfg!(target_os = "macos") && !self.external_apps.is_empty() {
+                Some(self.render_external_app_picker(cx))
+            } else {
+                None
+            };
             Some(
                 controls
                     .child(
@@ -276,6 +282,7 @@ impl Shell {
                             .into()
                         }),
                     )
+                    .children(external_picker)
                     // Terminals are chat-scoped: the new-chat canvas carries
                     // no working terminal to toggle.
                     .when(!on_canvas, |cluster| {

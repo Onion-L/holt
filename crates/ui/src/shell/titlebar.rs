@@ -291,6 +291,174 @@ impl Shell {
         )
     }
 
+    fn selected_external_app(&self) -> ExternalApp {
+        self.external_apps
+            .iter()
+            .copied()
+            .find(|app| app.label() == self.settings.external_app)
+            .or_else(|| {
+                self.external_apps
+                    .iter()
+                    .copied()
+                    .find(|app| *app == ExternalApp::Zed)
+            })
+            .or_else(|| self.external_apps.first().copied())
+            .unwrap_or(ExternalApp::Zed)
+    }
+
+    fn close_external_app_menu(&mut self, cx: &mut Context<Self>) {
+        if self.external_app_menu.begin_close() {
+            popover::reap_popup(cx, |shell: &mut Self| &mut shell.external_app_menu);
+            cx.notify();
+        }
+    }
+
+    fn open_workspace_in(&mut self, app: ExternalApp, cx: &mut Context<Self>) {
+        self.settings.external_app = app.label().to_string();
+        self.schedule_save(cx);
+        self.close_external_app_menu(cx);
+
+        let Some(cwd) = self.state.read(cx).skills_cwd() else {
+            self.push_holt_notice(
+                HoltNoticeKind::Warning,
+                "No workspace is selected".into(),
+                cx,
+            );
+            return;
+        };
+        let path = std::path::Path::new(&cwd);
+        if app == ExternalApp::Finder {
+            cx.reveal_path(path);
+            return;
+        }
+        let Some(bundle) = app.bundle_name() else {
+            return;
+        };
+        if let Err(error) = Command::new("open")
+            .args(["-a", bundle, "--"])
+            .arg(path)
+            .spawn()
+        {
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                format!("Could not open {}: {error}", app.label()).into(),
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn render_external_app_picker(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let selected = self.selected_external_app();
+        let menu_open = self.external_app_menu.is_open();
+        let closing = self.external_app_menu.closing_since();
+        let mut trigger = div()
+            .id("open-with-trigger")
+            .h(px(28.0))
+            .w(px(100.0))
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .bg(if menu_open {
+                theme.glass_hover()
+            } else {
+                theme.glass_hover().opacity(0.55)
+            })
+            .occlude()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    window.prevent_default();
+                    this.external_app_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                if this.external_app_menu.take_press_was_open() {
+                    this.close_external_app_menu(cx);
+                } else {
+                    this.external_app_menu.open(this.selected_external_app());
+                    cx.notify();
+                }
+            }))
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    crate::image_viewer::ViewerTooltip(
+                        format!("Open workspace in {}", selected.label()).into(),
+                    )
+                })
+                .into()
+            })
+            .child(
+                div()
+                    .w(px(48.0))
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        icon(selected.icon())
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(18.0))
+                    .bg(crate::theme::hairline(0.08)),
+            )
+            .child(
+                div().flex_1().flex().items_center().justify_center().child(
+                    icon(icons::ALT_ARROW_DOWN)
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                ),
+            );
+
+        if menu_open || self.external_app_menu.is_closing() {
+            let options = self.external_apps.clone();
+            let menu = popover::popover_card(&theme)
+                .w(px(220.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_external_app_menu(cx)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .children(options.into_iter().map(|app| {
+                            let active = app == selected;
+                            popover::menu_row(&theme, active, format!("open-with-{app:?}"))
+                                .id(format!("open-with-{app:?}-row"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_workspace_in(app, cx);
+                                }))
+                                .child(icon(app.icon()).size(px(16.0)).text_color(theme.text_muted))
+                                .child(SharedString::from(app.label()))
+                                .child(div().flex_1())
+                                .when(active, |row| {
+                                    row.child(
+                                        icon(icons::CHECK)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                })
+                        })),
+                )
+                .into_any_element();
+            trigger = trigger.relative().child(popover::anchored_menu_below_gap(
+                "open-with-menu",
+                menu,
+                closing,
+                8.0,
+            ));
+        }
+        trigger.into_any_element()
+    }
+
     /// Native Windows caption controls integrated into Holt's unified
     /// titlebar. `WindowControlArea` maps these hit targets to HTMINBUTTON,
     /// HTMAXBUTTON, and HTCLOSE, so Windows owns their behavior (including
