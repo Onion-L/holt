@@ -9,7 +9,10 @@
 
 use std::time::Duration;
 
-use gpui::BackgroundExecutor;
+use gpui::{BackgroundExecutor, SharedString};
+
+use holt_proto::FileSearchMatch;
+use holt_rpc::{RpcError, methods};
 
 use crate::state::EngineHandle;
 
@@ -165,6 +168,62 @@ pub(crate) async fn call_with_timeout(
     match futures::future::select(call, timer).await {
         futures::future::Either::Left((result, _)) => result.map_err(|e| e.to_string()),
         futures::future::Either::Right(_) => Err(format!("{method} timed out")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared SearchFiles plumbing (the `@` mention popup and the ⌘P find-file
+// palette ride the same RPC with the same cadence)
+// ---------------------------------------------------------------------------
+
+/// A failed `SearchFiles` call, translated for its popup. `UnknownMethod` is
+/// the version-skew case: `SearchFiles` shipped after v0.1.9, so an engine
+/// older than that answers "unknown method".
+pub(crate) fn search_files_error(err: &RpcError) -> SharedString {
+    match err {
+        RpcError::UnknownMethod(_) => {
+            "File search isn't available — the engine doesn't support it yet".into()
+        }
+        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
+        RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
+    }
+}
+
+/// One keystroke-scoped `SearchFiles` round trip: a short debounce (one full
+/// workspace walk per keystroke is too many), the call, a single 250ms retry
+/// that rides out a cold engine start, and the decode. Errors arrive
+/// pre-translated through [`search_files_error`]. Exactly one of
+/// `chat_id`/`space_id` is Some, mirroring the RPC's selector.
+pub(crate) async fn search_files(
+    engine: &EngineHandle,
+    executor: &BackgroundExecutor,
+    query: &str,
+    chat_id: Option<&str>,
+    space_id: Option<&str>,
+) -> Result<Vec<FileSearchMatch>, SharedString> {
+    executor.timer(Duration::from_millis(80)).await;
+    let mut params = serde_json::Map::new();
+    params.insert("query".into(), serde_json::json!(query));
+    if let Some(chat_id) = chat_id {
+        params.insert("chatId".into(), serde_json::json!(chat_id));
+    } else if let Some(space_id) = space_id {
+        params.insert("spaceId".into(), serde_json::json!(space_id));
+    }
+    let params = serde_json::Value::Object(params);
+    let mut result = engine
+        .client()
+        .call(methods::SEARCH_FILES, params.clone())
+        .await;
+    if matches!(result, Err(RpcError::Transport(_)) | Err(RpcError::Closed)) {
+        executor.timer(Duration::from_millis(250)).await;
+        result = engine.client().call(methods::SEARCH_FILES, params).await;
+    }
+    match result {
+        Ok(value) => serde_json::from_value::<Vec<FileSearchMatch>>(value).map_err(|err| {
+            tracing::warn!(%err, "file search decode failed");
+            "File search failed".into()
+        }),
+        Err(err) => Err(search_files_error(&err)),
     }
 }
 

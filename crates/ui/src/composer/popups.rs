@@ -5,7 +5,6 @@
 use super::Composer;
 
 use std::ops::Range;
-use std::time::Duration;
 
 use gpui::{App, Context, SharedString, Window, div, prelude::*, px};
 
@@ -133,19 +132,6 @@ fn mention_response_is_current(state: &FileMentionState, request: u64) -> bool {
     state.request == request && state.token.is_some()
 }
 
-/// A failed file search, translated for the popup. `UnknownMethod` is the
-/// version-skew case: `SearchFiles` shipped after v0.1.9, so an engine older
-/// than that answers "unknown method".
-fn mention_error_message(err: &RpcError) -> SharedString {
-    match err {
-        RpcError::UnknownMethod(_) => {
-            "File search isn't available — the engine doesn't support it yet".into()
-        }
-        RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
-    }
-}
-
 /// A failed command discovery, translated for the popup.
 fn slash_error_message(err: &RpcError) -> SharedString {
     match err {
@@ -263,22 +249,11 @@ impl Composer {
             cx.notify();
             return;
         };
-        let (params, has_context) = {
+        let selector = {
             let state = self.state.read(cx);
-            let mut params = serde_json::Map::new();
-            params.insert("query".into(), token.query.clone().into());
-            let has_context = if let Some(chat) = state.selected_chat_row() {
-                params.insert("chatId".into(), chat.id.clone().into());
-                true
-            } else if let Some(space) = state.selected_space_row() {
-                params.insert("spaceId".into(), space.id.clone().into());
-                true
-            } else {
-                false
-            };
-            (serde_json::Value::Object(params), has_context)
+            state.search_selector()
         };
-        if !has_context {
+        if selector.is_none() {
             self.mention.loading = false;
             cx.notify();
             return;
@@ -287,47 +262,37 @@ impl Composer {
         // results against this root, not against whatever is selected later.
         self.mention.root = self.mention_root(cx);
         let request = self.mention.request;
+        let (chat_id, space_id) = selector.as_ref().map(|s| s.ids()).unwrap_or((None, None));
+        let chat_id = chat_id.map(str::to_string);
+        let space_id = space_id.map(str::to_string);
         self.mention_task = Some(cx.spawn(async move |this, cx| {
-            // A short debounce prevents one full workspace walk per keystroke
-            // during normal typing. The generation check below still guards
-            // requests that were already in flight when the query changed.
-            cx.background_executor()
-                .timer(Duration::from_millis(80))
-                .await;
-            let mut result = engine
-                .client()
-                .call(methods::SEARCH_FILES, params.clone())
-                .await;
-            if matches!(result, Err(RpcError::Transport(_)) | Err(RpcError::Closed)) {
-                // One retry rides out a cold engine start (the diffs pane
-                // retries forever; a keystroke-scoped search gets a single
-                // second chance).
-                cx.background_executor()
-                    .timer(Duration::from_millis(250))
-                    .await;
-                result = engine.client().call(methods::SEARCH_FILES, params).await;
-            }
+            // The shared `SearchFiles` round trip (debounce, call, one cold-
+            // start retry, decode) — the same plumbing the ⌘P palette rides.
+            let result = crate::attachments::search_files(
+                &engine,
+                cx.background_executor(),
+                &token.query,
+                chat_id.as_deref(),
+                space_id.as_deref(),
+            )
+            .await;
             this.update(cx, |composer, cx| {
                 if !mention_response_is_current(&composer.mention, request) {
                     return;
                 }
                 composer.mention.loading = false;
                 match result {
-                    Ok(value) => match serde_json::from_value::<Vec<FileSearchMatch>>(value) {
-                        Ok(results) => {
-                            composer.mention.error = None;
-                            composer.mention.active = (!results.is_empty()).then_some(0);
-                            composer.mention.results = results;
-                            // New result set: the row stack restarts at the top.
-                            reset_scroll_offset(&composer.mention_scroll);
-                        }
-                        Err(err) => tracing::warn!(%err, "file mention response decode failed"),
-                    },
-                    Err(err) => {
-                        tracing::warn!(%err, "file mention search failed");
+                    Ok(results) => {
+                        composer.mention.error = None;
+                        composer.mention.active = (!results.is_empty()).then_some(0);
+                        composer.mention.results = results;
+                        // New result set: the row stack restarts at the top.
+                        reset_scroll_offset(&composer.mention_scroll);
+                    }
+                    Err(message) => {
                         composer.mention.results.clear();
                         composer.mention.active = None;
-                        composer.mention.error = Some(mention_error_message(&err));
+                        composer.mention.error = Some(message);
                     }
                 }
                 composer.sync_mention_controls(cx);
@@ -389,14 +354,11 @@ impl Composer {
     }
 
     /// The root `@` search ran against, for binding results to absolute
-    /// targets: the selected chat's cwd, else the selected Space's path.
+    /// targets: the selected chat's cwd, else its space's path, else the
+    /// selected Space's path (the engine's own resolution order — shared
+    /// with the ⌘P palette through `AppState::search_root`).
     fn mention_root(&self, cx: &App) -> Option<std::path::PathBuf> {
-        let state = self.state.read(cx);
-        let root = state
-            .selected_chat_row()
-            .and_then(|chat| chat.cwd.clone())
-            .or_else(|| state.selected_space_row().map(|space| space.path.clone()))?;
-        Some(crate::path_refs::expand_home(&root))
+        self.state.read(cx).search_root()
     }
 
     pub(super) fn render_file_mention_popup(

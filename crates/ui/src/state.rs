@@ -178,6 +178,25 @@ pub struct UploadProgress {
     total: u64,
 }
 
+/// The owner of a workspace path search (`SearchFiles`): the selected Chat
+/// (its working directory), or a Space before a Chat exists. Exactly one —
+/// the type encodes what two `Option<String>`s would only imply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchSelector {
+    Chat(String),
+    Space(String),
+}
+
+impl SearchSelector {
+    /// The `(chatId, spaceId)` pair the RPC's params carry.
+    pub fn ids(&self) -> (Option<&str>, Option<&str>) {
+        match self {
+            SearchSelector::Chat(id) => (Some(id), None),
+            SearchSelector::Space(id) => (None, Some(id)),
+        }
+    }
+}
+
 /// Root application state. Reducer methods (`apply_*`, [`Self::session_for`], …)
 /// are plain `&mut self` functions so tests construct the struct directly; gpui
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
@@ -796,6 +815,38 @@ impl AppState {
         self.selected_chat_row()
             .and_then(|chat| chat.cwd.clone())
             .or_else(|| self.selected_space_row().map(|space| space.path.clone()))
+    }
+
+    /// The root a workspace path search (`SearchFiles`) runs against for
+    /// the current selection — the engine's own resolution order: the
+    /// selected chat's cwd, else THAT chat's space's path, else the
+    /// selected space's path. Tilde-expanded, ready to join root-relative
+    /// results against. The `@` mention popup and the find-file palette
+    /// share it so their selector and join root can never disagree.
+    pub fn search_root(&self) -> Option<PathBuf> {
+        let root = match self.selected_chat_row() {
+            Some(chat) => chat.cwd.clone().or_else(|| {
+                chat.space_id
+                    .as_deref()
+                    .and_then(|space_id| self.space_row(space_id))
+                    .map(|space| space.path.clone())
+            }),
+            None => self.selected_space_row().map(|space| space.path.clone()),
+        }?;
+        Some(crate::path_refs::expand_home(&root))
+    }
+
+    /// The RPC selector for a workspace path search of the current
+    /// selection: the chat when one is selected (its working directory IS
+    /// the root), else the space. The twin of [`Self::search_root`] — the
+    /// pair always describes one owner.
+    pub fn search_selector(&self) -> Option<SearchSelector> {
+        if let Some(chat) = self.selected_chat_row() {
+            Some(SearchSelector::Chat(chat.id.clone()))
+        } else {
+            self.selected_space_row()
+                .map(|space| SearchSelector::Space(space.id.clone()))
+        }
     }
 
     /// The chat the Archive session shortcut acts on: the selected one, unless
@@ -1603,6 +1654,72 @@ mod tests {
             checkout_id: None,
             created_at: base + TimeDelta::minutes(created_min),
         }
+    }
+
+    fn chat_row(id: &str, cwd: Option<&str>, space_id: Option<&str>) -> Chat {
+        use holt_proto::TitleSource;
+        Chat {
+            id: id.into(),
+            device_id: "dev".into(),
+            title: None,
+            title_source: TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            cwd: cwd.map(str::to_string),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc::now(),
+            space_id: space_id.map(str::to_string),
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+        }
+    }
+
+    /// A workspace search's selector and join root always describe ONE
+    /// owner (ticket 09): a chat with a cwd owns both; a cwd-less chat
+    /// falls back to ITS OWN space's path (the engine's resolution order —
+    /// never a mismatched selected space); before a chat exists the space
+    /// owns both.
+    #[test]
+    fn search_selector_and_root_describe_one_owner() {
+        let mut s = AppState::new();
+        s.spaces = vec![
+            space("space-1", "dev", "/tmp/space-1", 0),
+            space("space-2", "dev", "/tmp/space-2", 10),
+        ];
+
+        // A chat with its own cwd.
+        s.chats = vec![chat_row("chat-1", Some("/tmp/elsewhere"), Some("space-1"))];
+        s.selected_chat = Some("chat-1".into());
+        s.selected_space = Some("space-2".into());
+        assert_eq!(
+            s.search_selector(),
+            Some(SearchSelector::Chat("chat-1".into()))
+        );
+        assert_eq!(s.search_root(), Some(PathBuf::from("/tmp/elsewhere")));
+
+        // A cwd-less chat roots at ITS OWN space, not the selected one.
+        s.chats = vec![chat_row("chat-2", None, Some("space-1"))];
+        s.selected_chat = Some("chat-2".into());
+        assert_eq!(
+            s.search_selector(),
+            Some(SearchSelector::Chat("chat-2".into()))
+        );
+        assert_eq!(s.search_root(), Some(PathBuf::from("/tmp/space-1")));
+
+        // Before a chat exists, the space owns both.
+        s.selected_chat = None;
+        s.selected_space = Some("space-2".into());
+        assert_eq!(
+            s.search_selector(),
+            Some(SearchSelector::Space("space-2".into()))
+        );
+        assert_eq!(s.search_root(), Some(PathBuf::from("/tmp/space-2")));
     }
 
     fn session(

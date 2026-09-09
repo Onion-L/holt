@@ -81,6 +81,61 @@ pub struct FileMenuTarget {
     pub parent: String,
     /// The entry a Rename acts on: (absolute path, current name).
     pub rename: Option<(String, String)>,
+    /// The entry an "Add to Chat" attaches (ticket 09): inside-root entries
+    /// only — outside-root and broken links stay external-open rows.
+    pub attach: Option<String>,
+}
+
+/// A dragged tree entry (ticket 09): the ABSOLUTE entry path, bound at drag
+/// start, so a drop into the composer attaches exactly what the row showed
+/// even if the selection moves mid-gesture. Outside-root and broken symlinks
+/// never start a drag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntryDrag {
+    pub path: String,
+    pub is_dir: bool,
+    pub title: SharedString,
+}
+
+/// Ghost chip following the pointer while a tree entry drags.
+struct TreeEntryGhost {
+    title: SharedString,
+    is_dir: bool,
+}
+
+impl gpui::Render for TreeEntryGhost {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .h(px(24.0))
+            .w(px(140.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .rounded(px(6.0))
+            .bg(theme.surface_raised)
+            .border_1()
+            .border_color(theme.border_strong)
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text)
+            .opacity(0.85)
+            .child(
+                icon(if self.is_dir {
+                    icons::FOLDER
+                } else {
+                    icons::DOCUMENT
+                })
+                .size(px(12.0))
+                .flex_none()
+                .text_color(theme.text_muted),
+            )
+            .child(div().truncate().child(self.title.clone()))
+    }
 }
 
 /// Events up to the shell: the tree never owns tabs, it just asks for opens.
@@ -119,7 +174,8 @@ struct TreeRow {
     name: SharedString,
     path: String,
     kind: WorkspaceEntryKind,
-    #[allow(dead_code)]
+    /// A UI-only notice row (truncated listing, empty folder) — never a
+    /// drag source or a context-menu target.
     marker: Option<RowMarker>,
 }
 
@@ -132,6 +188,10 @@ pub struct FileTreePanel {
     active: Option<ActiveRoot>,
     /// The visible rows for the active space (drives the ListState count).
     rows: Vec<TreeRow>,
+    /// A reveal in flight (ticket 09): the absolute path being walked into
+    /// the tree. Each ancestor expansion loads one level; the walk resumes
+    /// as listings land and finishes by selecting the target's row.
+    pending_reveal: Option<String>,
     /// The live watch task for the active root (replaced on switch — the
     /// old stream drops, ending the engine-side watch with it).
     watch_task: Option<Task<()>>,
@@ -247,6 +307,7 @@ impl FileTreePanel {
             spaces: HashMap::new(),
             active: None,
             rows: Vec::new(),
+            pending_reveal: None,
             watch_task: None,
         };
         panel.sync_root(cx);
@@ -437,6 +498,124 @@ impl FileTreePanel {
             };
             if let Some(carried) = carried {
                 space.selection = Some(carried);
+            }
+        }
+    }
+
+    /// Reveal a path in the tree (ticket 09): expand its ancestor chain one
+    /// level at a time, then select the target row. The walk is resumable —
+    /// each ancestor's listing lands asynchronously and re-runs
+    /// [`Self::advance_reveal`]; a path that left the tree (or never existed)
+    /// walks as deep as it can and stops, never blocking anything else.
+    pub(crate) fn reveal_path(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.pending_reveal = Some(path.trim_end_matches('/').to_string());
+        self.advance_reveal(cx);
+    }
+
+    /// The reveal currently walking, if any (read-only view for tests).
+    #[cfg(test)]
+    pub(crate) fn pending_reveal_path(&self) -> Option<&str> {
+        self.pending_reveal.as_deref()
+    }
+
+    /// One step of the pending reveal: every ancestor whose listing is
+    /// already loaded expands; the first missing one loads (the reply
+    /// re-runs this); once the target's parent is expanded the target row
+    /// is selected. A missing ancestor listing, a failed one, or a target
+    /// outside the current root clears the reveal.
+    fn advance_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.pending_reveal.clone() else {
+            return;
+        };
+        let Some(active) = self.active.clone() else {
+            self.pending_reveal = None;
+            return;
+        };
+        // The canonical root spells the ancestor prefixes; before it loads
+        // the walk cannot even start.
+        let root =
+            match self
+                .spaces
+                .get(&active.space_key)
+                .and_then(|space| match space.dirs.get("") {
+                    Some(DirState::Loaded(listing)) => Some(listing.path.clone()),
+                    _ => None,
+                }) {
+                Some(root) => root.trim_end_matches('/').to_string(),
+                None => {
+                    self.ensure_dir_loaded("", cx);
+                    return;
+                }
+            };
+        let Some(relative) = target
+            .strip_prefix(&root)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .filter(|rest| !rest.is_empty())
+        else {
+            // The root itself or outside it — nothing to walk to.
+            self.pending_reveal = None;
+            return;
+        };
+        // All segments but the last name directories to expand; the last is
+        // the row to select (file or folder — a folder reveals without
+        // expanding, the tree's selection IS the reveal).
+        #[derive(PartialEq)]
+        enum Ancestor {
+            Ready,
+            Loading,
+            Missing,
+            Failed,
+        }
+        let segments: Vec<&str> = relative.split('/').collect();
+        let mut prefix = root;
+        for segment in &segments[..segments.len().saturating_sub(1)] {
+            prefix = format!("{prefix}/{segment}");
+            let state = self
+                .spaces
+                .get(&active.space_key)
+                .map(|space| match space.dirs.get(&prefix) {
+                    Some(DirState::Loaded(_)) => Ancestor::Ready,
+                    Some(DirState::Loading) => Ancestor::Loading,
+                    Some(DirState::Failed(_)) => Ancestor::Failed,
+                    None => Ancestor::Missing,
+                })
+                .unwrap_or(Ancestor::Missing);
+            match state {
+                Ancestor::Ready | Ancestor::Missing => {
+                    // Expand it (a missing ancestor loads; the reply resumes
+                    // the walk).
+                    if let Some(space) = self.spaces.get_mut(&active.space_key) {
+                        space.expanded.insert(prefix.clone());
+                    }
+                    if state == Ancestor::Missing {
+                        self.ensure_dir_loaded(&prefix, cx);
+                        return;
+                    }
+                }
+                // Already on its way — the reply resumes the walk.
+                Ancestor::Loading => return,
+                Ancestor::Failed => {
+                    // The ancestor is gone or unreadable — the walk stops
+                    // here, and the dead expansion flag goes with it.
+                    if let Some(space) = self.spaces.get_mut(&active.space_key) {
+                        space.expanded.remove(&prefix);
+                    }
+                    self.pending_reveal = None;
+                    return;
+                }
+            }
+        }
+        self.rebuild_rows();
+        match self.row_index_for_path(&target) {
+            Some(ix) => {
+                self.select(ix, cx);
+                self.pending_reveal = None;
+            }
+            None => {
+                // The parent loaded but the target is not in it — the entry
+                // left since the search saw it. The reveal is done.
+                self.pending_reveal = None;
+                cx.notify();
             }
         }
     }
@@ -659,6 +838,10 @@ impl FileTreePanel {
                 };
                 space.dirs.insert(dir.clone(), state);
                 this.rebuild_rows();
+                // A pending reveal resumes as each ancestor's listing lands.
+                if this.pending_reveal.is_some() {
+                    this.advance_reveal(cx);
+                }
                 cx.notify();
                 None::<()>
             });
@@ -962,6 +1145,7 @@ impl FileTreePanel {
                             position: event.position,
                             parent: String::new(),
                             rename: None,
+                            attach: None,
                         },
                     });
                 }),
@@ -1025,6 +1209,20 @@ impl FileTreePanel {
 
         let group: SharedString = format!("file-tree-row-{ix}").into();
         let indent = px(6.0) + px(row.depth as f32 * 13.0);
+        // Ticket 09: plain entries and inside-root aliases attach to the
+        // chat (context menu + drag into the composer); outside-root and
+        // broken links stay external-open rows, and UI notice rows
+        // (empty/truncated markers) never do.
+        let attachable = row.marker.is_none()
+            && !matches!(
+                &row.kind,
+                WorkspaceEntryKind::SymlinkOutside { .. } | WorkspaceEntryKind::SymlinkBroken
+            );
+        let is_dir = match &row.kind {
+            WorkspaceEntryKind::Directory => true,
+            WorkspaceEntryKind::SymlinkInside { target_is_dir, .. } => *target_is_dir,
+            _ => false,
+        };
 
         let chevron: AnyElement = if loading {
             loaders::mini_glyph_spinner(
@@ -1198,7 +1396,15 @@ impl FileTreePanel {
             _ => {}
         }
 
-        row_el
+        // The drag payload (ticket 09), captured before the row's listeners
+        // take the row: a plain/inside-root entry drags into the composer as
+        // a path reference carrying its ABSOLUTE path.
+        let drag = attachable.then(|| TreeEntryDrag {
+            path: row.path.clone(),
+            is_dir,
+            title: row.name.clone(),
+        });
+        row_el = row_el
             .on_mouse_down(
                 gpui::MouseButton::Right,
                 cx.listener(move |_this, event: &gpui::MouseDownEvent, _, cx| {
@@ -1229,6 +1435,7 @@ impl FileTreePanel {
                             position: event.position,
                             parent,
                             rename,
+                            attach: attachable.then(|| row.path.clone()),
                         },
                     });
                 }),
@@ -1239,8 +1446,18 @@ impl FileTreePanel {
                 // 12). Directories toggle on either.
                 let pin = event.click_count() >= 2;
                 this.activate_row(ix, pin, cx);
-            }))
-            .into_any_element()
+            }));
+        // The drag source (ticket 09).
+        if let Some(drag) = drag {
+            row_el = row_el.on_drag(drag, |payload, _point: gpui::Point<gpui::Pixels>, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| TreeEntryGhost {
+                    title: payload.title.clone(),
+                    is_dir: payload.is_dir,
+                })
+            });
+        }
+        row_el.into_any_element()
     }
 }
 
@@ -1567,5 +1784,193 @@ mod tests {
         let mut ancestors = Vec::new();
         flatten_into(&empty, "/e", 0, &mut ancestors, &mut rows);
         assert!(rows.iter().any(|row| row.marker == Some(RowMarker::Empty)));
+    }
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+    use crate::state::AppState;
+    use gpui::TestAppContext;
+    use holt_proto::WorkspaceEntry;
+
+    fn entry(name: &str, path: &str, kind: WorkspaceEntryKind) -> WorkspaceEntry {
+        WorkspaceEntry {
+            name: name.into(),
+            path: path.into(),
+            kind,
+            size: None,
+        }
+    }
+
+    fn listing(path: &str, entries: Vec<WorkspaceEntry>) -> DirState {
+        DirState::Loaded(WorkspaceListing {
+            path: path.into(),
+            entries,
+            truncated: false,
+        })
+    }
+
+    fn panel(cx: &mut TestAppContext) -> gpui::Entity<FileTreePanel> {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        cx.new(|cx| FileTreePanel::new(state, cx))
+    }
+
+    /// Ticket 09's folder-reveal: `reveal_path` walks the ancestor chain one
+    /// level at a time, waiting for each listing, and lands with the target
+    /// selected — never treating the folder as editable text.
+    #[gpui::test]
+    fn reveal_walks_ancestors_and_selects_the_target(cx: &mut TestAppContext) {
+        let tree = panel(cx);
+        // Root listing holds `src`; `src` is not loaded yet.
+        tree.update(cx, |tree, _| {
+            tree.spaces.get_mut("space-1").unwrap().dirs.insert(
+                String::new(),
+                listing(
+                    "/tmp/space-1",
+                    vec![
+                        entry("src", "/tmp/space-1/src", WorkspaceEntryKind::Directory),
+                        entry(
+                            "README.md",
+                            "/tmp/space-1/README.md",
+                            WorkspaceEntryKind::File,
+                        ),
+                    ],
+                ),
+            );
+        });
+        // No engine in this test, so a missing listing never loads by itself:
+        // the walk pauses at `src` until its listing lands.
+        tree.update(cx, |tree, cx| {
+            tree.reveal_path("/tmp/space-1/src/deep/x.rs", cx)
+        });
+        tree.update(cx, |tree, _| {
+            let space = tree.spaces.get("space-1").unwrap();
+            assert!(
+                space.expanded.contains("/tmp/space-1/src"),
+                "the ancestor expands while waiting for its listing"
+            );
+            assert_eq!(
+                tree.pending_reveal.as_deref(),
+                Some("/tmp/space-1/src/deep/x.rs")
+            );
+            assert!(tree.selection_path().is_none(), "nothing selected yet");
+        });
+        // The `src` listing arrives (deep is a dir, x.rs the target).
+        tree.update(cx, |tree, _| {
+            tree.spaces.get_mut("space-1").unwrap().dirs.insert(
+                "/tmp/space-1/src".into(),
+                listing(
+                    "/tmp/space-1/src",
+                    vec![
+                        entry(
+                            "deep",
+                            "/tmp/space-1/src/deep",
+                            WorkspaceEntryKind::Directory,
+                        ),
+                        entry(
+                            "other.rs",
+                            "/tmp/space-1/src/other.rs",
+                            WorkspaceEntryKind::File,
+                        ),
+                    ],
+                ),
+            );
+        });
+        // `deep` is still missing — the walk advances one level and pauses.
+        tree.update(cx, |tree, cx| tree.advance_reveal(cx));
+        tree.update(cx, |tree, _| {
+            assert!(
+                tree.spaces
+                    .get("space-1")
+                    .unwrap()
+                    .expanded
+                    .contains("/tmp/space-1/src/deep")
+            );
+            assert!(tree.pending_reveal.is_some());
+        });
+        tree.update(cx, |tree, _| {
+            tree.spaces.get_mut("space-1").unwrap().dirs.insert(
+                "/tmp/space-1/src/deep".into(),
+                listing(
+                    "/tmp/space-1/src/deep",
+                    vec![entry(
+                        "x.rs",
+                        "/tmp/space-1/src/deep/x.rs",
+                        WorkspaceEntryKind::File,
+                    )],
+                ),
+            );
+        });
+        tree.update(cx, |tree, cx| tree.advance_reveal(cx));
+        tree.update(cx, |tree, _| {
+            assert_eq!(
+                tree.selection_path().as_deref(),
+                Some("/tmp/space-1/src/deep/x.rs"),
+                "the target row is selected once visible"
+            );
+            assert!(tree.pending_reveal.is_none(), "the reveal finished");
+        });
+    }
+
+    /// A target that left the tree since the search saw it walks as deep as
+    /// it can and gives up without leaving dead expansion flags behind.
+    #[gpui::test]
+    fn reveal_of_a_missing_entry_stops_cleanly(cx: &mut TestAppContext) {
+        let tree = panel(cx);
+        tree.update(cx, |tree, _| {
+            tree.spaces
+                .get_mut("space-1")
+                .unwrap()
+                .dirs
+                .insert(String::new(), listing("/tmp/space-1", Vec::new()));
+        });
+        // `src` never exists in the root's listing, but its listing request
+        // fails (no engine → Missing → wait). Inject a Failed listing to
+        // simulate the engine refusing the missing directory.
+        tree.update(cx, |tree, cx| tree.reveal_path("/tmp/space-1/src/x.rs", cx));
+        tree.update(cx, |tree, _| {
+            tree.spaces
+                .get_mut("space-1")
+                .unwrap()
+                .dirs
+                .insert("/tmp/space-1/src".into(), DirState::Failed("nope".into()));
+        });
+        tree.update(cx, |tree, cx| tree.advance_reveal(cx));
+        tree.update(cx, |tree, _| {
+            assert!(tree.pending_reveal.is_none());
+            assert!(
+                !tree
+                    .spaces
+                    .get("space-1")
+                    .unwrap()
+                    .expanded
+                    .contains("/tmp/space-1/src"),
+                "the failed ancestor's expansion flag is dropped"
+            );
+        });
+    }
+
+    /// A target outside the current root (a stale reveal after a Space
+    /// switch) is refused outright.
+    #[gpui::test]
+    fn reveal_outside_the_root_is_refused(cx: &mut TestAppContext) {
+        let tree = panel(cx);
+        tree.update(cx, |tree, _| {
+            tree.spaces
+                .get_mut("space-1")
+                .unwrap()
+                .dirs
+                .insert(String::new(), listing("/tmp/space-1", Vec::new()));
+        });
+        tree.update(cx, |tree, cx| tree.reveal_path("/elsewhere/pkg", cx));
+        tree.update(cx, |tree, _| {
+            assert!(tree.pending_reveal.is_none());
+            assert!(tree.spaces.get("space-1").unwrap().expanded.is_empty());
+        });
     }
 }

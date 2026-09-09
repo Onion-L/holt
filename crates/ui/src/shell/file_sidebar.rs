@@ -673,7 +673,9 @@ impl Shell {
     }
 
     /// The far-right column: full-height glass-friendly panel with a left
-    /// hairline, its width clipped through the open/close tween.
+    /// hairline, its width clipped through the open/close tween. A compact
+    /// search row (ticket 09) heads the column — the find-file palette's
+    /// click affordance next to its ⌘P key.
     pub(super) fn render_file_tree_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let bg = theme.bg;
@@ -684,6 +686,55 @@ impl Shell {
         };
         let tree = self.file_tree_panel(cx);
         let content = tree.update(cx, |tree, cx| tree.render_panel(cx));
+        let header = div()
+            .id("file-tree-search")
+            .h(px(30.0))
+            .flex_none()
+            .mx(px(8.0))
+            .mt(px(6.0))
+            .mb(px(2.0))
+            .px(px(8.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .bg(crate::theme::ink(0.045))
+            .border_1()
+            .border_color(crate::theme::hairline(0.07))
+            .hover(|style| style.bg(crate::theme::ink(0.08)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.toggle_file_lookup(cx);
+            }))
+            .child(
+                icon(crate::icons::MAGNIFER)
+                    .size(px(13.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(0.8)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
+                    .child("Search files"),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(4.0))
+                    .h(px(16.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .bg(crate::theme::ink(0.05))
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .font_family(theme.font_mono.clone())
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(crate::settings::badge_combo("mod-p")),
+            );
         let panel = div()
             .size_full()
             .flex()
@@ -695,6 +746,7 @@ impl Shell {
             // The titlebar overlays the full-height column; content starts
             // below it (the right pane's own convention).
             .pt(px(Theme::TITLEBAR_HEIGHT))
+            .child(header)
             .child(content);
         let target = self.file_tree_target(cx);
         self.pane_container(
@@ -1075,6 +1127,17 @@ impl Shell {
                 chat_id: None,
                 space_id: Some(space.to_string()),
             })
+    }
+
+    /// Attach a tree entry to the current chat (ticket 09): the path joins
+    /// the composer's staged references — bound to its live target,
+    /// deduplicated, owned by whichever draft is showing (path_refs.rs).
+    /// Adding never sends a message or starts a Turn, and nothing is read,
+    /// copied, or snapshotted: the reference is just a path.
+    pub(super) fn attach_entry_to_chat(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.composer.update(cx, |composer, cx| {
+            composer.add_paths(vec![std::path::PathBuf::from(path)], cx);
+        });
     }
 
     /// Cut an entry (ticket 07): it becomes the pending paste source for
@@ -1684,10 +1747,28 @@ impl Shell {
                         .child(SharedString::from("New directory")),
                 );
 
-            // Entry operations: cut/paste-move, rename, and trash (ticket
-            // 06 + 07). The whole section is row-bound — the background
-            // menu offers creates and pastes only.
+            // Entry operations: add-to-chat (ticket 09), cut/paste-move,
+            // rename, and trash (tickets 06 + 07). The whole section is
+            // row-bound — the background menu offers creates and pastes only.
             if let Some((path, _name)) = entry_target {
+                // Ticket 09: attach the entry to the current chat's composer
+                // as a path reference — never a send, never a Turn.
+                if let Some(attach) = target.attach.clone() {
+                    menu = menu.child(
+                        popover::menu_row(&theme, false, "file-menu-attach")
+                            .id("file-menu-attach")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_file_menu(cx);
+                                this.attach_entry_to_chat(&attach, cx);
+                            }))
+                            .child(
+                                icon(icons::PAPERCLIP)
+                                    .size(px(15.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Add to Chat")),
+                    );
+                }
                 let cut_path = path.clone();
                 menu = menu.child(popover::menu_separator()).child(
                     popover::menu_row(&theme, false, "file-menu-cut")

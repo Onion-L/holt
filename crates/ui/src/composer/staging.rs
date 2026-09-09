@@ -488,3 +488,48 @@ impl Composer {
         }));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    /// Ticket 09's composer seam: a dragged/attached tree entry stages as a
+    /// path reference — bound to its live target, deduplicated per draft —
+    /// and never sends anything (no queue touch, no failure notice for a
+    /// healthy path).
+    #[gpui::test]
+    fn tree_entries_stage_deduplicated_without_sending(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a file.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let folder = dir.path().join("pkg");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        // The same drop landing twice stays one chip; a folder joins as a
+        // folder reference; a file inside it coexists.
+        composer.update(cx, |composer, cx| {
+            composer.add_paths(vec![file.clone()], cx);
+            composer.add_paths(vec![file.clone()], cx);
+            composer.add_paths(vec![folder.clone()], cx);
+        });
+        composer.update(cx, |composer, _| {
+            // bind canonicalizes (macOS tempdirs live behind /var →
+            // /private/var), so compare against the resolved targets.
+            let file = std::fs::canonicalize(&file).unwrap();
+            let folder = std::fs::canonicalize(&folder).unwrap();
+            let refs = composer.staged_refs();
+            assert_eq!(refs.len(), 2, "duplicate attachments dedup: {refs:?}");
+            assert!(refs.iter().any(|r| r.path == file && !r.is_dir));
+            assert!(refs.iter().any(|r| r.path == folder && r.is_dir));
+            assert!(composer.failure.is_none());
+            assert!(!composer.sending);
+        });
+        // Nothing was queued or sent: the empty AppState still has no queue.
+        state.read_with(cx, |state, _| assert!(state.message_queue.is_none()));
+    }
+}

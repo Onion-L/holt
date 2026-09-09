@@ -61,6 +61,7 @@ mod titlebar;
 
 pub use chat_list::*;
 use chat_menu::ChatMenuState;
+mod file_lookup;
 mod file_sidebar;
 use file_sidebar::*;
 pub use right_pane::*;
@@ -73,6 +74,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        OpenFileLookup,
         NewSession,
         OpenSettings,
         NextSession,
@@ -273,6 +275,9 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // Fixed: ⌘K summons the add-space palette (the ⌘K chip in its search
         // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
+        // Fixed: ⌘P opens the find-file palette (ticket 09) — the tree
+        // column's search row carries the same shortcut.
+        KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
@@ -630,6 +635,8 @@ pub struct Shell {
     /// The File tree's context menu (ticket 06): the menu target plus the
     /// owning Space it opened under.
     file_menu: popover::Popup<(FileMenuTarget, String)>,
+    /// The find-file palette (ticket 09, ⌘P), `Some` while open.
+    file_lookup: Option<file_lookup::FileLookup>,
     /// The create/rename dialog opened from that menu.
     file_op_dialog: Option<file_sidebar::FileOpDialog>,
     /// Bumped whenever a new file-op dialog opens — stale in-flight errors
@@ -911,6 +918,7 @@ impl Shell {
             file_viewers_sub: std::collections::HashMap::new(),
             _file_tree_expansion: None,
             file_menu: popover::Popup::default(),
+            file_lookup: None,
             file_op_dialog: None,
             file_op_epoch: 0,
             file_cut: None,
@@ -1818,14 +1826,16 @@ impl Shell {
     }
 
     /// Whether an overlay that owns the keyboard is up — the add-space
-    /// palette or a composer picker popover (model selector, traits, repo,
-    /// branch…). Session-nav shortcuts (cycle/jump/archive) go quiet
-    /// underneath one: gpui runs a matched binding before any `on_key_down`,
-    /// so an unguarded jump would switch sessions UNDER the open popover,
-    /// stranding it over a session the user never picked.
+    /// palette, the find-file palette, or a composer picker popover (model
+    /// selector, traits, repo, branch…). Session-nav shortcuts
+    /// (cycle/jump/archive) go quiet underneath one: gpui runs a matched
+    /// binding before any `on_key_down`, so an unguarded jump would switch
+    /// sessions UNDER the open popover, stranding it over a session the user
+    /// never picked.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
         self.chat_menu.get().is_some()
             || self.add_space.is_some()
+            || self.file_lookup.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
@@ -2019,6 +2029,9 @@ impl Shell {
         }
         overlays.extend(self.render_file_draft_overlays(viewport, window, cx));
         overlays.extend(self.render_file_menu_overlay(viewport, window, cx));
+        if let Some(overlay) = self.render_file_lookup_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
 
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(
@@ -2543,6 +2556,39 @@ impl Shell {
                         cx.notify();
                     })),
             )
+            // The same veil for entries dragged from the File sidebar
+            // (ticket 09): an internal drag never triggers the
+            // ExternalPaths layer above, so tree drags get their own — the
+            // whole conversation column is the drop surface, matching the
+            // OS-file behavior. The pill itself carries a tighter highlight
+            // (composer.rs); both funnels stage the same path reference.
+            .child(
+                div()
+                    .invisible()
+                    .absolute()
+                    .inset_0()
+                    .bg(theme.scrim().opacity(0.4 / 0.6))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(crate::typography::ui_rems(13.0))
+                    .text_color(theme.text)
+                    .child("Drop to attach")
+                    .drag_over::<crate::files::tree::TreeEntryDrag>(|style, _, _, _| {
+                        style.visible()
+                    })
+                    .on_drop(cx.listener(
+                        |this, entry: &crate::files::tree::TreeEntryDrag, _, cx| {
+                            this.composer.update(cx, |composer, cx| {
+                                composer.add_paths(
+                                    vec![std::path::PathBuf::from(entry.path.as_str())],
+                                    cx,
+                                );
+                            });
+                            cx.notify();
+                        },
+                    )),
+            )
             .into_any_element()
     }
 
@@ -3047,6 +3093,9 @@ impl Render for Shell {
                 } else {
                     this.open_add_space(cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &OpenFileLookup, _, cx| {
+                this.toggle_file_lookup(cx);
             }));
 
         let root = match &gate {

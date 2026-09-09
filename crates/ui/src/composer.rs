@@ -1047,6 +1047,28 @@ impl Render for Composer {
                 .child(
                     div()
                         .relative()
+                        // Tree-entry drops (ticket 09): a file or folder
+                        // dragged from the File sidebar lands here as a path
+                        // reference — the same staging the picker and OS-file
+                        // drops use (bind to the live target, dedup, per-draft
+                        // ownership). Internal drags never trigger the
+                        // ExternalPaths veil above.
+                        .rounded(px(26.0))
+                        .drag_over::<crate::files::tree::TreeEntryDrag>(|style, _, _, _| {
+                            style
+                                .bg(crate::theme::wash(0.08))
+                                .border_1()
+                                .border_color(crate::theme::ink(0.18))
+                        })
+                        .on_drop::<crate::files::tree::TreeEntryDrag>(cx.listener(
+                            |this, payload: &crate::files::tree::TreeEntryDrag, _, cx| {
+                                this.add_paths(
+                                    vec![std::path::PathBuf::from(payload.path.as_str())],
+                                    cx,
+                                );
+                                cx.notify();
+                            },
+                        ))
                         .child(crate::frost::frosted(
                             26.0,
                             16.0,
