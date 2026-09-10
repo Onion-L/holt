@@ -88,8 +88,9 @@ fn git_kind_for(index: &GitStatusIndex, path: &str) -> Option<WorkspaceGitStatus
 }
 
 /// The marker letter and its tooltip text. `Ignored` renders no letter —
-/// subdued styling is its whole treatment.
-fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str, SharedString)> {
+/// subdued styling is its whole treatment. Shared with the Git panel's
+/// kind badges.
+pub(crate) fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str, SharedString)> {
     use WorkspaceGitStatusKind as Kind;
     match kind {
         Kind::Untracked => Some((
@@ -109,8 +110,8 @@ fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str, SharedStr
 
 /// The marker's color: new content green, changes and conflicts amber,
 /// removals red. `Ignored` never carries a letter (see [`marker_parts`]);
-/// the arm keeps the match exhaustive.
-fn marker_color(kind: WorkspaceGitStatusKind, theme: &Theme) -> gpui::Hsla {
+/// the arm keeps the match exhaustive. Shared with the Git panel.
+pub(crate) fn marker_color(kind: WorkspaceGitStatusKind, theme: &Theme) -> gpui::Hsla {
     use WorkspaceGitStatusKind as Kind;
     match kind {
         Kind::Untracked | Kind::Added => theme.success,

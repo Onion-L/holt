@@ -1,7 +1,9 @@
 //! Shared scaffolding for the settings pages — the original's page rhythm
 //! (`mx-auto max-w-3xl px-6 pb-16 pt-8`), section cards, row layout, badges
 //! and small buttons, so every page reads as the same product surface
-//! (holt settings.agents.tsx / settings.archived.tsx).
+//! (holt settings.agents.tsx / settings.archived.tsx). A few cross-surface
+//! controls (the checkbox) live here too, following the same display-only
+//! idiom.
 
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
 
@@ -285,6 +287,45 @@ pub fn animated_toggle_switch(
             move |track, progress| track.bg(motion::mix(from_track, to_track, progress)),
         );
     div().flex_none().w(px(32.0)).h(px(18.0)).child(track)
+}
+
+/// Checkbox state for [`checkbox`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckboxState {
+    Unchecked,
+    Checked,
+    /// Visible but never clickable (a conflicted status row, a control over
+    /// a non-git root).
+    Disabled,
+}
+
+/// Display-only checkbox (the Git panel's staging rows): a 14px rounded box,
+/// accent-filled with a check glyph when on, dimmed when disabled. State is
+/// owned by the parent row — the caller adds `.id(..)` and `.on_click(..)`.
+pub fn checkbox(theme: &Theme, state: CheckboxState) -> gpui::Div {
+    let mut box_el = div()
+        .flex_none()
+        .size(px(14.0))
+        .rounded(px(4.0))
+        .border_1()
+        .flex()
+        .items_center()
+        .justify_center();
+    box_el = match state {
+        CheckboxState::Checked => box_el.bg(theme.accent).border_color(theme.accent),
+        _ => box_el.border_color(theme.border_strong).bg(ink(0.02)),
+    };
+    if state == CheckboxState::Checked {
+        box_el = box_el.child(
+            crate::icons::icon(crate::icons::CHECK)
+                .size(px(10.0))
+                .text_color(theme.on_solid),
+        );
+    }
+    if state == CheckboxState::Disabled {
+        box_el = box_el.opacity(0.4);
+    }
+    box_el
 }
 
 /// A small quiet ghost action (`rounded-lg px-2.5 py-1.5 text-[12px]

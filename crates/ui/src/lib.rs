@@ -24,6 +24,7 @@ pub mod composer;
 pub mod edge_fade;
 pub mod files;
 pub mod frost;
+pub mod git_panel;
 pub mod history;
 pub mod icons;
 pub mod image_viewer;

@@ -30,6 +30,7 @@ use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent
 use crate::files::FileStateMap;
 use crate::files::tree::{FileMenuTarget, FileTreeEvent, FileTreePanel};
 use crate::files::viewer::{FileScope, FileViewerEvent};
+use crate::git_panel::GitPanel;
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
@@ -612,6 +613,10 @@ pub struct Shell {
     /// Event hookups for [`Self::diffs`] (History rows opening commit tabs).
     diff_subs: std::collections::HashMap<u64, Subscription>,
     diff_seq: u64,
+    /// Git panel surfaces by id — each tab its own [`GitPanel`] status watch
+    /// (ticket 03).
+    git_panels: std::collections::HashMap<u64, Entity<GitPanel>>,
+    git_seq: u64,
     /// Subagent transcript surfaces by id — each tab a read-only
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
@@ -991,6 +996,8 @@ impl Shell {
             diffs: std::collections::HashMap::new(),
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
+            git_panels: std::collections::HashMap::new(),
+            git_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
             subagent_seq: 0,
             right_tabs: std::collections::HashMap::new(),

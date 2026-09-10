@@ -34,6 +34,9 @@ pub enum RightSurface {
     /// A Space-owned file contents tab (ADR-0020) — the handle keys
     /// [`Shell::file_state`]'s tabs for the CURRENT space, not any chat.
     File(u64),
+    /// The Git panel (ticket 03): the chat's live working-tree status,
+    /// read-only for now — the handle keys [`Shell::git_panels`].
+    Git(u64),
     /// The File surface itself (picker card / `+` row): the far-right tree
     /// plus the Space's file tabs in the shared contents area. Never a strip
     /// chip — [`Shell::resolved_right_active`] shows it as the Space's live
@@ -209,6 +212,10 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone())),
+                RightSurface::Git(id) => self
+                    .git_panels
+                    .get(id)
+                    .map(|_| (*surface, SharedString::from("Git"))),
                 RightSurface::Picker => None,
                 RightSurface::File(id) => self
                     .file_space_key(cx)
@@ -347,6 +354,9 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
+            // Same for the Git panel: its status watch starts at open and
+            // lives until the tab closes.
+            RightSurface::Git(_) => {}
             // File tabs are Space-owned: activation records the space's
             // selected tab (the strip's duplicate-open identity).
             RightSurface::File(id) => {
@@ -364,9 +374,8 @@ impl Shell {
         cx.notify();
     }
 
-    /// The picker's Git card / the `+` menu's Diff row: every click opens a
-    /// FRESH diff tab with its own scope/base selection (multiple diff
-    /// panels, user request).
+    /// The `+` menu's Diff row: every click opens a FRESH diff tab with its
+    /// own scope/base selection (multiple diff panels, user request).
     pub(super) fn add_diff_surface(&mut self, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, cx);
@@ -403,6 +412,22 @@ impl Shell {
             .or_default()
             .push(RightSurface::Diff(id));
         self.set_right_active(RightSurface::Diff(id), cx);
+    }
+
+    /// The picker's Git card / the `+` menu's Git row (ticket 03): every
+    /// click opens a fresh Git panel tab watching the current chat's working
+    /// directory.
+    pub(super) fn add_git_surface(&mut self, cx: &mut Context<Self>) {
+        let panel = cx.new(|cx| GitPanel::new(self.state.clone(), cx));
+        self.git_seq += 1;
+        let id = self.git_seq;
+        self.git_panels.insert(id, panel);
+        let key = self.panel_key(cx);
+        self.right_tabs
+            .entry(key)
+            .or_default()
+            .push(RightSurface::Git(id));
+        self.set_right_active(RightSurface::Git(id), cx);
     }
 
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
@@ -593,6 +618,10 @@ impl Shell {
                 self.diffs.remove(&id);
                 self.diff_subs.remove(&id);
             }
+            RightSurface::Git(id) => {
+                // Dropping the entity cancels its status watch.
+                self.git_panels.remove(&id);
+            }
             RightSurface::Terminal(tab) => {
                 let panel = self.right_terminal_panel(cx);
                 panel.update(cx, |panel, cx| panel.close_tab_by_key(tab, window, cx));
@@ -726,6 +755,13 @@ impl Shell {
                 },
                 // File browsing shares this host with Git and Terminal.
                 RightSurface::Files => self.render_file_tree_surface(cx),
+                // The Git panel owns its whole surface (header included).
+                RightSurface::Git(id) if self.git_panels.contains_key(&id) => self
+                    .git_panels
+                    .get(&id)
+                    .expect("checked")
+                    .clone()
+                    .into_any_element(),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -901,11 +937,13 @@ impl Shell {
                         ),
                     )
                     // Git only where there IS git — the pane itself no
-                    // longer gates on it (terminals work anywhere).
+                    // longer gates on it (terminals work anywhere). The card
+                    // opens the Git panel's Status tab (ticket 03); the diff
+                    // viewer keeps its own Diff row in the `+` menu.
                     .when(self.space_git_detected(cx), |el| {
                         el.child(row("surface-card-git", icons::GIT_BRANCH, "Git").on_click(
                             cx.listener(|this, _, _, cx| {
-                                this.add_diff_surface(cx);
+                                this.add_git_surface(cx);
                             }),
                         ))
                     }),
@@ -996,6 +1034,7 @@ impl Shell {
             let is_active = surface == active;
             let icon_path = match surface {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
+                RightSurface::Git(_) => icons::CHECKLIST,
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::File(_) => icons::DOCUMENT,
                 _ => icons::TERMINAL,
@@ -1269,6 +1308,24 @@ impl Shell {
                         )
                         .when(self.space_git_detected(cx), |menu| {
                             menu.child(
+                                popover::menu_row(&theme, false, "right-plus-git")
+                                    .id("right-plus-git-row")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.add_git_surface(cx);
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::CHECKLIST)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    // The Git panel's Status tab (ticket 03).
+                                    .child(SharedString::from("Git")),
+                            )
+                            // The Changes diff viewer keeps its own entry
+                            // here — the picker's Git card moved to the
+                            // panel (ticket 03).
+                            .child(
                                 popover::menu_row(&theme, false, "right-plus-diff")
                                     .id("right-plus-diff-row")
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1280,10 +1337,7 @@ impl Shell {
                                             .size(px(13.0))
                                             .text_color(theme.text_muted),
                                     )
-                                    // "Git", not "Git diff" — the surface hosts
-                                    // history and per-commit views too (user
-                                    // request; matches the picker card).
-                                    .child(SharedString::from("Git")),
+                                    .child(SharedString::from("Diff")),
                             )
                         }),
                 )
