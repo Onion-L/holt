@@ -2,10 +2,12 @@
 //! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
 //! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
 //! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
-//! for — plus holt's own content search (ADR-0004) in [`grep`].
+//! for — plus holt's own content search (ADR-0004) in [`grep`] and web fetch
+//! (ADR-0023) in [`web_fetch`].
 
 mod grep;
 mod read_chat;
+mod web_fetch;
 
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
@@ -606,7 +608,8 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 
 /// The toolset handed to the agent loop: pi-core's built-in read/write/
 /// edit/bash, all running against one environment rooted at `cwd`, plus
-/// holt's own content-search tool, exposed to the agent as `grep`.
+/// holt's own content-search and web-fetch tools, exposed to the agent as
+/// `grep` and `web_fetch`.
 #[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
     execution_tools_for_model(cwd, true)
@@ -621,6 +624,7 @@ pub(crate) fn execution_tools_for_model(cwd: &str, allow_images: bool) -> Vec<Ag
         with_execution_context(create_edit_tool(), &context),
         with_execution_context(create_bash_tool(BashToolOptions::default()), &context),
         grep::create_grep_tool(cwd),
+        web_fetch::create_web_fetch_tool(),
     ]
 }
 

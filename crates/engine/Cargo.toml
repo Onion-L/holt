@@ -32,6 +32,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 chrono.workspace = true
 tiktoken-rs = "0.7"
+reqwest.workspace = true
+htmd = "0.5"
 
 # System-trash deletion (ticket 07): the same objc2-foundation the vendored
 # gpui already carries, so the lockfile gains nothing. NSFileManager's

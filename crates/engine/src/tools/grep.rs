@@ -838,7 +838,7 @@ mod tests {
     fn execution_tools_mounts_grep() {
         let (root, _guard) = temp_root();
         let tools = crate::tools::execution_tools(root.to_str().unwrap());
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert!(tools.iter().any(|tool| tool.name == "grep"));
     }
 }
