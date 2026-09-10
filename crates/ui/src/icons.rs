@@ -68,6 +68,42 @@ provider_assets![
     (PROVIDER_ZAI, "zai"),
 ];
 
+macro_rules! app_assets {
+    ($(($const_name:ident, $path:literal)),+ $(,)?) => {
+        $(pub const $const_name: &str = concat!("apps/", $path, ".png");)+
+
+        const APP_ASSET_PATHS: &[&str] = &[
+            $(concat!("apps/", $path, ".png")),+
+        ];
+
+        fn load_app_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+            match path {
+                $(concat!("apps/", $path, ".png") => Some(Cow::Borrowed(
+                    include_bytes!(concat!("../assets/apps/", $path, ".png")).as_slice(),
+                )),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+// Full-colour brand marks for the titlebar's "open with" picker, rendered
+// via `img` (not the tinted SVG path). finder/vscode come from the holt
+// renderer assets; pycharm/terminal/ghostty are extracted from the installed
+// .app bundles; cursor/zed ship per-appearance variants (`-dark` = light
+// glyph for dark surfaces, matching the provider icon convention).
+app_assets![
+    (APP_CURSOR_DARK, "cursor-dark"),
+    (APP_CURSOR_LIGHT, "cursor-light"),
+    (APP_FINDER, "finder"),
+    (APP_GHOSTTY, "ghostty"),
+    (APP_PYCHARM, "pycharm"),
+    (APP_TERMINAL, "terminal"),
+    (APP_VSCODE, "vscode"),
+    (APP_ZED_DARK, "zed-dark"),
+    (APP_ZED_LIGHT, "zed-light"),
+];
+
 macro_rules! icon_assets {
     ($(($const_name:ident, $path:literal)),+ $(,)?) => {
         $(pub const $const_name: &str = concat!("icons/", $path, ".svg");)+
@@ -81,7 +117,7 @@ macro_rules! icon_assets {
                     $(concat!("icons/", $path, ".svg") => Some(Cow::Borrowed(
                         include_bytes!(concat!("../assets/icons/", $path, ".svg")).as_slice(),
                     )),)+
-                    _ => load_provider_asset(path),
+                    _ => load_provider_asset(path).or_else(|| load_app_asset(path)),
                 })
             }
 
@@ -91,6 +127,7 @@ macro_rules! icon_assets {
                     .iter()
                     .copied()
                     .chain(PROVIDER_ASSET_PATHS.iter().copied())
+                    .chain(APP_ASSET_PATHS.iter().copied())
                     .filter(|p| p.starts_with(path))
                     .map(SharedString::from)
                     .collect())
@@ -251,6 +288,10 @@ mod tests {
                 .load(&path)
                 .unwrap()
                 .unwrap_or_else(|| panic!("missing asset {path}"));
+            if path.ends_with(".png") {
+                assert!(bytes.starts_with(b"\x89PNG"), "{path} is not a png");
+                continue;
+            }
             let text = std::str::from_utf8(&bytes).expect("icon svg is utf-8");
             assert!(text.contains("<svg"), "{path} is not an svg");
             assert!(text.contains("viewBox"), "{path} lacks a viewBox");
@@ -266,6 +307,7 @@ mod tests {
     fn list_filters_by_prefix() {
         assert!(!Assets.list("icons/").unwrap().is_empty());
         assert_eq!(Assets.list("providers/").unwrap().len(), 31);
+        assert_eq!(Assets.list("apps/").unwrap().len(), 9);
         assert!(Assets.list("fonts/").unwrap().is_empty());
     }
 }

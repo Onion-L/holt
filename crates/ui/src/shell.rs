@@ -20,7 +20,7 @@ use gpui::{
     Action, AnyElement, App, ClipboardItem, Context, Empty, Entity, Focusable as _, IntoElement,
     KeyBinding, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseUpEvent,
     Pixels, Point, Render, SharedString, Subscription, Task, Window, WindowControlArea, actions,
-    div, prelude::*, px,
+    div, img, prelude::*, px,
 };
 
 use holt_rpc::methods;
@@ -149,11 +149,32 @@ impl ExternalApp {
         }
     }
 
-    fn icon(self) -> &'static str {
+    /// Full-colour brand mark (PNG under `assets/apps/`), rendered by the
+    /// titlebar via `img` — not the tinted Solar SVG path. Cursor/Zed ship
+    /// per-appearance variants (`-dark` is the light glyph for dark
+    /// surfaces, same convention as the provider brand icons).
+    fn icon(self, appearance: crate::theme::Appearance) -> &'static str {
+        let dark = appearance.is_dark();
         match self {
-            Self::Finder => icons::FOLDER,
-            Self::Terminal | Self::Ghostty => icons::TERMINAL,
-            _ => icons::PROGRAMMING_OUTLINE,
+            Self::Finder => icons::APP_FINDER,
+            Self::VsCode => icons::APP_VSCODE,
+            Self::Cursor => {
+                if dark {
+                    icons::APP_CURSOR_DARK
+                } else {
+                    icons::APP_CURSOR_LIGHT
+                }
+            }
+            Self::Zed => {
+                if dark {
+                    icons::APP_ZED_DARK
+                } else {
+                    icons::APP_ZED_LIGHT
+                }
+            }
+            Self::PyCharm => icons::APP_PYCHARM,
+            Self::Terminal => icons::APP_TERMINAL,
+            Self::Ghostty => icons::APP_GHOSTTY,
         }
     }
 }

@@ -400,9 +400,9 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .child(
-                        icon(selected.icon())
+                        img(selected.icon(theme.appearance))
                             .size(px(16.0))
-                            .text_color(theme.text_muted),
+                            .flex_none(),
                     ),
             )
             .child(
@@ -436,7 +436,7 @@ impl Shell {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.open_workspace_in(app, cx);
                                 }))
-                                .child(icon(app.icon()).size(px(16.0)).text_color(theme.text_muted))
+                                .child(img(app.icon(theme.appearance)).size(px(16.0)).flex_none())
                                 .child(SharedString::from(app.label()))
                                 .child(div().flex_1())
                                 .when(active, |row| {
