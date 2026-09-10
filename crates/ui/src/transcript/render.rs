@@ -1392,7 +1392,7 @@ impl Transcript {
         let card_metrics: Vec<Option<(bool, f32, f32)>> = tools
             .iter()
             .enumerate()
-            .map(|(ix, tool)| {
+            .map(|(ix, _tool)| {
                 if details[ix].is_none() && invocations[ix].is_none() {
                     return None;
                 }
