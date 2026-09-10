@@ -191,8 +191,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `sha256(deviceId ‖ NUL ‖ git_dir)`), `GetCheckoutDiff` /
   `GetCheckoutFileDiffText` in working-tree / branch (merge-base) / commit
   / turn (net-change baseline, ADR-0003) modes — plus `ListGitHistory`
-  (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
-  30 s timeout).
+  (paged topo-ordered graph), `FetchAll` (prune, system credentials,
+  30 s timeout), and the Git panel's write trio `StagePaths` /
+  `UnstagePaths` / `CommitStaged` (ADR-0022: path validation, conflicted
+  paths, and mid-merge/rebase/revert/cherry-pick states all refuse
+  engine-side; commit identity is the repo's git config, author ==
+  committer; the agent tool surface stays read-only).
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktrees, change requests, and uploads.
 

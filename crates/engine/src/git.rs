@@ -206,6 +206,46 @@ impl Git {
         .await
     }
 
+    /// Stage repo-relative paths into the index (ADR-0022): `git add`
+    /// semantics under the per-checkout lock — modifications, untracked
+    /// files, recursive directories, and workdir deletions (remove from
+    /// index, never a bogus add). The panel's first content-mutating
+    /// operation; the agent tool surface stays read-only.
+    pub(crate) async fn stage_paths(
+        &self,
+        repo_path: &str,
+        paths: Vec<String>,
+    ) -> Result<(), GitFault> {
+        self.with_repo(repo_path, move |repo| stage_paths(&repo, &paths))
+            .await
+    }
+
+    /// Unstage repo-relative paths: reset their index entries to HEAD
+    /// (`git reset -- <paths>`), or drop them from the index outright on an
+    /// unborn HEAD. A path absent from the index is a successful no-op.
+    pub(crate) async fn unstage_paths(
+        &self,
+        repo_path: &str,
+        paths: Vec<String>,
+    ) -> Result<(), GitFault> {
+        self.with_repo(repo_path, move |repo| unstage_paths(&repo, &paths))
+            .await
+    }
+
+    /// Commit the staged index and return the new commit's sha. Identity
+    /// comes from the repo's effective git config (author == committer);
+    /// mid-operation states and a nothing-staged index refuse — see
+    /// [`commit_staged`].
+    pub(crate) async fn commit_staged(
+        &self,
+        repo_path: &str,
+        message: &str,
+    ) -> Result<String, GitFault> {
+        let message = message.to_string();
+        self.with_repo(repo_path, move |repo| commit_staged(&repo, &message))
+            .await
+    }
+
     /// The File sidebar's working-tree status snapshot (file-sidebar ticket
     /// 10): one `statuses()` pass over the checkout — untracked and ignored
     /// directories reported whole, never recursed into — classified into
@@ -685,6 +725,239 @@ fn create_and_switch(
     }
 }
 
+// ---- staging and commit (ADR-0022) ----
+
+/// The write trio's path contract: at least one path, each repo-relative
+/// with no escapes — absolute paths and `..` components are bad params.
+fn validate_repo_paths(paths: &[String]) -> Result<(), GitFault> {
+    if paths.is_empty() {
+        return Err(GitFault::BadParams(
+            "paths must list at least one repo-relative path".into(),
+        ));
+    }
+    for path in paths {
+        let parsed = Path::new(path);
+        if path.trim().is_empty() {
+            return Err(GitFault::BadParams("paths must not be empty".into()));
+        }
+        if parsed.is_absolute() {
+            return Err(GitFault::BadParams(format!(
+                "paths must be repo-relative, not absolute: {path}"
+            )));
+        }
+        if parsed
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(GitFault::BadParams(format!(
+                "paths must not escape the repository: {path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse to stage or unstage any requested path that IS — or contains — a
+/// conflicted index entry: libgit2 would silently mark the conflict
+/// resolved, discarding the merge information the user still needs.
+fn refuse_conflicted(repo: &Repository, paths: &[String]) -> Result<(), GitFault> {
+    let index = repo.index().map_err(git_fail)?;
+    if !index.has_conflicts() {
+        return Ok(());
+    }
+    let mut conflicted: Vec<String> = Vec::new();
+    let conflicts = index.conflicts().map_err(git_fail)?;
+    for conflict in conflicts {
+        let conflict = conflict.map_err(git_fail)?;
+        for side in [conflict.ancestor, conflict.our, conflict.their]
+            .into_iter()
+            .flatten()
+        {
+            conflicted.push(String::from_utf8_lossy(&side.path).into_owned());
+        }
+    }
+    for requested in paths {
+        let hit = conflicted
+            .iter()
+            .any(|path| path == requested || path.starts_with(&format!("{requested}/")));
+        if hit {
+            return Err(GitFault::Error(format!(
+                "{requested} has unresolved merge conflicts — resolve them first"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `git add <paths>`: one `add_all` pass stages modifications, untracked
+/// files (directories recursively), and deletions of paths the working
+/// tree no longer has — the deletion lands as a remove-from-index, never a
+/// bogus add of a missing file.
+fn stage_paths(repo: &Repository, paths: &[String]) -> Result<(), GitFault> {
+    validate_repo_paths(paths)?;
+    refuse_conflicted(repo, paths)?;
+    let mut index = repo.index().map_err(git_fail)?;
+    index
+        .add_all(paths.iter(), git2::IndexAddOption::DEFAULT, None)
+        .map_err(git_fail)?;
+    index.write().map_err(git_fail)?;
+    Ok(())
+}
+
+/// `git reset -- <paths>`: reset each path's index entry to HEAD. With an
+/// unborn HEAD there is nothing to reset against, so the paths drop out of
+/// the index outright (`git rm --cached` semantics); either way a path
+/// absent from the index is a successful no-op.
+fn unstage_paths(repo: &Repository, paths: &[String]) -> Result<(), GitFault> {
+    validate_repo_paths(paths)?;
+    refuse_conflicted(repo, paths)?;
+    match repo.head() {
+        Ok(head) => {
+            let target = head.peel(git2::ObjectType::Any).map_err(git_fail)?;
+            repo.reset_default(Some(&target), paths.iter())
+                .map_err(git_fail)?;
+        }
+        Err(error) if unborn(&error) => {
+            let mut index = repo.index().map_err(git_fail)?;
+            let wanted: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+            let mut to_remove: Vec<PathBuf> = Vec::new();
+            for position in 0..index.len() {
+                let Some(entry) = index.get(position) else {
+                    continue;
+                };
+                let entry_path = PathBuf::from(String::from_utf8_lossy(&entry.path).into_owned());
+                if wanted
+                    .iter()
+                    .any(|path| entry_path == *path || entry_path.starts_with(path))
+                {
+                    to_remove.push(entry_path);
+                }
+            }
+            for path in to_remove {
+                match index.remove_path(&path) {
+                    Ok(()) => {}
+                    // Absent from the index: the no-op case.
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                    Err(error) => return Err(GitFault::Error(git_message(error))),
+                }
+            }
+            index.write().map_err(git_fail)?;
+        }
+        Err(error) => return Err(GitFault::Error(git_message(error))),
+    }
+    Ok(())
+}
+
+/// `repo.head()` reports an unborn branch (no commits yet) as UnbornBranch
+/// or NotFound depending on how HEAD is set — both mean "no HEAD commit".
+fn unborn(error: &git2::Error) -> bool {
+    matches!(
+        error.code(),
+        git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+    )
+}
+
+/// Commit the staged index on HEAD, returning the new sha. Safety gates,
+/// in order: a blank message is bad params; any in-progress operation
+/// (merge, rebase, revert, cherry-pick — even with all conflicts resolved,
+/// where the merge state persists) refuses, because git2's `commit()` does
+/// not pick up `MERGE_HEAD` and would silently drop the merge parentage;
+/// and a nothing-staged index refuses like `git commit` does. Identity is
+/// the repo's effective `user.name` / `user.email`, author == committer —
+/// a missing identity fails with an actionable message. On a detached HEAD
+/// the commit advances HEAD directly and moves no branch; on an unborn
+/// HEAD it creates the parentless root commit.
+fn commit_staged(repo: &Repository, message: &str) -> Result<String, GitFault> {
+    if message.trim().is_empty() {
+        return Err(GitFault::BadParams(
+            "commit message must not be blank".into(),
+        ));
+    }
+    let state = repo.state();
+    if state != git2::RepositoryState::Clean {
+        return Err(GitFault::Error(format!(
+            "cannot commit while a {} is in progress — finish or abort it first",
+            operation_label(state),
+        )));
+    }
+    let head_commit = match repo.head() {
+        Ok(head) => Some(head.peel_to_commit().map_err(git_fail)?),
+        Err(error) if unborn(&error) => None,
+        Err(error) => return Err(GitFault::Error(git_message(error))),
+    };
+    let mut index = repo.index().map_err(git_fail)?;
+    let staged = match &head_commit {
+        Some(commit) => {
+            let head_tree = commit.tree().map_err(git_fail)?;
+            let diff = repo
+                .diff_tree_to_index(Some(&head_tree), Some(&index), None)
+                .map_err(git_fail)?;
+            diff.deltas().len() > 0
+        }
+        None => !index.is_empty(),
+    };
+    if !staged {
+        return Err(GitFault::Error("nothing staged to commit".into()));
+    }
+    let signature = commit_identity(repo)?;
+    let tree_id = index.write_tree().map_err(git_fail)?;
+    let tree = repo.find_tree(tree_id).map_err(git_fail)?;
+    let parents: Vec<&git2::Commit> = head_commit.iter().collect();
+    let oid = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .map_err(git_fail)?;
+    Ok(oid.to_string())
+}
+
+/// The commit signature: `user.name` / `user.email` from the repo's
+/// effective config (local → global → system), author == committer,
+/// exactly like `git commit`. Missing or blank values fail with the
+/// configuration hint the UI shows verbatim.
+fn commit_identity(repo: &Repository) -> Result<git2::Signature<'static>, GitFault> {
+    let config = repo.config().map_err(git_fail)?;
+    let name = config
+        .get_string("user.name")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let email = config
+        .get_string("user.email")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (name, email) {
+        (Some(name), Some(email)) => git2::Signature::now(&name, &email).map_err(git_fail),
+        _ => Err(GitFault::Error(
+            "no git identity configured — set user.name and user.email, e.g. \
+             `git config user.name \"Your Name\"` and `git config user.email you@example.com`"
+                .into(),
+        )),
+    }
+}
+
+/// The in-progress operation a non-Clean `RepositoryState` represents, for
+/// the commit refusal message.
+fn operation_label(state: git2::RepositoryState) -> &'static str {
+    use git2::RepositoryState as State;
+    match state {
+        State::Merge => "merge",
+        State::Revert | State::RevertSequence => "revert",
+        State::CherryPick | State::CherryPickSequence => "cherry-pick",
+        State::Rebase
+        | State::RebaseInteractive
+        | State::RebaseMerge
+        | State::ApplyMailboxOrRebase => "rebase",
+        State::ApplyMailbox => "am",
+        State::Bisect => "bisect",
+        _ => "operation",
+    }
+}
+
 fn git_message(error: git2::Error) -> String {
     error.message().to_string()
 }
@@ -901,6 +1174,11 @@ impl From<String> for GitFault {
     fn from(message: String) -> Self {
         Self::Error(message)
     }
+}
+
+/// Wrap a git2 failure as a repository-level [`GitFault::Error`].
+fn git_fail(error: git2::Error) -> GitFault {
+    GitFault::Error(git_message(error))
 }
 
 /// Resolve the diff base tree for a capture mode. `workingTree` keys on

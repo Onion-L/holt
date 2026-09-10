@@ -139,6 +139,26 @@ pub mod methods {
     pub const LIST_GIT_HISTORY: &str = "ListGitHistory";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
+    /// Stage repo-relative paths into the index (Git panel, ADR-0022):
+    /// params `{repoPath, paths}`, reply `{}`. `git add` semantics —
+    /// modifications, untracked files, recursive directories, and workdir
+    /// deletions all land in the index. Absolute paths, `..` components,
+    /// and empty lists are bad params; conflicted paths refuse (staging
+    /// one would silently mark the conflict resolved).
+    pub const STAGE_PATHS: &str = "StagePaths";
+    /// Unstage repo-relative paths (reset their index entries to HEAD; on
+    /// an unborn HEAD, drop them from the index outright): params
+    /// `{repoPath, paths}`, reply `{}`. A path absent from the index is a
+    /// successful no-op, matching `git reset -- <path>`.
+    pub const UNSTAGE_PATHS: &str = "UnstagePaths";
+    /// Commit the staged index: params `{repoPath, message}`, reply
+    /// `{sha}`. Identity comes from the repo's effective git config
+    /// (`user.name` / `user.email`), author equals committer; a missing
+    /// identity fails with an actionable message. A blank message is bad
+    /// params; committing with nothing staged, or while a merge / rebase /
+    /// revert / cherry-pick is in progress (even with conflicts resolved),
+    /// fails — git2 would otherwise drop the merge parentage.
+    pub const COMMIT_STAGED: &str = "CommitStaged";
     pub const SWITCH_REF: &str = "SwitchRef";
     /// Create a branch and check it out (`checkout -b` semantics): params
     /// `{repoPath, name, baseRef?}`. Base defaults to the current HEAD; the
