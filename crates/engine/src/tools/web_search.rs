@@ -38,17 +38,17 @@ backend. Results are not cached.";
 /// One search result as the model sees it. Adapters map their API's
 /// fields onto this shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SearchHit {
-    pub(crate) title: String,
-    pub(crate) url: String,
-    pub(crate) snippet: String,
+pub struct SearchHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
 }
 
 /// The pluggable web-search service behind the `web_search` tool: the
 /// user's Settings choice, carried as its own key (never a provider
 /// credential). Implemented by the backend adapters; mounted only when
 /// configured.
-pub(crate) trait SearchBackend: Send + Sync {
+pub trait SearchBackend: Send + Sync {
     /// The backend's display name — the tool's output header states it so
     /// the model knows where its results came from, and errors name it.
     fn name(&self) -> &str;

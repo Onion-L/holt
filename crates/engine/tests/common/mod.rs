@@ -470,6 +470,24 @@ impl Fixture {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
+            search_backend_resolver: None,
+        })
+        .unwrap()
+    }
+
+    /// The scripted engine plus an injected search-backend resolver
+    /// (ADR-0023): the injected table stands in for the built-in one when
+    /// the engine resolves the configured backend at Turn admission.
+    pub fn engine_with_search_backend(
+        &self,
+        provider: &ScriptedProvider,
+        resolver: holt_engine::SearchBackendResolver,
+    ) -> LocalEngine {
+        LocalEngine::assemble(&EngineConfig {
+            data_dir: self.data_dir.path().to_path_buf(),
+            personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
+            stream_fn: Some(provider.stream_fn()),
+            search_backend_resolver: Some(resolver),
         })
         .unwrap()
     }

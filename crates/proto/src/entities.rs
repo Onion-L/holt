@@ -132,6 +132,23 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
+/// The web-search settings view (ADR-0023): the configured backend plus a
+/// masked key — the reply shape of the web-search read and save RPCs.
+/// Both fields are `None` when no backend is configured; the raw key
+/// never rides this view (the dedicated reveal RPC is the only surface
+/// that returns it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchSettingsState {
+    /// The configured backend id (`zhipu` | `bocha` | `brave`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// The stored key, masked for display (first/last four characters;
+    /// keys of eight or fewer characters show only the ellipsis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_masked: Option<String>,
+}
+
 /// Immutable-at-run-start repository context owned by one conversation.
 ///
 /// This is deliberately separate from the live checkout snapshot: another

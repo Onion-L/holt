@@ -51,6 +51,7 @@ mod title_task;
 mod tools;
 mod trash;
 mod turn_events;
+mod web_search_settings;
 mod workspace_watch;
 
 use agent::AgentRuntime;
@@ -59,6 +60,13 @@ pub use instance_lock::InstanceLock;
 use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 use store::{load_chats, load_or_create_device_id, load_spaces};
+pub use tools::{SearchBackend, SearchHit};
+
+/// Maps a configured search-backend id (the `web-search.json` record's
+/// `backend`) to its mounted adapter. The engine's built-in table fills in
+/// as the backend slices land; tests inject one through `EngineConfig` to
+/// script the `web_search` tool end to end.
+pub type SearchBackendResolver = Arc<dyn Fn(&str) -> Option<Arc<dyn SearchBackend>> + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -84,16 +92,25 @@ pub struct EngineConfig {
     /// integration tests script model replies and assert on the message
     /// lists the "model" receives. Production assembly leaves it unset.
     pub stream_fn: Option<pi_core::agent::types::StreamFn>,
+    /// Injectable search-backend resolver, set only by tests (like
+    /// `stream_fn`): when present, it stands in for the built-in adapter
+    /// table when the engine resolves the configured backend at Turn
+    /// admission. Production assembly leaves it unset.
+    pub search_backend_resolver: Option<SearchBackendResolver>,
 }
 
 impl std::fmt::Debug for EngineConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The injected stream function is an opaque closure; its presence is
-        // the only fact worth printing.
+        // The injected stream function and resolver are opaque closures;
+        // their presence is the only fact worth printing.
         f.debug_struct("EngineConfig")
             .field("data_dir", &self.data_dir)
             .field("personal_skills_dir", &self.personal_skills_dir)
             .field("stream_fn", &self.stream_fn.as_ref().map(|_| "injected"))
+            .field(
+                "search_backend_resolver",
+                &self.search_backend_resolver.as_ref().map(|_| "injected"),
+            )
             .finish()
     }
 }
@@ -133,6 +150,13 @@ struct EngineService {
     /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
+    /// Engine-owned web-search settings (ADR-0023): the user-chosen search
+    /// backend record behind the `web_search` tool's mounting.
+    web_search: web_search_settings::WebSearchStore,
+    /// Test-injected backend resolver (`EngineConfig`); production resolves
+    /// through the built-in adapter table (which the backend slices fill
+    /// in).
+    search_backend_resolver: Option<SearchBackendResolver>,
     terminals: Arc<terminals::Terminals>,
     /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
@@ -175,6 +199,7 @@ impl LocalEngine {
         let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
+        let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -199,6 +224,8 @@ impl LocalEngine {
                 images: images::assemble(&config.data_dir),
                 title_settings,
                 mode_default,
+                web_search,
+                search_backend_resolver: config.search_backend_resolver.clone(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),
             },
@@ -248,6 +275,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let first = LocalEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
@@ -264,6 +292,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let _first = LocalEngine::assemble(&config).unwrap();
         assert!(LocalEngine::assemble(&config).is_err());
@@ -278,6 +307,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -341,6 +371,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -397,6 +428,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         })
         .unwrap();
         engine
@@ -487,6 +519,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         })
         .unwrap();
         engine
@@ -544,6 +577,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -636,6 +670,7 @@ mod tests {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -698,6 +733,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         })
         .unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -747,6 +783,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -833,6 +870,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -914,6 +952,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: None,
+            search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine

@@ -43,6 +43,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Saving rejects unresolvable provider-qualified models and empty or
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
+- Web search settings (ADR-0023): `GetWebSearchSettings` /
+  `SaveWebSearchSettings` (`{backend, apiKey}`, both replying the masked
+  `WebSearchSettingsState`), `RevealWebSearchKey`, and
+  `RemoveWebSearchSettings` — the user-chosen search-backend record in
+  `web-search.json` under the credentials pattern (0600, atomic replace,
+  malformed fails startup loudly). Saving validates the backend id
+  (zhipu/bocha/brave) and a non-empty key; the key is an independent
+  record, never shared with a same-vendor provider key. The engine
+  resolves the configured backend once per Turn admission — a mid-Turn
+  change lands from the next Turn — and an unconfigured (or not-yet-
+  shipped) backend leaves the `web_search` agent tool unmounted: absent,
+  never erroring.
 - Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —

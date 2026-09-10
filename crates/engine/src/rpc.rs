@@ -9,7 +9,7 @@ use holt_doc::{
 };
 use holt_proto::{
     AuthState, Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSettings,
-    TitleSettingsState, TitleSource,
+    TitleSettingsState, TitleSource, WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
@@ -804,10 +804,10 @@ impl EngineService {
             skills: self.skills.clone(),
             invocation,
             permission_mode: mode,
-            // No web-search backend is configured until the settings
-            // record exists (its own slice); `None` keeps `web_search`
-            // out of the toolset — absent, not erroring.
-            search_backend: None,
+            // The admission-time backend snapshot (ADR-0023): resolved
+            // once here, so a settings change mid-Turn lands from the
+            // next Turn — the same snapshot semantics as the mode.
+            search_backend: self.search_backend(),
             stream_fn: self.runtime.stream_fn.clone(),
         })
     }
@@ -959,6 +959,55 @@ impl EngineService {
         Some(format!(
             "Provider {provider} has no saved credentials — automatic titles will keep the fallback until a key is configured."
         ))
+    }
+
+    /// The web-search settings view (ADR-0023) — the reply shape of the
+    /// read and save RPCs. The raw key never rides this view.
+    fn web_search_state(&self) -> WebSearchSettingsState {
+        match self.web_search.get() {
+            Some(record) => WebSearchSettingsState {
+                backend: Some(record.backend),
+                api_key_masked: Some(masked_key(&record.api_key)),
+            },
+            None => WebSearchSettingsState {
+                backend: None,
+                api_key_masked: None,
+            },
+        }
+    }
+
+    async fn save_web_search_settings(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let backend = required_string(&params, "backend")?;
+        let key = required_string(&params, "apiKey")?;
+        if !crate::web_search_settings::KNOWN_BACKENDS.contains(&backend) {
+            return Err(RpcError::BadParams(format!(
+                "unknown search backend {backend:?}; expected one of {}",
+                crate::web_search_settings::KNOWN_BACKENDS.join(", "),
+            )));
+        }
+        self.web_search
+            .save(backend, key)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        RpcReply::value(&self.web_search_state())
+    }
+
+    /// The Turn's web-search backend (ADR-0023), resolved once per Turn
+    /// admission — a mid-Turn settings change lands from the next Turn,
+    /// like the permission mode. Unconfigured — or an id whose adapter
+    /// slice has not landed — resolves to no backend, so `web_search`
+    /// stays out of the toolset.
+    fn search_backend(&self) -> Option<Arc<dyn crate::SearchBackend>> {
+        let record = self.web_search.get()?;
+        match &self.search_backend_resolver {
+            Some(resolve) => resolve(&record.backend),
+            // The built-in adapter table grows as the backend slices land
+            // (ADR-0023's launch set: zhipu, bocha, brave); until an id's
+            // slice exists, its configured record mounts no tool.
+            None => None,
+        }
     }
 
     /// Cheap read-side pre-check for the Title task's eligibility window:
@@ -1245,6 +1294,19 @@ fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| RpcError::BadParams(format!("{field} is required")))
+}
+
+/// Mask a stored search key for display: the first and last four
+/// characters joined by an ellipsis. At least one character must stay
+/// hidden, so keys of eight or fewer characters reveal nothing at all.
+fn masked_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
+        return "…".into();
+    }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 fn required_string_list(params: &serde_json::Value, field: &str) -> Result<Vec<String>, RpcError> {
@@ -1547,6 +1609,17 @@ impl RpcService for EngineService {
             }
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.title_settings_state().await),
             methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,
+            methods::GET_WEB_SEARCH_SETTINGS => RpcReply::value(&self.web_search_state()),
+            methods::SAVE_WEB_SEARCH_SETTINGS => self.save_web_search_settings(params).await,
+            methods::REVEAL_WEB_SEARCH_KEY => RpcReply::value(&serde_json::json!({
+                "key": self.web_search.get().map(|record| record.api_key),
+            })),
+            methods::REMOVE_WEB_SEARCH_SETTINGS => {
+                self.web_search
+                    .remove()
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             // The composer's slash menu (ADR-0011): the one command this
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([

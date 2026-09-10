@@ -34,6 +34,7 @@ impl Fixture {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: None,
+            search_backend_resolver: None,
         })
         .unwrap()
     }

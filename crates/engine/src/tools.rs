@@ -640,7 +640,7 @@ pub(crate) fn execution_tools_for_model(
 }
 
 pub(crate) use read_chat::create_read_chat_tool;
-pub(crate) use web_search::SearchBackend;
+pub use web_search::{SearchBackend, SearchHit};
 
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;

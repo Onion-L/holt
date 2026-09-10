@@ -81,6 +81,7 @@ impl GitFixture {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: Some(ScriptedProvider::new(Vec::new()).stream_fn()),
+            search_backend_resolver: None,
         })
         .unwrap()
     }
@@ -118,6 +119,7 @@ impl UnbornFixture {
             data_dir: self.data_dir.path().to_path_buf(),
             personal_skills_dir: None,
             stream_fn: Some(ScriptedProvider::new(Vec::new()).stream_fn()),
+            search_backend_resolver: None,
         })
         .unwrap()
     }
