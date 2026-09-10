@@ -423,6 +423,25 @@ impl Shell {
         }
     }
 
+    /// The titlebar expand button: takeover swaps the conversation column for
+    /// the pane (full bleed); collapsing restores the manual width. Both ride
+    /// the shared tweens so the transition stays seamless.
+    pub(super) fn toggle_right_pane_expand(&mut self, cx: &mut Context<Self>) {
+        let from = self.right_target(cx);
+        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
+        let from_main = conversation_width(self.viewport_width, sidebar_now, from);
+        self.right_pane_expanded = !self.right_pane_expanded;
+        let to = self.right_target(cx);
+        let right_transition = WidthTween::new(from, to);
+        self.right_tween = Some(right_transition);
+        self.right_takeover_content_tween = Some(right_transition);
+        self.main_takeover_tween = Some(WidthTween::new(
+            from_main,
+            conversation_width(self.viewport_width, sidebar_now, to),
+        ));
+        cx.notify();
+    }
+
     /// Spawn-chip events from the primary transcript AND from subagent-tab
     /// transcripts (nested spawns open their own tabs).
     pub(super) fn on_transcript_event(

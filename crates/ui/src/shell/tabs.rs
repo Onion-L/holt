@@ -31,6 +31,14 @@ pub(super) fn cycle_target(
     Some(order[next].clone())
 }
 
+pub(super) fn right_pane_expand_icon(expanded: bool) -> &'static str {
+    if expanded {
+        icons::COLLAPSE_ARROWS
+    } else {
+        icons::EXPAND_ARROWS
+    }
+}
+
 impl Shell {
     /// Ctrl+Tab / Ctrl+Shift+Tab: step through the sidebar's Sessions list in
     /// the order it is drawn. Selection is immediate (no MRU overlay held open
@@ -105,13 +113,12 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [provider icon + session title] … [surface tabs ·
-    /// expand · close] [open with]`.
+    /// `[new-session +] [provider icon + session title] … [open with]
+    /// [terminal] [expand · right-pane toggle]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
-    /// animated left inset). The old file-tree/terminal/changes toggle
-    /// buttons are gone (ticket 11): the right pane's own surface picker is
-    /// the single entry point for File/Terminal/Git, and the File tree
-    /// column carries its hide control in the tree itself.
+    /// animated left inset). The terminal button toggles the BOTTOM terminal
+    /// panel; the pane's own surface picker remains the entry point for
+    /// File/Terminal/Git surfaces in the right pane.
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         // The canvas titles as NOTHING (user request — a "New session"
@@ -193,8 +200,11 @@ impl Shell {
         } else {
             content_left
         };
-        // Stable right-side actions: open-with, Terminal, then the shared
-        // right-pane toggle. These stay visible even while the pane is closed.
+        // Stable right-side actions: open-with, the bottom-terminal toggle,
+        // then the shared right-pane controls (expand while open + toggle).
+        // The terminal and pane toggles track their panel state with the
+        // active background.
+        let right_open = self.right_pane_open(cx);
         let trailing = div()
             .id("right-titlebar-controls")
             .flex_none()
@@ -207,12 +217,38 @@ impl Shell {
                 cfg!(target_os = "macos") && !self.external_apps.is_empty(),
                 |el| el.child(self.render_external_app_picker(cx)),
             )
-            .child(header_icon_button(
-                "open-terminal-surface",
-                icons::TERMINAL,
-                &theme,
-                cx.listener(|this, _, _, cx| this.add_terminal_surface(cx)),
-            ))
+            // Terminals are chat-scoped: the new-chat canvas carries no
+            // working terminal to toggle. This toggles the BOTTOM terminal
+            // panel (⌘J), not the right pane's terminal surface.
+            .when(!on_canvas, |cluster| {
+                cluster.child(
+                    header_icon_button(
+                        "toggle-terminal",
+                        icons::PROGRAMMING_OUTLINE,
+                        &theme,
+                        cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                    )
+                    .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle terminal".into()))
+                            .into()
+                    }),
+                )
+            })
+            .when(right_open, |cluster| {
+                cluster.child(
+                    header_icon_button(
+                        "expand-changes",
+                        right_pane_expand_icon(self.right_pane_expanded),
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
+                    )
+                    .tooltip(|_, cx| {
+                        cx.new(|_| crate::image_viewer::ViewerTooltip("Expand panel".into()))
+                            .into()
+                    }),
+                )
+            })
             .child(
                 header_icon_button(
                     "toggle-right-pane",
@@ -220,6 +256,7 @@ impl Shell {
                     &theme,
                     cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                 )
+                .when(right_open, |el| el.bg(theme.glass_hover()))
                 .tooltip(|_, cx| {
                     cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle right panel".into()))
                         .into()

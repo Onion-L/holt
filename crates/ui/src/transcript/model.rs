@@ -623,6 +623,38 @@ pub fn rows_for_entry(
 
     for (part_ix, part) in entry.parts.iter().enumerate() {
         match part {
+            MessagePart::Skill {
+                file,
+                content: None,
+                ..
+            } => {
+                // Skill-file reads belong with the assistant's other tools.
+                if pending_group.first().is_some_and(is_agent_tool) {
+                    flush_group(
+                        &mut rows,
+                        &mut pending_group,
+                        &mut group_ix,
+                        group_last_part_ix,
+                    );
+                }
+                let call = ToolCall::ReadFile { path: file.clone() };
+                pending_group.push(ToolItem {
+                    invocation: call_block(&call).map(Arc::new),
+                    call,
+                    is_error: false,
+                    resolved: true,
+                    detail: None,
+                    output_ref: None,
+                    output_bytes: None,
+                    diff_ref: None,
+                    subagent_ref: None,
+                    subagent_status: None,
+                    subagent_tail: None,
+                    is_thought: false,
+                    gate: None,
+                });
+                group_last_part_ix = part_ix;
+            }
             MessagePart::Tool {
                 id: part_id,
                 call,
@@ -1741,8 +1773,8 @@ mod tests {
         assert!(matches!(rows[1].kind, RowKind::ToolGroup { .. }));
         assert!(matches!(rows[2].kind, RowKind::Markdown { .. }));
 
-        // A read-collapse chip (no content) keeps the compact shape and
-        // re-keys with content presence.
+        // A skill-file read joins the thought/tool group instead of
+        // producing another standalone skill bubble.
         let mut plain = entry.clone();
         plain.parts[0] = MessagePart::Skill {
             id: "s0".into(),
@@ -1751,11 +1783,19 @@ mod tests {
             content: None,
         };
         let plain_rows = rows_for_entry(&plain, false, &mut parse);
-        match &plain_rows[0].kind {
-            RowKind::SkillChip { content, .. } => assert_eq!(content, &None),
-            _other => panic!("expected a skill chip"),
-        }
-        assert_ne!(plain_rows[0].version, rows[0].version);
+        assert_eq!(plain_rows.len(), 2);
+        let RowKind::ToolGroup { tools, .. } = &plain_rows[0].kind else {
+            panic!("expected the read and thought in one tool group");
+        };
+        assert_eq!(tools.len(), 2);
+        assert_eq!(
+            tools[0].call,
+            ToolCall::ReadFile {
+                path: "/home/.agents/skills/ask-matt/SKILL.md".into()
+            }
+        );
+        assert!(tools[1].is_thought);
+        assert!(matches!(plain_rows[1].kind, RowKind::Markdown { .. }));
     }
 
     #[test]

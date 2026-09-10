@@ -355,7 +355,7 @@ impl Shell {
         let mut trigger = div()
             .id("open-with-trigger")
             .h(px(28.0))
-            .w(px(100.0))
+            .w(px(50.0))
             .flex_none()
             .flex()
             .flex_row()
@@ -394,7 +394,7 @@ impl Shell {
             })
             .child(
                 div()
-                    .w(px(48.0))
+                    .w(px(24.0))
                     .h_full()
                     .flex()
                     .items_center()
