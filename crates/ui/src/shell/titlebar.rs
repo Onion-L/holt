@@ -361,44 +361,35 @@ impl Shell {
             .flex_row()
             .items_center()
             .rounded(px(8.0))
-            .cursor_pointer()
-            .bg(if menu_open {
-                theme.glass_hover()
-            } else {
-                theme.glass_hover().opacity(0.55)
-            })
+            .bg(theme.glass_hover().opacity(0.55))
             .occlude()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
-                    window.prevent_default();
-                    this.external_app_menu.note_trigger_press();
-                }),
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                if this.external_app_menu.take_press_was_open() {
-                    this.close_external_app_menu(cx);
-                } else {
-                    this.external_app_menu.open(this.selected_external_app());
-                    cx.notify();
-                }
-            }))
-            .tooltip(move |_, cx| {
-                cx.new(|_| {
-                    crate::image_viewer::ViewerTooltip(
-                        format!("Open workspace in {}", selected.label()).into(),
-                    )
-                })
-                .into()
-            })
+            // Left half: open the workspace in the selected app immediately.
             .child(
                 div()
+                    .id("open-with-open")
                     .w(px(24.0))
                     .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
+                    .rounded_l(px(8.0))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.glass_hover()))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.prevent_default();
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_workspace_in(selected, cx);
+                    }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| {
+                            crate::image_viewer::ViewerTooltip(
+                                format!("Open workspace in {}", selected.label()).into(),
+                            )
+                        })
+                        .into()
+                    })
                     .child(
                         img(selected.icon(theme.appearance))
                             .size(px(16.0))
@@ -411,12 +402,40 @@ impl Shell {
                     .h(px(18.0))
                     .bg(crate::theme::hairline(0.08)),
             )
+            // Right half: toggle the app-picker menu.
             .child(
-                div().flex_1().flex().items_center().justify_center().child(
-                    icon(icons::ALT_ARROW_DOWN)
-                        .size(px(14.0))
-                        .text_color(theme.text_muted),
-                ),
+                div()
+                    .id("open-with-menu")
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_r(px(8.0))
+                    .cursor_pointer()
+                    .when(menu_open, |el| el.bg(theme.glass_hover()))
+                    .hover(|style| style.bg(theme.glass_hover()))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, _| {
+                            window.prevent_default();
+                            this.external_app_menu.note_trigger_press();
+                        }),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        if this.external_app_menu.take_press_was_open() {
+                            this.close_external_app_menu(cx);
+                        } else {
+                            this.external_app_menu.open(this.selected_external_app());
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        icon(icons::ALT_ARROW_DOWN)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    ),
             );
 
         if menu_open || self.external_app_menu.is_closing() {
