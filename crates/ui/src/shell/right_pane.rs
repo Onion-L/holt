@@ -354,9 +354,14 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
-            // Same for the Git panel: its status watch starts at open and
-            // lives until the tab closes.
-            RightSurface::Git(_) => {}
+            // Same for the Git panel's status watch; its History tab,
+            // though, refreshes on visibility (ticket 07), so activation
+            // pokes the panel when History is the showing tab.
+            RightSurface::Git(id) => {
+                if let Some(panel) = self.git_panels.get(&id).cloned() {
+                    panel.update(cx, |panel, cx| panel.ensure_visible(cx));
+                }
+            }
             // File tabs are Space-owned: activation records the space's
             // selected tab (the strip's duplicate-open identity).
             RightSurface::File(id) => {
@@ -425,6 +430,11 @@ impl Shell {
         let sub = cx.subscribe(&panel, move |this: &mut Self, _, event, cx| match event {
             GitPanelEvent::ViewDiff { path } => {
                 this.open_git_companion_diff(id, path.clone(), cx);
+            }
+            GitPanelEvent::OpenCommit(commit) => {
+                // The History tab's row click: the same pinned-commit diff
+                // tab the Changes pane's History scope opens.
+                this.add_commit_diff_surface(commit.clone(), cx);
             }
         });
         self.git_panels.insert(id, panel);

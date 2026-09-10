@@ -1,33 +1,38 @@
-//! The right-pane Git panel (tickets 03/04/05/06): a per-chat surface
-//! rendering the live working-tree status stream as three flat,
-//! path-sorted sections — Staged, Unstaged, Untracked — with live staging
-//! and the commit box. Checking an unstaged/untracked row stages it,
-//! unchecking a staged row unstages it, and Stage all / Unstage all move
-//! everything in one click. State is purely stream-driven — no optimistic
-//! local layer — so the rows can never drift from the real index,
-//! including after external terminal git operations; a refused write
-//! surfaces the engine's message in an error strip. The commit box reuses
-//! the composer input (Enter commits, Shift-Enter breaks the line) with a
-//! count-labeled button gated on message ∧ staged ∧ no-conflicts — the
-//! engine's own gates (identity, mid-merge) remain the backstop. The
-//! header carries the working-tree diff's total +/- counts (whose file
-//! set is exactly the union of the three sections) and a View Diff
-//! action; a row click opens the Changes surface scrolled to that file.
-//! The panel owns one `WatchWorkspaceGitStatus` subscription and one
-//! `WatchCheckoutDiffs` subscription from open to close.
+//! The right-pane Git panel (tickets 03–07): a per-chat surface with two
+//! internal tabs. Status renders the live working-tree status stream as
+//! three flat, path-sorted sections — Staged, Unstaged, Untracked — with
+//! live staging and the commit box. Checking an unstaged/untracked row
+//! stages it, unchecking a staged row unstages it, and Stage all /
+//! Unstage all move everything in one click. State is purely
+//! stream-driven — no optimistic local layer — so the rows can never
+//! drift from the real index, including after external terminal git
+//! operations; a refused write surfaces the engine's message in an error
+//! strip. The commit box reuses the composer input (Enter commits,
+//! Shift-Enter breaks the line) with a count-labeled button gated on
+//! message ∧ staged ∧ no-conflicts — the engine's own gates (identity,
+//! mid-merge) remain the backstop. The header carries the working-tree
+//! diff's total +/- counts (whose file set is exactly the union of the
+//! three sections) and a View Diff action; a row click opens the Changes
+//! surface scrolled to that file. History hosts the existing commit-graph
+//! entity, refreshing on exactly two triggers: a successful commit from
+//! the panel and the tab becoming visible. The panel owns one
+//! `WatchWorkspaceGitStatus` subscription and one `WatchCheckoutDiffs`
+//! subscription from open to close.
 
 use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, div, px};
 use holt_proto::{
-    Chat, CheckoutDiff, WorkspaceGitStatus, WorkspaceGitStatusEntry, WorkspaceGitStatusKind,
+    Chat, CheckoutDiff, GitHistoryCommit, WorkspaceGitStatus, WorkspaceGitStatusEntry,
+    WorkspaceGitStatusKind,
 };
 use holt_rpc::methods;
 
 use crate::changes::apply_diff_frame;
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::files::tree::{marker_color, marker_parts};
+use crate::history::GitHistory;
 use crate::icons::{self, icon};
 use crate::settings::widgets::{self, CheckboxState};
 use crate::state::{AppState, EngineHandle};
@@ -36,12 +41,42 @@ use crate::theme::Theme;
 /// How long the committed short sha stays flashed beside the button.
 const COMMIT_FLASH: Duration = Duration::from_secs(4);
 
+/// The panel's internal tabs — plain view state, not right-pane surface
+/// tabs (ticket 07): one panel, two faces of the same checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitPanelTab {
+    #[default]
+    Status,
+    History,
+}
+
+impl GitPanelTab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Status => "Status",
+            Self::History => "History",
+        }
+    }
+
+    /// The tab-switch element id.
+    fn id_tag(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::History => "history",
+        }
+    }
+}
+
 /// Events the host (the right pane's surface strip) listens for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitPanelEvent {
     /// Open (or focus) this panel's companion Changes surface on the
     /// working-tree scope, scrolled to the file when one is given.
     ViewDiff { path: Option<String> },
+    /// A History commit row was clicked — open it as its own pinned
+    /// Changes diff tab (the same routing as the Changes pane's History
+    /// scope).
+    OpenCommit(GitHistoryCommit),
 }
 
 impl gpui::EventEmitter<GitPanelEvent> for GitPanel {}
@@ -366,6 +401,15 @@ pub struct GitPanel {
     committing: bool,
     /// The last commit's short sha, flashed briefly beside the button.
     committed_flash: Option<String>,
+    /// Which internal tab is showing (ticket 07).
+    tab: GitPanelTab,
+    /// The History tab's commit-graph entity — the same one the Changes
+    /// pane's History scope hosts, instantiated separately so both
+    /// coexist. Created lazily on first show; owns its data and rendering.
+    history: Option<Entity<GitHistory>>,
+    /// Holds the history entity's event subscription for the panel's
+    /// lifetime.
+    history_events: Option<Subscription>,
 }
 
 impl GitPanel {
@@ -395,6 +439,9 @@ impl GitPanel {
             _message_events,
             committing: false,
             committed_flash: None,
+            tab: GitPanelTab::default(),
+            history: None,
+            history_events: None,
         };
         panel.ensure_watch(cx);
         // The engine can attach AFTER the panel opens (boot ordering): retry
@@ -538,6 +585,51 @@ impl GitPanel {
         Some((repo_path, engine))
     }
 
+    /// The History tab's commit-graph entity, created on first show (the
+    /// Changes pane's own `history_pane` recipe): it owns its data and
+    /// rendering, and its commit clicks re-emit as
+    /// [`GitPanelEvent::OpenCommit`] for the surface strip to route — the
+    /// same pinned-diff tab the Changes pane's History scope opens.
+    fn ensure_history(&mut self, cx: &mut Context<Self>) -> Entity<GitHistory> {
+        if let Some(history) = &self.history {
+            return history.clone();
+        }
+        let history = cx.new(|cx| GitHistory::new(self.state.clone(), cx));
+        self.history_events = Some(cx.subscribe(&history, |_this: &mut Self, _, event, cx| {
+            if let crate::history::GitHistoryEvent::OpenCommit(commit) = event {
+                cx.emit(GitPanelEvent::OpenCommit(commit.clone()));
+            }
+        }));
+        self.history = Some(history.clone());
+        history
+    }
+
+    /// Switch the internal tab. Becoming visible is one of History's
+    /// exactly two refresh triggers: the entity is created (and loads) on
+    /// first show, then force-reloads on every later visit. Branch
+    /// switches made elsewhere while the panel stays open stay stale
+    /// until either trigger fires, by design — the status payload
+    /// deliberately carries no head sha to key a smarter invalidation.
+    fn select_tab(&mut self, tab: GitPanelTab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.ensure_visible(cx);
+        cx.notify();
+    }
+
+    /// The panel (or its History tab) became the visible surface — the
+    /// shell's activation hook. When History is the showing tab, its
+    /// visibility refresh fires; the Status tab needs nothing (its watch
+    /// runs from open to close).
+    pub fn ensure_visible(&mut self, cx: &mut Context<Self>) {
+        if self.tab == GitPanelTab::History {
+            let history = self.ensure_history(cx);
+            history.update(cx, |history, cx| history.ensure_current(cx));
+        }
+    }
+
     /// Issue one staging write through the engine's trio. No optimistic
     /// state: on success only the status watch's next frame moves the rows;
     /// on refusal the engine's message rides the error strip and the rows
@@ -617,6 +709,14 @@ impl GitPanel {
                         // just without a flash.
                         if !sha.is_empty() {
                             panel.flash_commit(sha, cx);
+                        }
+                        // History's first refresh trigger (ticket 07): the
+                        // returned sha is the new HEAD, so a forced page-0
+                        // reload lands it as the graph's marked head row.
+                        // A never-opened History tab needs nothing — its
+                        // first show loads fresh.
+                        if let Some(history) = panel.history.clone() {
+                            history.update(cx, |history, cx| history.reload(cx));
                         }
                     }
                     Err(err) => panel.view.note_write_error(err.to_string()),
@@ -839,11 +939,13 @@ impl GitPanel {
         .into_any_element()
     }
 
-    /// The slim header: which checkout this status belongs to (workdir),
-    /// the working-tree diff's total counts in the Changes header's own
-    /// spelling (`+N −M`, mono, add/del colors), and the View Diff action
-    /// (ticket 06). Totals hide while no diff frame has landed — they are
-    /// commentary on the list, never a gate on it.
+    /// The slim header: the internal Status | History tab switch, the
+    /// checkout this panel describes (workdir), the working-tree diff's
+    /// total counts in the Changes header's own spelling (`+N −M`, mono,
+    /// add/del colors), and the View Diff action (ticket 06) — the totals
+    /// and the diff action belong to the Status tab's list. Totals hide
+    /// while no diff frame has landed — they are commentary on the list,
+    /// never a gate on it.
     fn render_header(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
         let chat = self
             .chat_id
@@ -851,10 +953,11 @@ impl GitPanel {
             .and_then(|id| self.state.read(cx).chat_row(id));
         let totals = resolve_panel_diff(&self.diffs, chat, self.view.workdir.as_deref())
             .map(|diff| (diff.additions, diff.deletions));
+        let on_status = self.tab == GitPanelTab::Status;
         div()
             .flex_none()
             .h(px(36.0))
-            .pl(px(12.0))
+            .pl(px(8.0))
             .pr(px(8.0))
             .border_b_1()
             .border_color(theme.border)
@@ -866,10 +969,12 @@ impl GitPanel {
             .child(
                 div()
                     .flex_none()
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child("Status"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(Self::tab_chip(theme, self.tab, GitPanelTab::Status, cx))
+                    .child(Self::tab_chip(theme, self.tab, GitPanelTab::History, cx)),
             )
             .children(self.view.workdir.clone().map(|workdir| {
                 div()
@@ -880,29 +985,69 @@ impl GitPanel {
                     .text_color(theme.text_muted.opacity(0.7))
                     .child(SharedString::from(workdir))
             }))
-            .when_some(totals, |el, (additions, deletions)| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .gap(px(4.0))
-                        .font_family(theme.font_mono.clone())
-                        .text_size(px(11.0))
-                        .child(
-                            div()
-                                .text_color(theme.diff_add)
-                                .child(SharedString::from(format!("+{additions}"))),
-                        )
-                        .child(
-                            div()
-                                .text_color(theme.diff_del)
-                                .child(SharedString::from(format!("−{deletions}"))),
-                        ),
-                )
-            })
-            .child(Self::view_diff_button(theme, cx))
+            .when_some(
+                on_status.then_some(totals).flatten(),
+                |el, (additions, deletions)| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .gap(px(4.0))
+                            .font_family(theme.font_mono.clone())
+                            .text_size(px(11.0))
+                            .child(
+                                div()
+                                    .text_color(theme.diff_add)
+                                    .child(SharedString::from(format!("+{additions}"))),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.diff_del)
+                                    .child(SharedString::from(format!("−{deletions}"))),
+                            ),
+                    )
+                },
+            )
+            .when(on_status, |el| el.child(Self::view_diff_button(theme, cx)))
             .into_any_element()
+    }
+
+    /// One internal-tab chip: the active tab carries a wash and full
+    /// weight; the inactive one is a quiet switch.
+    fn tab_chip(
+        theme: &Theme,
+        current: GitPanelTab,
+        tab: GitPanelTab,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let active = current == tab;
+        let mut chip = div()
+            .id(SharedString::from(format!("git-tab-{}", tab.id_tag())))
+            .flex_none()
+            .h(px(22.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .rounded(px(6.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .font_weight(if active {
+                gpui::FontWeight::SEMIBOLD
+            } else {
+                gpui::FontWeight::MEDIUM
+            })
+            .text_color(if active { theme.text } else { theme.text_muted });
+        if active {
+            chip = chip.bg(crate::theme::wash(0.06));
+        } else {
+            chip = chip
+                .cursor_pointer()
+                .hover(|state| state.bg(crate::theme::wash(0.05)).text_color(theme.text))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.select_tab(tab, cx);
+                }));
+        }
+        chip.child(tab.label()).into_any_element()
     }
 
     /// The header's View Diff action: opens (or focuses) the panel's
@@ -1164,7 +1309,20 @@ impl GitPanel {
 impl Render for GitPanel {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let body: AnyElement = if !self.view.frame_seen {
+        let on_status = self.tab == GitPanelTab::Status;
+        let body: AnyElement = if !on_status {
+            // The History tab: the commit-graph entity, full bleed — it owns
+            // its data, list, empty states ("No commits yet" included), and
+            // even its own render-time `ensure_loaded`. The visibility
+            // reload itself happened in `select_tab` / `ensure_visible`.
+            let history = self.ensure_history(cx);
+            div()
+                .size_full()
+                .flex_1()
+                .min_h_0()
+                .child(history)
+                .into_any_element()
+        } else if !self.view.frame_seen {
             Self::render_centered(&theme, icons::GIT_BRANCH, "Reading git status…")
         } else if self.view.not_git {
             Self::render_centered(
@@ -1212,24 +1370,30 @@ impl Render for GitPanel {
             .size_full()
             .flex()
             .flex_col()
-            // The slim header: which checkout this status belongs to, the
-            // working-tree diff's total +/- counts (the Changes pane's own
-            // header spelling), and View Diff.
+            // The slim header: the Status | History switch, the checkout
+            // this panel describes, the working-tree diff's total +/-
+            // counts, and View Diff.
             .child(self.render_header(&theme, cx))
             // A refused stage/unstage strip carries the engine's message
-            // verbatim over rows that still tell the truth about the index.
-            .when_some(self.view.write_error.clone(), |el, message| {
-                el.child(Self::write_error_banner(&theme, message.into()))
-            })
+            // verbatim over rows that still tell the truth about the index —
+            // Status-tab chrome.
+            .when_some(
+                self.view.write_error.clone().filter(|_| on_status),
+                |el, message| el.child(Self::write_error_banner(&theme, message.into())),
+            )
             // The bulk actions ride a fixed bar under the header — hidden
             // while loading, on a non-git root, and on a clean tree.
             .when(
-                self.view.frame_seen && !self.view.not_git && !self.view.sections.is_empty(),
+                on_status
+                    && self.view.frame_seen
+                    && !self.view.not_git
+                    && !self.view.sections.is_empty(),
                 |el| el.child(self.render_toolbar(&theme, cx)),
             )
             // A read failure / stream interruption banners over the last
             // good frame (the Changes pane's watch-error pattern); a non-git
-            // root banners with its controls absent (no rows render).
+            // root banners with its controls absent (no rows render). Both
+            // tabs — they describe the checkout, not the status list.
             .when_some(self.view.error.clone(), |el, message| {
                 el.child(Self::banner(&theme, message))
             })
@@ -1240,11 +1404,13 @@ impl Render for GitPanel {
                 ))
             })
             .child(div().flex_1().min_h_0().child(body))
-            // The commit box rides pinned to the bottom on every git root —
-            // clean tree included, with the button gated off.
-            .when(self.view.frame_seen && !self.view.not_git, |el| {
-                el.child(self.render_commit_box(&theme, cx))
-            })
+            // The commit box rides pinned to the bottom of the Status tab —
+            // clean tree included, with the button gated off. History is a
+            // read view: no composer.
+            .when(
+                on_status && self.view.frame_seen && !self.view.not_git,
+                |el| el.child(self.render_commit_box(&theme, cx)),
+            )
     }
 }
 
@@ -1768,5 +1934,35 @@ mod tests {
         );
         assert_eq!(resolve_panel_diff(&diffs, None, Some("/nope")), None);
         assert_eq!(resolve_panel_diff(&diffs, None, None), None);
+    }
+
+    #[gpui::test]
+    fn the_history_tab_is_lazy_and_its_entity_survives_tab_switches(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+        });
+        let state = cx.new(|_| AppState::new());
+        let (panel, mut visual) = cx.add_window_view(|_window, cx| GitPanel::new(state, cx));
+        panel.update(&mut *visual, |panel, cx| {
+            assert_eq!(panel.tab, GitPanelTab::Status);
+            assert!(
+                panel.history.is_none(),
+                "the graph entity is created lazily"
+            );
+
+            panel.select_tab(GitPanelTab::History, cx);
+            assert_eq!(panel.tab, GitPanelTab::History);
+            assert!(panel.history.is_some(), "first show creates the entity");
+
+            let entity = panel.history.clone().unwrap();
+            panel.select_tab(GitPanelTab::Status, cx);
+            assert_eq!(panel.tab, GitPanelTab::Status);
+            assert!(
+                panel.history.as_ref() == Some(&entity),
+                "switching away keeps the instance"
+            );
+            panel.select_tab(GitPanelTab::History, cx);
+            assert!(panel.history.as_ref() == Some(&entity));
+        });
     }
 }

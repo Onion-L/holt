@@ -579,6 +579,35 @@ impl GitHistory {
         self.fetch_page(key, cwd, 0, true, cx);
     }
 
+    /// Force a page-0 reload — the Git panel's two refresh triggers
+    /// (ticket 07): a successful commit and the History tab becoming
+    /// visible. Unlike [`Self::refresh`], an in-flight page request is
+    /// cancelled first, because `fetch_page` refuses while `loading` and a
+    /// swallowed refresh would hide the just-made commit — the returned
+    /// sha is the new HEAD, so the refetched page lands it as the marked
+    /// head row.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.cancel_inflight();
+        self.refresh(cx);
+    }
+
+    /// Drop any in-flight page request so the next one cannot be refused
+    /// (or land late, over fresher rows).
+    fn cancel_inflight(&mut self) {
+        self.request_task = None;
+        self.loading = false;
+    }
+
+    /// The visibility refresh: a first show loads; every later one
+    /// force-reloads. Callers never poke `started` directly.
+    pub fn ensure_current(&mut self, cx: &mut Context<Self>) {
+        if self.started {
+            self.reload(cx);
+        } else {
+            self.ensure_loaded(cx);
+        }
+    }
+
     pub fn fetch_all(&mut self, cx: &mut Context<Self>) {
         if self.fetching_all {
             return;
@@ -611,8 +640,7 @@ impl GitHistory {
                         history.fetch_error = None;
                         // Cancel a pre-fetch history request so the next page
                         // is guaranteed to observe the updated remote refs.
-                        history.request_task = None;
-                        history.loading = false;
+                        history.cancel_inflight();
                         history.fetch_page(key, cwd, 0, true, cx);
                         cx.emit(GitHistoryEvent::FetchSucceeded);
                     }
@@ -1219,10 +1247,13 @@ impl Render for GitHistory {
                 )
                 .into_any_element()
         } else if self.commits.is_empty() {
+            // Empty first page, no error: an unborn repository (the engine
+            // answers `head_sha: null` with `total_count 0`; a repo with
+            // commits can never produce an empty first page).
             let message = self
                 .error
                 .clone()
-                .unwrap_or_else(|| SharedString::from("No commits found"));
+                .unwrap_or_else(|| SharedString::from("No commits yet"));
             div()
                 .flex_1()
                 .flex()
