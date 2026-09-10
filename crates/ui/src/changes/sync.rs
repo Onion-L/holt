@@ -92,9 +92,27 @@ impl Changes {
     }
 
     fn resolved(&self, cx: &App) -> Option<CheckoutDiff> {
+        self.resolved_ref(cx).cloned()
+    }
+
+    /// The watch-resolved diff for the selected chat, borrowed — the
+    /// key-only callers must not clone a patch that can run to megabytes.
+    fn resolved_ref(&self, cx: &App) -> Option<&CheckoutDiff> {
         let state = self.state.read(cx);
         let chat = state.selected_chat_row()?;
-        resolve_diff(&self.diffs, chat).cloned()
+        resolve_diff(&self.diffs, chat)
+    }
+
+    /// The parse key of the diff the pane currently displays, without
+    /// materializing the diff itself.
+    fn active_parse_key(&self, cx: &App) -> Option<String> {
+        match self.scope {
+            DiffScope::WorkingTree => self.resolved_ref(cx).map(|d| self.parse_key(d)),
+            DiffScope::Branch | DiffScope::LatestTurn | DiffScope::Commit => {
+                self.scoped.as_ref().map(|d| self.parse_key(d))
+            }
+            DiffScope::History => None,
+        }
     }
 
     /// The checkout root the scoped RPCs address: the watch-resolved diff's
@@ -318,6 +336,62 @@ impl Changes {
         cx.notify();
     }
 
+    /// The Git panel's click-to-diff target (ticket 06): aim the pane at the
+    /// working-tree scope — switching it back from branch/turn/history — and
+    /// scroll to `path`'s file section. The reveal waits for the rows the
+    /// scope switch produces when a re-parse runs; when the rows already
+    /// describe the working tree it lands at once.
+    pub fn view_working_tree(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        self.set_scope(DiffScope::WorkingTree, cx);
+        if let Some(path) = path {
+            self.reveal = Some(path);
+            self.try_reveal(cx);
+        }
+    }
+
+    /// Consume the pending reveal once the parsed rows describe the CURRENT
+    /// diff: mid-switch rows belong to the old capture, so they are neither
+    /// scrolled to nor allowed to cancel the reveal. Judged against live
+    /// rows, the path resolves or it never will — an untracked-directory
+    /// row reveals its first file, a rename's old spelling reveals the
+    /// rename, and a path absent from the diff drops the request.
+    pub(super) fn try_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.reveal.clone() else {
+            return;
+        };
+        let Some(key) = self.active_parse_key(cx) else {
+            return;
+        };
+        let Some(parsed) = &self.parsed else {
+            return;
+        };
+        if parsed.key != key {
+            return;
+        }
+        self.reveal = None;
+        let prefix = format!("{path}/");
+        let file_ix = parsed
+            .files
+            .iter()
+            .position(|file| file.path == path)
+            .or_else(|| {
+                parsed
+                    .files
+                    .iter()
+                    .position(|file| file.old_path.as_deref() == Some(path.as_str()))
+            })
+            .or_else(|| {
+                parsed
+                    .files
+                    .iter()
+                    .position(|file| file.path.starts_with(&prefix))
+            });
+        if let Some(row) = file_ix.and_then(|ix| self.row_ranges.get(ix).map(|r| r.start)) {
+            self.list.scroll_to_reveal_item(row);
+            cx.notify();
+        }
+    }
+
     pub(super) fn history_pane(&mut self, cx: &mut Context<Self>) -> Entity<GitHistory> {
         if let Some(history) = &self.history {
             return history.clone();
@@ -417,6 +491,9 @@ impl Changes {
         let key = self.parse_key(&diff);
         if self.parsed.as_ref().is_some_and(|p| p.key == key) {
             self.sync_comment_rows(cx);
+            // Rows already current: a pending reveal has nothing to wait
+            // for, so it lands (or drops) here rather than strand.
+            self.try_reveal(cx);
             return;
         }
         // Parse off the render path — patches run to megabytes.
@@ -471,6 +548,8 @@ impl Changes {
                     file_count,
                     files: Arc::new(files),
                 });
+                // A Git-panel reveal waiting on this parse lands now.
+                changes.try_reveal(cx);
                 cx.notify();
             })
             .ok();

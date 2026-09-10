@@ -1,4 +1,4 @@
-//! The right-pane Git panel (tickets 03/04/05): a per-chat surface
+//! The right-pane Git panel (tickets 03/04/05/06): a per-chat surface
 //! rendering the live working-tree status stream as three flat,
 //! path-sorted sections — Staged, Unstaged, Untracked — with live staging
 //! and the commit box. Checking an unstaged/untracked row stages it,
@@ -10,16 +10,22 @@
 //! the composer input (Enter commits, Shift-Enter breaks the line) with a
 //! count-labeled button gated on message ∧ staged ∧ no-conflicts — the
 //! engine's own gates (identity, mid-merge) remain the backstop. The
-//! panel owns one `WatchWorkspaceGitStatus` subscription from open to
-//! close.
+//! header carries the working-tree diff's total +/- counts (whose file
+//! set is exactly the union of the three sections) and a View Diff
+//! action; a row click opens the Changes surface scrolled to that file.
+//! The panel owns one `WatchWorkspaceGitStatus` subscription and one
+//! `WatchCheckoutDiffs` subscription from open to close.
 
 use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, div, px};
-use holt_proto::{WorkspaceGitStatus, WorkspaceGitStatusEntry, WorkspaceGitStatusKind};
+use holt_proto::{
+    Chat, CheckoutDiff, WorkspaceGitStatus, WorkspaceGitStatusEntry, WorkspaceGitStatusKind,
+};
 use holt_rpc::methods;
 
+use crate::changes::apply_diff_frame;
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::files::tree::{marker_color, marker_parts};
 use crate::icons::{self, icon};
@@ -29,6 +35,16 @@ use crate::theme::Theme;
 
 /// How long the committed short sha stays flashed beside the button.
 const COMMIT_FLASH: Duration = Duration::from_secs(4);
+
+/// Events the host (the right pane's surface strip) listens for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitPanelEvent {
+    /// Open (or focus) this panel's companion Changes surface on the
+    /// working-tree scope, scrolled to the file when one is given.
+    ViewDiff { path: Option<String> },
+}
+
+impl gpui::EventEmitter<GitPanelEvent> for GitPanel {}
 
 /// The section a status row belongs to. Staged answers "what would the next
 /// commit contain?"; Unstaged and Untracked are what the worktree still owes
@@ -230,6 +246,29 @@ pub fn assign_sections(entries: &[WorkspaceGitStatusEntry]) -> StatusSections {
     sections
 }
 
+/// The working-tree diff whose totals the header shows (ticket 06): the
+/// panel's own chat resolved exactly like the Changes pane resolves its
+/// watch — checkout id, then device + cwd, then cwd — so the two surfaces
+/// can never disagree about which checkout they describe; with no chat
+/// (the space / new-chat canvas) the diff whose cwd matches the status
+/// stream's own workdir spelling. Its file set is the union of the three
+/// status sections by construction (worktree ∪ index vs HEAD), so the
+/// totals always match the list below them — with the known inherited
+/// asymmetry that a RENAME lists as delete + untracked in the panel while
+/// the diff folds it into one rename entry (status reporting disables
+/// rename detection, diff capture enables it); documented, not fixed.
+pub fn resolve_panel_diff<'a>(
+    diffs: &'a [CheckoutDiff],
+    chat: Option<&Chat>,
+    workdir: Option<&str>,
+) -> Option<&'a CheckoutDiff> {
+    if let Some(diff) = chat.and_then(|chat| crate::changes::resolve_diff(diffs, chat)) {
+        return Some(diff);
+    }
+    let workdir = workdir?;
+    diffs.iter().find(|d| d.cwd == workdir)
+}
+
 /// The panel's view of the status stream. Kept cx-free so frame handling is
 /// unit-testable without an app: the watch task applies frames here and just
 /// notifies.
@@ -309,6 +348,13 @@ pub struct GitPanel {
     /// The status watch, kept so its drop cancels the engine-side stream.
     /// `None` until the engine handle exists (the state observer retries).
     watch: Option<Task<()>>,
+    /// The working-tree diff watch (the Changes pane's own stream): frames
+    /// fold into [`Self::diffs`] and feed the header totals. `None` until
+    /// the engine handle exists.
+    diff_watch: Option<Task<()>>,
+    /// The last diff frame set — every checkout the engine streams, resolved
+    /// down to this panel's checkout at render time.
+    diffs: Vec<CheckoutDiff>,
     /// The commit message draft — the shared composer input entity, so the
     /// commit box behaves exactly like every other multiline field (Enter
     /// submits, Shift-Enter breaks the line, full IME/undo machinery).
@@ -343,6 +389,8 @@ impl GitPanel {
             space_id,
             view: StatusView::default(),
             watch: None,
+            diff_watch: None,
+            diffs: Vec::new(),
             message,
             _message_events,
             committing: false,
@@ -356,28 +404,37 @@ impl GitPanel {
         panel
     }
 
-    /// Start the status stream once an engine and a selector both exist.
-    /// Idempotent — an established watch is never duplicated.
+    /// Start the panel's streams once an engine exists: the status watch
+    /// (which also needs a chat/space selector) and the diff watch.
+    /// Idempotent per stream — an established watch is never duplicated.
     fn ensure_watch(&mut self, cx: &mut Context<Self>) {
-        if self.watch.is_some() {
+        if self.watch.is_some() && self.diff_watch.is_some() {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        if self.watch.is_none()
+            && let Some(params) = self.status_params()
+        {
+            self.watch = Some(Self::spawn_watch(engine.clone(), params, cx));
+        }
+        if self.diff_watch.is_none() {
+            self.diff_watch = Some(Self::spawn_diff_watch(engine, cx));
+        }
+    }
+
+    /// The status watch's selector params, when a chat or a space exists.
+    fn status_params(&self) -> Option<serde_json::Value> {
         let mut params = serde_json::Map::new();
         if let Some(chat_id) = &self.chat_id {
             params.insert("chatId".into(), serde_json::json!(chat_id));
         } else if let Some(space_id) = &self.space_id {
             params.insert("spaceId".into(), serde_json::json!(space_id));
         } else {
-            return;
+            return None;
         }
-        self.watch = Some(Self::spawn_watch(
-            engine,
-            serde_json::Value::Object(params),
-            cx,
-        ));
+        Some(serde_json::Value::Object(params))
     }
 
     /// The Changes pane's resubscribe loop: frames apply to the view; a
@@ -430,6 +487,35 @@ impl GitPanel {
                                 .view
                                 .note_stream_error(format!("Status watch unavailable: {err}"));
                             cx.notify();
+                        });
+                        if alive.is_err() {
+                            return;
+                        }
+                    }
+                }
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+            }
+        })
+    }
+
+    /// The Changes pane's diff-watch loop, narrowed to the panel's need:
+    /// frames fold into [`Self::diffs`] (the same `apply_diff_frame`) to
+    /// feed the header totals. No parse and no error banner — an absent or
+    /// interrupted stream just means the totals are not shown yet, and the
+    /// rows below never depend on it.
+    fn spawn_diff_watch(engine: EngineHandle, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let subscribed = engine
+                    .client()
+                    .subscribe(methods::WATCH_CHECKOUT_DIFFS, serde_json::json!({}))
+                    .await;
+                if let Ok(mut frames) = subscribed {
+                    while let Some(value) = frames.recv().await {
+                        let alive = this.update(cx, |panel, cx| {
+                            if apply_diff_frame(&mut panel.diffs, value) {
+                                cx.notify();
+                            }
                         });
                         if alive.is_err() {
                             return;
@@ -561,8 +647,9 @@ impl GitPanel {
         .detach();
     }
 
-    /// The click wiring every staging control shares: pointer affordance,
-    /// a caller-chosen hover wash, and the write itself.
+    /// The click wiring the bulk toolbar buttons share: pointer
+    /// affordance, a hover wash, and the write itself. (Row checkboxes
+    /// stop propagation on top of this — their row opens the diff.)
     fn staging_clickable(
         el: gpui::Stateful<gpui::Div>,
         hover: impl FnOnce(gpui::StyleRefinement) -> gpui::StyleRefinement,
@@ -619,11 +706,14 @@ impl GitPanel {
     }
 
     /// One status row: checkbox, kind badge, path. The checkbox is checked
-    /// exactly where the row's click unstages — the Staged side — and
-    /// unchecked where it stages; a conflicted row has no action and
-    /// renders disabled (a whole-directory untracked entry carries its
-    /// trailing slash and the whole-directory hint). The row's visible
-    /// state only ever follows the stream, never a local guess.
+    /// exactly where its click unstages — the Staged side — and unchecked
+    /// where it stages; a conflicted row has no action and renders
+    /// disabled. The checkbox is its own click target (stopping
+    /// propagation so the row's diff-open click doesn't fire under it),
+    /// while clicking anywhere else on the row opens the Changes surface
+    /// scrolled to this file (ticket 06). The row's visible state only
+    /// ever follows the stream, never a local guess; rows carry kind
+    /// badges only — no per-file statistics.
     fn render_row(
         &self,
         theme: &Theme,
@@ -636,6 +726,30 @@ impl GitPanel {
             Some(StagingAction::Unstage(_)) => CheckboxState::Checked,
             Some(StagingAction::Stage(_)) => CheckboxState::Unchecked,
         };
+        // The staging click target: a padded cell around the 14px box, so
+        // the hit area is honest without inflating the visual weight.
+        let mut checkbox = div()
+            .id(SharedString::from(format!(
+                "git-status-check-{}-{ix}",
+                row.section.id_tag()
+            )))
+            .flex_none()
+            .size(px(20.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .child(widgets::checkbox(theme, checkbox_state));
+        if let Some(action) = row.staging_action() {
+            checkbox = checkbox
+                .cursor_pointer()
+                .hover(|state| state.bg(crate::theme::wash(0.06)))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    // The row's own click (open the diff) must not fire.
+                    cx.stop_propagation();
+                    this.run_staging(action.clone(), cx);
+                }));
+        }
         let mut path = row.path.clone();
         if row.is_dir {
             path.push('/');
@@ -654,20 +768,24 @@ impl GitPanel {
                 .child(*letter)
         });
         let label = parts.map(|(_, label)| label);
-        let mut el = div()
+        // The row itself is the click-to-diff target — conflicted rows
+        // included (viewing a conflicted file is exactly when the diff
+        // helps); the directory row reveals its first file in the diff.
+        let row_path = row.path.clone();
+        let el = div()
             .id(SharedString::from(format!(
                 "git-status-row-{}-{ix}",
                 row.section.id_tag()
             )))
             .w_full()
             .h(px(28.0))
-            .pl(px(12.0))
+            .pl(px(6.0))
             .pr(px(8.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.0))
-            .child(widgets::checkbox(theme, checkbox_state))
+            .gap(px(2.0))
+            .child(checkbox)
             .children(badge)
             .when(row.is_dir, |el| {
                 el.child(
@@ -704,11 +822,14 @@ impl GitPanel {
                         .text_color(theme.text_muted.opacity(0.6))
                         .child("stages the whole directory"),
                 )
-            });
-        if let Some(action) = row.staging_action() {
-            el =
-                Self::staging_clickable(el, |state| state.bg(crate::theme::wash(0.04)), action, cx);
-        }
+            })
+            .cursor_pointer()
+            .hover(|state| state.bg(crate::theme::wash(0.04)))
+            .on_click(cx.listener(move |_this, _event, _window, cx| {
+                cx.emit(GitPanelEvent::ViewDiff {
+                    path: Some(row_path.clone()),
+                });
+            }));
         el.when_some(label, |el, label| {
             el.tooltip(move |_, cx| {
                 cx.new(|_| crate::image_viewer::ViewerTooltip(label.clone()))
@@ -716,6 +837,94 @@ impl GitPanel {
             })
         })
         .into_any_element()
+    }
+
+    /// The slim header: which checkout this status belongs to (workdir),
+    /// the working-tree diff's total counts in the Changes header's own
+    /// spelling (`+N −M`, mono, add/del colors), and the View Diff action
+    /// (ticket 06). Totals hide while no diff frame has landed — they are
+    /// commentary on the list, never a gate on it.
+    fn render_header(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let chat = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| self.state.read(cx).chat_row(id));
+        let totals = resolve_panel_diff(&self.diffs, chat, self.view.workdir.as_deref())
+            .map(|diff| (diff.additions, diff.deletions));
+        div()
+            .flex_none()
+            .h(px(36.0))
+            .pl(px(12.0))
+            .pr(px(8.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child("Status"),
+            )
+            .children(self.view.workdir.clone().map(|workdir| {
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(10.5))
+                    .text_color(theme.text_muted.opacity(0.7))
+                    .child(SharedString::from(workdir))
+            }))
+            .when_some(totals, |el, (additions, deletions)| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .gap(px(4.0))
+                        .font_family(theme.font_mono.clone())
+                        .text_size(px(11.0))
+                        .child(
+                            div()
+                                .text_color(theme.diff_add)
+                                .child(SharedString::from(format!("+{additions}"))),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.diff_del)
+                                .child(SharedString::from(format!("−{deletions}"))),
+                        ),
+                )
+            })
+            .child(Self::view_diff_button(theme, cx))
+            .into_any_element()
+    }
+
+    /// The header's View Diff action: opens (or focuses) the panel's
+    /// companion Changes surface on the working-tree scope.
+    fn view_diff_button(theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        div()
+            .id("git-view-diff")
+            .flex_none()
+            .h(px(20.0))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .rounded(px(5.0))
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|state| state.bg(crate::theme::wash(0.06)).text_color(theme.text))
+            .on_click(cx.listener(|_this, _event, _window, cx| {
+                cx.emit(GitPanelEvent::ViewDiff { path: None });
+            }))
+            .child("View Diff")
+            .into_any_element()
     }
 
     /// The fixed Stage all / Unstage all bar under the header. Buttons
@@ -1003,37 +1212,10 @@ impl Render for GitPanel {
             .size_full()
             .flex()
             .flex_col()
-            // The slim header: which checkout this status belongs to.
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(36.0))
-                    .px(px(12.0))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child("Status"),
-                    )
-                    .children(self.view.workdir.clone().map(|workdir| {
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(10.5))
-                            .text_color(theme.text_muted.opacity(0.7))
-                            .child(SharedString::from(workdir))
-                    })),
-            )
+            // The slim header: which checkout this status belongs to, the
+            // working-tree diff's total +/- counts (the Changes pane's own
+            // header spelling), and View Diff.
+            .child(self.render_header(&theme, cx))
             // A refused stage/unstage strip carries the engine's message
             // verbatim over rows that still tell the truth about the index.
             .when_some(self.view.write_error.clone(), |el, message| {
@@ -1509,5 +1691,82 @@ mod tests {
         assert_eq!(commit_button_label(0), "Commit 0 files");
         assert_eq!(commit_button_label(1), "Commit 1 file");
         assert_eq!(commit_button_label(3), "Commit 3 files");
+    }
+
+    fn checkout_diff(checkout_id: &str, cwd: &str, additions: u32, deletions: u32) -> CheckoutDiff {
+        CheckoutDiff {
+            checkout_id: checkout_id.into(),
+            device_id: "dev".into(),
+            cwd: cwd.into(),
+            patch: String::new(),
+            files: Vec::new(),
+            additions,
+            deletions,
+            truncated: false,
+            checksum: format!("sum-{checkout_id}"),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn chat_row(id: &str, cwd: Option<&str>, checkout_id: Option<&str>) -> Chat {
+        use holt_proto::TitleSource;
+        Chat {
+            id: id.into(),
+            device_id: "dev".into(),
+            title: None,
+            title_source: TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            cwd: cwd.map(str::to_string),
+            branch: None,
+            checkout_id: checkout_id.map(str::to_string),
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+        }
+    }
+
+    #[test]
+    fn header_totals_resolve_the_panels_own_chat_like_the_changes_pane() {
+        let diffs = vec![
+            checkout_diff("other", "/elsewhere", 1, 2),
+            checkout_diff("co-1", "/repo", 30, 7),
+        ];
+        // Checkout id wins outright.
+        let chat = chat_row("c1", Some("/somewhere-else"), Some("co-1"));
+        assert_eq!(
+            resolve_panel_diff(&diffs, Some(&chat), None).map(|d| (d.additions, d.deletions)),
+            Some((30, 7))
+        );
+        // Without a checkout id, the Changes pane's cwd precedence applies.
+        let chat = chat_row("c1", Some("/elsewhere"), None);
+        assert_eq!(
+            resolve_panel_diff(&diffs, Some(&chat), None).map(|d| d.cwd.as_str()),
+            Some("/elsewhere")
+        );
+        // A chat on an unknown checkout falls through to the workdir
+        // spelling — never to some other checkout's diff.
+        let chat = chat_row("c1", None, Some("co-gone"));
+        assert_eq!(resolve_panel_diff(&diffs, Some(&chat), None), None);
+    }
+
+    #[test]
+    fn header_totals_fall_back_to_the_status_workdir_without_a_chat() {
+        let diffs = vec![
+            checkout_diff("other", "/elsewhere", 1, 2),
+            checkout_diff("co-1", "/repo", 30, 7),
+        ];
+        assert_eq!(
+            resolve_panel_diff(&diffs, None, Some("/repo")).map(|d| (d.additions, d.deletions)),
+            Some((30, 7))
+        );
+        assert_eq!(resolve_panel_diff(&diffs, None, Some("/nope")), None);
+        assert_eq!(resolve_panel_diff(&diffs, None, None), None);
     }
 }

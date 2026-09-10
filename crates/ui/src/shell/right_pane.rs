@@ -396,7 +396,7 @@ impl Shell {
         &mut self,
         changes: Entity<Changes>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
         self.diff_seq += 1;
         let id = self.diff_seq;
         let sub = cx.subscribe(&changes, |this: &mut Self, _, event, cx| match event {
@@ -412,6 +412,7 @@ impl Shell {
             .or_default()
             .push(RightSurface::Diff(id));
         self.set_right_active(RightSurface::Diff(id), cx);
+        id
     }
 
     /// The picker's Git card / the `+` menu's Git row (ticket 03): every
@@ -421,13 +422,49 @@ impl Shell {
         let panel = cx.new(|cx| GitPanel::new(self.state.clone(), cx));
         self.git_seq += 1;
         let id = self.git_seq;
+        let sub = cx.subscribe(&panel, move |this: &mut Self, _, event, cx| match event {
+            GitPanelEvent::ViewDiff { path } => {
+                this.open_git_companion_diff(id, path.clone(), cx);
+            }
+        });
         self.git_panels.insert(id, panel);
+        self.git_subs.insert(id, sub);
         let key = self.panel_key(cx);
         self.right_tabs
             .entry(key)
             .or_default()
             .push(RightSurface::Git(id));
         self.set_right_active(RightSurface::Git(id), cx);
+    }
+
+    /// A Git panel's View Diff / click-to-diff (ticket 06): open (or focus)
+    /// that panel's ONE companion Changes surface — never the user's other
+    /// diff tabs — aimed at the working-tree scope and scrolled to the file
+    /// when one was named. A closed companion is simply recreated.
+    fn open_git_companion_diff(
+        &mut self,
+        git_id: u64,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let companion = self
+            .git_diff_companions
+            .get(&git_id)
+            .copied()
+            .filter(|id| self.diffs.contains_key(id));
+        let diff_id = match companion {
+            Some(id) => id,
+            None => {
+                let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
+                let id = self.register_diff_surface(changes, cx);
+                self.git_diff_companions.insert(git_id, id);
+                id
+            }
+        };
+        self.set_right_active(RightSurface::Diff(diff_id), cx);
+        if let Some(changes) = self.diffs.get(&diff_id).cloned() {
+            changes.update(cx, |changes, cx| changes.view_working_tree(path, cx));
+        }
     }
 
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
@@ -617,10 +654,15 @@ impl Shell {
                 // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
                 self.diff_subs.remove(&id);
+                // Any Git panel companioned to it recreates on its next
+                // click-to-diff.
+                self.git_diff_companions.retain(|_, diff| *diff != id);
             }
             RightSurface::Git(id) => {
                 // Dropping the entity cancels its status watch.
                 self.git_panels.remove(&id);
+                self.git_subs.remove(&id);
+                self.git_diff_companions.remove(&id);
             }
             RightSurface::Terminal(tab) => {
                 let panel = self.right_terminal_panel(cx);

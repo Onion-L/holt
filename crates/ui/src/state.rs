@@ -807,6 +807,12 @@ impl AppState {
         self.chats.iter().find(|c| c.id == id)
     }
 
+    /// A chat row by id — for surfaces that pinned their chat at open (the
+    /// Git panel's diff totals) instead of following the live selection.
+    pub fn chat_row(&self, id: &str) -> Option<&Chat> {
+        self.chats.iter().find(|c| c.id == id)
+    }
+
     /// The working directory skills resolve against: the selected chat's
     /// own cwd, else the picked space's folder (the project skill root
     /// derives from it). Shared by the composer's `/` popup and the

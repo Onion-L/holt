@@ -248,6 +248,10 @@ pub struct Changes {
     /// once their tween window elapses.
     fold_settle: Option<Task<()>>,
     list: ListState,
+    /// A pending scroll-to-file from the Git panel's click-to-diff: applied
+    /// once the rows describe the current diff (a scope switch re-parses
+    /// first), consumed or dropped the moment they do.
+    reveal: Option<String>,
     /// What the pane diffs against (toolbar dropdown).
     scope: DiffScope,
     /// Unified or side-by-side (toolbar toggle, persisted per user).
@@ -308,6 +312,7 @@ impl Changes {
             rows: Vec::new(),
             row_ranges: Vec::new(),
             fold_settle: None,
+            reveal: None,
             // Rows are single lines now — a deep overdraw is cheap and keeps
             // fast wheel flicks from outrunning measurement.
             list: ListState::new(0, ListAlignment::Top, px(1024.0)),
