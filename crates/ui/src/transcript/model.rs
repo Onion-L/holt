@@ -62,8 +62,8 @@ pub struct ToolItem {
     /// thought process belongs inside the combined "Ran N commands"
     /// accordion, opening/closing with the same tween). Synthesized in
     /// [`rows_for_entry`] — never comes from a doc tool part. The thought
-    /// text is the `detail`; `resolved == false` means it is still
-    /// streaming (the chip then defaults open).
+    /// text is the `detail`; the chip defaults collapsed, streaming or
+    /// settled. `resolved == false` only marks the part as still streaming.
     pub is_thought: bool,
     /// The permission gate's record (ADR-0014), when this call was gated.
     /// `Pending` never reaches a group — it splices into its own
@@ -104,8 +104,7 @@ pub(super) fn tool_group_collapses(tools: &[ToolItem]) -> bool {
 /// A reasoning part as a tool-group chip: "Thought process" header over the
 /// thought's markdown flattened into styled detail lines (analytic height —
 /// the group's fold tween needs it; see [`thought_lines`]). Capped like tool
-/// outputs, with the counted tail. `live` = the part is still streaming
-/// (chip defaults open).
+/// outputs, with the counted tail. `live` = the part is still streaming.
 fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
     let mut lines = thought_lines(tree);
     let truncated_by = lines.len().saturating_sub(OUTPUT_DETAIL_MAX_LINES);
@@ -1169,8 +1168,8 @@ mod tests {
         let RowKind::ToolGroup { tools, auto_open } = &rows[0].kind else {
             panic!("expected a tool group");
         };
-        // The live tail auto-opens the group; the chip itself is unresolved
-        // (defaults open) until the part stops being the tail.
+        // The live tail auto-opens the group; the chip is unresolved while
+        // the part streams.
         assert!(*auto_open);
         assert!(!tools[0].resolved);
 

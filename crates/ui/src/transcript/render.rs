@@ -1405,7 +1405,10 @@ impl Transcript {
                     + invocations[ix].as_deref().map_or(0.0, detail_height)
                     + details[ix].as_deref().map_or(0.0, detail_height)
                     + affordance_h;
-                Some((tool.is_thought && !tool.resolved, open_h, CHIP_HEIGHT))
+                // No chip defaults open, thoughts included (user request:
+                // the live thinking stays folded until the user opens it).
+                // A user toggle pins either way.
+                Some((false, open_h, CHIP_HEIGHT))
             })
             .collect();
         // Which chips have their detail block open (render-local, analytic —
@@ -1428,9 +1431,9 @@ impl Transcript {
             .iter()
             .zip(&detail_folds)
             .map(|(card, fold)| {
-                // A STREAMING thought chip defaults open (the live thinking
-                // is the point); settled chips default closed. A user toggle
-                // overrides either way.
+                // Every chip defaults closed — thought chips included, so
+                // the streaming thinking no longer auto-expands. A user
+                // toggle overrides.
                 card.is_some_and(|(default_open, ..)| fold.open.unwrap_or(default_open))
             })
             .collect();
@@ -1465,15 +1468,14 @@ impl Transcript {
 
         // ---- auto-flip tween arming ----------------------------------------
         // The streaming tail moves between parts at doc-commit cadence: a
-        // trailing group loses `auto_open` when text follows, a thought chip
-        // closes when it loses the tail, and the settle closes both. Those
-        // flips used to hard-cut the row height, and the bottom-pinned
-        // viewport follows content height 1:1 — every flip read as a
-        // page-wide jump (user report: jitter while the agent outputs). Arm
-        // the same 200ms tween a user toggle gets, seeded from the height
-        // committed at the previous render. First sight seeds silently (a
-        // new row simply appears at its height); a user pin masks the auto
-        // rule; reduced motion keeps the snap.
+        // trailing group loses `auto_open` when text follows, and the settle
+        // closes it. Those flips used to hard-cut the row height, and the
+        // bottom-pinned viewport follows content height 1:1 — every flip
+        // read as a page-wide jump (user report: jitter while the agent
+        // outputs). Arm the same 200ms tween a user toggle gets, seeded
+        // from the height committed at the previous render. First sight
+        // seeds silently (a new row simply appears at its height); a user
+        // pin masks the auto rule; reduced motion keeps the snap.
         {
             let reduced = motion::reduced_motion(cx);
             let group_flipped =
