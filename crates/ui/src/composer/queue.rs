@@ -17,6 +17,13 @@ use crate::theme::Theme;
 /// otherwise snap to the post-tween target without the easing curve).
 const QUEUE_DISCLOSURE_TWEEN_GRACE: Duration = Duration::from_millis(120);
 
+/// The header's Resume control: automatic execution is paused with work
+/// waiting. A queue-level error is not an unreadable queue and must not
+/// hide the control (ADR-0021).
+pub(super) fn queue_resume_visible(queue: &holt_proto::MessageQueue) -> bool {
+    queue.paused && !queue.pending.is_empty()
+}
+
 /// Keep long queues from taking over the composer; `uniform_list` scrolls the
 /// rows that do not fit in this viewport.
 const QUEUE_LIST_MAX_HEIGHT: f32 = 240.0;
@@ -330,6 +337,39 @@ impl Composer {
         }));
     }
 
+    /// Resume the queue's automatic execution (ADR-0021): lifts the pause
+    /// and the single-run scope of an attended send, so parked work drains.
+    pub(super) fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        if self.queue_busy {
+            return;
+        }
+        let chat_id = self.current_key.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.queue_busy = true;
+        cx.notify();
+        self.queue_task = Some(cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                methods::CONTINUE_MESSAGE_QUEUE,
+                serde_json::json!({ "chatId": chat_id }),
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                this.queue_busy = false;
+                if let Err(error) = result {
+                    this.failure = Some(format!("Could not resume the queue: {error}").into());
+                    this.failure_key = Some(chat_id);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     pub(super) fn render_message_queue(
         &mut self,
         window: &mut Window,
@@ -368,6 +408,9 @@ impl Composer {
         // uniform_list's item closure sees only `&mut App`, so row handlers
         // dispatch through the composer's weak handle instead of a listener.
         let composer = cx.weak_entity();
+        // The header's Resume control dispatches the same way; the list
+        // closure consumes the first handle.
+        let header_composer = composer.clone();
         // The editor renders inline in its own row; the entity is cloned in so
         // the closure can hand it to that row.
         let edit_input = self.queue_edit.as_ref().map(|edit| edit.input.clone());
@@ -730,14 +773,41 @@ impl Composer {
                     .px(px(4.0))
                     .py(px(2.0))
                     .child(div().text_color(theme.text_muted).child(header))
+                    // When the queue is paused with work waiting, the header carries the
+                    // Resume control; it stops propagation so the header's own
+                    // collapse toggle does not fire.
                     .child(
-                        crate::icons::icon(if expanded {
-                            crate::icons::ALT_ARROW_DOWN
-                        } else {
-                            crate::icons::ALT_ARROW_RIGHT
-                        })
-                        .size(px(14.0))
-                        .text_color(theme.text_muted),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            .when(queue_resume_visible(&queue), |el| {
+                                el.child(queue_row_action(
+                                    "queue-resume".into(),
+                                    "Resume the message queue",
+                                    crate::icons::ARROW_RIGHT,
+                                    theme.glass_hover(),
+                                    theme.text_muted,
+                                    {
+                                        let composer = header_composer.clone();
+                                        move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            composer
+                                                .update(cx, |this, cx| this.resume_queue(cx))
+                                                .ok();
+                                        }
+                                    },
+                                ))
+                            })
+                            .child(
+                                crate::icons::icon(if expanded {
+                                    crate::icons::ALT_ARROW_DOWN
+                                } else {
+                                    crate::icons::ALT_ARROW_RIGHT
+                                })
+                                .size(px(14.0))
+                                .text_color(theme.text_muted),
+                            ),
                     )
                     .on_click(click_toggle)
                     .on_key_down(key_toggle),
@@ -862,6 +932,32 @@ mod tests {
             height.get(),
             px(0.0),
             "empty paused queue still occupies space"
+        );
+    }
+
+    #[test]
+    fn the_resume_control_shows_when_paused_with_work_waiting() {
+        let queue = |paused: bool, prompts: &[&str]| -> holt_proto::MessageQueue {
+            serde_json::from_value(serde_json::json!({
+                "pending": prompts.iter().map(|p| serde_json::json!({
+                    "messageId": format!("m-{p}"), "kind": "ordinary", "submittedAt": 0,
+                    "request": {
+                        "prompt": p, "provider": "openai", "model": "openai/gpt-5.4",
+                        "cwd": "/tmp"
+                    },
+                })).collect::<Vec<_>>(),
+                "paused": paused,
+            }))
+            .unwrap()
+        };
+        assert!(queue_resume_visible(&queue(true, &["a"])));
+        assert!(
+            !queue_resume_visible(&queue(false, &["a"])),
+            "a running queue has nothing to resume"
+        );
+        assert!(
+            !queue_resume_visible(&queue(true, &[])),
+            "nothing parked: no control"
         );
     }
 

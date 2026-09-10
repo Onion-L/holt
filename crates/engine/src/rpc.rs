@@ -15,6 +15,7 @@ use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -378,6 +379,14 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// An attended send (ADR-0021): a first acceptance arriving while the
+    /// chat's execution channel is settled and the queue is paused. Prep
+    /// that has not reached the admission checkpoint still occupies the
+    /// channel through the driver, so `driver_running` must be quiet too.
+    fn attended_send(chat: &ChatRuntime, queue: &super::queue::Queue) -> bool {
+        queue.paused() && queue.idle() && !chat.driver_running.load(Ordering::Acquire)
+    }
+
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: QueueCommandParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
@@ -416,7 +425,15 @@ impl EngineService {
                     if chat.is_removed() {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
-                    queue.enqueue(request, message_id, PendingKind::Ordinary, None, None)?;
+                    let attended = Self::attended_send(&chat, &queue);
+                    queue.enqueue(
+                        request,
+                        message_id,
+                        PendingKind::Ordinary,
+                        None,
+                        None,
+                        attended,
+                    )?;
                 }
                 self.kick_queue(chat);
             }
@@ -440,12 +457,14 @@ impl EngineService {
                     if chat.is_removed() {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
+                    let attended = Self::attended_send(&chat, &queue);
                     queue.enqueue(
                         request,
                         message_id,
                         PendingKind::Skill,
                         Some(name),
                         extra_instructions,
+                        attended,
                     )?;
                 }
                 self.kick_queue(chat);
@@ -503,7 +522,10 @@ impl EngineService {
                     if chat.is_removed() {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
-                    queue.enqueue(request, message_id, PendingKind::Compact, None, None)?;
+                    // Manual Compaction keeps its strict submission order
+                    // (ADR-0011): an attended /compact parks like any
+                    // queued item, and Continue is its way forward.
+                    queue.enqueue(request, message_id, PendingKind::Compact, None, None, false)?;
                 }
                 self.kick_queue(chat);
             }
@@ -1382,7 +1404,10 @@ impl RpcService for EngineService {
                     if chat.is_removed() {
                         return Err(RpcError::Failed("chat was deleted".into()));
                     }
-                    queue.pause(false)?;
+                    // Continue lifts the single-run scope of an attended
+                    // send along with the pause (ADR-0021); a later failure
+                    // pauses again.
+                    queue.resume()?;
                     queue.snapshot()
                 };
                 self.kick_queue(chat);

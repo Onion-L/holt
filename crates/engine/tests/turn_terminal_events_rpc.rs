@@ -227,11 +227,12 @@ async fn a_provider_failure_publishes_a_failed_event() {
         "{event}"
     );
 
-    // Existing failure behavior is unchanged: the session errors and the
-    // queue pauses.
+    // Existing failure behavior is unchanged: the session errors. The queue
+    // settles with no work left and no queue-level error, so the clean-state
+    // invariant leaves it unpaused (ADR-0021).
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
     let queue = queue_snapshot(&engine, "chat-1").await;
-    assert_eq!(queue["paused"], json!(true));
+    assert_eq!(queue["paused"], json!(false));
     assert_no_event(&mut events).await;
 }
 

@@ -36,6 +36,152 @@ async fn wait_for_queue(
     }
 }
 
+/// The last user prompt a recorded request carried.
+fn last_user_prompt(request: &common::RecordedRequest) -> String {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            pi_core::ai::types::Message::User(message) => Some(message.content.text().to_string()),
+            _ => None,
+        })
+        .next_back()
+        .expect("request with a user message")
+}
+
+/// Wait out the failing driver's unwind: an attended grant requires a
+/// settled execution channel (`driver_running` quiet), and the queue watch
+/// frame for the pause lands strictly before the driver exits.
+async fn let_driver_settle() {
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+}
+
+#[tokio::test]
+async fn a_send_after_a_failure_runs_through_the_pause_and_parks_the_backlog() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::gated(gate.clone(), "first"),
+        ScriptedReply::Failed("provider offline".into()),
+        ScriptedReply::text("answer fresh"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    // Hold A mid-Turn and queue the backlog behind it, so the failure
+    // settles onto a non-empty queue: work parked by the pause.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
+    common::wait_for_requests(&provider, 1).await;
+    // B queued behind A consumes the scripted failure; "old" parks behind it.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "old").await;
+    gate.notify_one();
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
+    let_driver_settle().await;
+
+    // The user's own next send is admitted through the pause (ADR-0021):
+    // it runs instead of the parked backlog.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fresh").await;
+    common::wait_for_requests(&provider, 3).await;
+    assert_eq!(last_user_prompt(&provider.requests()[2]), "fresh");
+
+    // The solo scope re-pauses around the parked backlog.
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
+    let state = queue_state(&engine).await;
+    assert_eq!(state["pending"][0]["request"]["prompt"], "old");
+    assert_eq!(provider.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn a_redelivered_command_is_acknowledged_without_running_again() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::gated(gate.clone(), "first"),
+        ScriptedReply::Failed("provider offline".into()),
+        ScriptedReply::gated(gate.clone(), "answer fresh"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
+    common::wait_for_requests(&provider, 1).await;
+    // B queued behind A consumes the scripted failure; "old" parks behind it.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "old").await;
+    gate.notify_one();
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
+    let_driver_settle().await;
+
+    // The attended send holds mid-Turn on the gate...
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fresh").await;
+    common::wait_for_requests(&provider, 3).await;
+    // ...and its durable-delivery retry replays the same command id: acked
+    // without a second grant, a second pending item, or a second run.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fresh").await;
+    let state = queue_state(&engine).await;
+    assert_eq!(state["pending"].as_array().unwrap().len(), 1);
+    assert_eq!(state["pending"][0]["request"]["prompt"], "old");
+    assert!(!state["activeMessageId"].is_null());
+
+    gate.notify_one();
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
+    assert_eq!(provider.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn continue_during_an_attended_run_resumes_the_parked_backlog() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::gated(gate.clone(), "first"),
+        ScriptedReply::Failed("provider offline".into()),
+        ScriptedReply::gated(gate.clone(), "answer fresh"),
+        ScriptedReply::text("answer C"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
+    common::wait_for_requests(&provider, 1).await;
+    // B queued behind A consumes the scripted failure; C parks behind it.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "C").await;
+    gate.notify_one();
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
+    let_driver_settle().await;
+
+    // The attended send runs ahead of the parked C and holds mid-Turn.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fresh").await;
+    common::wait_for_requests(&provider, 3).await;
+
+    // Continue lifts the single-run scope: after the attended Turn
+    // settles, the parked backlog drains and the queue stays resumed.
+    engine
+        .handle(methods::CONTINUE_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
+        .await
+        .unwrap();
+    gate.notify_one();
+    wait_for_queue(&engine, |q| {
+        q["pending"] == json!([]) && q["paused"] == false && q["activeMessageId"].is_null()
+    })
+    .await;
+    assert_eq!(provider.requests().len(), 4);
+    assert_eq!(last_user_prompt(&provider.requests()[3]), "C");
+}
+
 #[tokio::test]
 async fn ordinary_messages_wait_their_turn_without_entering_the_transcript() {
     let fixture = Fixture::new();
@@ -870,7 +1016,13 @@ async fn deleting_a_failed_head_lets_continue_admit_the_next_item() {
         .unwrap();
     queue_run(&engine, &fixture.cwd(), "m-a", "head-A").await;
     wait_for_queue(&engine, |q| q["paused"] == true).await;
+    // The next send is an attended one now: it attempts immediately on the
+    // missing credentials and settles back onto the pause (ADR-0021).
     queue_run(&engine, &fixture.cwd(), "m-b", "next-B").await;
+    wait_for_queue(&engine, |q| {
+        q["paused"] == true && q["activeMessageId"].is_null()
+    })
+    .await;
     assert_eq!(
         queue_state(&engine).await["pending"]
             .as_array()

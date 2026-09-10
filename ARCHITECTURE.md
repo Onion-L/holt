@@ -356,9 +356,15 @@ Compaction included. Execution failures pause remaining work; admission
 failures (missing credentials or an unresolved skill) retain the head with
 an error without creating a Turn. Nothing to compact completes the command
 with a Transcript notice and advances the queue without a model request.
-New submissions preserve pause state; Continue resumes it. Deleting the last
-pending item also clears pause when no item is executing and there is no
-queue-level error, so the next submission runs normally.
+New submissions preserve pause state, with one exception (ADR-0021): an
+attended send — a first acceptance arriving while the execution channel is
+settled and the queue is paused — is admitted at once through a one-shot,
+persisted grant bound to its message id; it runs alone ahead of parked
+work, and the queue returns to its pause when it settles. Continue resumes
+the queue and lifts the single-run scope of an outstanding grant. Deleting
+the last pending item also clears pause when no item is executing and there is no
+queue-level error, and a queue that settles empty with no queue-level error
+comes back clean on reload as well, so the next submission runs normally.
 
 The pending-to-started checkpoint is atomically replaced and synced before
 any model or tool work. Restart repairs a started Turn as interrupted,

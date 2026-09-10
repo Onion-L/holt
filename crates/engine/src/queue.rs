@@ -30,7 +30,7 @@ enum DriverOutcome {
     Settled((bool, Option<String>)),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StartedMessage {
     pub message: PendingMessage,
     pub timestamp: i64,
@@ -46,6 +46,24 @@ struct Record {
     paused: bool,
     started: Option<StartedMessage>,
     accepted: HashSet<String>,
+    /// ADR-0021: the one attended send granted admission through a pause —
+    /// a message id bound at first acceptance, served by `head` ahead of
+    /// priority, consumed by `start`, and never set for a redelivered id.
+    #[serde(default)]
+    attended_grant: Option<String>,
+}
+
+impl Record {
+    /// A settled queue with no remaining work is clean: not paused, no
+    /// single-run scope, no outstanding grant. Callers settle the executing
+    /// command first and check the queue-level error themselves.
+    fn clear_pause_when_empty(&mut self) {
+        if self.pending.is_empty() {
+            self.paused = false;
+            self.priority_only = false;
+            self.attended_grant = None;
+        }
+    }
 }
 
 pub(crate) struct Queue {
@@ -76,6 +94,11 @@ impl Queue {
             ),
         };
         record.paused |= !record.pending.is_empty() || record.started.is_some() || error.is_some();
+        if record.started.is_none() && error.is_none() {
+            // A saved file's stale pause must not resurrect on an empty,
+            // error-free queue (ADR-0021).
+            record.clear_pause_when_empty();
+        }
         let (tx, _) = watch::channel(serde_json::Value::Null);
         let queue = Self {
             record,
@@ -101,6 +124,9 @@ impl Queue {
         }
         let mut next = self.record.clone();
         next.started = None;
+        if self.error.is_none() {
+            next.clear_pause_when_empty();
+        }
         if self.commit(next).is_err() {
             self.unreadable = true;
         }
@@ -117,6 +143,19 @@ impl Queue {
                 .map(|s| s.message.message_id.clone()),
             error: self.error.clone(),
         }
+    }
+
+    /// Whether the queue's automatic execution is switched off.
+    pub(crate) fn paused(&self) -> bool {
+        self.record.paused
+    }
+
+    /// Whether no admitted work is executing. Preparation that has not yet
+    /// reached the admission checkpoint still occupies the channel through
+    /// the driver, so a caller granting attended admission must also check
+    /// `ChatRuntime::driver_running`.
+    pub(crate) fn idle(&self) -> bool {
+        self.record.started.is_none() && !self.unreadable
     }
 
     fn publish(&self) {
@@ -174,6 +213,7 @@ impl Queue {
         kind: PendingKind,
         skill_name: Option<String>,
         extra_instructions: Option<String>,
+        attended: bool,
     ) -> Result<(), RpcError> {
         if self.record.accepted.contains(&message_id) {
             return if self.error.is_some() {
@@ -185,7 +225,7 @@ impl Queue {
         let mut next = self.record.clone();
         next.accepted.insert(message_id.clone());
         next.pending.push(PendingMessage {
-            message_id,
+            message_id: message_id.clone(),
             request,
             kind,
             skill_name,
@@ -193,6 +233,14 @@ impl Queue {
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
+        // An attended send is granted only on first acceptance and only
+        // through a pause: the grant, the unpause, and the solo scope are
+        // one durable change, so an enqueue can never be half-granted.
+        if attended && self.record.paused {
+            next.attended_grant = Some(message_id);
+            next.paused = false;
+            next.priority_only = true;
+        }
         self.commit(next)
     }
 
@@ -207,6 +255,7 @@ impl Queue {
             PendingKind::Ordinary,
             None,
             None,
+            false,
         )?;
         let mut next = self.record.clone();
         next.priority.retain(|id| id != &message_id);
@@ -276,9 +325,11 @@ impl Queue {
         };
         next.pending.remove(index);
         next.priority.retain(|id| id != message_id);
+        if next.attended_grant.as_deref() == Some(message_id) {
+            next.attended_grant = None;
+        }
         if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
-            next.paused = false;
-            next.priority_only = false;
+            next.clear_pause_when_empty();
         }
         self.commit(next)
     }
@@ -294,14 +345,33 @@ impl Queue {
         result
     }
 
+    /// Continue: resume automatic execution and lift the single-run scope
+    /// of an outstanding attended send in one durable change. The grant
+    /// itself stays — past this point it is ordering only.
+    pub(crate) fn resume(&mut self) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        next.paused = false;
+        next.priority_only = false;
+        self.commit(next)
+    }
+
     fn head(&self) -> Option<PendingMessage> {
+        let by_id =
+            |record: &Record, id: &str| record.pending.iter().find(|m| m.message_id == id).cloned();
         (!self.record.paused && !self.unreadable)
             .then(|| {
+                // The attended grant outranks everything: it exists precisely
+                // to jump a promoted item parked ahead of the pause.
                 self.record
-                    .priority
-                    .iter()
-                    .find_map(|id| self.record.pending.iter().find(|m| &m.message_id == id))
-                    .cloned()
+                    .attended_grant
+                    .as_deref()
+                    .and_then(|id| by_id(&self.record, id))
+                    .or_else(|| {
+                        self.record
+                            .priority
+                            .iter()
+                            .find_map(|id| by_id(&self.record, id))
+                    })
                     .or_else(|| self.record.pending.first().cloned())
             })
             .flatten()
@@ -325,7 +395,10 @@ impl Queue {
             ));
         }
         let mut next = self.record.clone();
-        next.priority_only = next.paused;
+        // A Run now on a paused queue keeps the rest parked; a promotion
+        // landing mid-attended-run must not downgrade the outstanding solo
+        // scope either (ADR-0021).
+        next.priority_only = next.paused || next.priority_only;
         next.priority.retain(|id| id != message_id);
         next.priority.push(message_id.to_string());
         self.commit(next)
@@ -341,14 +414,15 @@ impl Queue {
             return Err(RpcError::Failed("Message queue is paused".into()));
         }
         let mut next = self.record.clone();
-        let is_head = next.priority.first().map_or_else(
-            || {
-                next.pending
-                    .first()
-                    .is_some_and(|m| m.message_id == message_id)
-            },
-            |id| id == message_id,
-        );
+        let is_head = next.attended_grant.as_deref() == Some(message_id)
+            || next.priority.first().map_or_else(
+                || {
+                    next.pending
+                        .first()
+                        .is_some_and(|m| m.message_id == message_id)
+                },
+                |id| id == message_id,
+            );
         if !is_head {
             return Err(RpcError::Failed("Message is no longer pending".into()));
         }
@@ -362,6 +436,10 @@ impl Queue {
             timestamp,
         };
         next.priority.retain(|id| id != message_id);
+        if next.attended_grant.as_deref() == Some(message_id) {
+            // Single-run: the grant is spent at admission.
+            next.attended_grant = None;
+        }
         next.started = Some(started.clone());
         let result = self.commit(next);
         if result.is_err() && self.record.started.is_some() {
@@ -389,6 +467,12 @@ impl Queue {
         }
         if !was_started && let Some(head) = next.pending.first_mut() {
             head.error = error.clone();
+        }
+        // The clean-state invariant outranks the failure pause: with no
+        // work left and no queue-level error (this settle must not be one),
+        // there is nothing for a pause to protect (ADR-0021).
+        if self.error.is_none() && error.is_none() {
+            next.clear_pause_when_empty();
         }
         if let Err(commit_error) = self.commit(next) {
             self.record.paused = true;
@@ -753,6 +837,7 @@ mod tests {
                 PendingKind::Ordinary,
                 None,
                 None,
+                false,
             )
             .expect("enqueue");
     }
@@ -839,7 +924,10 @@ mod tests {
         assert!(queue.snapshot().paused);
         assert_eq!(queue.snapshot().active_message_id.as_deref(), Some("m-b"));
         queue.finish(true, None).unwrap();
-        assert!(queue.snapshot().paused);
+        // The delete itself must not lift the pause while m-b executes, but
+        // once it settles with no work left and no queue-level error, the
+        // clean-state invariant clears the pause (ADR-0021).
+        assert!(!queue.snapshot().paused);
     }
 
     #[test]
@@ -850,6 +938,218 @@ mod tests {
         queue.error = Some("Could not save the message queue".into());
         queue.delete("m-c").unwrap();
         assert!(queue.snapshot().paused);
+    }
+
+    #[test]
+    fn an_attended_send_runs_first_through_a_paused_queue_and_leaves_it_paused() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        queue.promote("m-b").unwrap();
+        assert!(queue.snapshot().paused);
+
+        // The user's fresh send is granted admission even though the queue
+        // is paused: it runs ahead of the promoted m-b, and the queue
+        // returns to its pause when it settles (ADR-0021).
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        assert!(!queue.snapshot().paused, "the grant unblocks execution");
+        assert_eq!(queue.snapshot().active_message_id, None);
+
+        let started = queue
+            .start("m-fresh", 1)
+            .expect("the grant runs ahead of parked priority");
+        assert_eq!(started.message.request.prompt, "fresh");
+        queue.finish(true, None).expect("settle");
+
+        assert!(queue.snapshot().paused, "the solo run re-pauses the queue");
+        assert_eq!(
+            queue
+                .snapshot()
+                .pending
+                .iter()
+                .map(|m| m.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["m-b", "m-c"],
+            "parked items keep their order"
+        );
+        queue
+            .start("m-b", 2)
+            .expect_err("the pause still holds for parked items");
+    }
+
+    #[test]
+    fn a_redelivered_pending_message_does_not_gain_a_grant() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        // A durable-delivery retry replays an already-accepted command
+        // while the queue is parked: dedup answers Ok and grants nothing.
+        queue
+            .enqueue(
+                request("C", "openai/gpt-5.4"),
+                "m-c".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("redelivery");
+        assert!(queue.snapshot().paused, "the retry must not unpause");
+        queue
+            .start("m-c", 1)
+            .expect_err("a redelivered id is never an admission");
+    }
+
+    #[test]
+    fn deleting_the_granted_message_revokes_the_grant() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        queue.delete("m-fresh").expect("delete the granted message");
+        // With the grant gone the queue serves its normal head again.
+        let started = queue.start("m-b", 1).expect("normal head is runnable");
+        assert_eq!(started.message.message_id, "m-b");
+    }
+
+    #[test]
+    fn a_failed_settle_with_no_work_left_restores_a_clean_queue() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.delete("m-b").unwrap();
+        queue.delete("m-c").unwrap();
+        queue.pause(true).unwrap();
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        queue.start("m-fresh", 1).unwrap();
+        queue.finish(false, None).expect("failed settle");
+        assert!(
+            !queue.snapshot().paused,
+            "nothing left to protect: the clean-state invariant outranks the failure pause"
+        );
+    }
+
+    #[test]
+    fn a_queue_level_error_keeps_the_pause_on_an_empty_settle() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.delete("m-b").unwrap();
+        queue.delete("m-c").unwrap();
+        queue.pause(true).unwrap();
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        queue.start("m-fresh", 1).unwrap();
+        queue.error = Some("Could not save the message queue".into());
+        queue.finish(true, None).expect("settle");
+        assert!(
+            queue.snapshot().paused,
+            "a queue-level error keeps the pause"
+        );
+    }
+
+    #[test]
+    fn a_saved_clean_queue_reloads_unpaused() {
+        let (mut queue, dir) = queue_with_pending();
+        queue.delete("m-b").unwrap();
+        queue.delete("m-c").unwrap();
+        // Residue: a pause persisted over an empty, error-free queue.
+        queue.pause(true).unwrap();
+        let reloaded = Queue::load(dir.path(), "chat-1");
+        assert!(
+            !reloaded.snapshot().paused,
+            "a stale saved pause must not resurrect on a clean queue"
+        );
+    }
+
+    #[test]
+    fn recovering_a_started_item_with_no_work_left_restores_a_clean_queue() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.delete("m-b").unwrap();
+        queue.delete("m-c").unwrap();
+        queue.pause(true).unwrap();
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        queue.start("m-fresh", 1).unwrap();
+        queue.pause(true).expect("Stop during the attended run");
+        queue.recovered(None);
+        assert!(
+            !queue.snapshot().paused,
+            "the recovered queue is settled, empty, and error-free: clean state"
+        );
+    }
+
+    #[test]
+    fn promoting_during_an_attended_run_preserves_the_solo_scope() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).unwrap();
+        queue
+            .enqueue(
+                request("fresh", "openai/gpt-5.4"),
+                "m-fresh".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("attended enqueue");
+        queue.start("m-fresh", 1).expect("the grant runs");
+        assert!(!queue.snapshot().paused);
+
+        // A Run now / Steer landing mid-attended-run must not downgrade the
+        // single-run scope: when the interrupted-or-promoted work settles,
+        // the queue still returns to its pause (ADR-0021).
+        queue.promote("m-b").expect("promote during the run");
+        queue.finish(true, None).expect("settle");
+        assert!(
+            queue.snapshot().paused,
+            "the solo scope survives a mid-run promotion"
+        );
+        assert_eq!(
+            queue
+                .snapshot()
+                .pending
+                .iter()
+                .map(|m| m.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["m-b", "m-c"],
+        );
     }
 
     #[test]
@@ -909,6 +1209,7 @@ mod tests {
                 PendingKind::Skill,
                 Some("grill".into()),
                 Some("focus on the data layer".into()),
+                false,
             )
             .expect("enqueue skill");
         queue
@@ -918,6 +1219,7 @@ mod tests {
                 PendingKind::Compact,
                 None,
                 None,
+                false,
             )
             .expect("enqueue compact");
         (queue, dir)
