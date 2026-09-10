@@ -4,13 +4,15 @@
 //! it exists only when the user has configured a backend: with none, the
 //! tool is absent from the model's toolset, never registered-and-erroring.
 //!
-//! The backend is user-chosen (Zhipu, Bocha, Brave — the adapters land as
-//! their own slices, [`zhipu`] first); this module owns the trait, the
-//! tool, the output shape, and the built-in adapter table. The tool races
-//! the run's cancellation token around the backend call, exactly like
-//! grep and web_fetch.
+//! The backend is user-chosen (Zhipu, Bocha, Brave — one adapter module
+//! each, sharing the [`transport`] scaffolding); this module owns the
+//! trait, the tool, the output shape, and the built-in adapter table. The
+//! tool races the run's cancellation token around the backend call,
+//! exactly like grep and web_fetch.
 
 mod bocha;
+mod brave;
+mod transport;
 mod zhipu;
 
 use std::sync::Arc;
@@ -24,20 +26,46 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-/// The launch backends (ADR-0023): `(id, display name)` — the save RPC's
-/// validation set and the Settings picker's option list. Each id mounts
-/// its adapter as its slice lands; an id without an entry in [`builtin`]
-/// saves fine but mounts no tool yet.
-pub(crate) const BACKENDS: [(&str, &str); 3] =
-    [("zhipu", "Zhipu"), ("bocha", "Bocha"), ("brave", "Brave")];
+/// One launch backend (ADR-0023) as the Settings picker offers it.
+pub(crate) struct Backend {
+    /// The record and save-RPC id.
+    pub(crate) id: &'static str,
+    /// The display name.
+    pub(crate) name: &'static str,
+    /// Settings-group copy flagging an access requirement (Brave needs
+    /// international access); `None` for backends with nothing to flag.
+    pub(crate) note: Option<&'static str>,
+}
+
+/// The launch backends (ADR-0023) — the save RPC's validation set and
+/// the Settings picker's option list. Every id here mounts its adapter
+/// through [`builtin`].
+pub(crate) const BACKENDS: [Backend; 3] = [
+    Backend {
+        id: "zhipu",
+        name: "Zhipu",
+        note: None,
+    },
+    Backend {
+        id: "bocha",
+        name: "Bocha",
+        note: None,
+    },
+    Backend {
+        id: "brave",
+        name: "Brave",
+        note: Some("Needs international access"),
+    },
+];
 
 /// The built-in adapter table behind the engine's Turn-admission
-/// resolution (the injected test resolver aside). `None` for an id whose
-/// adapter slice has not landed.
+/// resolution (the injected test resolver aside). `None` for an unknown
+/// id.
 pub(crate) fn builtin(id: &str, api_key: &str) -> Option<Arc<dyn SearchBackend>> {
     match id {
         "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key.to_string()))),
         "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key.to_string()))),
+        "brave" => Some(Arc::new(brave::BraveBackend::new(api_key.to_string()))),
         _ => None,
     }
 }
@@ -560,13 +588,11 @@ mod tests {
 
     #[test]
     fn the_builtin_table_mounts_exactly_the_shipped_backends() {
-        let shipped = ["zhipu", "bocha"];
-        for (id, _) in BACKENDS {
-            assert_eq!(
-                builtin(id, "sk-key").is_some(),
-                shipped.contains(&id),
-                "{id}'s mounting state drifted from the shipped set"
-            );
+        for backend in &BACKENDS {
+            let mounted = builtin(backend.id, "sk-key")
+                .map(|adapter| adapter.name().to_string())
+                .expect("every launch backend mounts its adapter");
+            assert_eq!(mounted, backend.name);
         }
         assert!(builtin("nope", "sk-key").is_none());
     }

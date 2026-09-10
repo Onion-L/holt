@@ -76,7 +76,7 @@ async fn the_state_lists_the_picker_options() {
         json!([
             { "id": "zhipu", "name": "Zhipu" },
             { "id": "bocha", "name": "Bocha" },
-            { "id": "brave", "name": "Brave" },
+            { "id": "brave", "name": "Brave", "note": "Needs international access" },
         ])
     );
 }
@@ -109,11 +109,12 @@ async fn configured_records_mount_through_the_builtin_table() {
             .contains(&"web_search".into())
     );
 
-    // Switching to Bocha keeps the tool mounted — its adapter ships too…
+    // Switching backends keeps the tool mounted — every launch adapter
+    // ships.
     value(
         &engine,
         methods::SAVE_WEB_SEARCH_SETTINGS,
-        json!({ "backend": "bocha", "apiKey": "sk-1234567890" }),
+        json!({ "backend": "brave", "apiKey": "sk-1234567890" }),
     )
     .await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second").await;
@@ -124,14 +125,8 @@ async fn configured_records_mount_through_the_builtin_table() {
             .contains(&"web_search".into())
     );
 
-    // …while an id whose adapter has not shipped saves fine but mounts
-    // nothing.
-    value(
-        &engine,
-        methods::SAVE_WEB_SEARCH_SETTINGS,
-        json!({ "backend": "brave", "apiKey": "sk-1234567890" }),
-    )
-    .await;
+    // …while removing the record unmounts it from the next admission.
+    value(&engine, methods::REMOVE_WEB_SEARCH_SETTINGS, json!({})).await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "third").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert!(

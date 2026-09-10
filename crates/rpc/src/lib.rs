@@ -49,13 +49,14 @@ pub mod methods {
     /// Engine-owned web-search settings (ADR-0023): the user-chosen search
     /// backend record. Get takes no params and replies the masked state
     /// `{backend, apiKeyMasked, backends}` (record fields null when
-    /// unconfigured; `backends` carries the picker's launch options);
-    /// save params are `{backend, apiKey}` — backend one of the offered
-    /// ids, key non-empty — replying the same state; reveal returns the
-    /// raw `{key}`; remove clears the record. The engine resolves the
-    /// configured backend once per Turn admission through the built-in
-    /// adapter table; unconfigured (or an id whose adapter has not
-    /// shipped) mounts no `web_search` tool.
+    /// unconfigured; `backends` carries the picker's launch options,
+    /// each optionally carrying Settings copy such as Brave's
+    /// international-access note); save params are `{backend, apiKey}` —
+    /// backend one of the offered ids, key non-empty — replying the same
+    /// state; reveal returns the raw `{key}`; remove clears the record.
+    /// The engine resolves the configured backend once per Turn
+    /// admission through the built-in adapter table; unconfigured mounts
+    /// no `web_search` tool.
     pub const GET_WEB_SEARCH_SETTINGS: &str = "GetWebSearchSettings";
     pub const SAVE_WEB_SEARCH_SETTINGS: &str = "SaveWebSearchSettings";
     pub const REVEAL_WEB_SEARCH_KEY: &str = "RevealWebSearchKey";

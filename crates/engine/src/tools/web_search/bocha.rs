@@ -24,9 +24,9 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::{SearchBackend, SearchHit};
-use crate::tools::USER_AGENT;
+use super::{SearchBackend, SearchHit, transport};
 
+const NAME: &str = "Bocha";
 const ENDPOINT: &str = "https://api.bochaai.com/v1/web-search";
 /// Total budget for one query, request through the last decoded body
 /// byte.
@@ -52,43 +52,27 @@ impl BochaBackend {
         Self { api_key, endpoint }
     }
 
-    /// One query under a total wall-clock budget — request through the
-    /// last decoded body byte.
     async fn request(
         &self,
         query: &str,
         max_results: usize,
         timeout: Duration,
     ) -> Result<Vec<SearchHit>, String> {
-        tokio::time::timeout(timeout, self.exchange(query, max_results))
-            .await
-            .map_err(|_| format!("Bocha search timed out after {:.0}s", timeout.as_secs_f64()))?
-    }
-
-    async fn exchange(&self, query: &str, max_results: usize) -> Result<Vec<SearchHit>, String> {
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|error| format!("Bocha search could not start: {error}"))?;
-        let response = client
-            .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&BochaRequest {
-                query,
-                count: max_results,
-            })
-            .send()
-            .await
-            .map_err(|error| format!("Bocha search request failed: {error}"))?;
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| format!("Bocha search failed reading the response: {error}"))?;
+        let (status, body) = transport::send_bounded(NAME, timeout, |client| {
+            client
+                .post(&self.endpoint)
+                .bearer_auth(&self.api_key)
+                .json(&BochaRequest {
+                    query,
+                    count: max_results,
+                })
+        })
+        .await?;
         if !status.is_success() {
+            let (code, message) = flat_error_pieces(&body);
             return Err(format!(
-                "Bocha search failed: HTTP {status}{}",
-                error_detail(&body)
+                "{NAME} search failed: HTTP {status}{}",
+                transport::error_detail(code, message)
             ));
         }
         let decoded: BochaResponse = serde_json::from_slice(&body)
@@ -109,7 +93,7 @@ impl BochaBackend {
 
 impl SearchBackend for BochaBackend {
     fn name(&self) -> &str {
-        "Bocha"
+        NAME
     }
 
     fn search<'a>(
@@ -118,43 +102,30 @@ impl SearchBackend for BochaBackend {
         max_results: usize,
         cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
-        // The request carries its own timeout; dropping it on
-        // cancellation aborts the in-flight HTTP call.
-        Box::pin(async move {
-            let request = self.request(query, max_results, REQUEST_TIMEOUT);
-            tokio::select! {
-                _ = cancel.cancelled() => Err("search cancelled".to_string()),
-                result = request => result,
-            }
-        })
+        Box::pin(transport::race_cancel(
+            self.request(query, max_results, REQUEST_TIMEOUT),
+            cancel,
+        ))
     }
 }
 
-/// Quote an undocumented-but-common flat `{"code", "message"}` error
-/// body; anything else contributes nothing and the status stands alone.
-/// A string code prints bare; anything else (a number, say) keeps its
-/// JSON rendering.
-fn error_detail(body: &[u8]) -> String {
+/// Pull the `code`/`message` pieces out of an undocumented-but-common
+/// flat error body; anything else contributes nothing and the status
+/// stands alone. A string code prints bare; anything else (a number,
+/// say) keeps its JSON rendering.
+fn flat_error_pieces(body: &[u8]) -> (Option<String>, Option<String>) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return String::new();
+        return (None, None);
     };
     let message = parsed
         .get("message")
         .and_then(|message| message.as_str())
-        .filter(|message| !message.is_empty());
-    let code = parsed
-        .get("code")
-        .map(|code| match code {
-            serde_json::Value::String(text) => text.clone(),
-            other => other.to_string(),
-        })
-        .filter(|code| !code.is_empty());
-    match (code, message) {
-        (Some(code), Some(message)) => format!(" (code {code}): {message}"),
-        (Some(code), None) => format!(" (code {code})"),
-        (None, Some(message)) => format!(": {message}"),
-        (None, None) => String::new(),
-    }
+        .map(str::to_string);
+    let code = parsed.get("code").map(|code| match code {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    });
+    (code, message)
 }
 
 #[derive(serde::Serialize)]
@@ -187,6 +158,7 @@ struct WebPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::USER_AGENT;
     use crate::tools::test_http::{Server, response, serve};
     use serde_json::json;
 
@@ -386,10 +358,5 @@ mod tests {
         cancel.cancel();
 
         assert_eq!(task.await.unwrap().unwrap_err(), "search cancelled");
-    }
-
-    #[test]
-    fn the_backend_names_itself() {
-        assert_eq!(BochaBackend::new("k".into()).name(), "Bocha");
     }
 }

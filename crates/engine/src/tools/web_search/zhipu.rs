@@ -20,9 +20,9 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::{SearchBackend, SearchHit};
-use crate::tools::USER_AGENT;
+use super::{SearchBackend, SearchHit, transport};
 
+const NAME: &str = "Zhipu";
 const ENDPOINT: &str = "https://open.bigmodel.cn/api/paas/v4/web_search";
 /// Zhipu's own standard engine — the cheapest tier, and the one a coding
 /// agent's ordinary lookups want (`search_pro` and the partner engines
@@ -51,67 +51,40 @@ impl ZhipuBackend {
         Self { api_key, endpoint }
     }
 
-    /// One query under a total wall-clock budget — request through the
-    /// last decoded body byte (the web_fetch precedent).
     async fn request(
         &self,
         query: &str,
         max_results: usize,
         timeout: Duration,
     ) -> Result<Vec<SearchHit>, String> {
-        tokio::time::timeout(timeout, self.exchange(query, max_results))
-            .await
-            .map_err(|_| format!("Zhipu search timed out after {:.0}s", timeout.as_secs_f64()))?
-    }
-
-    async fn exchange(&self, query: &str, max_results: usize) -> Result<Vec<SearchHit>, String> {
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|error| format!("Zhipu search could not start: {error}"))?;
-        let response = client
-            .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&ZhipuRequest {
-                search_query: query,
-                search_engine: SEARCH_ENGINE,
-                search_intent: false,
-                count: max_results,
-            })
-            .send()
-            .await
-            .map_err(|error| format!("Zhipu search request failed: {error}"))?;
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| format!("Zhipu search failed reading the response: {error}"))?;
+        let (status, body) = transport::send_bounded(NAME, timeout, |client| {
+            client
+                .post(&self.endpoint)
+                .bearer_auth(&self.api_key)
+                .json(&ZhipuRequest {
+                    search_query: query,
+                    search_engine: SEARCH_ENGINE,
+                    search_intent: false,
+                    count: max_results,
+                })
+        })
+        .await?;
         if !status.is_success() {
             // The API documents `{"error": {"code", "message"}}` on
-            // failures; quote both when they are there, the bare status
-            // when they are not.
+            // failures; the docs type the code as a string, but it decodes
+            // leniently so a numeric code cannot nuke the body (and drop
+            // the message with it).
             let detail = serde_json::from_slice::<ZhipuErrorBody>(&body)
                 .ok()
                 .map(|error| {
-                    // The docs type the code as a string; decode it
-                    // leniently so a numeric code cannot nuke the body
-                    // (and drop the message with it). A string prints
-                    // bare, anything else keeps its JSON rendering.
                     let code = error.error.code.map(|value| match value {
                         serde_json::Value::String(text) => text,
                         other => other.to_string(),
                     });
-                    match (code.as_deref(), error.error.message.is_empty()) {
-                        (Some(""), false) | (None, false) => {
-                            format!(": {}", error.error.message)
-                        }
-                        (Some(""), true) | (None, true) => String::new(),
-                        (Some(code), false) => format!(" (code {code}): {}", error.error.message),
-                        (Some(code), true) => format!(" (code {code})"),
-                    }
+                    transport::error_detail(code, Some(error.error.message))
                 })
                 .unwrap_or_default();
-            return Err(format!("Zhipu search failed: HTTP {status}{detail}"));
+            return Err(format!("{NAME} search failed: HTTP {status}{detail}"));
         }
         let decoded: ZhipuResponse = serde_json::from_slice(&body)
             .map_err(|error| format!("could not decode the Zhipu search response: {error}"))?;
@@ -129,7 +102,7 @@ impl ZhipuBackend {
 
 impl SearchBackend for ZhipuBackend {
     fn name(&self) -> &str {
-        "Zhipu"
+        NAME
     }
 
     fn search<'a>(
@@ -138,15 +111,10 @@ impl SearchBackend for ZhipuBackend {
         max_results: usize,
         cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
-        // The request carries its own timeout; dropping it on
-        // cancellation aborts the in-flight HTTP call.
-        Box::pin(async move {
-            let request = self.request(query, max_results, REQUEST_TIMEOUT);
-            tokio::select! {
-                _ = cancel.cancelled() => Err("search cancelled".to_string()),
-                result = request => result,
-            }
-        })
+        Box::pin(transport::race_cancel(
+            self.request(query, max_results, REQUEST_TIMEOUT),
+            cancel,
+        ))
     }
 }
 
@@ -191,6 +159,7 @@ struct ZhipuError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::USER_AGENT;
     use crate::tools::test_http::{Server, response, serve};
     use serde_json::json;
 
@@ -379,10 +348,5 @@ mod tests {
         cancel.cancel();
 
         assert_eq!(task.await.unwrap().unwrap_err(), "search cancelled");
-    }
-
-    #[test]
-    fn the_backend_names_itself() {
-        assert_eq!(ZhipuBackend::new("k".into()).name(), "Zhipu");
     }
 }

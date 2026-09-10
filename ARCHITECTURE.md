@@ -52,10 +52,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   loudly). Saving validates the backend id against the offered list and
   a non-empty key; the key is an independent record, never shared with a
   same-vendor provider key. The engine resolves the configured backend
-  once per Turn admission through the built-in adapter table (Zhipu and
-  Bocha today; each adapter is an in-process `SearchBackend` with its own
-  budget, timeout, and cancellation race) — a mid-Turn change lands from
-  the next Turn — and an unconfigured (or not-yet-shipped) backend leaves
+  once per Turn admission through the built-in adapter table — Zhipu,
+  Bocha, and Brave, one adapter module each over a shared transport
+  scaffolding (whole-exchange budget, cancellation race); request and
+  response shapes and error mapping stay per adapter — a mid-Turn
+  change lands from the next Turn, and an unconfigured backend leaves
   the `web_search` agent tool unmounted: absent, never erroring.
 - Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on

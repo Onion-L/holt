@@ -966,9 +966,10 @@ impl EngineService {
     fn web_search_state(&self) -> WebSearchSettingsState {
         let backends = crate::tools::web_search::BACKENDS
             .iter()
-            .map(|(id, name)| WebSearchBackendOption {
-                id: (*id).to_string(),
-                name: (*name).to_string(),
+            .map(|backend| WebSearchBackendOption {
+                id: backend.id.to_string(),
+                name: backend.name.to_string(),
+                note: backend.note.map(str::to_string),
             })
             .collect();
         match self.web_search.get() {
@@ -992,12 +993,12 @@ impl EngineService {
         let backend = required_string(&params, "backend")?;
         let key = required_string(&params, "apiKey")?;
         let known = crate::tools::web_search::BACKENDS;
-        if !known.iter().any(|(id, _)| *id == backend) {
+        if !known.iter().any(|entry| entry.id == backend) {
             return Err(RpcError::BadParams(format!(
                 "unknown search backend {backend:?}; expected one of {}",
                 known
                     .iter()
-                    .map(|(id, _)| *id)
+                    .map(|entry| entry.id)
                     .collect::<Vec<_>>()
                     .join(", "),
             )));

@@ -133,12 +133,16 @@ pub struct TitleSettingsState {
 }
 
 /// One selectable search backend in the Settings picker (ADR-0023):
-/// `id` is what `SaveWebSearchSettings` takes, `name` is its label.
+/// `id` is what `SaveWebSearchSettings` takes, `name` is its label, and
+/// `note` is Settings-group copy flagging an access requirement (Brave
+/// needs international access).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchBackendOption {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The web-search settings view (ADR-0023): the configured backend plus a
