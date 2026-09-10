@@ -1278,13 +1278,9 @@ impl Shell {
     /// (user report).
     fn panel_key(&self, cx: &App) -> String {
         if self.active_chat.is_empty() {
-            let space = self
-                .state
-                .read(cx)
-                .selected_space
-                .clone()
-                .unwrap_or_default();
-            format!("space-canvas:{space}")
+            crate::terminal::panel::canvas_terminal_key(
+                self.state.read(cx).selected_space.as_deref(),
+            )
         } else {
             self.active_chat.clone()
         }
@@ -2475,8 +2471,17 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .items_center()
+                        .child(loaders::holt_mark_loader(
+                            "onboarding-mark",
+                            theme,
+                            56.0,
+                            loaders::MARK_SHAPES[self.new_chat_mark],
+                            cx.entity_id(),
+                            cx,
+                        ))
                         .child(
                             div()
+                                .mt(px(16.0))
                                 .text_size(crate::typography::ui_rems(16.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)

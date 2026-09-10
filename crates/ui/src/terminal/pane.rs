@@ -716,7 +716,18 @@ impl TerminalPane {
         });
         entry.active = entry.tabs.len() - 1;
 
-        let run = Self::spawn_session(chat.clone(), key, engine, cx);
+        // Chat-less canvas terminals carry their root explicitly: the
+        // selected Space's path, or nothing in the no-project empty state
+        // (the engine then falls back to the user's home directory).
+        let cwd = if crate::terminal::panel::is_canvas_terminal_key(&chat) {
+            self.state
+                .read(cx)
+                .selected_space_row()
+                .map(|space| space.path.clone())
+        } else {
+            None
+        };
+        let run = Self::spawn_session(chat.clone(), key, cwd, engine, cx);
         if let Some(tab) = self.tab_mut(&chat, key) {
             tab._run = Some(run);
         }
@@ -727,6 +738,7 @@ impl TerminalPane {
     fn spawn_session(
         chat: String,
         key: u64,
+        cwd: Option<String>,
         engine: EngineHandle,
         cx: &mut Context<Self>,
     ) -> Task<()> {
@@ -744,7 +756,7 @@ impl TerminalPane {
                 .client()
                 .call_as::<TerminalSession>(
                     methods::OPEN_TERMINAL,
-                    serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows }),
+                    serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows, "cwd": cwd }),
                 )
                 .await;
             let session = match opened {

@@ -881,16 +881,18 @@ impl Shell {
                     .flex_col()
                     .gap(px(8.0))
                     // File first — the tree + file tabs are the browsing
-                    // surface (ticket 11), a peer of Terminal and Git.
-                    .child(
-                        row("surface-card-file", icons::DOCUMENT, "File").on_click(cx.listener(
-                            |this, _, window, cx| {
+                    // surface (ticket 11), a peer of Terminal and Git. It
+                    // needs a workspace: the no-project empty state offers
+                    // terminals only.
+                    .when(self.file_space_key(cx).is_some(), |el| {
+                        el.child(row("surface-card-file", icons::DOCUMENT, "File").on_click(
+                            cx.listener(|this, _, window, cx| {
                                 if this.add_file_surface(cx) {
                                     this.focus_file_tree(window, cx);
                                 }
-                            },
-                        )),
-                    )
+                            }),
+                        ))
+                    })
                     .child(
                         row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
                             cx.listener(|this, _, _, cx| {
@@ -1231,22 +1233,26 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(
-                            popover::menu_row(&theme, false, "right-plus-file")
-                                .id("right-plus-file-row")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if this.add_file_surface(cx) {
-                                        this.focus_file_tree(window, cx);
-                                    }
-                                    this.close_right_plus(cx);
-                                }))
-                                .child(
-                                    icon(icons::DOCUMENT)
-                                        .size(px(13.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("File")),
-                        )
+                        // File needs a workspace (same gate as the picker);
+                        // the no-project empty state is terminals only.
+                        .when(self.file_space_key(cx).is_some(), |menu| {
+                            menu.child(
+                                popover::menu_row(&theme, false, "right-plus-file")
+                                    .id("right-plus-file-row")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if this.add_file_surface(cx) {
+                                            this.focus_file_tree(window, cx);
+                                        }
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::DOCUMENT)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("File")),
+                            )
+                        })
                         .child(
                             popover::menu_row(&theme, false, "right-plus-terminal")
                                 .id("right-plus-terminal-row")

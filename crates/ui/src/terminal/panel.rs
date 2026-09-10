@@ -179,6 +179,20 @@ struct PaneEntry {
     _focus: Subscription,
 }
 
+/// The terminal key for a chat-less canvas — the same key the shell's
+/// surface bookkeeping uses (`Shell::panel_key`): `space-canvas:<space>`, or
+/// a bare `space-canvas:` in the no-project empty state. Only the EMBEDDED
+/// (right-pane) panel opens tabs under it; the bottom dock stays chat-only.
+pub(crate) fn canvas_terminal_key(space: Option<&str>) -> String {
+    format!("space-canvas:{}", space.unwrap_or_default())
+}
+
+/// Whether `key` is a canvas key rather than a real chat id. Canvas keys are
+/// never pruned against the live chat list — they outlive chat switches.
+pub(crate) fn is_canvas_terminal_key(key: &str) -> bool {
+    key.starts_with("space-canvas:")
+}
+
 pub struct TerminalPanel {
     state: Entity<AppState>,
     chats: HashMap<String, ChatTabs>,
@@ -207,7 +221,7 @@ impl TerminalPanel {
             let removed: Vec<_> = this
                 .chats
                 .keys()
-                .filter(|chat| !valid.contains(*chat))
+                .filter(|chat| !valid.contains(*chat) && !is_canvas_terminal_key(chat))
                 .cloned()
                 .collect();
             for chat in removed {
@@ -247,7 +261,15 @@ impl TerminalPanel {
     }
 
     fn chat(&self, cx: &App) -> Option<String> {
-        self.state.read(cx).selected_chat.clone()
+        let state = self.state.read(cx);
+        if let Some(chat) = state.selected_chat.clone() {
+            return Some(chat);
+        }
+        // Embedded (right-pane) only: with no chat selected, scope tabs to
+        // the canvas the way the shell keys its surfaces, so a terminal can
+        // open on the new-chat canvas and in the no-project empty state.
+        self.embedded
+            .then(|| canvas_terminal_key(state.selected_space.as_deref()))
     }
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
@@ -870,6 +892,15 @@ impl Render for TerminalPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_keys_round_trip_and_are_not_prunable_chat_ids() {
+        let key = canvas_terminal_key(Some("space-1"));
+        assert_eq!(key, "space-canvas:space-1");
+        assert!(is_canvas_terminal_key(&key));
+        assert!(is_canvas_terminal_key(&canvas_terminal_key(None)));
+        assert!(!is_canvas_terminal_key("chat-1"));
+    }
 
     #[test]
     fn tab_numbers_stay_unique_and_reuse_freed_slots() {

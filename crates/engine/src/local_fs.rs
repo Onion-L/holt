@@ -34,7 +34,7 @@ fn hostname() -> String {
     "This device".to_string()
 }
 
-fn home_dir() -> Option<String> {
+pub(crate) fn home_dir() -> Option<String> {
     std::env::var_os("HOME")
         .map(|home| home.to_string_lossy().to_string())
         .filter(|home| !home.is_empty())
