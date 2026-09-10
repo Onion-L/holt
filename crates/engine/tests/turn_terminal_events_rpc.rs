@@ -301,6 +301,12 @@ async fn an_interrupted_turn_publishes_an_interrupted_event() {
     // An interruption settles Idle like a clean end, and the queue is not
     // paused by it beyond Stop's own pause.
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    // The user's own Stop is not an error: the transcript keeps the partial
+    // text but never renders the transport's abort artifact as an ErrorChip.
+    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
+    let transcript = transcript.to_string();
+    assert!(transcript.contains("partial A"), "{transcript}");
+    assert!(!transcript.contains("Request was aborted"), "{transcript}");
     assert_no_event(&mut events).await;
 }
 

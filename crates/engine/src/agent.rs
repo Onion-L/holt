@@ -988,6 +988,12 @@ fn part_char_len(part: &MessagePart) -> usize {
 /// per-message ids (`t0`, `r1`, …) must not collide across its messages — the
 /// UI keys rows by `entry_id#part_id`.
 ///
+/// `cancelled` is the run's own cancellation (Stop / Steer). A cancelled run
+/// ends on an aborted assistant message whose `error_message` is the
+/// transport's abort artifact ("The operation was aborted"), not a provider
+/// failure — like the loop-error path, it must not become an ErrorChip. An
+/// abort WITHOUT cancellation (a transport dying on its own) keeps the chip.
+///
 /// `skill_files` maps this run's catalog `SKILL.md` paths (normalized
 /// absolute) to skill names: a read of one collapses to the same skill chip
 /// an invocation uses (ADR-0006) — the file's content reached the model
@@ -997,6 +1003,7 @@ fn assistant_parts(
     id_base: usize,
     cwd: &str,
     skill_files: &HashMap<String, String>,
+    cancelled: bool,
 ) -> Vec<MessagePart> {
     let AgentMessage::Assistant(message) = message else {
         return Vec::new();
@@ -1040,10 +1047,14 @@ fn assistant_parts(
         }
     }
     if let Some(error) = message.error_message.as_ref() {
-        parts.push(MessagePart::Error {
-            id: format!("e{}", id_base + parts.len()),
-            message: error.clone(),
-        });
+        let user_aborted =
+            cancelled && message.stop_reason == pi_core::ai::types::StopReason::Aborted;
+        if !user_aborted {
+            parts.push(MessagePart::Error {
+                id: format!("e{}", id_base + parts.len()),
+                message: error.clone(),
+            });
+        }
     }
     parts
 }
@@ -1193,6 +1204,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let sink_run_start = Instant::now();
     let sink_cwd = cwd.clone();
     let sink_skill_files: Arc<HashMap<String, String>> = Arc::new(skill_files);
+    let sink_cancel = cancel.clone();
     let emit: AgentEventSink = Arc::new(move |event| {
         let chat = sink_chat.clone();
         let base_parts = sink_base.clone();
@@ -1201,6 +1213,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         let last_publish = sink_last_publish.clone();
         let cwd = sink_cwd.clone();
         let skill_files = sink_skill_files.clone();
+        let cancel = sink_cancel.clone();
         Box::pin(async move {
             // Debug trace of the event cadence: answers "did the reply
             // stream?" without a debugger — deltas arriving bunched here are
@@ -1221,7 +1234,13 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 {
                     let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
+                    parts.extend(assistant_parts(
+                        &message,
+                        base.len(),
+                        &cwd,
+                        &skill_files,
+                        cancel.is_cancelled(),
+                    ));
                     drop(base);
                     trace("start", parts.iter().map(part_char_len).sum(), true);
                     update_assistant_entry(
@@ -1247,7 +1266,13 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     };
                     let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
+                    parts.extend(assistant_parts(
+                        &message,
+                        base.len(),
+                        &cwd,
+                        &skill_files,
+                        cancel.is_cancelled(),
+                    ));
                     drop(base);
                     trace("delta", parts.iter().map(part_char_len).sum(), due);
                     update_assistant_entry(
@@ -1264,7 +1289,13 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 {
                     let mut base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
                     let mut parts = base.clone();
-                    parts.extend(assistant_parts(&message, base.len(), &cwd, &skill_files));
+                    parts.extend(assistant_parts(
+                        &message,
+                        base.len(),
+                        &cwd,
+                        &skill_files,
+                        cancel.is_cancelled(),
+                    ));
                     *base = parts.clone();
                     drop(base);
                     // The next message's first delta must publish immediately.
@@ -1851,7 +1882,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new()),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
             vec![
                 MessagePart::Reasoning {
                     id: "r0".into(),
@@ -1867,7 +1898,7 @@ mod tests {
         // generated part ids continue after the base so row keys never
         // collide.
         assert_eq!(
-            assistant_parts(&message, 2, "/tmp/x", &HashMap::new()),
+            assistant_parts(&message, 2, "/tmp/x", &HashMap::new(), false),
             vec![
                 MessagePart::Reasoning {
                     id: "r2".into(),
@@ -1876,6 +1907,45 @@ mod tests {
                 MessagePart::Text {
                     id: "t3".into(),
                     text: "answer".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_runs_aborted_message_drops_the_abort_error_part() {
+        let aborted = || {
+            AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![AssistantContent::Text(TextContent {
+                    text: "partial".into(),
+                    ..Default::default()
+                })],
+                stop_reason: pi_core::ai::types::StopReason::Aborted,
+                error_message: Some("The operation was aborted".into()),
+                ..Default::default()
+            }))
+        };
+        // Stop / Steer: the transport's abort artifact is not an error —
+        // only the partial text lands.
+        assert_eq!(
+            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), true),
+            vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "partial".into(),
+            }]
+        );
+        // An abort WITHOUT the run's cancellation (the transport died on
+        // its own) keeps the chip — that failure must stay diagnosable.
+        assert_eq!(
+            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), false),
+            vec![
+                MessagePart::Text {
+                    id: "t0".into(),
+                    text: "partial".into(),
+                },
+                MessagePart::Error {
+                    id: "e1".into(),
+                    message: "The operation was aborted".into(),
                 },
             ]
         );
@@ -1966,7 +2036,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new()),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
             vec![MessagePart::Tool {
                 id: "call-1".into(),
                 call: TranscriptToolCall::Exec {
@@ -2054,7 +2124,7 @@ mod tests {
                 ))],
                 ..Default::default()
             }));
-            assistant_parts(&message, 0, "/roots", &skill_files)
+            assistant_parts(&message, 0, "/roots", &skill_files, false)
         };
         // The advertised location, absolute…
         assert_eq!(
@@ -2108,7 +2178,7 @@ mod tests {
             ))],
             ..Default::default()
         }));
-        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new());
+        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new(), false);
         assert!(matches!(
             &parts[0],
             MessagePart::Tool {
@@ -2280,7 +2350,7 @@ mod tests {
         // First message creates the entry, later ones replace its parts in
         // place — same id, same created_at (the delta protocol keys appends
         // off an unchanged entry and the strip stamps once).
-        let mut first_parts = assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new());
+        let mut first_parts = assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new(), false);
         update_assistant_entry(
             &chat,
             "run-1",
@@ -2295,6 +2365,7 @@ mod tests {
             first_parts.len(),
             "/tmp/x",
             &HashMap::new(),
+            false,
         );
         first_parts.extend(second);
         update_assistant_entry(
