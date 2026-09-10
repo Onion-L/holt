@@ -1,26 +1,34 @@
-//! The right-pane Git panel (tickets 03/04): a per-chat surface rendering
-//! the live working-tree status stream as three flat, path-sorted sections
-//! — Staged, Unstaged, Untracked — with live staging. Checking an
-//! unstaged/untracked row stages it, unchecking a staged row unstages it,
-//! and Stage all / Unstage all move everything in one click. State is
-//! purely stream-driven — no optimistic local layer — so the rows can
-//! never drift from the real index, including after external terminal git
-//! operations; a refused write surfaces the engine's message in an error
-//! strip. The panel owns one `WatchWorkspaceGitStatus` subscription from
-//! open to close.
+//! The right-pane Git panel (tickets 03/04/05): a per-chat surface
+//! rendering the live working-tree status stream as three flat,
+//! path-sorted sections — Staged, Unstaged, Untracked — with live staging
+//! and the commit box. Checking an unstaged/untracked row stages it,
+//! unchecking a staged row unstages it, and Stage all / Unstage all move
+//! everything in one click. State is purely stream-driven — no optimistic
+//! local layer — so the rows can never drift from the real index,
+//! including after external terminal git operations; a refused write
+//! surfaces the engine's message in an error strip. The commit box reuses
+//! the composer input (Enter commits, Shift-Enter breaks the line) with a
+//! count-labeled button gated on message ∧ staged ∧ no-conflicts — the
+//! engine's own gates (identity, mid-merge) remain the backstop. The
+//! panel owns one `WatchWorkspaceGitStatus` subscription from open to
+//! close.
 
 use std::time::Duration;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Entity, SharedString, Task, div, px};
+use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, div, px};
 use holt_proto::{WorkspaceGitStatus, WorkspaceGitStatusEntry, WorkspaceGitStatusKind};
 use holt_rpc::methods;
 
+use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::files::tree::{marker_color, marker_parts};
 use crate::icons::{self, icon};
 use crate::settings::widgets::{self, CheckboxState};
 use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
+
+/// How long the committed short sha stays flashed beside the button.
+const COMMIT_FLASH: Duration = Duration::from_secs(4);
 
 /// The section a status row belongs to. Staged answers "what would the next
 /// commit contain?"; Unstaged and Untracked are what the worktree still owes
@@ -137,6 +145,34 @@ impl StatusSections {
             .filter(|row| !row.conflicted)
             .map(|row| row.path.clone())
             .collect()
+    }
+
+    /// Whether any rendered row is conflicted. A conflict anywhere means
+    /// the engine will refuse the commit (a conflicted tree is mid-merge),
+    /// so the commit button steps aside no matter which section carries it.
+    pub fn has_conflicts(&self) -> bool {
+        self.staged
+            .iter()
+            .chain(&self.unstaged)
+            .chain(&self.untracked)
+            .any(|row| row.conflicted)
+    }
+}
+
+/// The commit button's UI gate (ticket 05): a non-blank message ∧ at
+/// least one staged path ∧ no conflicted paths anywhere. Presentation
+/// only — the engine's own gates (identity, mid-merge, nothing staged)
+/// remain the backstop, so this never decides commit correctness, just
+/// whether the click is worth offering.
+pub fn commit_enabled(message: &str, sections: &StatusSections) -> bool {
+    !message.trim().is_empty() && !sections.staged.is_empty() && !sections.has_conflicts()
+}
+
+/// The commit button's label, carrying the live staged count.
+pub fn commit_button_label(staged_count: usize) -> String {
+    match staged_count {
+        1 => "Commit 1 file".into(),
+        n => format!("Commit {n} files"),
     }
 }
 
@@ -273,6 +309,17 @@ pub struct GitPanel {
     /// The status watch, kept so its drop cancels the engine-side stream.
     /// `None` until the engine handle exists (the state observer retries).
     watch: Option<Task<()>>,
+    /// The commit message draft — the shared composer input entity, so the
+    /// commit box behaves exactly like every other multiline field (Enter
+    /// submits, Shift-Enter breaks the line, full IME/undo machinery).
+    message: Entity<ComposerInput>,
+    /// Holds the draft's event subscription for the panel's lifetime.
+    _message_events: Subscription,
+    /// One commit write is in flight: the button and Enter both refuse
+    /// until its reply lands.
+    committing: bool,
+    /// The last commit's short sha, flashed briefly beside the button.
+    committed_flash: Option<String>,
 }
 
 impl GitPanel {
@@ -284,12 +331,22 @@ impl GitPanel {
                 None => (None, state.selected_space.clone()),
             }
         };
+        let message = cx.new(|cx| ComposerInput::new("Commit message…", cx));
+        let _message_events = cx.subscribe(&message, |this: &mut Self, _, event, cx| match event {
+            ComposerInputEvent::Submitted => this.commit_staged(cx),
+            ComposerInputEvent::Edited => cx.notify(),
+            _ => {}
+        });
         let mut panel = Self {
             state,
             chat_id,
             space_id,
             view: StatusView::default(),
             watch: None,
+            message,
+            _message_events,
+            committing: false,
+            committed_flash: None,
         };
         panel.ensure_watch(cx);
         // The engine can attach AFTER the panel opens (boot ordering): retry
@@ -384,21 +441,28 @@ impl GitPanel {
         })
     }
 
+    /// The address and transport every git write needs: the stream's own
+    /// workdir — the checkout whose status the rows describe, so the write
+    /// addresses exactly what is rendered — plus the engine handle. `None`
+    /// when there is nothing to address yet (no workdir seen, or no engine
+    /// attached).
+    fn write_target(&self, cx: &Context<Self>) -> Option<(String, EngineHandle)> {
+        let repo_path = self.view.workdir.clone()?;
+        let engine = self.state.read(cx).engine().cloned()?;
+        Some((repo_path, engine))
+    }
+
     /// Issue one staging write through the engine's trio. No optimistic
     /// state: on success only the status watch's next frame moves the rows;
     /// on refusal the engine's message rides the error strip and the rows
-    /// keep telling the truth. The stream's own workdir is the checkout
-    /// whose status the rows describe, so the write addresses exactly what
-    /// is rendered. No Turn gating — the per-checkout lock serializes this
-    /// with any agent git work, mid-Turn included (ADR-0022).
+    /// keep telling the truth. No Turn gating — the per-checkout lock
+    /// serializes this with any agent git work, mid-Turn included
+    /// (ADR-0022).
     fn run_staging(&mut self, action: StagingAction, cx: &mut Context<Self>) {
         if action.paths().is_empty() {
             return;
         }
-        let Some(repo_path) = self.view.workdir.clone() else {
-            return;
-        };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        let Some((repo_path, engine)) = self.write_target(cx) else {
             return;
         };
         let (method, paths) = match action {
@@ -417,6 +481,78 @@ impl GitPanel {
                 match result {
                     Ok(_) => panel.view.clear_write_error(),
                     Err(err) => panel.view.note_write_error(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Commit the staged index. The UI gate is presentation only (Enter and
+    /// the button share it); the engine's own gates — missing identity,
+    /// mid-merge state, an empty index — are the backstop and land their
+    /// message on the error strip with the draft preserved for a retry. No
+    /// Turn gating: committing mid-Turn rides the same per-checkout lock
+    /// as staging (ADR-0022).
+    fn commit_staged(&mut self, cx: &mut Context<Self>) {
+        if self.committing {
+            return;
+        }
+        let message = self.message.read(cx).text().trim().to_string();
+        if !commit_enabled(&message, &self.view.sections) {
+            return;
+        }
+        let Some((repo_path, engine)) = self.write_target(cx) else {
+            return;
+        };
+        self.committing = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::COMMIT_STAGED,
+                    serde_json::json!({ "repoPath": repo_path, "message": message }),
+                )
+                .await;
+            this.update(cx, |panel, cx| {
+                panel.committing = false;
+                match result {
+                    Ok(value) => {
+                        let sha = value
+                            .get("sha")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        panel.view.clear_write_error();
+                        panel.message.update(cx, |input, cx| input.set_text("", cx));
+                        // The contract always replies with a sha; an empty
+                        // one (a degenerate reply) still clears the draft,
+                        // just without a flash.
+                        if !sha.is_empty() {
+                            panel.flash_commit(sha, cx);
+                        }
+                    }
+                    Err(err) => panel.view.note_write_error(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Flash the new commit's short sha beside the button for a few
+    /// seconds. A newer flash replaces an older one outright, and only the
+    /// matching timer may clear what is showing.
+    fn flash_commit(&mut self, sha: &str, cx: &mut Context<Self>) {
+        let short = sha.get(..7).unwrap_or(sha).to_string();
+        self.committed_flash = Some(short.clone());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COMMIT_FLASH).await;
+            this.update(cx, |panel, cx| {
+                if panel.committed_flash.as_deref() == Some(short.as_str()) {
+                    panel.committed_flash = None;
                 }
                 cx.notify();
             })
@@ -652,6 +788,93 @@ impl GitPanel {
         button.child(label).into_any_element()
     }
 
+    /// The commit box pinned to the panel's bottom (ticket 05): the shared
+    /// composer input for the message — Enter commits, Shift-Enter breaks
+    /// the line, exactly the main composer's chords — above a footer row
+    /// pairing the flashed short sha with the count-labeled Commit button.
+    /// The button dims and refuses while the gate fails or a write is in
+    /// flight; a failed commit keeps the draft for a retry.
+    fn render_commit_box(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let enabled =
+            commit_enabled(self.message.read(cx).text(), &self.view.sections) && !self.committing;
+        let staged_count = self.view.sections.staged.len();
+        let mut button = div()
+            .id("git-commit-button")
+            .flex_none()
+            .h(px(24.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .rounded(px(6.0))
+            .text_size(px(11.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .bg(theme.solid)
+            .text_color(theme.on_solid)
+            .child(SharedString::from(commit_button_label(staged_count)));
+        if enabled {
+            button = button
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.85))
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.commit_staged(cx);
+                }));
+        } else {
+            button = button.opacity(0.35);
+        }
+        div()
+            .flex_none()
+            .border_t_1()
+            .border_color(theme.border)
+            .px(px(10.0))
+            .pt(px(8.0))
+            .pb(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .w_full()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.hairline(0.12))
+                    .bg(theme.ink(0.04))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .child(self.message.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().flex_1().min_w_0())
+                    .children(self.committed_flash.clone().map(|sha| {
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                icon(icons::CHECK)
+                                    .size(px(12.0))
+                                    .flex_none()
+                                    .text_color(theme.success),
+                            )
+                            .child(
+                                div()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(theme.success_muted)
+                                    .child(SharedString::from(format!("Committed {sha}"))),
+                            )
+                    }))
+                    .child(button),
+            )
+            .into_any_element()
+    }
+
     /// The staging-refusal strip (the file viewer's save-error pattern):
     /// the engine's message verbatim, over rows that still tell the truth.
     fn write_error_banner(theme: &Theme, message: SharedString) -> AnyElement {
@@ -835,6 +1058,11 @@ impl Render for GitPanel {
                 ))
             })
             .child(div().flex_1().min_h_0().child(body))
+            // The commit box rides pinned to the bottom on every git root —
+            // clean tree included, with the button gated off.
+            .when(self.view.frame_seen && !self.view.not_git, |el| {
+                el.child(self.render_commit_box(&theme, cx))
+            })
     }
 }
 
@@ -1201,5 +1429,85 @@ mod tests {
         view.apply(frame(Some("/repo"), Vec::new(), None));
         assert_eq!(view.write_error, None);
         assert!(view.sections.is_empty());
+    }
+
+    #[test]
+    fn the_commit_button_needs_message_and_staged_paths() {
+        let sections = assign_sections(&[
+            entry("a.rs", Kind::Modified, Some(Kind::Modified), None, false),
+            entry("b.rs", Kind::Added, Some(Kind::Added), None, false),
+        ]);
+        assert!(
+            commit_enabled("Fix the thing", &sections),
+            "message plus staged paths enables"
+        );
+        assert!(!commit_enabled("", &sections), "a blank message disables");
+        assert!(
+            !commit_enabled("   \n\t ", &sections),
+            "a whitespace-only message is blank"
+        );
+    }
+
+    #[test]
+    fn the_commit_button_needs_something_staged() {
+        let clean = StatusSections::default();
+        assert!(!commit_enabled("Fix the thing", &clean));
+
+        let unstaged_only = assign_sections(&[entry(
+            "a.rs",
+            Kind::Modified,
+            None,
+            Some(Kind::Modified),
+            false,
+        )]);
+        assert!(
+            !commit_enabled("Fix the thing", &unstaged_only),
+            "worktree-side changes alone are not committable"
+        );
+
+        let untracked_only = assign_sections(&[entry(
+            "new.rs",
+            Kind::Untracked,
+            None,
+            Some(Kind::Untracked),
+            false,
+        )]);
+        assert!(!commit_enabled("Fix the thing", &untracked_only));
+    }
+
+    #[test]
+    fn any_conflict_disables_the_commit_button() {
+        // A conflict in the Staged section alone…
+        let staged_conflict = assign_sections(&[entry(
+            "conf.rs",
+            Kind::Conflicted,
+            Some(Kind::Conflicted),
+            Some(Kind::Conflicted),
+            false,
+        )]);
+        assert!(!commit_enabled("Merge work", &staged_conflict));
+
+        // …and one sitting beside otherwise-clean staged paths.
+        let mixed = assign_sections(&[
+            entry("a.rs", Kind::Modified, Some(Kind::Modified), None, false),
+            entry(
+                "conf.rs",
+                Kind::Conflicted,
+                None,
+                Some(Kind::Conflicted),
+                false,
+            ),
+        ]);
+        assert!(
+            !commit_enabled("Merge work", &mixed),
+            "a conflicted tree is mid-merge — the engine would refuse"
+        );
+    }
+
+    #[test]
+    fn the_commit_button_label_carries_the_staged_count() {
+        assert_eq!(commit_button_label(0), "Commit 0 files");
+        assert_eq!(commit_button_label(1), "Commit 1 file");
+        assert_eq!(commit_button_label(3), "Commit 3 files");
     }
 }
