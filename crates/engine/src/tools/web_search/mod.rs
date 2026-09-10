@@ -5,9 +5,12 @@
 //! tool is absent from the model's toolset, never registered-and-erroring.
 //!
 //! The backend is user-chosen (Zhipu, Bocha, Brave — the adapters land as
-//! their own slices); this module owns the trait, the tool, and the output
-//! shape. The tool races the run's cancellation token around the backend
-//! call, exactly like grep and web_fetch.
+//! their own slices, [`zhipu`] first); this module owns the trait, the
+//! tool, the output shape, and the built-in adapter table. The tool races
+//! the run's cancellation token around the backend call, exactly like
+//! grep and web_fetch.
+
+mod zhipu;
 
 use std::sync::Arc;
 
@@ -19,6 +22,23 @@ use pi_core::{
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+
+/// The launch backends (ADR-0023): `(id, display name)` — the save RPC's
+/// validation set and the Settings picker's option list. Each id mounts
+/// its adapter as its slice lands; an id without an entry in [`builtin`]
+/// saves fine but mounts no tool yet.
+pub(crate) const BACKENDS: [(&str, &str); 3] =
+    [("zhipu", "Zhipu"), ("bocha", "Bocha"), ("brave", "Brave")];
+
+/// The built-in adapter table behind the engine's Turn-admission
+/// resolution (the injected test resolver aside). `None` for an id whose
+/// adapter slice has not landed.
+pub(crate) fn builtin(id: &str, api_key: &str) -> Option<Arc<dyn SearchBackend>> {
+    match id {
+        "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key.to_string()))),
+        _ => None,
+    }
+}
 
 /// Hit count used when the model omits `max_results`.
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -534,5 +554,18 @@ mod tests {
             tool.parameters["properties"]["max_results"]["maximum"],
             json!(10)
         );
+    }
+
+    #[test]
+    fn the_builtin_table_mounts_exactly_the_shipped_backends() {
+        let shipped = ["zhipu"];
+        for (id, _) in BACKENDS {
+            assert_eq!(
+                builtin(id, "sk-key").is_some(),
+                shipped.contains(&id),
+                "{id}'s mounting state drifted from the shipped set"
+            );
+        }
+        assert!(builtin("nope", "sk-key").is_none());
     }
 }

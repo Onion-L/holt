@@ -7,8 +7,10 @@
 //! never shared with, or prefilled from, a same-vendor provider key.
 //!
 //! Mutated only through the typed RPC surface. Resolution into a mounted
-//! [`SearchBackend`] happens once per Turn admission in the engine —
-//! unconfigured mounts no `web_search` tool at all.
+//! backend happens once per Turn admission in the engine, through the
+//! built-in adapter table in `tools::web_search` (whose `BACKENDS` const
+//! is also the save RPC's validation set) — unconfigured mounts no
+//! `web_search` tool at all.
 
 use std::{
     io::Write,
@@ -19,12 +21,6 @@ use std::{
 use crate::EngineError;
 
 const FILE_NAME: &str = "web-search.json";
-
-/// The launch backend ids (ADR-0023) — the save RPC's validation set.
-/// The adapters land as their own slices; until one does, its configured
-/// id mounts no tool. The Settings picker (UI) needs its own surface for
-/// this list — the crate boundary keeps it out of reach here.
-pub(crate) const KNOWN_BACKENDS: [&str; 3] = ["zhipu", "bocha", "brave"];
 
 /// The persisted record: nothing is stored unconfigured — the file exists
 /// only while both fields are set.

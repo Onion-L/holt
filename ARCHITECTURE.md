@@ -45,16 +45,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   error.
 - Web search settings (ADR-0023): `GetWebSearchSettings` /
   `SaveWebSearchSettings` (`{backend, apiKey}`, both replying the masked
-  `WebSearchSettingsState`), `RevealWebSearchKey`, and
-  `RemoveWebSearchSettings` — the user-chosen search-backend record in
-  `web-search.json` under the credentials pattern (0600, atomic replace,
-  malformed fails startup loudly). Saving validates the backend id
-  (zhipu/bocha/brave) and a non-empty key; the key is an independent
-  record, never shared with a same-vendor provider key. The engine
-  resolves the configured backend once per Turn admission — a mid-Turn
-  change lands from the next Turn — and an unconfigured (or not-yet-
-  shipped) backend leaves the `web_search` agent tool unmounted: absent,
-  never erroring.
+  `WebSearchSettingsState` plus the picker's launch options — Zhipu,
+  Bocha, Brave), `RevealWebSearchKey`, and `RemoveWebSearchSettings` —
+  the user-chosen search-backend record in `web-search.json` under the
+  credentials pattern (0600, atomic replace, malformed fails startup
+  loudly). Saving validates the backend id against the offered list and
+  a non-empty key; the key is an independent record, never shared with a
+  same-vendor provider key. The engine resolves the configured backend
+  once per Turn admission through the built-in adapter table (Zhipu
+  today; each adapter is an in-process `SearchBackend` with its own
+  budget, timeout, and cancellation race) — a mid-Turn change lands from
+  the next Turn — and an unconfigured (or not-yet-shipped) backend leaves
+  the `web_search` agent tool unmounted: absent, never erroring.
 - Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —

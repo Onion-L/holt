@@ -132,11 +132,21 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
+/// One selectable search backend in the Settings picker (ADR-0023):
+/// `id` is what `SaveWebSearchSettings` takes, `name` is its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchBackendOption {
+    pub id: String,
+    pub name: String,
+}
+
 /// The web-search settings view (ADR-0023): the configured backend plus a
 /// masked key — the reply shape of the web-search read and save RPCs.
 /// Both fields are `None` when no backend is configured; the raw key
 /// never rides this view (the dedicated reveal RPC is the only surface
-/// that returns it).
+/// that returns it). `backends` carries the picker's launch options
+/// (Zhipu, Bocha, Brave) so the Settings group renders from one call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchSettingsState {
@@ -147,6 +157,9 @@ pub struct WebSearchSettingsState {
     /// keys of eight or fewer characters show only the ellipsis).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_masked: Option<String>,
+    /// The selectable backends for the Settings picker.
+    #[serde(default)]
+    pub backends: Vec<WebSearchBackendOption>,
 }
 
 /// Immutable-at-run-start repository context owned by one conversation.

@@ -8,8 +8,10 @@
 
 mod grep;
 mod read_chat;
+#[cfg(test)]
+pub(crate) mod test_http;
 mod web_fetch;
-mod web_search;
+pub(crate) mod web_search;
 
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
@@ -42,6 +44,10 @@ use tokio_util::sync::CancellationToken;
 /// Hard cap on captured command output, per stream; the bash tool applies
 /// its own line/byte truncation on top, so this only guards our memory.
 const EXEC_OUTPUT_CAP: u64 = 2 * 1024 * 1024;
+
+/// The app identity web tools send as their User-Agent — one constant
+/// across fetch and the search adapters.
+pub(crate) const USER_AGENT: &str = concat!("holt/", env!("CARGO_PKG_VERSION"));
 
 /// The host filesystem and shell, rooted at the chat's working directory.
 /// Blocking std filesystem calls run inline — the pi-core tools only issue

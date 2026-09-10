@@ -23,6 +23,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+use super::USER_AGENT;
+
 /// Byte envelope for the text handed back to the model.
 const OUTPUT_BYTE_CAP: usize = 50 * 1024;
 /// Hard download cap, checked against `Content-Length` and streamed bytes.
@@ -31,7 +33,6 @@ const DOWNLOAD_BYTE_CAP: u64 = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Redirect hops followed before the request fails (cross-host allowed).
 const MAX_REDIRECTS: usize = 10;
-const USER_AGENT: &str = concat!("holt/", env!("CARGO_PKG_VERSION"));
 
 const DESCRIPTION: &str = "Fetch one HTTP(S) URL and return its content as text. HTML is \
 converted to Markdown; other text content types (JSON, plain text, CSV, XML…) pass through \
@@ -388,105 +389,7 @@ pub(crate) fn create_web_fetch_tool() -> AgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    /// An in-process loopback HTTP/1.1 server — the tests never touch the
-    /// real network. Every connection is answered from `respond`, which sees
-    /// the request target (path plus query) and returns the raw response
-    /// bytes; an empty return parks the connection without answering, which
-    /// keeps a request in flight for the timeout and cancellation tests.
-    struct Server {
-        base: String,
-        requests: Arc<std::sync::Mutex<Vec<String>>>,
-        task: tokio::task::JoinHandle<()>,
-    }
-
-    impl Server {
-        /// The request heads received so far. Tests use this to pin the
-        /// headers the tool sends.
-        fn requests(&self) -> Vec<String> {
-            self.requests.lock().unwrap().clone()
-        }
-    }
-
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.task.abort();
-        }
-    }
-
-    async fn serve<F>(respond: F) -> Server
-    where
-        F: Fn(&str) -> Vec<u8> + Send + Sync + 'static,
-    {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let respond = Arc::new(respond);
-        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&requests);
-        let task = tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let respond = Arc::clone(&respond);
-                let recorded = Arc::clone(&recorded);
-                tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut chunk = [0u8; 1024];
-                    let head_end = loop {
-                        let read = match socket.read(&mut chunk).await {
-                            Ok(0) | Err(_) => break request.len(),
-                            Ok(read) => read,
-                        };
-                        request.extend_from_slice(&chunk[..read]);
-                        if let Some(end) = header_end(&request) {
-                            break end;
-                        }
-                    };
-                    let head = String::from_utf8_lossy(&request[..head_end]);
-                    recorded.lock().unwrap().push(head.to_string());
-                    let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                    let response = respond(&target);
-                    if response.is_empty() {
-                        std::future::pending::<()>().await;
-                    }
-                    let _ = socket.write_all(&response).await;
-                    let _ = socket.shutdown().await;
-                });
-            }
-        });
-        Server {
-            base,
-            requests,
-            task,
-        }
-    }
-
-    fn header_end(buffer: &[u8]) -> Option<usize> {
-        buffer
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map(|position| position + 4)
-    }
-
-    fn response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
-        let mut out = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
-        out.extend_from_slice(body);
-        out
-    }
-
-    fn redirect(location: &str) -> Vec<u8> {
-        format!(
-            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        .into_bytes()
-    }
+    use crate::tools::test_http::{Server, redirect, response, serve};
 
     async fn fetch_path(server: &Server, path: &str) -> Result<FetchOutcome, FetchError> {
         let client = build_client().unwrap();
@@ -521,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn html_is_converted_to_markdown_with_scripts_stripped() {
-        let server = serve(|_| {
+        let server = serve(|_, _| {
             response(
                 "200 OK",
                 "text/html; charset=utf-8",
@@ -553,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_html_text_passes_through_raw() {
-        let server = serve(|target| match target {
+        let server = serve(|target, _| match target {
             "/data.json" => response("200 OK", "application/json", br#"{"ok":true}"#),
             "/data.csv" => response("200 OK", "text/csv", b"a,b\n1,2\n"),
             _ => response("200 OK", "text/plain", b"plain & raw\n"),
@@ -580,7 +483,7 @@ mod tests {
             ("image/png", b"\x89PNG\r\n\x1a\n"),
         ];
         for (content_type, body) in cases {
-            let server = serve(move |_| response("200 OK", content_type, body)).await;
+            let server = serve(move |_, _| response("200 OK", content_type, body)).await;
             let error = fetch_path(&server, "/").await.unwrap_err();
             assert!(
                 matches!(error, FetchError::Unsupported { .. }),
@@ -597,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn binary_without_content_length_is_rejected_after_streaming() {
-        let server = serve(|_| {
+        let server = serve(|_, _| {
             let mut out =
                 b"HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nConnection: close\r\n\r\n".to_vec();
             out.extend_from_slice(b"GIF89a");
@@ -613,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn declared_oversize_is_rejected_without_reading_the_body() {
-        let server = serve(|_| {
+        let server = serve(|_, _| {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6000000\r\nConnection: close\r\n\r\n"
                 .to_vec()
         })
@@ -634,7 +537,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_binary_reports_its_type_rather_than_the_cap() {
-        let server = serve(|_| {
+        let server = serve(|_, _| {
             b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: 6000000\r\nConnection: close\r\n\r\n"
                 .to_vec()
         })
@@ -650,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn streamed_oversize_is_rejected() {
         let over = DOWNLOAD_BYTE_CAP + 1;
-        let server = serve(move |_| {
+        let server = serve(move |_, _| {
             let mut out =
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
                     .to_vec();
@@ -670,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn output_over_the_envelope_truncates_with_a_notice() {
         let downloaded = 200 * 1024;
-        let server = serve(move |_| {
+        let server = serve(move |_, _| {
             let mut body = b"start-".to_vec();
             body.resize(downloaded, b'x');
             response("200 OK", "text/plain", &body)
@@ -700,9 +603,9 @@ mod tests {
 
     #[tokio::test]
     async fn redirects_are_followed_across_hosts_and_the_final_url_is_reported() {
-        let target = serve(|_| response("200 OK", "text/plain", b"arrived")).await;
+        let target = serve(|_, _| response("200 OK", "text/plain", b"arrived")).await;
         let location = format!("{}/final", target.base);
-        let source = serve(move |_| redirect(&location)).await;
+        let source = serve(move |_, _| redirect(&location)).await;
 
         let outcome = fetch_path(&source, "/start").await.unwrap();
         assert_eq!(outcome.requested_url, format!("{}/start", source.base));
@@ -727,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_redirect_loop_stops_at_the_hop_limit() {
-        let server = serve(|_| redirect("/loop")).await;
+        let server = serve(|_, _| redirect("/loop")).await;
 
         let error = fetch_path(&server, "/loop").await.unwrap_err();
         assert!(
@@ -739,7 +642,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_success_status_is_an_error() {
-        let server = serve(|_| response("404 Not Found", "text/plain", b"nope")).await;
+        let server = serve(|_, _| response("404 Not Found", "text/plain", b"nope")).await;
 
         let error = fetch_path(&server, "/missing").await.unwrap_err();
         assert!(
@@ -751,7 +654,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_hanging_request_times_out() {
-        let server = serve(|_| Vec::new()).await;
+        let server = serve(|_, _| Vec::new()).await;
         let client = build_client().unwrap();
 
         let error = fetch_bounded(
@@ -774,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_races_the_run_token() {
-        let server = serve(|_| Vec::new()).await;
+        let server = serve(|_, _| Vec::new()).await;
         let tool = create_web_fetch_tool();
         let cancel = CancellationToken::new();
         let future = (tool.execute)(
@@ -793,7 +696,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_executes_end_to_end() {
-        let server = serve(|_| response("200 OK", "text/html", b"<h1>Title</h1>")).await;
+        let server = serve(|_, _| response("200 OK", "text/html", b"<h1>Title</h1>")).await;
 
         let result = run_tool(&format!("{}/", server.base)).await.unwrap();
         let text = text_of(&result);
@@ -861,7 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_carry_the_holt_user_agent() {
-        let server = serve(|_| response("200 OK", "text/plain", b"ok")).await;
+        let server = serve(|_, _| response("200 OK", "text/plain", b"ok")).await;
         fetch_path(&server, "/ua").await.unwrap();
 
         let request = &server.requests()[0];

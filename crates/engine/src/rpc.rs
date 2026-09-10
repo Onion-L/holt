@@ -9,7 +9,7 @@ use holt_doc::{
 };
 use holt_proto::{
     AuthState, Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSettings,
-    TitleSettingsState, TitleSource, WebSearchSettingsState,
+    TitleSettingsState, TitleSource, WebSearchBackendOption, WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
@@ -964,14 +964,23 @@ impl EngineService {
     /// The web-search settings view (ADR-0023) — the reply shape of the
     /// read and save RPCs. The raw key never rides this view.
     fn web_search_state(&self) -> WebSearchSettingsState {
+        let backends = crate::tools::web_search::BACKENDS
+            .iter()
+            .map(|(id, name)| WebSearchBackendOption {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+            })
+            .collect();
         match self.web_search.get() {
             Some(record) => WebSearchSettingsState {
                 backend: Some(record.backend),
                 api_key_masked: Some(masked_key(&record.api_key)),
+                backends,
             },
             None => WebSearchSettingsState {
                 backend: None,
                 api_key_masked: None,
+                backends,
             },
         }
     }
@@ -982,10 +991,15 @@ impl EngineService {
     ) -> Result<RpcReply, RpcError> {
         let backend = required_string(&params, "backend")?;
         let key = required_string(&params, "apiKey")?;
-        if !crate::web_search_settings::KNOWN_BACKENDS.contains(&backend) {
+        let known = crate::tools::web_search::BACKENDS;
+        if !known.iter().any(|(id, _)| *id == backend) {
             return Err(RpcError::BadParams(format!(
                 "unknown search backend {backend:?}; expected one of {}",
-                crate::web_search_settings::KNOWN_BACKENDS.join(", "),
+                known
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             )));
         }
         self.web_search
@@ -1003,10 +1017,7 @@ impl EngineService {
         let record = self.web_search.get()?;
         match &self.search_backend_resolver {
             Some(resolve) => resolve(&record.backend),
-            // The built-in adapter table grows as the backend slices land
-            // (ADR-0023's launch set: zhipu, bocha, brave); until an id's
-            // slice exists, its configured record mounts no tool.
-            None => None,
+            None => crate::tools::web_search::builtin(&record.backend, &record.api_key),
         }
     }
 
