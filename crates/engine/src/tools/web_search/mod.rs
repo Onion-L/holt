@@ -10,6 +10,7 @@
 //! the run's cancellation token around the backend call, exactly like
 //! grep and web_fetch.
 
+mod bocha;
 mod zhipu;
 
 use std::sync::Arc;
@@ -36,6 +37,7 @@ pub(crate) const BACKENDS: [(&str, &str); 3] =
 pub(crate) fn builtin(id: &str, api_key: &str) -> Option<Arc<dyn SearchBackend>> {
     match id {
         "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key.to_string()))),
+        "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key.to_string()))),
         _ => None,
     }
 }
@@ -558,7 +560,7 @@ mod tests {
 
     #[test]
     fn the_builtin_table_mounts_exactly_the_shipped_backends() {
-        let shipped = ["zhipu"];
+        let shipped = ["zhipu", "bocha"];
         for (id, _) in BACKENDS {
             assert_eq!(
                 builtin(id, "sk-key").is_some(),

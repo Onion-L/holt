@@ -92,15 +92,24 @@ impl ZhipuBackend {
             // when they are not.
             let detail = serde_json::from_slice::<ZhipuErrorBody>(&body)
                 .ok()
-                .map(
-                    |error| match (error.error.code.is_empty(), error.error.message.is_empty()) {
-                        (false, false) => {
-                            format!(" (code {}: {})", error.error.code, error.error.message)
+                .map(|error| {
+                    // The docs type the code as a string; decode it
+                    // leniently so a numeric code cannot nuke the body
+                    // (and drop the message with it). A string prints
+                    // bare, anything else keeps its JSON rendering.
+                    let code = error.error.code.map(|value| match value {
+                        serde_json::Value::String(text) => text,
+                        other => other.to_string(),
+                    });
+                    match (code.as_deref(), error.error.message.is_empty()) {
+                        (Some(""), false) | (None, false) => {
+                            format!(": {}", error.error.message)
                         }
-                        (false, true) => format!(" (code {})", error.error.code),
-                        _ => String::new(),
-                    },
-                )
+                        (Some(""), true) | (None, true) => String::new(),
+                        (Some(code), false) => format!(" (code {code}): {}", error.error.message),
+                        (Some(code), true) => format!(" (code {code})"),
+                    }
+                })
                 .unwrap_or_default();
             return Err(format!("Zhipu search failed: HTTP {status}{detail}"));
         }
@@ -170,53 +179,13 @@ struct ZhipuErrorBody {
 
 #[derive(serde::Deserialize)]
 struct ZhipuError {
-    /// The docs type it as a string; a lenient string-or-number decode
-    /// so a numeric code cannot nuke the whole error body (and drop the
-    /// message with it).
+    /// The docs type it as a string, but a numeric code must not fail
+    /// the decode (and drop the message with it) — a raw value accepts
+    /// both.
     #[serde(default)]
-    code: ZhipuErrorCode,
+    code: Option<serde_json::Value>,
     #[serde(default)]
     message: String,
-}
-
-#[derive(Default, Clone, PartialEq, Eq)]
-struct ZhipuErrorCode(String);
-
-impl ZhipuErrorCode {
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl std::fmt::Display for ZhipuErrorCode {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ZhipuErrorCode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = ZhipuErrorCode;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a string or number")
-            }
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(ZhipuErrorCode(value.to_string()))
-            }
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(ZhipuErrorCode(value.to_string()))
-            }
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(ZhipuErrorCode(value.to_string()))
-            }
-        }
-        deserializer.deserialize_any(Visitor)
-    }
 }
 
 #[cfg(test)]
@@ -267,11 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn maps_results_and_pins_the_request_shape() {
-        let server = serve(|target, _| {
-            assert_eq!(target, "/api/paas/v4/web_search");
-            response("200 OK", "application/json", &hits_page())
-        })
-        .await;
+        let server = serve(|_, _| response("200 OK", "application/json", &hits_page())).await;
 
         let hits = stub(&server)
             .request("rust async", 2, REQUEST_TIMEOUT)

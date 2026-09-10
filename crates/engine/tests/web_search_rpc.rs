@@ -82,12 +82,15 @@ async fn the_state_lists_the_picker_options() {
 }
 
 #[tokio::test]
-async fn a_configured_zhipu_record_mounts_through_the_builtin_table() {
+async fn configured_records_mount_through_the_builtin_table() {
     let fixture = Fixture::new();
     // A plain engine — no injected resolver: the built-in adapter table
     // resolves the configured record itself.
-    let provider =
-        ScriptedProvider::new(vec![ScriptedReply::text("one"), ScriptedReply::text("two")]);
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("one"),
+        ScriptedReply::text("two"),
+        ScriptedReply::text("three"),
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -106,7 +109,7 @@ async fn a_configured_zhipu_record_mounts_through_the_builtin_table() {
             .contains(&"web_search".into())
     );
 
-    // An id whose adapter has not shipped saves fine but mounts nothing.
+    // Switching to Bocha keeps the tool mounted — its adapter ships too…
     value(
         &engine,
         methods::SAVE_WEB_SEARCH_SETTINGS,
@@ -116,7 +119,23 @@ async fn a_configured_zhipu_record_mounts_through_the_builtin_table() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert!(
-        !provider.requests()[1]
+        provider.requests()[1]
+            .tool_names
+            .contains(&"web_search".into())
+    );
+
+    // …while an id whose adapter has not shipped saves fine but mounts
+    // nothing.
+    value(
+        &engine,
+        methods::SAVE_WEB_SEARCH_SETTINGS,
+        json!({ "backend": "brave", "apiKey": "sk-1234567890" }),
+    )
+    .await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "third").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(
+        !provider.requests()[2]
             .tool_names
             .contains(&"web_search".into())
     );

@@ -52,8 +52,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   loudly). Saving validates the backend id against the offered list and
   a non-empty key; the key is an independent record, never shared with a
   same-vendor provider key. The engine resolves the configured backend
-  once per Turn admission through the built-in adapter table (Zhipu
-  today; each adapter is an in-process `SearchBackend` with its own
+  once per Turn admission through the built-in adapter table (Zhipu and
+  Bocha today; each adapter is an in-process `SearchBackend` with its own
   budget, timeout, and cancellation race) — a mid-Turn change lands from
   the next Turn — and an unconfigured (or not-yet-shipped) backend leaves
   the `web_search` agent tool unmounted: absent, never erroring.
