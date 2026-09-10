@@ -98,19 +98,23 @@ fn marker_parts(kind: WorkspaceGitStatusKind) -> Option<(&'static str, SharedStr
         )),
         Kind::Added => Some(("A", SharedString::from("Added — staged new file"))),
         Kind::Modified => Some(("M", SharedString::from("Modified — uncommitted changes"))),
+        Kind::Conflicted => Some((
+            "C",
+            SharedString::from("Conflicted — unresolved merge conflict"),
+        )),
         Kind::Deleted => Some(("D", SharedString::from("Deleted from the working tree"))),
         Kind::Ignored => None,
     }
 }
 
-/// The marker's color: new content green, changes amber, removals red.
-/// `Ignored` never carries a letter (see [`marker_parts`]); the arm keeps
-/// the match exhaustive.
+/// The marker's color: new content green, changes and conflicts amber,
+/// removals red. `Ignored` never carries a letter (see [`marker_parts`]);
+/// the arm keeps the match exhaustive.
 fn marker_color(kind: WorkspaceGitStatusKind, theme: &Theme) -> gpui::Hsla {
     use WorkspaceGitStatusKind as Kind;
     match kind {
         Kind::Untracked | Kind::Added => theme.success,
-        Kind::Modified => theme.warning,
+        Kind::Modified | Kind::Conflicted => theme.warning,
         Kind::Deleted => theme.danger,
         Kind::Ignored => theme.text_muted,
     }
@@ -1668,6 +1672,9 @@ mod git_status_tests {
                 .map(|(path, kind)| WorkspaceGitStatusEntry {
                     path: (*path).to_string(),
                     kind: *kind,
+                    index: None,
+                    worktree: None,
+                    is_dir: false,
                 })
                 .collect(),
             error: None,
@@ -1746,6 +1753,9 @@ mod git_status_tests {
             entries: vec![WorkspaceGitStatusEntry {
                 path: "a.txt".into(),
                 kind: Kind::Untracked,
+                index: None,
+                worktree: Some(Kind::Untracked),
+                is_dir: false,
             }],
             error: Some("corrupt index".into()),
         });
@@ -1763,6 +1773,7 @@ mod git_status_tests {
             (Kind::Untracked, "U"),
             (Kind::Added, "A"),
             (Kind::Modified, "M"),
+            (Kind::Conflicted, "C"),
             (Kind::Deleted, "D"),
         ] {
             assert_eq!(
@@ -1773,6 +1784,12 @@ mod git_status_tests {
         }
         // Ignored has no letter — subdued styling is its whole treatment.
         assert_eq!(marker_parts(Kind::Ignored), None);
+        // Conflicted styles like Modified.
+        let theme = Theme::default();
+        assert_eq!(
+            marker_color(Kind::Conflicted, &theme),
+            marker_color(Kind::Modified, &theme)
+        );
     }
 
     #[gpui::test]
@@ -1784,6 +1801,9 @@ mod git_status_tests {
             entries: vec![WorkspaceGitStatusEntry {
                 path: "notes.md".into(),
                 kind: Kind::Modified,
+                index: Some(Kind::Modified),
+                worktree: None,
+                is_dir: false,
             }],
             error: None,
         };

@@ -147,11 +147,14 @@ async fn next_frame(
 }
 
 fn kind_of(status: &WorkspaceGitStatus, path: &str) -> Option<Kind> {
-    status
-        .entries
-        .iter()
-        .find(|entry| entry.path == path)
-        .map(|entry| entry.kind)
+    entry_of(status, path).map(|entry| entry.kind)
+}
+
+fn entry_of<'a>(
+    status: &'a WorkspaceGitStatus,
+    path: &str,
+) -> Option<&'a holt_proto::WorkspaceGitStatusEntry> {
+    status.entries.iter().find(|entry| entry.path == path)
 }
 
 /// Create the Space and chat the selector family expects, rooted at `path`.
@@ -240,13 +243,17 @@ async fn untracked_modified_and_hidden_entries_classify() {
     // reported whole (git does not recurse into untracked directories).
     assert_eq!(kind_of(&status, ".hidden"), Some(Kind::Untracked));
     assert_eq!(kind_of(&status, "README.md"), Some(Kind::Modified));
-    // Paths normalize: no libgit2 trailing `/` survives the wire.
+    // Paths normalize: no libgit2 trailing `/` survives the wire; the
+    // whole-directory fact survives as the is-dir flag instead.
     assert!(
         status
             .entries
             .iter()
             .all(|entry| !entry.path.ends_with('/'))
     );
+    assert!(entry_of(&status, ".hidden").unwrap().is_dir);
+    assert!(!entry_of(&status, "notes.md").unwrap().is_dir);
+    assert!(!entry_of(&status, "README.md").unwrap().is_dir);
 }
 
 #[tokio::test]
@@ -263,14 +270,17 @@ async fn ignored_directories_and_files_report_whole() {
     let status = snapshot(&engine, json!({ "spaceId": "space-1" })).await;
     // One entry for the whole ignored directory — no recursion inside it,
     // so expanding a large ignored directory never grows this list.
-    assert_eq!(kind_of(&status, "node_modules"), Some(Kind::Ignored));
+    let node_modules = entry_of(&status, "node_modules").unwrap();
+    assert_eq!(node_modules.kind, Kind::Ignored);
+    assert!(node_modules.is_dir);
     assert!(
         status
             .entries
             .iter()
             .all(|entry| !entry.path.starts_with("node_modules/"))
     );
-    assert_eq!(kind_of(&status, "debug.log"), Some(Kind::Ignored));
+    assert_eq!(entry_of(&status, "debug.log").unwrap().kind, Kind::Ignored);
+    assert!(!entry_of(&status, "debug.log").unwrap().is_dir);
     // The staged .gitignore is itself a change the tree sees.
     assert_eq!(kind_of(&status, ".gitignore"), Some(Kind::Added));
 }
@@ -296,6 +306,123 @@ async fn moves_decorate_under_the_new_name() {
     // invisible to the tree) and untracked under the new one.
     assert_eq!(kind_of(&status, "moved.txt"), Some(Kind::Untracked));
     assert_eq!(kind_of(&status, "movable.txt"), Some(Kind::Deleted));
+}
+
+#[tokio::test]
+async fn staged_then_modified_reports_both_porcelain_sides() {
+    // MM: modify a tracked file, stage it, modify again — the entry carries
+    // Modified on BOTH sides while the collapsed kind stays Modified.
+    let fixture = GitFixture::new();
+    let repo_dir = fixture.repo_dir.path().to_path_buf();
+    std::fs::write(repo_dir.join("README.md"), "edit one\n").unwrap();
+    stage(&fixture.repo(), &["README.md"]);
+    std::fs::write(repo_dir.join("README.md"), "edit two\n").unwrap();
+    let engine = fixture.engine();
+    setup_space(&engine, &fixture.repo_path()).await;
+
+    let status = snapshot(&engine, json!({ "spaceId": "space-1" })).await;
+    let entry = entry_of(&status, "README.md").expect("README.md entry");
+    assert_eq!(entry.kind, Kind::Modified);
+    assert_eq!(entry.index, Some(Kind::Modified));
+    assert_eq!(entry.worktree, Some(Kind::Modified));
+    assert!(!entry.is_dir);
+}
+
+#[tokio::test]
+async fn staged_new_file_then_modified_reports_added_and_modified() {
+    // AM: a new file staged then modified — index side Added, worktree
+    // side Modified; the collapsed kind keeps its Added precedence.
+    let fixture = GitFixture::new();
+    let repo_dir = fixture.repo_dir.path().to_path_buf();
+    write(&repo_dir, "fresh.rs", "v1\n");
+    stage(&fixture.repo(), &["fresh.rs"]);
+    std::fs::write(repo_dir.join("fresh.rs"), "v2\n").unwrap();
+    let engine = fixture.engine();
+    setup_space(&engine, &fixture.repo_path()).await;
+
+    let status = snapshot(&engine, json!({ "spaceId": "space-1" })).await;
+    let entry = entry_of(&status, "fresh.rs").expect("fresh.rs entry");
+    assert_eq!(entry.kind, Kind::Added);
+    assert_eq!(entry.index, Some(Kind::Added));
+    assert_eq!(entry.worktree, Some(Kind::Modified));
+}
+
+#[tokio::test]
+async fn untracked_entries_report_the_worktree_side_only() {
+    let fixture = GitFixture::new();
+    let repo_dir = fixture.repo_dir.path().to_path_buf();
+    write(&repo_dir, "notes.md", "new\n");
+    write(&repo_dir, "drafts/a.md", "whole dir\n");
+    let engine = fixture.engine();
+    setup_space(&engine, &fixture.repo_path()).await;
+
+    let status = snapshot(&engine, json!({ "spaceId": "space-1" })).await;
+    let file = entry_of(&status, "notes.md").expect("notes.md entry");
+    assert_eq!(file.index, None);
+    assert_eq!(file.worktree, Some(Kind::Untracked));
+    let dir = entry_of(&status, "drafts").expect("drafts entry");
+    assert_eq!(dir.index, None);
+    assert_eq!(dir.worktree, Some(Kind::Untracked));
+    assert!(dir.is_dir);
+}
+
+#[tokio::test]
+async fn a_merge_conflict_reports_conflicted_not_modified() {
+    // main and side both rewrite movable.txt; merging side into main
+    // leaves an unmerged path the snapshot must report honestly.
+    let fixture = GitFixture::new();
+    let repo = fixture.repo();
+    let base = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id();
+    let side = commit_on(
+        &repo,
+        "refs/heads/side",
+        Some(base),
+        &[
+            ("README.md", "hello\n"),
+            ("movable.txt", movable_body("side").as_str()),
+        ],
+        "side change",
+    );
+    let main = commit_on(
+        &repo,
+        "refs/heads/main",
+        Some(base),
+        &[
+            ("README.md", "hello\n"),
+            ("movable.txt", movable_body("main").as_str()),
+        ],
+        "main change",
+    );
+    // commit_on moves the ref only; sync index and worktree to the new
+    // HEAD before merging so the merge's checkout sees a clean tree.
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force();
+    repo.reset(
+        repo.find_commit(main).unwrap().as_object(),
+        git2::ResetType::Hard,
+        Some(&mut checkout),
+    )
+    .unwrap();
+    let annotated = repo.find_annotated_commit(side).unwrap();
+    repo.merge(&[&annotated], None, None).unwrap();
+    drop(annotated);
+    drop(repo);
+
+    let engine = fixture.engine();
+    setup_space(&engine, &fixture.repo_path()).await;
+    let status = snapshot(&engine, json!({ "spaceId": "space-1" })).await;
+    assert_eq!(status.error, None);
+    let entry = entry_of(&status, "movable.txt").expect("movable.txt entry");
+    assert_eq!(entry.kind, Kind::Conflicted);
+    // The sides stay honest with the collapsed kind: porcelain fills both
+    // columns for an unmerged path.
+    assert_eq!(entry.index, Some(Kind::Conflicted));
+    assert_eq!(entry.worktree, Some(Kind::Conflicted));
 }
 
 #[tokio::test]

@@ -485,11 +485,14 @@ pub enum WorkspaceGitStatusKind {
     Untracked,
     /// Newly created and staged (`git add` of a new file).
     Added,
-    /// Content changes against HEAD or the index — staged, unstaged, or
-    /// conflicted.
+    /// Content changes against HEAD or the index — staged or unstaged.
     Modified,
     /// Tracked but missing from the working tree.
     Deleted,
+    /// Unmerged path in an in-progress merge. First-class so the sidebar
+    /// and the Git panel both see conflict state without deriving it; the
+    /// file sidebar styles it like `Modified`.
+    Conflicted,
 }
 
 /// One row of a [`WorkspaceGitStatus`] snapshot.
@@ -501,7 +504,24 @@ pub struct WorkspaceGitStatusEntry {
     /// descendants too: a row under it inherits the directory's kind when
     /// nothing more specific matches.
     pub path: String,
+    /// The collapsed kind the File sidebar's decorations render: one kind
+    /// per entry, per the precedence in the engine's classifier (conflicted
+    /// beats modified, staged beats unstaged).
     pub kind: WorkspaceGitStatusKind,
+    /// The porcelain index side (`git status --porcelain`'s X column): what
+    /// staging captured, when it differs from HEAD. `None` when the index
+    /// side is clean (or the entry is ignored/untracked-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<WorkspaceGitStatusKind>,
+    /// The porcelain worktree side (the Y column): unstaged working-tree
+    /// state, `Untracked` included. `None` when the worktree side is clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorkspaceGitStatusKind>,
+    /// True when the entry is a whole directory (libgit2 spells collapsed
+    /// untracked/ignored directory entries with a trailing `/`). The path
+    /// keeps its stripped spelling; this flag carries the fact forward.
+    #[serde(default)]
+    pub is_dir: bool,
 }
 
 /// One `WatchWorkspaceGitStatus` frame: the working-tree status list for a
