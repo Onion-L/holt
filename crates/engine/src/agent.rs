@@ -1706,6 +1706,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         }
         Err(error) => {
             let reason = error.clone();
+            // Cancellation is the normal hand-off path for steer (and for
+            // an explicit stop).  The loop reports it as an error, but it is
+            // not a provider failure and must not become an ErrorChip.
+            let cancelled = cancel.is_cancelled();
             {
                 let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
                 if !chat.is_removed()
@@ -1717,23 +1721,27 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             }
             let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = transcript.iter_mut().find(|e| e.id == entry_id) {
-                // The loop died mid-reply: surface the error on the live entry
-                // and settle it, rather than pushing a second entry that
-                // reuses its id.
-                existing.parts.push(MessagePart::Error {
-                    id: format!("e{}", existing.parts.len()),
-                    message: error,
-                });
+                if !cancelled {
+                    // The loop died mid-reply: surface the error on the live
+                    // entry and settle it, rather than pushing a second entry
+                    // that reuses its id.
+                    existing.parts.push(MessagePart::Error {
+                        id: format!("e{}", existing.parts.len()),
+                        message: error,
+                    });
+                }
                 existing.status = Some(MessageStatus::Aborted);
             } else {
                 // The loop died before its first message: the entry never
                 // materialized, so build it here — the invocation seed
                 // (if any) still leads, the error closes.
                 let mut parts = base_parts.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                parts.push(MessagePart::Error {
-                    id: format!("e{}", parts.len()),
-                    message: error,
-                });
+                if !cancelled {
+                    parts.push(MessagePart::Error {
+                        id: format!("e{}", parts.len()),
+                        message: error,
+                    });
+                }
                 transcript.push(SessionMessageEntry {
                     id: entry_id,
                     role: MessageRole::Assistant,
@@ -1746,7 +1754,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             }
             drop(transcript);
             chat.publish();
-            Some(reason)
+            (!cancelled).then_some(reason)
         }
     };
     settle_unresolved_tools(&chat);
