@@ -33,9 +33,9 @@ pub(crate) async fn system_prompt(
     catalog: &crate::skills::Catalog,
 ) -> String {
     let tools = if role == "explorer" {
-        "read, grep, and read_chat only; report findings without changing files or executing commands"
+        "read, grep, read_chat, web_fetch, and web_search only; report findings without changing files or executing commands"
     } else {
-        "read, grep, read_chat, write, edit, and bash; implement and verify your assigned work"
+        "read, grep, read_chat, web_fetch, web_search, write, edit, and bash; implement and verify your assigned work"
     };
     let mut prompt = format!(
         "You are Holt's {role} subagent working in {cwd}. You have {tools}. \
@@ -251,6 +251,9 @@ pub(crate) struct Delegation {
     pub(crate) api_key: String,
     pub(crate) skills: crate::skills::Skills,
     pub(crate) permission_mode: PermissionMode,
+    /// The parent Turn's web-search backend snapshot (ADR-0023): children
+    /// mount `web_search` under the same admission-time choice.
+    pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
     pub(crate) stream_fn: StreamFn,
     pub(crate) cancel: CancellationToken,
 }
@@ -259,7 +262,7 @@ pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     let count = Arc::new(AtomicUsize::new(0));
     AgentTool {
         name: "Agent".into(), label: "Delegate".into(),
-        description: "Delegate a bounded, independent task to an explorer (read/grep only) or worker (read/grep/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work. This foreground call waits and returns only the final summary; inspect the full result file if truncated. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children per Turn, four running across Holt, and children cannot delegate.".into(),
+        description: "Delegate a bounded, independent task to an explorer (read/grep/web only) or worker (read/grep/web/write/edit/bash). Children start with fresh History and share your working directory. Supply the goal, necessary context, acceptance criteria, and non-overlapping file ownership for workers. Issue multiple Agent calls together for parallel work. This foreground call waits and returns only the final summary; inspect the full result file if truncated. Use delegation when independent work benefits from it; handle simple queries directly. At most eight children per Turn, four running across Holt, and children cannot delegate.".into(),
         parameters: serde_json::json!({
             "type": "object", "properties": {
                 "subagent_type": {"type": "string", "enum": ["explorer", "worker"]},
@@ -391,6 +394,7 @@ async fn execute(
                 skills: d.skills,
                 invocation: None,
                 permission_mode: d.permission_mode,
+                search_backend: d.search_backend,
                 stream_fn: Some(stream_fn),
             })
             .await,

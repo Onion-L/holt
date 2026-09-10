@@ -2,12 +2,14 @@
 //! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
 //! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
 //! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
-//! for — plus holt's own content search (ADR-0004) in [`grep`] and web fetch
-//! (ADR-0023) in [`web_fetch`].
+//! for — plus holt's own content search (ADR-0004) in [`grep`], web fetch
+//! (ADR-0023) in [`web_fetch`], and web search behind the user-configured
+//! [`SearchBackend`] (ADR-0023) in [`web_search`].
 
 mod grep;
 mod read_chat;
 mod web_fetch;
+mod web_search;
 
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
@@ -609,26 +611,36 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 /// The toolset handed to the agent loop: pi-core's built-in read/write/
 /// edit/bash, all running against one environment rooted at `cwd`, plus
 /// holt's own content-search and web-fetch tools, exposed to the agent as
-/// `grep` and `web_fetch`.
+/// `grep` and `web_fetch` — and `web_search` when a backend is configured
+/// (no backend means the tool is absent, never registered-and-erroring).
 #[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
-    execution_tools_for_model(cwd, true)
+    execution_tools_for_model(cwd, true, None)
 }
 
-pub(crate) fn execution_tools_for_model(cwd: &str, allow_images: bool) -> Vec<AgentTool> {
+pub(crate) fn execution_tools_for_model(
+    cwd: &str,
+    allow_images: bool,
+    search_backend: Option<Arc<dyn web_search::SearchBackend>>,
+) -> Vec<AgentTool> {
     let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(cwd));
     let context = ExecutionToolContext { env }.into_tool_context();
-    vec![
+    let mut tools = vec![
         image_read_tool(&context, allow_images),
         with_execution_context(create_write_tool(), &context),
         with_execution_context(create_edit_tool(), &context),
         with_execution_context(create_bash_tool(BashToolOptions::default()), &context),
         grep::create_grep_tool(cwd),
         web_fetch::create_web_fetch_tool(),
-    ]
+    ];
+    if let Some(backend) = search_backend {
+        tools.push(web_search::create_web_search_tool(backend));
+    }
+    tools
 }
 
 pub(crate) use read_chat::create_read_chat_tool;
+pub(crate) use web_search::SearchBackend;
 
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;

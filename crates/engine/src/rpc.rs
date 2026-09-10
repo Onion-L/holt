@@ -804,6 +804,10 @@ impl EngineService {
             skills: self.skills.clone(),
             invocation,
             permission_mode: mode,
+            // No web-search backend is configured until the settings
+            // record exists (its own slice); `None` keeps `web_search`
+            // out of the toolset — absent, not erroring.
+            search_backend: None,
             stream_fn: self.runtime.stream_fn.clone(),
         })
     }

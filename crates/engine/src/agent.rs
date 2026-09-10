@@ -1136,6 +1136,10 @@ pub(crate) struct AgentRun {
     /// The Turn's permission-mode snapshot (ADR-0014), taken at acceptance:
     /// switches mid-Turn leave the running Turn under its original mode.
     pub(crate) permission_mode: PermissionMode,
+    /// The Turn's web-search backend snapshot (ADR-0023), resolved once at
+    /// admission from the engine's settings state. `None` — nothing
+    /// configured — mounts no `web_search` tool at all.
+    pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -1148,6 +1152,16 @@ pub(crate) enum TurnEnd {
     Succeeded,
     Failed { reason: String },
     Interrupted,
+}
+
+/// The Explorer's tool whitelist (ADR-0023): reading, content search,
+/// chat reads, and the ungated web reads — everything that cannot change
+/// files or execute commands. Workers keep the full toolset.
+fn explorer_tool_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "read" | "grep" | "read_chat" | "web_fetch" | "web_search"
+    )
 }
 
 pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, TurnEnd> {
@@ -1169,6 +1183,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         skills,
         invocation,
         permission_mode,
+        search_backend,
         stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
@@ -1570,7 +1585,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cancel.clone(),
     );
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
-    let mut tools = crate::tools::execution_tools_for_model(&cwd, allow_images);
+    let mut tools =
+        crate::tools::execution_tools_for_model(&cwd, allow_images, search_backend.clone());
     let current_chat_id = chat
         .child
         .as_ref()
@@ -1582,7 +1598,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     ));
     if let Some(child) = &chat.child {
         if child.role == "explorer" {
-            tools.retain(|tool| matches!(tool.name.as_str(), "read" | "grep" | "read_chat"));
+            tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
     } else {
         tools.push(crate::subagents::tool(crate::subagents::Delegation {
@@ -1596,6 +1612,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             api_key: api_key.clone(),
             skills: skills.clone(),
             permission_mode,
+            search_backend,
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
         }));
@@ -1957,6 +1974,22 @@ mod tests {
         assert!(prompt.contains("/tmp/holt"));
         assert!(!prompt.contains("{{cwd}}"));
         assert!(prompt.contains("call `read_chat` immediately"));
+    }
+
+    #[test]
+    fn the_explorer_whitelist_keeps_reads_and_web_tools_only() {
+        // The read-only surface: reads, content search, chat reads, and
+        // both ungated web tools (ADR-0023).
+        for name in ["read", "grep", "read_chat", "web_fetch", "web_search"] {
+            assert!(
+                explorer_tool_allowed(name),
+                "{name} should survive the retain"
+            );
+        }
+        // Everything that mutates or reaches beyond the whitelist.
+        for name in ["write", "edit", "bash", "Agent"] {
+            assert!(!explorer_tool_allowed(name), "{name} must be dropped");
+        }
     }
 
     /// Write a skill into a temp personal root the way the loader expects.
