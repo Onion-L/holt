@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `HOLT_DATA_DIR` override, else `~/.holt`.
+/// `HOLT_DATA_DIR` override, else an environment-specific default.
 fn data_dir() -> std::path::PathBuf {
     std::env::var_os("HOLT_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -50,7 +50,16 @@ fn data_dir() -> std::path::PathBuf {
 
 fn default_data_dir() -> std::path::PathBuf {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME not set"));
-    home.join(".holt")
+    // Keep a locally launched debug build isolated from an installed release
+    // app. Both may run at the same time during development.
+    #[cfg(debug_assertions)]
+    {
+        home.join(".holt-dev")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        home.join(".holt")
+    }
 }
 
 /// `{data_dir}/logs/holt-{mode}.log`, previous launch preserved as `.old`.
