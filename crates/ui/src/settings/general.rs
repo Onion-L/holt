@@ -244,57 +244,52 @@ impl GeneralPage {
                 "Device-local. Banners appear only while no Holt window is active.",
             )))
             .child(
-                div().mt(px(8.0)).child(
-                    widgets::section_card(theme)
-                        .child(
-                            widgets::card_row(theme, true)
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(3.0))
-                                        .child(widgets::row_title(theme, "Completion notifications"))
-                                        .child(widgets::row_description(
-                                            theme,
-                                            "Show a system banner when a background Turn succeeds or fails.",
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .id("completion-notifications-toggle")
-                                        .debug_selector(|| "completion-notifications-toggle".into())
-                                        .flex_none()
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            settings::update(SavePolicy::Immediate, cx, |settings| {
-                                                settings.completion_notifications =
-                                                    !settings.completion_notifications;
-                                            });
-                                            cx.notify();
-                                        }))
-                                        .child(widgets::toggle_switch(theme, master_on)),
-                                ),
-                        )
-                        .child(
-                            widgets::card_row(theme, false)
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(3.0))
-                                        .child(widgets::row_title(theme, "Play sound"))
-                                        .child(widgets::row_description(
-                                            theme,
-                                            "Play the system notification sound with each banner.",
-                                        )),
-                                )
-                                .child(sound_switch),
-                        ),
-                ),
+                widgets::flat_row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(widgets::row_title(theme, "Completion notifications"))
+                            .child(widgets::row_description(
+                                theme,
+                                "Show a system banner when a background Turn succeeds or fails.",
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id("completion-notifications-toggle")
+                            .debug_selector(|| "completion-notifications-toggle".into())
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                settings::update(SavePolicy::Immediate, cx, |settings| {
+                                    settings.completion_notifications =
+                                        !settings.completion_notifications;
+                                });
+                                cx.notify();
+                            }))
+                            .child(widgets::toggle_switch(theme, master_on)),
+                    ),
+            )
+            .child(
+                widgets::flat_row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(widgets::row_title(theme, "Play sound"))
+                            .child(widgets::row_description(
+                                theme,
+                                "Play the system notification sound with each banner.",
+                            )),
+                    )
+                    .child(sound_switch),
             )
     }
 
@@ -580,6 +575,7 @@ impl Render for GeneralPage {
                         &theme,
                         "Everyday preferences — starting with how new chats are named.",
                     ))
+                    .child(Self::render_notifications(&theme, cx))
                     .child(
                         div()
                             .mt(px(24.0))
@@ -591,8 +587,7 @@ impl Render for GeneralPage {
                              background request to this model can replace it. Your manual \
                              renames always win.",
                     )))
-                    .child(body)
-                    .child(Self::render_notifications(&theme, cx)),
+                    .child(body),
             )
     }
 }
