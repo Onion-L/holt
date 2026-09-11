@@ -38,6 +38,7 @@ pub mod instance_lock;
 mod local_fs;
 mod mode_default;
 mod path_search;
+mod plan_mode;
 pub mod provider_settings;
 pub mod providers;
 mod queue;

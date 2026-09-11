@@ -254,6 +254,57 @@ pub struct Chat {
     /// first request. Consumed by that Turn.
     #[serde(default)]
     pub compact_before_next_turn: bool,
+    /// Plan Mode (ADR-0025): the chat's planning checkpoint, orthogonal to
+    /// the permission mode. `None` — the chat is not planning. Restored by
+    /// restart; recovery never starts a Turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_mode: Option<ChatPlanState>,
+}
+
+/// A chat's Plan Mode state (ADR-0025): the permission mode captured on
+/// entry — restored on plan approval, never on explicit exit — plus the
+/// active plan revision, when one exists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPlanState {
+    pub entry_permission_mode: PermissionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_plan: Option<ActivePlan>,
+}
+
+/// One plan revision (ADR-0025): a unique id per plan and per revision, so
+/// the documents under the working directory's `.holt/plans` never overwrite
+/// each other and older revisions stay on disk. Lifecycle: the agent drafts
+/// (`planning`), submits, and the plan waits for the user's verdict
+/// (`awaitingApproval`). Approving exits Plan Mode; rejecting retires the
+/// revision (the file remains) so the next planning Turn mints a new id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivePlan {
+    pub plan_id: String,
+    pub state: PlanLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanLifecycle {
+    Planning,
+    AwaitingApproval,
+}
+
+/// The `GetPlanMode` reply: the chat's Plan Mode view. `planPath` resolves
+/// the active revision's document under the chat's working directory when
+/// both a plan and a working directory exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanModeState {
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_permission_mode: Option<PermissionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_plan: Option<ActivePlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_path: Option<String>,
 }
 
 impl Chat {

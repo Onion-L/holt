@@ -97,6 +97,17 @@ pub mod methods {
     /// verdict releases the gate the run is blocked in; unknown ids fail —
     /// an approval resolves once.
     pub const RESOLVE_APPROVAL: &str = "ResolveApproval";
+    /// Plan Mode (ADR-0025). `EnterPlanMode` / `ExitPlanMode` take
+    /// `{chatId}` and reply the chat's `holt_proto::PlanModeState`; both are
+    /// idempotent (entering an already-planning chat replies its state).
+    /// Entering records the chat's current permission mode for restoration
+    /// on approval — the stored mode itself does not move. `GetPlanMode`
+    /// (same params) is the pure query. A mid-Turn switch affects only the
+    /// next Turn; exiting retires the active plan reference but keeps the
+    /// plan documents on disk.
+    pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
+    pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
+    pub const GET_PLAN_MODE: &str = "GetPlanMode";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`.

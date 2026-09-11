@@ -82,6 +82,19 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   full-access never gate. The gate rides the agent loop's
   `before_tool_call` hook (no upstream changes); the Title task and
   Compaction mount no tools and never see it.
+- Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
+  permission mode, carried on the chat row (`planMode`: the permission
+  mode recorded on entry — restored on plan approval, never moved by the
+  entry itself — plus the active plan revision).
+  `EnterPlanMode` / `ExitPlanMode` (`{chatId}`; both idempotent) and
+  `GetPlanMode` reply the `PlanModeState` view (`active`, the entry mode,
+  the active plan, and its resolved document path under the chat working
+  directory's `.holt/plans`). Exiting retires the active plan reference
+  but keeps the plan documents on disk; switches during a running Turn
+  take effect from the next Turn; restart restores the state without
+  auto-starting a Turn. The planning-turn shaping (read-only exploration
+  tools, the plan write, `SubmitPlan` enforcement) and the approval flow
+  land with the plan lifecycle issues (ADR-0025).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

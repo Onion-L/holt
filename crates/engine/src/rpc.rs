@@ -209,6 +209,7 @@ impl EngineService {
             last_seen_at: None,
             room_gen: None,
             compact_before_next_turn: false,
+            plan_mode: None,
         });
         drop(chats);
         persist_chats(
@@ -943,6 +944,96 @@ impl EngineService {
             .send(verdict)
             .map_err(|_| RpcError::Failed("the approval's Turn already ended".into()))?;
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Enter Plan Mode (ADR-0025): record the chat's CURRENT permission
+    /// mode as the entry mode — restored on plan approval, never moved by
+    /// the entry itself — and mark the chat planning. Idempotent: an
+    /// already-planning chat replies its state unchanged. A chat without a
+    /// config yet inherits the sticky default, exactly as its first Turn
+    /// would.
+    fn enter_plan_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            if chat.plan_mode.is_none() {
+                let entry_mode = chat
+                    .config
+                    .as_ref()
+                    .map(|config| config.permission_mode)
+                    .unwrap_or_else(|| self.mode_default.get());
+                chat.plan_mode = Some(holt_proto::ChatPlanState {
+                    entry_permission_mode: entry_mode,
+                    active_plan: None,
+                });
+                persist_chats(&self.data_dir, &chats)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+            }
+        }
+        self.runtime.publish_chats();
+        RpcReply::value(&self.plan_mode_state(chat_id)?)
+    }
+
+    /// Leave Plan Mode (ADR-0025). Idempotent. The active plan reference is
+    /// retired but the plan documents stay on disk (ADR-0025: planning
+    /// history is auditable); the current permission mode stands — only
+    /// plan approval restores the entry mode.
+    fn exit_plan_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            if chat.plan_mode.take().is_some() {
+                persist_chats(&self.data_dir, &chats)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+            }
+        }
+        self.runtime.publish_chats();
+        RpcReply::value(&self.plan_mode_state(chat_id)?)
+    }
+
+    /// The `GetPlanMode` view: whether the chat is planning, its recorded
+    /// entry mode, and the active revision with its resolved document path.
+    fn plan_mode_state(&self, chat_id: &str) -> Result<holt_proto::PlanModeState, RpcError> {
+        let chats = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+        let chat = chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+        Ok(match &chat.plan_mode {
+            Some(state) => holt_proto::PlanModeState {
+                active: true,
+                entry_permission_mode: Some(state.entry_permission_mode),
+                active_plan: state.active_plan.clone(),
+                plan_path: crate::plan_mode::active_plan_path(chat)
+                    .map(|path| path.to_string_lossy().into_owned()),
+            },
+            None => holt_proto::PlanModeState {
+                active: false,
+                entry_permission_mode: None,
+                active_plan: None,
+                plan_path: None,
+            },
+        })
     }
 
     /// The settings record plus its live validation view — the reply shape
@@ -2394,6 +2485,11 @@ impl RpcService for EngineService {
             // `{approvalId, verdict}` with `holt_proto::ApprovalVerdict`
             // as the verdict.
             methods::RESOLVE_APPROVAL => self.resolve_approval(params),
+            methods::ENTER_PLAN_MODE => self.enter_plan_mode(params),
+            methods::EXIT_PLAN_MODE => self.exit_plan_mode(params),
+            methods::GET_PLAN_MODE => {
+                RpcReply::value(&self.plan_mode_state(required_string(&params, "chatId")?)?)
+            }
 
             // Local image surface (engine/src/images.rs): bounded preview
             // reads, pasted-image staging, and draft-chip release.

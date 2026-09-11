@@ -684,6 +684,10 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     compact_before_next_turn: bool,
+    // Doc-store chat rows may predate Plan Mode (ADR-0025): the field
+    // decodes as absent on older rows.
+    #[serde(default)]
+    plan_mode: Option<holt_proto::ChatPlanState>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -727,6 +731,7 @@ impl From<RawChat> for Chat {
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
             compact_before_next_turn: raw.compact_before_next_turn,
+            plan_mode: raw.plan_mode,
         }
     }
 }
@@ -795,6 +800,7 @@ mod tests {
                 permission_mode: PermissionMode::default(),
             }),
             compact_before_next_turn: false,
+            plan_mode: None,
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),
