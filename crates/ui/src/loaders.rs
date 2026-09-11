@@ -1,5 +1,5 @@
 //! Loaders: the holt pulse loader, the three-dot pulse spinners, and the boot
-//! splash content. All motion routes through `crate::motion` pure helpers, so
+//! loading indicators. All motion routes through `crate::motion` pure helpers, so
 //! the math is unit-tested and these elements are testable-by-compile.
 //!
 //! Rendering pattern: each cell is its own repeating element sharing one
@@ -14,7 +14,7 @@ use gpui::{
     canvas, div, point, px,
 };
 
-use crate::motion::{self, DOT_PULSE, HOLT_PULSE, PULSE_STAGGER, SPLASH_OUT};
+use crate::motion::{self, DOT_PULSE, HOLT_PULSE, PULSE_STAGGER};
 use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`holt_proto::motion`) so both animate the
@@ -264,50 +264,8 @@ pub fn upload_progress_ring(percent: u8, diameter: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// Full-window boot splash: the app's dot loader (the same [`gradient_spinner`]
-/// the session list and the reconnecting line pulse — user request, replacing
-/// the hero ascii) over the app background with a quiet status line. While
-/// `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px lift); the
-/// shell removes it once [`SPLASH_OUT`] has run its course.
-pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App) -> AnyElement {
-    let content = div()
-        .absolute()
-        .inset_0()
-        // Frosted glass, not the opaque page tone (user request): the boot
-        // overlay reads like the rest of the chrome — the frost tint over
-        // the blurred window background (opaque platforms get the surface
-        // tone, since `glass()` collapses to it there).
-        .bg(theme.glass())
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(12.0))
-        // Cell 2.5 — the size every other surface runs this spinner at (the
-        // "Sending…" strip, the transcript working trailer).
-        .child(gradient_spinner(
-            "boot-splash-spinner",
-            theme,
-            2.5,
-            view,
-            cx,
-        ))
-        .child(
-            div()
-                .text_size(crate::typography::ui_rems(12.0))
-                .text_color(theme.text_muted.opacity(0.7))
-                .child(SharedString::from("Setting up Holt environment")),
-        );
-    if fading {
-        motion::splash_out("boot-splash-out", content).into_any_element()
-    } else {
-        content.into_any_element()
-    }
-}
-
 // Compile-time proof the specs referenced here stay wired to the catalog.
 const _: () = {
-    assert!(SPLASH_OUT.delay_ms == 150);
     assert!(HOLT_PULSE.duration_ms == 2400);
     assert!(DOT_PULSE.duration_ms == 1200);
 };

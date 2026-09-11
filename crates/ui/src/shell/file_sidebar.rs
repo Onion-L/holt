@@ -2048,7 +2048,6 @@ mod surface_tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });
@@ -2104,7 +2103,6 @@ mod surface_tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });
@@ -2184,7 +2182,6 @@ mod surface_tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });
@@ -2298,7 +2295,6 @@ mod cut_paste_trash_tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });

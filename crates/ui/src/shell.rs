@@ -1,5 +1,5 @@
 //! The app shell (holt `__root.tsx`): sidebar column + main panel + optional
-//! right "Changes" pane, plus the boot splash and the connection gate.
+//! right "Changes" pane, plus the connection gate.
 //!
 //! Layout is holt's: collapsible drag-resizable sidebar (208–400px, default
 //! 256) with a 200ms ease-out width transition; main panel with an h-11 header,
@@ -33,7 +33,7 @@ use crate::files::viewer::{FileScope, FileViewerEvent};
 use crate::git_panel::{GitPanel, GitPanelEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
-use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
+use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::appearance::AppearancePage;
@@ -46,9 +46,7 @@ use crate::settings::{
     ShortcutId, SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo, jump_hints_visible,
     platform_combo,
 };
-use crate::state::{
-    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_time_ago,
-};
+use crate::state::{AppState, EngineBootConfig, GatePhase, Indicator, format_time_ago};
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
@@ -482,13 +480,6 @@ impl WidthTween {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SplashPhase {
-    Visible,
-    FadingOut,
-    Gone,
-}
-
 /// The chat-row Rename dialog.
 struct RenameChatDialog {
     chat_id: String,
@@ -815,8 +806,6 @@ pub struct Shell {
     /// Set by [`Shell::eval_tween`] when any tween is mid-flight this frame;
     /// render schedules the next animation frame off it.
     motion_active: std::cell::Cell<bool>,
-    splash: SplashPhase,
-    splash_task: Option<Task<()>>,
     /// Focus fallback (registered on first paint — [`Shell::new`] has no
     /// window): keyboard shortcuts dispatch through the window focus chain, so
     /// with nothing focused they go dead. Initial focus lands on the composer
@@ -1113,8 +1102,6 @@ impl Shell {
             terminal_drag_anchor: None,
             reduced_motion: false,
             motion_active: std::cell::Cell::new(false),
-            splash: SplashPhase::Visible,
-            splash_task: None,
             focus_sub: None,
             activation_sub: None,
             _ticker: ticker,
@@ -1124,7 +1111,7 @@ impl Shell {
         }
     }
 
-    // ---- splash ----
+    // ---- state changes ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         // A Space's persisted file navigation restores the first time the
@@ -1273,26 +1260,6 @@ impl Shell {
             {
                 changes.update(cx, |changes, cx| changes.ensure_content(cx));
             }
-        }
-        match state.read(cx).connection {
-            ConnectionStatus::Ready => {
-                if self.splash == SplashPhase::Visible {
-                    self.splash = SplashPhase::FadingOut;
-                    self.splash_task = Some(cx.spawn(async move |this, cx| {
-                        cx.background_executor()
-                            .timer(SPLASH_OUT.total() + Duration::from_millis(30))
-                            .await;
-                        this.update(cx, |shell, cx| {
-                            shell.splash = SplashPhase::Gone;
-                            cx.notify();
-                        })
-                        .ok();
-                    }));
-                }
-            }
-            // Reveal the gate card immediately; the splash never returns mid-session.
-            ConnectionStatus::Failed(_) => self.splash = SplashPhase::Gone,
-            ConnectionStatus::Connecting => {}
         }
     }
 
@@ -3357,8 +3324,7 @@ impl Render for Shell {
                     .into_any_element();
                 // The whole app page is one keyed `animate-in` entrance (holt
                 // App.tsx `<div key={phase} className="animate-in h-full">`):
-                // arriving from the splash or any gate fades the page in; the
-                // splash-out crossfades over it on boot.
+                // Fade the page in when arriving from a connection gate.
                 // The sidebar resize handle FLOATS over the sidebar/card seam
                 // (zero layout width, same idiom as the changes-pane grabber)
                 // so the sidebar's right gutter stays exactly as wide as its
@@ -3445,7 +3411,7 @@ impl Render for Shell {
                 root.child(sidebar_tone)
                     .child(motion::fade_in("phase-app", page))
             }
-            GatePhase::Loading => root, // splash overlay covers boot
+            GatePhase::Loading => root,
             GatePhase::Failed(error) => {
                 let card = self.render_gate_card(error, cx);
                 root.child(card)
@@ -3460,21 +3426,8 @@ impl Render for Shell {
             window.request_animation_frame();
         }
 
-        // Boot splash overlay: visible → crossfades out on Ready → removed.
-        let root = match self.splash {
-            SplashPhase::Visible => {
-                let theme = Theme::of(cx).clone();
-                root.child(loaders::splash_overlay(&theme, false, cx.entity_id(), cx))
-            }
-            SplashPhase::FadingOut => {
-                let theme = Theme::of(cx).clone();
-                root.child(loaders::splash_overlay(&theme, true, cx.entity_id(), cx))
-            }
-            SplashPhase::Gone => root,
-        };
-
         // Caption controls are shell-level chrome, not Ready-page content:
-        // keep them above the splash and the error gate as well as the full
+        // keep them above the error gate as well as the full
         // application. Gate pages also need a drag surface because they do
         // not render the unified tabs/settings titlebar — on Windows the
         // native `Drag` control area, on Linux the explicit
@@ -3588,7 +3541,6 @@ mod tests {
                 cx,
             );
             shell.debug_gate = Some(GatePhase::Ready);
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell.active_chat = "terminal-layout".into();
             shell
@@ -3694,7 +3646,6 @@ mod tests {
                 cx,
             );
             shell.debug_gate = Some(GatePhase::Ready);
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell.active_chat = "review-chat".into();
             shell

@@ -589,7 +589,6 @@ mod tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });
@@ -675,7 +674,6 @@ mod tests {
                 },
                 cx,
             );
-            shell.splash = SplashPhase::Gone;
             shell.route = Route::Chat;
             shell
         });
