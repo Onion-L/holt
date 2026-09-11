@@ -251,7 +251,16 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   transcript appends one card row after each Turn's last entry. Empty sets
   (including a net-zero settle retiring a live card) and non-Git
   workspaces render no card; binary entries show status only with no line
-  counts; the Review/Open actions are ticket 04.
+  counts. The card's actions (ticket 04) are read-only and separate: Review
+  opens — or re-aims, since the pane keeps ONE review companion surface
+  (`ui::shell`'s `RightSurface::TurnReview`) rather than stacking tabs —
+  the per-file unified diff the review fetches through
+  `GetCheckoutFileDiffText` in `turn` mode addressed by the Turn's
+  `messageId` (a settled Turn therefore reviews its immutable stored pair,
+  a live one the working tree), while Open opens the post-Turn file in the
+  Space's pinned file tab. A deleted file stays reviewable but offers no
+  Open, and nothing in the surface writes: no accept, undo, discard, stage,
+  or commit.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktrees, change requests, and uploads.
 

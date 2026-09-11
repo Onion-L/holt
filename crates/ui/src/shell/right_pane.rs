@@ -37,6 +37,11 @@ pub enum RightSurface {
     /// The Git panel (ticket 03): the chat's live working-tree status,
     /// read-only for now — the handle keys [`Shell::git_panels`].
     Git(u64),
+    /// A Turn's read-only change review (ADR-0024 ticket 04): the per-file
+    /// unified diff from the Turn's immutable (or live) before/after pair —
+    /// the handle keys [`Shell::turn_reviews`]. One companion surface: a new
+    /// file selection re-aims it, never stacks.
+    TurnReview(u64),
     /// The File surface itself (picker card / `+` row): the far-right tree
     /// plus the Space's file tabs in the shared contents area. Never a strip
     /// chip — [`Shell::resolved_right_active`] shows it as the Space's live
@@ -216,6 +221,10 @@ impl Shell {
                     .git_panels
                     .get(id)
                     .map(|_| (*surface, SharedString::from("Git"))),
+                RightSurface::TurnReview(id) => self
+                    .turn_reviews
+                    .get(id)
+                    .map(|_| (*surface, SharedString::from("Review"))),
                 RightSurface::Picker => None,
                 RightSurface::File(id) => self
                     .file_space_key(cx)
@@ -362,6 +371,8 @@ impl Shell {
                     panel.update(cx, |panel, cx| panel.ensure_visible(cx));
                 }
             }
+            // The review's fetch runs on aim; activation is display-only.
+            RightSurface::TurnReview(_) => {}
             // File tabs are Space-owned: activation records the space's
             // selected tab (the strip's duplicate-open identity).
             RightSurface::File(id) => {
@@ -537,6 +548,61 @@ impl Shell {
                     cx,
                 );
             }
+            // The Turn change card's Review affordance (ADR-0024 ticket 04):
+            // open (or re-aim) the read-only review surface for that Turn.
+            TranscriptEvent::ReviewTurnChanges {
+                chat_id,
+                message_id,
+                path,
+            } => {
+                self.open_turn_review(chat_id.clone(), message_id.clone(), path.clone(), cx);
+            }
+            // The card's Open affordance: the post-Turn file in the
+            // workspace file tab (the ordinary file-open path — pinned, not
+            // a replaceable preview).
+            TranscriptEvent::OpenTurnFile { path } => {
+                self.open_file(path.clone(), None, true, cx);
+            }
+        }
+    }
+
+    /// The Turn review companion (ADR-0024 ticket 04): ONE review surface,
+    /// focused when alive and recreated when closed, then aimed at the
+    /// Turn's file — a new selection replaces the active view.
+    pub(super) fn open_turn_review(
+        &mut self,
+        chat_id: String,
+        message_id: String,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        // The card lives in the conversation column — the pane it opens into
+        // may still be closed.
+        if !self.right_pane_open(cx) {
+            self.toggle_right_pane(cx);
+        }
+        let companion = self
+            .turn_review_id
+            .filter(|id| self.turn_reviews.contains_key(id));
+        let id = match companion {
+            Some(id) => id,
+            None => {
+                let review = cx.new(|_| crate::turn_review::TurnReview::new(self.state.clone()));
+                self.turn_review_seq += 1;
+                let id = self.turn_review_seq;
+                self.turn_reviews.insert(id, review);
+                self.turn_review_id = Some(id);
+                let key = self.panel_key(cx);
+                self.right_tabs
+                    .entry(key)
+                    .or_default()
+                    .push(RightSurface::TurnReview(id));
+                id
+            }
+        };
+        self.set_right_active(RightSurface::TurnReview(id), cx);
+        if let Some(review) = self.turn_reviews.get(&id).cloned() {
+            review.update(cx, |review, cx| review.aim(&chat_id, &message_id, path, cx));
         }
     }
 
@@ -673,6 +739,12 @@ impl Shell {
                 self.git_panels.remove(&id);
                 self.git_subs.remove(&id);
                 self.git_diff_companions.remove(&id);
+            }
+            RightSurface::TurnReview(id) => {
+                self.turn_reviews.remove(&id);
+                if self.turn_review_id == Some(id) {
+                    self.turn_review_id = None;
+                }
             }
             RightSurface::Terminal(tab) => {
                 let panel = self.right_terminal_panel(cx);
@@ -814,6 +886,50 @@ impl Shell {
                     .expect("checked")
                     .clone()
                     .into_any_element(),
+                // The Turn review: the File surface's header convention —
+                // the fixed "Review" title with the aimed path as the muted
+                // companion — over the read-only body.
+                RightSurface::TurnReview(id) if self.turn_reviews.contains_key(&id) => {
+                    let review = self.turn_reviews.get(&id).expect("checked").clone();
+                    let path = review.update(cx, |review, _| review.header_path());
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("turn-review-header")
+                                .flex_none()
+                                .h(px(36.0))
+                                .px(px(8.0))
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::typography::ui_rems(11.5))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.text)
+                                        .child("Review"),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .truncate()
+                                        .font_family(theme.font_mono.clone())
+                                        .text_size(crate::typography::ui_rems(10.5))
+                                        .text_color(theme.text_muted.opacity(0.7))
+                                        .child(path),
+                                ),
+                        )
+                        .child(div().flex_1().min_h_0().child(review))
+                        .into_any_element()
+                }
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -1089,6 +1205,7 @@ impl Shell {
                 RightSurface::Git(_) => icons::CHECKLIST,
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::File(_) => icons::DOCUMENT,
+                RightSurface::TurnReview(_) => icons::EYE,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working

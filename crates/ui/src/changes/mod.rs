@@ -57,8 +57,8 @@ mod sync;
 pub use model::{
     DiffHighlights, DiffLine, DiffPhase, DiffScope, FileDiff, FileStatus, Hunk, LineKind, LinePair,
     SourceLineRef, SourceSide, apply_diff_frame, clean_message, default_base_ref, diff_phase,
-    file_notices, gutter_width, line_anchor, parse_patch, resolve_diff, scope_label, split_pairs,
-    split_pairs_upto, truncate_file_lines, uncommitted_label,
+    file_diff_from_text, file_notices, gutter_width, line_anchor, parse_patch, resolve_diff,
+    scope_label, split_pairs, split_pairs_upto, truncate_file_lines, uncommitted_label,
 };
 
 pub(crate) use render::render_file_body_with_syntax;

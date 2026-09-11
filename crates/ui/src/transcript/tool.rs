@@ -206,70 +206,22 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
 }
 
 /// Reduce an inline [`holt_proto::ToolDiff`] to the changes pane's
-/// [`crate::changes::FileDiff`]: hunks grouped with 3 context lines, dual
-/// 1-based line numbers, unified-diff hunk headers, and add/del counts.
+/// [`crate::changes::FileDiff`]: the shared hunk reduction over the diff's
+/// before/after text, with the status a tool diff can infer (no old side ⇒
+/// added).
 pub fn diff_to_file(diff: &holt_proto::ToolDiff) -> crate::changes::FileDiff {
-    use crate::changes::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
-    let old = diff.old_text.as_deref().unwrap_or("");
-    let text_diff = similar::TextDiff::from_lines(old, &diff.new_text);
-    let mut hunks = Vec::new();
-    let (mut additions, mut deletions) = (0u32, 0u32);
-    let mut max_line = 0u32;
-    for group in text_diff.grouped_ops(3) {
-        let (Some(first), Some(last)) = (group.first(), group.last()) else {
-            continue;
-        };
-        let old_range = first.old_range().start..last.old_range().end;
-        let new_range = first.new_range().start..last.new_range().end;
-        let header = format!(
-            "@@ -{},{} +{},{} @@",
-            old_range.start + 1,
-            old_range.len(),
-            new_range.start + 1,
-            new_range.len(),
-        );
-        let mut lines = Vec::new();
-        for op in &group {
-            for change in text_diff.iter_changes(op) {
-                let kind = match change.tag() {
-                    similar::ChangeTag::Delete => {
-                        deletions += 1;
-                        LineKind::Del
-                    }
-                    similar::ChangeTag::Insert => {
-                        additions += 1;
-                        LineKind::Add
-                    }
-                    similar::ChangeTag::Equal => LineKind::Context,
-                };
-                let old_no = change.old_index().map(|n| n as u32 + 1);
-                let new_no = change.new_index().map(|n| n as u32 + 1);
-                max_line = max_line.max(old_no.unwrap_or(0)).max(new_no.unwrap_or(0));
-                lines.push(DiffLine {
-                    kind,
-                    old_no,
-                    new_no,
-                    text: change.value().trim_end_matches('\n').to_owned(),
-                });
-            }
-        }
-        hunks.push(Hunk { header, lines });
-    }
-    FileDiff {
-        path: diff.path.clone(),
-        old_path: None,
-        status: if diff.old_text.is_none() {
+    use crate::changes::FileStatus;
+    crate::changes::file_diff_from_text(
+        &diff.path,
+        None,
+        if diff.old_text.is_none() {
             FileStatus::Added
         } else {
             FileStatus::Modified
         },
-        binary: false,
-        notices: Vec::new(),
-        hunks,
-        additions,
-        deletions,
-        max_line,
-    }
+        diff.old_text.as_deref().unwrap_or(""),
+        &diff.new_text,
+    )
 }
 
 // ---------------------------------------------------------------------------

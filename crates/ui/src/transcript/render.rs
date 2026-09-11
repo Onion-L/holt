@@ -489,13 +489,15 @@ impl Transcript {
         column.into_any_element()
     }
 
-    /// The Turn file-change card (ADR-0024 ticket 03): what one Turn changed,
-    /// at the end of the Turn's reply — per file its status, path, and line
-    /// counts, with the totals in the header. Live while the Turn runs (the
-    /// engine's debounced frames), frozen at settle; failed and interrupted
-    /// Turns keep their cards. Binary files show status only — no invented
-    /// line counts — and files render in the engine's path-sorted order. The
-    /// Review/Open actions are ticket 04's.
+    /// The Turn file-change card (ADR-0024 tickets 03+04): what one Turn
+    /// changed, at the end of the Turn's reply — per file its status, path,
+    /// and line counts, with the totals in the header. Live while the Turn
+    /// runs (the engine's debounced frames), frozen at settle; failed and
+    /// interrupted Turns keep their cards. Binary files show status only —
+    /// no invented line counts — and files render in the engine's
+    /// path-sorted order. Clicking a row (or the header's Review) opens the
+    /// read-only review; a live file's Open affordance opens the post-Turn
+    /// file — deleted files offer Review only, never Open.
     fn render_turn_change_card(
         &mut self,
         change_set: &Arc<TurnChangeSet>,
@@ -503,6 +505,8 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let live = change_set.phase == TurnChangeSetPhase::Live;
+        let chat_id = self.chat_id.clone().unwrap_or_default();
+        let message_id = change_set.message_id.clone();
         let mut header = div()
             .flex()
             .flex_row()
@@ -525,6 +529,8 @@ impl Transcript {
                     .text_color(theme.text_muted.opacity(0.75)),
             )
         };
+        let review_chat = chat_id.clone();
+        let review_message = message_id.clone();
         header = header
             .child(
                 div()
@@ -554,7 +560,29 @@ impl Transcript {
             })
             .when(change_set.deletions > 0, |el| {
                 el.child(turn_change_count(change_set.deletions, false, theme))
-            });
+            })
+            // Review: the read-only per-file diff in the right pane — the
+            // first file until a row picks one.
+            .child(
+                div()
+                    .id("turn-change-review")
+                    .debug_selector(|| "turn-card-review".to_string())
+                    .flex_none()
+                    .px(px(7.0))
+                    .rounded(px(5.0))
+                    .text_size(px(10.5))
+                    .text_color(theme.text_muted)
+                    .cursor_pointer()
+                    .hover(|el| el.bg(crate::theme::wash(0.06)))
+                    .child("Review")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(super::TranscriptEvent::ReviewTurnChanges {
+                            chat_id: review_chat.clone(),
+                            message_id: review_message.clone(),
+                            path: None,
+                        });
+                    })),
+            );
 
         div()
             .py(px(4.0))
@@ -573,12 +601,67 @@ impl Transcript {
                     .px(px(12.0))
                     .py(px(9.0))
                     .child(header)
-                    .children(
-                        change_set
-                            .files
-                            .iter()
-                            .map(|file| turn_change_file_row(file, theme)),
-                    ),
+                    .children(change_set.files.iter().map(|file| {
+                        let review_chat = chat_id.clone();
+                        let review_message = message_id.clone();
+                        let review_path = file.path.clone();
+                        let row_selector = review_path.clone();
+                        let row = div()
+                            .id(SharedString::from(format!(
+                                "turn-change-file-{}",
+                                file.path
+                            )))
+                            .debug_selector(move || format!("turn-card-file-{row_selector}"))
+                            .w_full()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .min_w_0()
+                            .rounded(px(5.0))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(crate::theme::wash(0.04)))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(super::TranscriptEvent::ReviewTurnChanges {
+                                    chat_id: review_chat.clone(),
+                                    message_id: review_message.clone(),
+                                    path: Some(review_path.clone()),
+                                });
+                            }))
+                            .child(turn_change_file_row(file, theme));
+                        // Open: the post-Turn file in the workspace tab. A
+                        // deleted file has nothing on disk to open — Review
+                        // keeps its diff available instead.
+                        if file.status == TurnFileChangeStatus::Deleted {
+                            row
+                        } else {
+                            let open_path = file.path.clone();
+                            let open_selector = file.path.clone();
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "turn-change-open-{}",
+                                        file.path
+                                    )))
+                                    .debug_selector(move || {
+                                        format!("turn-card-open-{open_selector}")
+                                    })
+                                    .flex_none()
+                                    .px(px(6.0))
+                                    .rounded(px(4.0))
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_faint)
+                                    .cursor_pointer()
+                                    .hover(|el| el.bg(crate::theme::wash(0.08)))
+                                    .child("Open")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(super::TranscriptEvent::OpenTurnFile {
+                                            path: open_path.clone(),
+                                        });
+                                    })),
+                            )
+                        }
+                    })),
             )
             .into_any_element()
     }

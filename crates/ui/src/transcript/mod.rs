@@ -338,6 +338,19 @@ pub enum TranscriptEvent {
         title: String,
         frozen: bool,
     },
+    /// A Turn change card's Review affordance (ADR-0024 ticket 04): open —
+    /// or re-aim — the read-only review surface for that Turn. `path`
+    /// targets one file when a specific row was clicked; `None` (the card
+    /// header's Review) selects the Turn's first file.
+    ReviewTurnChanges {
+        chat_id: String,
+        message_id: String,
+        path: Option<String>,
+    },
+    /// A Turn change card row's Open affordance: the post-Turn file in the
+    /// workspace file tab — the path is the change set's repo-relative one.
+    /// Deleted files never emit this (the file is gone).
+    OpenTurnFile { path: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
@@ -2081,6 +2094,123 @@ mod tests {
         assert!(!Transcript::should_restick(200.0, 300.0));
         // No movement — leave the pin alone.
         assert!(!Transcript::should_restick(50.0, 50.0));
+    }
+
+    /// The card's Review/Open affordances (ticket 04): a file row emits the
+    /// review event for ITS path, the row's Open button emits the open event
+    /// without also firing the row's review (stop-propagation), the header's
+    /// Review picks no specific path, and a deleted file offers Review only —
+    /// no Open affordance exists to click.
+    #[gpui::test]
+    fn change_card_affordances_emit_review_and_open(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        use gpui::AppContext as _;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        // The subscription must outlive the clicks — dropping the returned
+        // `Subscription` would unsubscribe the sink, leaving it silently empty.
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: "edit things".into(),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: None,
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            s.turn_change_sets.insert(
+                "m-1".into(),
+                holt_proto::TurnChangeSet {
+                    chat_id: "chat-1".into(),
+                    message_id: "m-1".into(),
+                    phase: holt_proto::TurnChangeSetPhase::Final,
+                    files: vec![
+                        holt_proto::TurnFileChange {
+                            path: "a.rs".into(),
+                            old_path: None,
+                            status: holt_proto::TurnFileChangeStatus::Modified,
+                            additions: 1,
+                            deletions: 1,
+                            binary: false,
+                        },
+                        holt_proto::TurnFileChange {
+                            path: "gone.txt".into(),
+                            old_path: None,
+                            status: holt_proto::TurnFileChangeStatus::Deleted,
+                            additions: 0,
+                            deletions: 3,
+                            binary: false,
+                        },
+                    ],
+                    additions: 1,
+                    deletions: 4,
+                    truncated: false,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // The deleted file row reviews like any other…
+        let row = cx
+            .debug_bounds("turn-card-file-gone.txt")
+            .expect("row drawn");
+        cx.simulate_click(row.center(), Default::default());
+        assert!(
+            matches!(
+                events.borrow().last(),
+                Some(TranscriptEvent::ReviewTurnChanges { message_id, path, .. })
+                    if message_id == "m-1" && path.as_deref() == Some("gone.txt")
+            ),
+            "{:?}",
+            events.borrow()
+        );
+        // …but it has no Open affordance at all (story 11).
+        assert!(cx.debug_bounds("turn-card-open-gone.txt").is_none());
+
+        // A live file's Open emits the open event alone — the row's review
+        // does not double-fire through the button.
+        let open = cx.debug_bounds("turn-card-open-a.rs").expect("open drawn");
+        cx.simulate_click(open.center(), Default::default());
+        assert_eq!(events.borrow().len(), 2);
+        assert!(
+            matches!(
+                events.borrow().last(),
+                Some(TranscriptEvent::OpenTurnFile { path }) if path == "a.rs"
+            ),
+            "{:?}",
+            events.borrow()
+        );
+
+        // The header's Review targets the Turn, not a specific file.
+        let header = cx.debug_bounds("turn-card-review").expect("header drawn");
+        cx.simulate_click(header.center(), Default::default());
+        assert!(
+            matches!(
+                events.borrow().last(),
+                Some(TranscriptEvent::ReviewTurnChanges { chat_id, message_id, path })
+                    if chat_id == "chat-1" && message_id == "m-1" && path.is_none()
+            ),
+            "{:?}",
+            events.borrow()
+        );
     }
 
     #[test]

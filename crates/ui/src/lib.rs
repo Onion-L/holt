@@ -46,6 +46,7 @@ pub mod terminal;
 pub mod theme;
 pub mod theme_library;
 pub mod transcript;
+pub mod turn_review;
 pub mod typography;
 mod watch_coordinator;
 

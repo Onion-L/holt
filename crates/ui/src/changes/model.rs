@@ -145,6 +145,77 @@ impl FileDiff {
     }
 }
 
+/// Build one file's unified diff from an explicit before/after text pair —
+/// the hunk reduction shared by the transcript's tool diffs
+/// (`transcript::tool::diff_to_file`) and the Turn review (`turn_review`):
+/// 3-line context groups, dual 1-based line numbers, `@@` hunk headers, and
+/// the add/delete counts. `status` and `old_path` are the caller's
+/// vocabulary — a tool diff infers them, a Turn file takes them from its
+/// change set.
+pub fn file_diff_from_text(
+    path: &str,
+    old_path: Option<String>,
+    status: FileStatus,
+    old: &str,
+    new: &str,
+) -> FileDiff {
+    let text_diff = similar::TextDiff::from_lines(old, new);
+    let mut hunks = Vec::new();
+    let (mut additions, mut deletions) = (0u32, 0u32);
+    let mut max_line = 0u32;
+    for group in text_diff.grouped_ops(3) {
+        let (Some(first), Some(last)) = (group.first(), group.last()) else {
+            continue;
+        };
+        let old_range = first.old_range().start..last.old_range().end;
+        let new_range = first.new_range().start..last.new_range().end;
+        let header = format!(
+            "@@ -{},{} +{},{} @@",
+            old_range.start + 1,
+            old_range.len(),
+            new_range.start + 1,
+            new_range.len(),
+        );
+        let mut lines = Vec::new();
+        for op in &group {
+            for change in text_diff.iter_changes(op) {
+                let kind = match change.tag() {
+                    similar::ChangeTag::Delete => {
+                        deletions += 1;
+                        LineKind::Del
+                    }
+                    similar::ChangeTag::Insert => {
+                        additions += 1;
+                        LineKind::Add
+                    }
+                    similar::ChangeTag::Equal => LineKind::Context,
+                };
+                let old_no = change.old_index().map(|n| n as u32 + 1);
+                let new_no = change.new_index().map(|n| n as u32 + 1);
+                max_line = max_line.max(old_no.unwrap_or(0)).max(new_no.unwrap_or(0));
+                lines.push(DiffLine {
+                    kind,
+                    old_no,
+                    new_no,
+                    text: change.value().trim_end_matches('\n').to_owned(),
+                });
+            }
+        }
+        hunks.push(Hunk { header, lines });
+    }
+    FileDiff {
+        path: path.to_string(),
+        old_path,
+        status,
+        binary: false,
+        notices: Vec::new(),
+        hunks,
+        additions,
+        deletions,
+        max_line,
+    }
+}
+
 /// Width of one line-number gutter column, fitted to the file's largest
 /// line number: 11px mono ≈ 6.6px per digit, the 8px right pad, and a 6px
 /// left gap so the number never abuts the accent bar (at 4 digits the old

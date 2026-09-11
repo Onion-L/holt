@@ -628,6 +628,13 @@ pub struct Shell {
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
+    /// The Turn review surfaces by id (ADR-0024 ticket 04) — read-only
+    /// per-file diffs over one Turn's change set.
+    turn_reviews: std::collections::HashMap<u64, Entity<crate::turn_review::TurnReview>>,
+    turn_review_seq: u64,
+    /// The live Turn review companion: the one surface Review affordances
+    /// open or re-aim, so a new selection replaces the active view.
+    turn_review_id: Option<u64>,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -1024,6 +1031,9 @@ impl Shell {
             git_diff_companions: std::collections::HashMap::new(),
             subagent_tabs: std::collections::HashMap::new(),
             subagent_seq: 0,
+            turn_reviews: std::collections::HashMap::new(),
+            turn_review_seq: 0,
+            turn_review_id: None,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -3624,6 +3634,122 @@ mod tests {
             assert!(top.size.height > px(0.0));
             assert!(dock.size.height >= px(160.0));
         }
+    }
+
+    /// The Turn review companion (ADR-0024 ticket 04): a card's Review opens
+    /// ONE read-only surface in the right pane and aims it at the Turn's
+    /// file; a second selection re-aims that same surface rather than
+    /// stacking tabs; a closed review is recreated by the next selection.
+    #[gpui::test]
+    fn turn_review_opens_reaims_and_recreates(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.selected_chat = Some("review-chat".into());
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "review-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-09-11T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state.turn_change_sets.insert(
+                "m-1".into(),
+                holt_proto::TurnChangeSet {
+                    chat_id: "review-chat".into(),
+                    message_id: "m-1".into(),
+                    phase: holt_proto::TurnChangeSetPhase::Final,
+                    files: vec![
+                        holt_proto::TurnFileChange {
+                            path: "a.rs".into(),
+                            old_path: None,
+                            status: holt_proto::TurnFileChangeStatus::Modified,
+                            additions: 1,
+                            deletions: 1,
+                            binary: false,
+                        },
+                        holt_proto::TurnFileChange {
+                            path: "gone.txt".into(),
+                            old_path: None,
+                            status: holt_proto::TurnFileChangeStatus::Deleted,
+                            additions: 0,
+                            deletions: 3,
+                            binary: false,
+                        },
+                    ],
+                    additions: 1,
+                    deletions: 4,
+                    truncated: false,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell.splash = SplashPhase::Gone;
+            shell.route = Route::Chat;
+            shell.active_chat = "review-chat".into();
+            shell
+        });
+        let aimed_path = |shell: &Shell, id: u64, cx: &App| {
+            shell
+                .turn_reviews
+                .get(&id)
+                .map(|review| review.read(cx).header_path())
+        };
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                // Review with no file named: the pane opens (it may still be
+                // closed) on the Turn's first file.
+                shell.open_turn_review("review-chat".into(), "m-1".into(), None, cx);
+                assert!(shell.right_pane_open(cx));
+                let RightSurface::TurnReview(first) = shell.resolved_right_active(cx) else {
+                    panic!("the review is the active right surface");
+                };
+                assert_eq!(
+                    aimed_path(shell, first, cx).as_deref(),
+                    Some("a.rs"),
+                    "the header's Review aims the Turn's first file"
+                );
+
+                // A row's Review re-aims the SAME companion: one surface,
+                // never a second tab.
+                shell.open_turn_review(
+                    "review-chat".into(),
+                    "m-1".into(),
+                    Some("gone.txt".into()),
+                    cx,
+                );
+                let RightSurface::TurnReview(second) = shell.resolved_right_active(cx) else {
+                    panic!("the re-aimed review stays active");
+                };
+                assert_eq!(second, first, "a new selection reuses the one surface");
+                assert_eq!(aimed_path(shell, second, cx).as_deref(), Some("gone.txt"));
+                let rows = shell.right_surface_rows(cx);
+                assert_eq!(rows.len(), 1, "the review stacks no tabs");
+                assert_eq!(rows[0].1.as_ref(), "Review");
+
+                // Closing drops the companion; the next selection builds a
+                // fresh surface instead of resurrecting the old one.
+                shell.close_right_surface(RightSurface::TurnReview(first), window, cx);
+                assert!(shell.turn_reviews.is_empty());
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Picker);
+                shell.open_turn_review("review-chat".into(), "m-1".into(), None, cx);
+                let RightSurface::TurnReview(recreated) = shell.resolved_right_active(cx) else {
+                    panic!("the review reopens after a close");
+                };
+                assert_ne!(recreated, first, "a closed review is recreated, not reused");
+                assert_eq!(aimed_path(shell, recreated, cx).as_deref(), Some("a.rs"));
+            });
+        });
     }
 
     #[test]
