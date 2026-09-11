@@ -67,6 +67,15 @@
 - **Auto-review**: the model pass that judges each mutating tool call before execution in auto-review mode — same model as the chat; a rejection blocks the call and returns the reason to the agent. Rendered as review chips in the Transcript.
 - **Always-allow**: a chat-scoped, in-memory grant that passes matching mutating calls through the gate for the rest of the app session — bash matches by command prefix, write/edit by exact file path. Checked before the gatekeeper, so it holds across mode switches; cleared on restart and never persisted.
 _Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
+
+- **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, write a pending plan document, and request approval before implementation; it is independent of the chat's Permission mode.
+_Avoid_: planning permission mode, read-only permission mode
+- **Plan document**: a versioned Markdown document under the chat's working directory at `.holt/plans`, representing one proposed implementation plan.
+_Avoid_: todo list, task list
+- **Plan submission**: the explicit runtime action that submits the active Plan document for user approval.
+_Avoid_: plan text, plan output
+- **Active plan**: the one plan document currently associated with a chat's Plan Mode state; a chat may retain older plans for audit.
+_Avoid_: current todo
 _Avoid_: permission prompt, confirm dialog (for Approval)
 _Avoid_: auto-approve (Auto-review can reject)
 _Avoid_: grep tool, agent search
