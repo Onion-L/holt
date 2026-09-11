@@ -59,7 +59,6 @@ use crate::theme::Theme;
 
 mod viewport;
 
-pub(crate) use viewport::OWN_SEND_TOP_INSET_PX;
 pub use viewport::{
     AT_BOTTOM_PX, FLAVOUR_ROTATE_SECS, FLAVOUR_WORDS, GLIDE_MAX_VIEWPORTS, OVERDRAW_PX,
     SCROLL_BUTTON_THRESHOLD_PX, SPRING_CHASE_MAX_LEAD, SPRING_DAMPING, SPRING_FRAME_MS,
@@ -69,9 +68,10 @@ pub use viewport::{
 };
 use viewport::{
     OWN_SEND_GLIDE_RETAIN, OWN_SEND_GLIDE_SNAP_PX, OWN_SEND_SCROLL_SLACK_PX, OwnTurnAnchor,
-    SELECTION_SCROLL_TICK_MS, SavedViewport, SavedViewportCache, TranscriptReplayState,
-    own_send_hold_inset, own_turn_reservation, selection_scroll_step, should_anchor_live_stream,
+    SavedViewport, SavedViewportCache, TranscriptReplayState, own_send_hold_inset,
+    own_turn_reservation, should_anchor_live_stream,
 };
+pub(crate) use viewport::{OWN_SEND_TOP_INSET_PX, SELECTION_SCROLL_TICK_MS, selection_scroll_step};
 
 mod tool;
 

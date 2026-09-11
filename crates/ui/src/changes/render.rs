@@ -307,7 +307,7 @@ impl Changes {
                 file,
                 hunk,
                 line,
-                flat: _,
+                flat,
             } => {
                 let Some(file_diff) = files.get(file as usize) else {
                     return gpui::Empty.into_any_element();
@@ -325,7 +325,13 @@ impl Changes {
                     .map(|highlights| highlights.spans(line))
                     .unwrap_or(&[]);
                 let gutter_px = gutter_width(file_diff);
-                let row = diff_line_row(line, spans, &theme, gutter_px);
+                let row = diff_line_row(
+                    line,
+                    spans,
+                    &theme,
+                    gutter_px,
+                    &format!("{parsed_key}:{flat}"),
+                );
                 let Some((side, line_no)) = line_anchor(line) else {
                     return row;
                 };
@@ -371,6 +377,7 @@ impl Changes {
                 // Same slot on both sides = a context row: one line, drawn in
                 // both columns.
                 let mirrored = left.is_some() && left == right;
+                let (left_slot, right_slot) = (left, right);
                 let left = left.and_then(|slot| lines.get(slot as usize));
                 let right = right.and_then(|slot| lines.get(slot as usize));
                 // `\ No newline at end of file` is not code on one side — it
@@ -394,13 +401,20 @@ impl Changes {
                 let shared_runs = mirrored
                     .then(|| left.map(|line| line_runs(line, highlight.as_deref(), &theme)))
                     .flatten();
-                let cell = |line: Option<&DiffLine>, old: bool| {
-                    line.map(|line| {
+                let cell = |line: Option<(&DiffLine, u32)>, old: bool| {
+                    line.map(|(line, slot)| {
                         let runs = shared_runs
                             .clone()
                             .unwrap_or_else(|| line_runs(line, highlight.as_deref(), &theme));
                         let number = if old { line.old_no } else { line.new_no };
-                        split_line_cell(line, number, runs, &theme, gutter_px)
+                        split_line_cell(
+                            line,
+                            number,
+                            runs,
+                            &theme,
+                            gutter_px,
+                            &split_sel_key(&parsed_key, hunk as usize, slot, old),
+                        )
                     })
                 };
                 // The left column is inert. It shows the pre-change file, and
@@ -410,10 +424,13 @@ impl Changes {
                 // Cards for old-side notes still render (they are pushed by
                 // the row, not the column), so switching layouts never hides
                 // one that is already staged.
-                let left = cell(left, true)
+                let left = cell(left.zip(left_slot), true)
                     .map(IntoElement::into_any_element)
                     .unwrap_or_else(|| split_filler().into_any_element());
-                let right = match (cell(right, false), right.and_then(line_anchor)) {
+                let right = match (
+                    cell(right.zip(right_slot), false),
+                    right.and_then(line_anchor),
+                ) {
                     (Some(cell), Some(anchor)) => {
                         let (side, line_no) = anchor;
                         let (move_path, leave_path) = (path.clone(), path.clone());
@@ -1264,6 +1281,7 @@ fn diff_line_row(
     spans: &[holt_syntax::HighlightSpan],
     theme: &Theme,
     gutter_px: f32,
+    sel_key: &str,
 ) -> AnyElement {
     if line.kind == LineKind::Meta {
         return meta_line_row(
@@ -1324,6 +1342,24 @@ fn diff_line_row(
         theme.text.opacity(0.92),
         theme,
     );
+    // Selectable text (user-bubble pattern): clone the layout BEFORE building
+    // the element — the clone shares state, so the wash painted from it during
+    // this canvas's paint phase uses the bounds the sibling text element
+    // finalizes. The canvas's own placement is irrelevant; wash quads come out
+    // in window coordinates.
+    let styled = gpui::StyledText::new(line.text.clone()).with_runs(runs);
+    let layout = styled.layout().clone();
+    let sel_key: Arc<str> = sel_key.into();
+    let sel_text: SharedString = line.text.clone().into();
+    let sel_theme = theme.clone();
+    let underlay = gpui::canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme);
+        },
+    )
+    .absolute()
+    .size_full();
     div()
         .h(px(DIFF_LINE_HEIGHT))
         .w_full()
@@ -1377,7 +1413,9 @@ fn diff_line_row(
                 .font_family(theme.font_mono.clone())
                 .text_size(px(DIFF_TEXT_SIZE))
                 .whitespace_nowrap()
-                .child(gpui::StyledText::new(line.text.clone()).with_runs(runs)),
+                .relative()
+                .child(underlay)
+                .child(styled),
         )
         .into_any_element()
 }
@@ -1420,17 +1458,42 @@ fn line_runs(
     )
 }
 
+/// Selection key for one split cell. The hunk index discriminates: slots
+/// index per-hunk lines, so a bare `{prefix}:{slot}:{side}` would collide
+/// across every hunk of a multi-hunk file.
+fn split_sel_key(prefix: &str, hunk: usize, slot: u32, old: bool) -> String {
+    format!("{prefix}:{hunk}:{slot}:{}", if old { 'o' } else { 'n' })
+}
+
 /// One half of a split row: the same accent bar / gutter / marker / code
 /// columns a unified row uses, minus the second gutter — each half numbers
 /// only its own side. Takes prebuilt `runs` so a mirrored row can share one
 /// set across both columns.
+///
+/// `sel_key` keys the half into the text-selection registry; see
+/// [`split_sel_key`].
 fn split_line_cell(
     line: &DiffLine,
     number: Option<u32>,
     runs: Vec<gpui::TextRun>,
     theme: &Theme,
     gutter_px: f32,
+    sel_key: &str,
 ) -> gpui::Div {
+    // Selectable text (user-bubble pattern) — see `diff_line_row`.
+    let styled = gpui::StyledText::new(line.text.clone()).with_runs(runs);
+    let layout = styled.layout().clone();
+    let sel_key: Arc<str> = sel_key.into();
+    let sel_text: SharedString = line.text.clone().into();
+    let sel_theme = theme.clone();
+    let underlay = gpui::canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme);
+        },
+    )
+    .absolute()
+    .size_full();
     let mut add_bg = add_color(theme);
     add_bg.a = 0.055;
     let mut del_bg = del_color(theme);
@@ -1508,7 +1571,9 @@ fn split_line_cell(
                 .font_family(theme.font_mono.clone())
                 .text_size(px(DIFF_TEXT_SIZE))
                 .whitespace_nowrap()
-                .child(gpui::StyledText::new(line.text.clone()).with_runs(runs)),
+                .relative()
+                .child(underlay)
+                .child(styled),
         )
 }
 
@@ -1825,6 +1890,12 @@ pub(crate) fn render_file_body_with_syntax(
     for notice in file_notices(file) {
         children.push(notice_row(notice, theme));
     }
+    // Selection keys: `tool-diff:` namespaces the transcript surface apart
+    // from the pane's row keys (`{checkout}:{checksum}:{flat}`) and the fold
+    // stand-in's (`fold:`), so two surfaces can show the same path without
+    // sharing selection state. The running line index is stable across frames.
+    let sel_prefix = format!("tool-diff:{}", file.path);
+    let mut line_ix = 0usize;
     for hunk in &file.hunks {
         children.push(hunk_header_row(&hunk.header, theme));
         for line in &hunk.lines {
@@ -1832,7 +1903,14 @@ pub(crate) fn render_file_body_with_syntax(
                 .as_deref()
                 .map(|highlights| highlights.spans(line))
                 .unwrap_or(&[]);
-            children.push(diff_line_row(line, spans, theme, gutter_px));
+            children.push(diff_line_row(
+                line,
+                spans,
+                theme,
+                gutter_px,
+                &format!("{sel_prefix}:{line_ix}"),
+            ));
+            line_ix += 1;
         }
     }
     div()
@@ -1855,6 +1933,12 @@ fn render_file_body_upto(
     let mut children: Vec<AnyElement> = Vec::new();
     let mut y = 0.0f32;
     let gutter_px = gutter_width(file);
+    // Selection keys: `fold:` namespaces the tween stand-in apart from the
+    // pane's row keys (`{checkout}:{checksum}:{flat}`) and the transcript's
+    // embedded-diff keys (`tool-diff:`). The running line index is stable
+    // across frames.
+    let sel_prefix = format!("fold:{}", file.path);
+    let mut line_ix = 0usize;
     let spans_for = |line: &DiffLine| {
         highlight
             .as_deref()
@@ -1870,7 +1954,7 @@ fn render_file_body_upto(
             children.push(notice_row(notice, theme));
             y += NOTICE_HEIGHT;
         }
-        for hunk in &file.hunks {
+        for (hunk_ix, hunk) in file.hunks.iter().enumerate() {
             if y >= max_px {
                 break 'build;
             }
@@ -1882,7 +1966,14 @@ fn render_file_body_upto(
                         if y >= max_px {
                             break 'build;
                         }
-                        children.push(diff_line_row(line, spans_for(line), theme, gutter_px));
+                        children.push(diff_line_row(
+                            line,
+                            spans_for(line),
+                            theme,
+                            gutter_px,
+                            &format!("{sel_prefix}:{line_ix}"),
+                        ));
+                        line_ix += 1;
                         y += DIFF_LINE_HEIGHT;
                     }
                 }
@@ -1891,28 +1982,33 @@ fn render_file_body_upto(
                     // arm breaks out of a lazy walk, so the split arm must not
                     // materialize the whole hunk first.
                     let budget = ((max_px - y) / DIFF_LINE_HEIGHT).ceil().max(0.0) as usize;
-                    for (left, right) in split_pairs_upto(&hunk.lines, budget) {
+                    for (left_slot, right_slot) in split_pairs_upto(&hunk.lines, budget) {
                         if y >= max_px {
                             break 'build;
                         }
-                        let line_at =
-                            |slot: Option<u32>| slot.and_then(|slot| hunk.lines.get(slot as usize));
-                        let cell = |line: Option<&DiffLine>, old: bool| match line {
-                            Some(line) => split_line_cell(
+                        let line_at = |slot: Option<u32>| {
+                            slot.and_then(|slot| {
+                                hunk.lines.get(slot as usize).map(|line| (line, slot))
+                            })
+                        };
+                        let cell = |line: Option<(&DiffLine, u32)>, old: bool| match line {
+                            Some((line, slot)) => split_line_cell(
                                 line,
                                 if old { line.old_no } else { line.new_no },
                                 line_runs(line, highlight.as_deref(), theme),
                                 theme,
                                 gutter_px,
+                                &split_sel_key(&sel_prefix, hunk_ix, slot, old),
                             )
                             .into_any_element(),
                             None => split_filler().into_any_element(),
                         };
-                        let (left, right) = (line_at(left), line_at(right));
+                        let (left, right) = (line_at(left_slot), line_at(right_slot));
                         let marker = [left, right]
                             .into_iter()
                             .flatten()
-                            .find(|line| line.kind == LineKind::Meta);
+                            .find(|(line, _)| line.kind == LineKind::Meta)
+                            .map(|(line, _)| line);
                         children.push(match marker {
                             Some(line) => meta_line_row(
                                 &line.text,
@@ -2082,6 +2178,19 @@ impl Render for Changes {
             // Changes is a code-adjacent surface: chrome stays Geist while
             // paths, hunks, gutters, and source runs keep their mono overrides.
             .font_family(theme.font_sans_fixed.clone())
+            .on_mouse_move(cx.listener(Self::on_selection_mouse_move))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(Self::on_selection_mouse_up),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(Self::on_selection_mouse_up),
+            )
+            // FIRST child ⇒ paints first: clears the frame's markdown text-
+            // selection registry before any row's text elements re-register
+            // (document paint order = selection order; see markdown/render.rs).
+            .child(crate::markdown::render::selection_frame_reset())
             .when_some(error, |el, message| {
                 el.child(
                     div()

@@ -20,7 +20,7 @@ const MAX_SAVED_VIEWPORTS: usize = 256;
 /// Text-selection edge scrolling runs only during a drag. A 24 ms cadence is
 /// smooth enough to track text while avoiding a permanent animation-frame loop
 /// on low-end devices.
-pub(super) const SELECTION_SCROLL_TICK_MS: u64 = 24;
+pub(crate) const SELECTION_SCROLL_TICK_MS: u64 = 24;
 const SELECTION_SCROLL_EDGE_PX: f32 = 36.0;
 const SELECTION_SCROLL_MAX_STEP_PX: f32 = 24.0;
 
@@ -28,7 +28,7 @@ const SELECTION_SCROLL_MAX_STEP_PX: f32 = 24.0;
 ///
 /// GPUI list offsets increase toward the document bottom. The quadratic ramp
 /// keeps entry into the edge zone gentle and reaches full speed at the edge.
-pub(super) fn selection_scroll_step(bounds: Bounds<Pixels>, position: Point<Pixels>) -> f32 {
+pub(crate) fn selection_scroll_step(bounds: Bounds<Pixels>, position: Point<Pixels>) -> f32 {
     let height = f32::from(bounds.size.height);
     if height <= 0.0 {
         return 0.0;

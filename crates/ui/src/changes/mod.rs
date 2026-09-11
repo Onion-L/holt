@@ -34,8 +34,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, ListAlignment, ListState, SharedString, Subscription, Task,
-    px,
+    App, Context, Entity, FocusHandle, ListAlignment, ListState, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, SharedString, Subscription, Task, Window, px,
 };
 
 use holt_proto::{CheckoutDiff, GitHistoryCommit};
@@ -43,8 +43,10 @@ use holt_proto::{CheckoutDiff, GitHistoryCommit};
 use crate::comments::CommentSide;
 use crate::composer::ComposerInput;
 use crate::history::{GitHistory, GitHistoryCount, GitHistoryFetchButton};
+use crate::markdown::render::update_drag_at;
 use crate::popover::Popup;
 use crate::state::AppState;
+use crate::transcript::{SELECTION_SCROLL_TICK_MS, selection_scroll_step};
 
 mod comments;
 mod model;
@@ -283,6 +285,11 @@ pub struct Changes {
     /// Pinned commit for a [`DiffScope::Commit`] pane (sha + subject drive
     /// the fetch and the surface-tab title).
     commit: Option<GitHistoryCommit>,
+    /// Last pointer sample while markdown selection owns a left-button drag.
+    selection_drag_position: Option<Point<Pixels>>,
+    /// One-shot timer rescheduled only while the pointer remains in an edge
+    /// zone. Dropping it on mouse-up stops all selection scroll work.
+    selection_scroll_task: Option<Task<()>>,
     _observe: Subscription,
 }
 
@@ -336,6 +343,8 @@ impl Changes {
             history_fetch_button: None,
             history_events: None,
             commit: None,
+            selection_drag_position: None,
+            selection_scroll_task: None,
             _observe: observe,
         }
     }
@@ -364,5 +373,87 @@ impl Changes {
             return commit.sha.chars().take(7).collect::<String>().into();
         }
         gpui::SharedString::from(self.scope.label())
+    }
+
+    // ---- diff-text selection (mirrors the transcript view's wiring) ----
+
+    fn on_selection_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.dragging() || !crate::markdown::selection::is_dragging() {
+            self.stop_selection_scroll();
+            return;
+        }
+        self.selection_drag_position = Some(event.position);
+        if update_drag_at(event.position) {
+            cx.notify();
+        }
+        self.schedule_selection_scroll(cx);
+    }
+
+    fn on_selection_mouse_up(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.stop_selection_scroll();
+        if let Some(_text) = crate::markdown::selection::end_active_drag() {
+            // X11 middle-click paste parity, including the case where the
+            // anchor row has virtualized away and cannot receive mouse-up.
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            _cx.write_to_primary(gpui::ClipboardItem::new_string(_text));
+        }
+    }
+
+    fn stop_selection_scroll(&mut self) {
+        self.selection_drag_position = None;
+        self.selection_scroll_task = None;
+    }
+
+    fn schedule_selection_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.selection_scroll_task.is_some() || !crate::markdown::selection::is_dragging() {
+            return;
+        }
+        let Some(position) = self.selection_drag_position else {
+            return;
+        };
+        if selection_scroll_step(self.list.viewport_bounds(), position) == 0.0 {
+            return;
+        }
+        self.selection_scroll_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(SELECTION_SCROLL_TICK_MS))
+                .await;
+            let _ = this.update(cx, |changes, cx| {
+                changes.selection_scroll_task = None;
+                changes.step_selection_scroll(cx);
+            });
+        }));
+    }
+
+    fn step_selection_scroll(&mut self, cx: &mut Context<Self>) {
+        if !crate::markdown::selection::is_dragging() {
+            self.stop_selection_scroll();
+            return;
+        }
+        let Some(position) = self.selection_drag_position else {
+            return;
+        };
+        let step = selection_scroll_step(self.list.viewport_bounds(), position);
+        if step == 0.0 {
+            return;
+        }
+
+        // Resolve against the registry painted after the previous step before
+        // moving it again. This is what lets a stationary edge pointer consume
+        // successive virtualized rows.
+        update_drag_at(position);
+        self.list.scroll_by(px(step));
+        cx.notify();
+        self.schedule_selection_scroll(cx);
     }
 }
