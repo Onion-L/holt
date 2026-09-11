@@ -535,6 +535,28 @@ pub async fn setup_chat(engine: &LocalEngine, chat_id: &str) {
         .unwrap();
 }
 
+/// The stored permission mode of a chat row, read through the WatchChats
+/// surface (the frames the UI's mode chip renders).
+pub async fn watched_permission_mode(engine: &LocalEngine, chat_id: &str) -> serde_json::Value {
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchChats did not return a stream");
+    };
+    let frame = next_frame(&mut chats).await;
+    frame
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == chat_id)
+        .unwrap_or_else(|| panic!("chat {chat_id} missing from the watch"))
+        .pointer("/config/permissionMode")
+        .cloned()
+        .expect("the chat carries a config with a permission mode")
+}
+
 /// `setup_chat` plus a full-access switch — for tests whose scripted Turns
 /// run mutating tools (bash/write/edit) while testing something other than
 /// the permission gate (ADR-0014): a confirm-changes chat would pause

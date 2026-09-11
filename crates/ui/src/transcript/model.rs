@@ -273,6 +273,17 @@ pub enum RowKind {
     CompactionDivider {
         summary: SharedString,
     },
+    /// The Plan Mode approval card (ADR-0025): one per plan submission,
+    /// carrying the document pointer and its resolution state. Pending
+    /// cards show the three verdict affordances (approve / reject with
+    /// feedback / stay in planning); settled cards show their verdict
+    /// marker. Interactive state (the feedback editor) lives on the
+    /// Transcript entity keyed by plan id, never here.
+    PlanApproval {
+        plan_id: SharedString,
+        plan_path: SharedString,
+        state: holt_doc::parts::PlanApprovalState,
+    },
     /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
     /// Turn changed so far — or, once it settled (success, failure, or
     /// interruption), what it froze as. Appended after the Turn's last row,
@@ -941,6 +952,28 @@ pub fn rows_for_entry(
                             copy_text: None,
                         });
                     }
+                    MessagePart::PlanApproval {
+                        id: part_id,
+                        plan_id,
+                        plan_path,
+                        state,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(
+                                serde_json::to_vec(&state).unwrap_or_default().as_slice(),
+                            ),
+                            turn_start: false,
+                            kind: RowKind::PlanApproval {
+                                plan_id: plan_id.clone().into(),
+                                plan_path: plan_path.clone().into(),
+                                state: state.clone(),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
                 }
             }
         }
@@ -990,11 +1023,17 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
         render::MD_BLOCK_GAP
     } else if matches!(
         row.kind,
-        RowKind::ToolGroup { .. } | RowKind::Approval { .. } | RowKind::TurnChangeCard { .. }
+        RowKind::ToolGroup { .. }
+            | RowKind::Approval { .. }
+            | RowKind::PlanApproval { .. }
+            | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
         matches!(
             row.kind,
-            RowKind::ToolGroup { .. } | RowKind::Approval { .. } | RowKind::TurnChangeCard { .. }
+            RowKind::ToolGroup { .. }
+                | RowKind::Approval { .. }
+                | RowKind::PlanApproval { .. }
+                | RowKind::TurnChangeCard { .. }
         )
     }) {
         Theme::SPACE_MD

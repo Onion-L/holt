@@ -138,6 +138,16 @@ struct DocPartJson {
     /// Epoch millis of the compaction (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timestamp: Option<i64>,
+    /// Plan id for `kind: "planApproval"` cards (additive, ADR-0025).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_id: Option<String>,
+    /// Plan-document pointer for `kind: "planApproval"` cards (additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_path: Option<String>,
+    /// Plan-approval state for `kind: "planApproval"` cards (additive):
+    /// `pending` | `settled:<approved|rejected|remained|dismissed>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_state: Option<String>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -257,6 +267,30 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             timestamp: Some(*timestamp),
             ..Default::default()
         },
+        MessagePart::PlanApproval {
+            id,
+            plan_id,
+            plan_path,
+            state,
+        } => DocPartJson {
+            id: id.clone(),
+            kind: "planApproval".into(),
+            plan_id: Some(plan_id.clone()),
+            plan_path: Some(plan_path.clone()),
+            plan_state: Some(match state {
+                crate::parts::PlanApprovalState::Pending => "pending".to_owned(),
+                crate::parts::PlanApprovalState::Settled { verdict } => format!(
+                    "settled:{}",
+                    match verdict {
+                        crate::parts::PlanApprovalVerdict::Approved => "approved",
+                        crate::parts::PlanApprovalVerdict::Rejected => "rejected",
+                        crate::parts::PlanApprovalVerdict::Remained => "remained",
+                        crate::parts::PlanApprovalVerdict::Dismissed => "dismissed",
+                    }
+                ),
+            }),
+            ..Default::default()
+        },
     })
 }
 
@@ -324,6 +358,27 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 _ => crate::parts::CompactionTrigger::Automatic,
             },
             timestamp: p.timestamp.unwrap_or_default(),
+        },
+        "planApproval" => MessagePart::PlanApproval {
+            id: p.id,
+            plan_id: p.plan_id.unwrap_or_default(),
+            plan_path: p.plan_path.unwrap_or_default(),
+            state: match p.plan_state.as_deref() {
+                Some("pending") | None => crate::parts::PlanApprovalState::Pending,
+                Some(rest) => {
+                    let verdict = match rest.strip_prefix("settled:") {
+                        Some("approved") => Some(crate::parts::PlanApprovalVerdict::Approved),
+                        Some("rejected") => Some(crate::parts::PlanApprovalVerdict::Rejected),
+                        Some("remained") => Some(crate::parts::PlanApprovalVerdict::Remained),
+                        Some("dismissed") => Some(crate::parts::PlanApprovalVerdict::Dismissed),
+                        _ => None,
+                    };
+                    match verdict {
+                        Some(verdict) => crate::parts::PlanApprovalState::Settled { verdict },
+                        None => crate::parts::PlanApprovalState::Pending,
+                    }
+                }
+            },
         },
         "reasoning" => MessagePart::Reasoning {
             id: p.id,

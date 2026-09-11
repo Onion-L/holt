@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use holt_doc::MessagePart;
+use holt_doc::parts::{PlanApprovalState, PlanApprovalVerdict};
 use holt_proto::{ActivePlan, Chat, PlanLifecycle};
 use pi_core::agent::types::AgentTool;
 
@@ -262,6 +264,21 @@ Tighten the plan with `write_plan` before submitting."
         }
     }
     runtime.publish_chats();
+    // The approval card (ADR-0025): its own transcript entry at the tail,
+    // answerable through ResolvePlanApproval. Unlike the ADR-0014 gate this
+    // resolution is pure state, so the card survives a restart.
+    let chat = runtime.chat(chat_id);
+    crate::agent::push_system_part(
+        &chat,
+        &runtime.device_id,
+        format!("plan-approval-{}", uuid::Uuid::new_v4()),
+        MessagePart::PlanApproval {
+            id: "p0".into(),
+            plan_id: plan.plan_id.clone(),
+            plan_path: plan.plan_path.display().to_string(),
+            state: PlanApprovalState::Pending,
+        },
+    );
     submitted.store(true, Ordering::Release);
     Ok(pi_core::agent::types::AgentToolResult {
         content: vec![pi_core::ai::types::BlockContent::Text(
@@ -318,6 +335,42 @@ pub(crate) fn active_plan_path(chat: &Chat) -> Option<PathBuf> {
         &chat.id,
         plan_id,
     ))
+}
+
+/// Settle every still-pending approval card for `plan_id` to `verdict`
+/// (ADR-0025). A resolution is pure display state — the lifecycle moved
+/// through the RPC — so this is a transcript edit only. A resubmission of
+/// the same revision appends a NEW card; the older pending cards of the
+/// same id settle with it (they address the same plan).
+pub(crate) fn settle_plan_cards(
+    chat: &crate::agent::ChatRuntime,
+    plan_id: &str,
+    verdict: PlanApprovalVerdict,
+) {
+    let mut transcript = chat
+        .transcript
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut changed = false;
+    for entry in transcript.iter_mut() {
+        for part in entry.parts.iter_mut() {
+            if let MessagePart::PlanApproval {
+                plan_id: card_plan,
+                state,
+                ..
+            } = part
+                && card_plan == plan_id
+                && *state == PlanApprovalState::Pending
+            {
+                *state = PlanApprovalState::Settled { verdict };
+                changed = true;
+            }
+        }
+    }
+    drop(transcript);
+    if changed {
+        chat.publish();
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +464,7 @@ mod tests {
             last_seen_at: None,
             room_gen: None,
             compact_before_next_turn: false,
+            approved_plan_path: None,
             plan_mode: Some(holt_proto::ChatPlanState {
                 entry_permission_mode: Default::default(),
                 active_plan: Some(ActivePlan {

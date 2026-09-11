@@ -193,6 +193,35 @@ pub enum GateVerdict {
     Aborted,
 }
 
+/// The Plan Mode approval card (ADR-0025): one card per plan submission,
+/// appended as its own transcript entry when `submit_plan` lands. Unlike
+/// the ADR-0014 tool gate this resolution is pure state — no run is
+/// blocked — so a pending card survives a restart and stays answerable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PlanApprovalState {
+    /// The plan awaits the user's verdict.
+    Pending,
+    /// The verdict (or a dismissal) that settled the card.
+    #[serde(rename_all = "camelCase")]
+    Settled { verdict: PlanApprovalVerdict },
+}
+
+/// How a plan-approval card settled (ADR-0025). Approve exits Plan Mode
+/// and restores the entry permission mode; a rejection retires the
+/// revision (the document stays) and opens the revision loop; remain
+/// keeps the chat planning without executing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanApprovalVerdict {
+    Approved,
+    Rejected,
+    /// Stayed in Plan Mode without approving or rejecting.
+    Remained,
+    /// Plan Mode was exited while the card was still pending.
+    Dismissed,
+}
+
 /// One rendered part of an assistant message.
 // Box-free by design: the doc type is cloned in folds, never hot, and
 // boxing would churn the serialized shape for no runtime win.
@@ -317,6 +346,18 @@ pub enum MessagePart {
         /// Epoch millis.
         timestamp: i64,
     },
+    /// The Plan Mode approval card (ADR-0025): the submitted plan's
+    /// document pointer plus its resolution state. Approve / reject /
+    /// remain ride `ResolvePlanApproval`; the card itself never edits the
+    /// document.
+    #[serde(rename_all = "camelCase")]
+    PlanApproval {
+        id: String,
+        plan_id: String,
+        /// Absolute path of the submitted plan document (display pointer).
+        plan_path: String,
+        state: PlanApprovalState,
+    },
 }
 
 impl MessagePart {
@@ -329,7 +370,8 @@ impl MessagePart {
             | MessagePart::Skill { id, .. }
             | MessagePart::Error { id, .. }
             | MessagePart::Notice { id, .. }
-            | MessagePart::CompactionDivider { id, .. } => id,
+            | MessagePart::CompactionDivider { id, .. }
+            | MessagePart::PlanApproval { id, .. } => id,
         }
     }
 
@@ -365,6 +407,12 @@ impl MessagePart {
                 message.len()
             }
             MessagePart::CompactionDivider { summary, .. } => summary.len(),
+            // The state rides the estimate: pending and settled cards
+            // differ here, which is what the transcript's entry
+            // fingerprint keys its row cache on.
+            MessagePart::PlanApproval {
+                plan_path, state, ..
+            } => plan_path.len() + serde_json::to_vec(state).map_or(0, |v| v.len()),
         }
     }
 }

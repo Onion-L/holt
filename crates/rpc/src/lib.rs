@@ -108,6 +108,17 @@ pub mod methods {
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
+    /// Resolve a submitted plan (ADR-0025): params `{chatId, planId,
+    /// verdict, feedback?}` where verdict is `"approve" | "reject" |
+    /// "remain"`. Approve exits Plan Mode, restores the entry permission
+    /// mode, and pins the plan document for injection into the next
+    /// implementation Turn. Reject retires the revision (the document
+    /// stays), keeps the chat planning, and a non-empty `feedback` is
+    /// enqueued as the revision's next planning input. Remain returns the
+    /// plan to drafting without starting anything. Unknown chat, a
+    /// superseded planId, or a plan not awaiting approval fails; every
+    /// path settles the transcript's approval cards for that plan.
+    pub const RESOLVE_PLAN_APPROVAL: &str = "ResolvePlanApproval";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
     /// per pending command. Params `{chatId}`.

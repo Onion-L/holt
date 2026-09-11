@@ -502,3 +502,342 @@ async fn exit_then_reenter_mints_a_new_revision_keeping_old_documents() {
     assert!(files.iter().any(|name| name.contains(&first_id)));
     assert!(files.iter().any(|name| name.contains(&second_id)));
 }
+
+async fn get_state(engine: &holt_engine::LocalEngine, chat_id: &str) -> serde_json::Value {
+    let RpcReply::Value(state) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    state
+}
+
+async fn set_mode(engine: &holt_engine::LocalEngine, chat_id: &str, mode: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "setChatPermissionMode",
+                "chatId": chat_id,
+                "mode": mode,
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+/// A write_plan→submit_plan script pair.
+fn write_submit() -> Vec<ScriptedReply> {
+    vec![
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "write-x",
+            "write_plan",
+            serde_json::json!({ "content": "# The plan\n- step one" }),
+        )]),
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "submit-x",
+            "submit_plan",
+            serde_json::json!({}),
+        )]),
+    ]
+}
+
+async fn resolve(
+    engine: &holt_engine::LocalEngine,
+    chat_id: &str,
+    plan_id: &str,
+    verdict: &str,
+    feedback: Option<&str>,
+) -> Result<serde_json::Value, holt_rpc::RpcError> {
+    let mut params = serde_json::json!({
+        "chatId": chat_id,
+        "planId": plan_id,
+        "verdict": verdict,
+    });
+    if let Some(feedback) = feedback {
+        params["feedback"] = serde_json::Value::String(feedback.into());
+    }
+    match engine.handle(methods::RESOLVE_PLAN_APPROVAL, params).await {
+        Ok(RpcReply::Value(state)) => Ok(state),
+        Ok(_) => panic!("ResolvePlanApproval did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+#[tokio::test]
+async fn approve_exits_plan_mode_restores_the_entry_mode_and_injects_the_plan() {
+    let fixture = Fixture::new();
+    let mut script = vec![ScriptedReply::text("seed reply")]; // the seed turn
+    script.extend(write_submit());
+    script.push(ScriptedReply::text("implementing")); // the next turn
+    script.push(ScriptedReply::text("and again")); // a further turn
+    let provider = ScriptedProvider::new(script);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // Seed the config, then enter: full-access is the entry mode.
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "seed").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    set_mode(&engine, "chat-1", "full-access").await;
+    enter_plan_mode(&engine, "chat-1").await;
+    // Planning under a different tier must not matter: the entry mode is
+    // what approval restores.
+    set_mode(&engine, "chat-1", "confirm-changes").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+    // The card is in the transcript, pending.
+    let card = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        card.to_string().contains("planApproval") && card.to_string().contains(&plan_id),
+        "the submitted plan carries a transcript card: {card}"
+    );
+
+    resolve(&engine, "chat-1", &plan_id, "approve", None)
+        .await
+        .unwrap();
+
+    // Approval exits Plan Mode and restores the ENTRY mode (full-access),
+    // not whatever tier happened to be set during planning.
+    let state = get_state(&engine, "chat-1").await;
+    assert_eq!(state["active"], serde_json::json!(false));
+    assert_eq!(
+        common::watched_permission_mode(&engine, "chat-1").await,
+        serde_json::json!("full-access")
+    );
+
+    // The pinned plan survives a restart: a fresh engine still carries the
+    // reference (the injection below is the same admission path it feeds).
+    let data_dir = fixture.data_dir.path().to_path_buf();
+    drop(engine);
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("implementing"), // the "go" Turn
+        ScriptedReply::text("and again"),    // the "continue" Turn
+    ]);
+    let engine = holt_engine::LocalEngine::assemble(&holt_engine::EngineConfig {
+        data_dir,
+        personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
+        stream_fn: Some(provider.stream_fn()),
+        search_backend_resolver: None,
+    })
+    .unwrap();
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchChats did not return a stream");
+    };
+    let frame = common::next_frame(&mut chats).await;
+    assert!(
+        frame[0]["approvedPlanPath"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(".holt/plans/chat-1-"),
+        "the approved plan reference survives restart: {frame}"
+    );
+    drop(chats);
+
+    // The old engine's watches died with it — subscribe fresh ones.
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    let _ = common::next_frame(&mut sessions).await;
+
+    // The next implementation Turn rides the approved plan whole.
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    let implementing = requests.last().unwrap();
+    // The NEW prompt (the request's last message) carries the plan.
+    let fresh_prompt = format!("{:?}", implementing.messages.last().unwrap());
+    assert!(
+        fresh_prompt.contains("<approved-plan>"),
+        "the approved plan is injected into the implementation Turn"
+    );
+    assert!(fresh_prompt.contains("step one"));
+
+    // …and the reference is consumed: the turn after that injects nothing.
+    // (The plan text legitimately remains in the conversation HISTORY —
+    // the check is the NEW prompt, the request's last message.)
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "continue").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    let fresh_prompt = format!("{:?}", requests.last().unwrap().messages.last().unwrap());
+    assert!(!fresh_prompt.contains("<approved-plan>"));
+}
+
+#[tokio::test]
+async fn reject_retires_the_plan_and_the_feedback_drives_a_new_revision() {
+    let fixture = Fixture::new();
+    let mut script = write_submit();
+    // The feedback enqueues the revision's planning input; its text-only
+    // reply earns the one corrective continuation, then the turn ends.
+    script.push(ScriptedReply::text("thinking about the feedback"));
+    script.push(ScriptedReply::text("still nothing"));
+    let provider = ScriptedProvider::new(script);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    resolve(
+        &engine,
+        "chat-1",
+        &plan_id,
+        "reject",
+        Some("use the database layer, not raw SQL"),
+    )
+    .await
+    .unwrap();
+
+    // Rejection keeps the chat planning; the revision was retired so the
+    // next cycle mints a fresh id.
+    let state = get_state(&engine, "chat-1").await;
+    assert_eq!(state["active"], serde_json::json!(true));
+    assert_eq!(state.get("activePlan"), None);
+
+    // The feedback was enqueued as the revision loop's next planning input:
+    // a new planning turn starts on its own, with a NEW plan id.
+    common::wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    assert!(
+        format!("{:?}", requests[2].messages).contains("use the database layer"),
+        "the feedback is the new planning turn's input"
+    );
+    assert!(
+        requests[2]
+            .system_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Plan Mode (active)"),
+        "the revision runs as a planning turn"
+    );
+    let state = get_state(&engine, "chat-1").await;
+    let new_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+    assert_ne!(new_id, plan_id, "the revision loop mints a fresh revision");
+
+    // The original document stays on disk.
+    let plans_dir = std::path::Path::new(&fixture.cwd()).join(".holt/plans");
+    assert!(plans_dir.join(format!("chat-1-{plan_id}.md")).exists());
+}
+
+#[tokio::test]
+async fn remain_keeps_the_chat_planning_without_starting_a_turn() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(write_submit());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    resolve(&engine, "chat-1", &plan_id, "remain", None)
+        .await
+        .unwrap();
+
+    let state = get_state(&engine, "chat-1").await;
+    assert_eq!(state["active"], serde_json::json!(true));
+    assert_eq!(state["activePlan"]["planId"], serde_json::json!(plan_id));
+    assert_eq!(state["activePlan"]["state"], serde_json::json!("planning"));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        provider.requests().len(),
+        2,
+        "remaining in Plan Mode starts no execution Turn"
+    );
+}
+
+#[tokio::test]
+async fn resolution_refuses_stale_or_wrong_targets() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(write_submit());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    // Nothing submitted yet: every verdict fails.
+    for verdict in ["approve", "reject", "remain"] {
+        let error = match resolve(&engine, "chat-1", "whatever", verdict, None).await {
+            Ok(_) => panic!("{verdict} must fail without an awaiting plan"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, holt_rpc::RpcError::Failed(_)));
+    }
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    // A wrong plan id fails; the right one approves exactly once.
+    let error = match resolve(&engine, "chat-1", "other-plan", "approve", None).await {
+        Ok(_) => panic!("a wrong plan id must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, holt_rpc::RpcError::Failed(_)));
+    resolve(&engine, "chat-1", &plan_id, "approve", None)
+        .await
+        .unwrap();
+    // Plan Mode is over: a second verdict for the same plan fails.
+    let error = match resolve(&engine, "chat-1", &plan_id, "reject", None).await {
+        Ok(_) => panic!("a resolved plan must not resolve again"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, holt_rpc::RpcError::Failed(_)));
+}
+
+#[tokio::test]
+async fn exiting_with_a_pending_card_settles_it_as_dismissed() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(write_submit());
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    engine
+        .handle(
+            methods::EXIT_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+
+    // The card settles as dismissed, never left answerable.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(
+        snapshot.contains("dismissed") && snapshot.contains(&plan_id),
+        "the pending card settles as dismissed on exit: {snapshot}"
+    );
+}

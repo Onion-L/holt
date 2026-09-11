@@ -259,6 +259,11 @@ pub struct Chat {
     /// restart; recovery never starts a Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_mode: Option<ChatPlanState>,
+    /// ADR-0025: an approved plan awaiting injection — the absolute path of
+    /// its document, pinned at approval. The next admitted Turn rides the
+    /// document's full text in model context, and the reference is consumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_plan_path: Option<String>,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on

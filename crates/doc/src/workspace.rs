@@ -732,6 +732,7 @@ impl From<RawChat> for Chat {
             room_gen: raw.room_gen,
             compact_before_next_turn: raw.compact_before_next_turn,
             plan_mode: raw.plan_mode,
+            approved_plan_path: None,
         }
     }
 }
@@ -801,6 +802,7 @@ mod tests {
             }),
             compact_before_next_turn: false,
             plan_mode: None,
+            approved_plan_path: None,
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),
