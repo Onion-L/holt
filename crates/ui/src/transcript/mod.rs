@@ -93,7 +93,7 @@ pub use markdown::{ParseOutcome, parse_for_row};
 use model::entry_fingerprint;
 pub use model::{
     Row, RowKind, ToolItem, UserSkill, diff_rows, format_skill_title, format_timestamp,
-    rows_for_entry, top_gap_for,
+    rows_for_entry, top_gap_for, turn_change_row,
 };
 
 mod render;
@@ -1414,17 +1414,20 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let (selected, entries, echoes, replay) = {
+        let (selected, entries, echoes, replay, turn_change_sets) = {
             let s = self.state.read(cx);
             match &self.doc_override {
                 // Pinned to a subagent doc: `selected` equals `chat_id` by
                 // construction, so the attach/reset branch below never fires,
                 // and echoes stay empty (nothing is ever sent from here).
+                // Change-set cards are main-chat Turns only — the map stays
+                // empty here, whatever the selected chat holds.
                 Some(doc_id) => (
                     Some(doc_id.clone()),
                     s.sub_transcript(doc_id).to_vec(),
                     Vec::new(),
                     TranscriptReplayState::Populated,
+                    HashMap::new(),
                 ),
                 None => {
                     let replay = if !s.transcript_replayed {
@@ -1439,6 +1442,7 @@ impl Transcript {
                         s.transcript.clone(),
                         s.pending_echoes().to_vec(),
                         replay,
+                        s.turn_change_sets.clone(),
                     )
                 }
             }
@@ -1516,8 +1520,25 @@ impl Transcript {
         }
 
         let mut new_rows: Vec<Row> = Vec::new();
-        for entry in &entries {
+        // The change-set card (ADR-0024 ticket 03) closes its Turn: it lands
+        // after the last row of the entries a User message opened — the next
+        // User entry (or the transcript's end) ends the Turn. `turn_id`
+        // tracks the most recent User entry; the state map guarantees any
+        // stored set is non-empty.
+        let mut turn_id: Option<&str> = None;
+        for (ix, entry) in entries.iter().enumerate() {
+            if entry.role == holt_doc::MessageRole::User {
+                turn_id = Some(entry.id.as_str());
+            }
             new_rows.extend(self.rows_for(entry, false));
+            let turn_ends =
+                ix + 1 == entries.len() || entries[ix + 1].role == holt_doc::MessageRole::User;
+            if turn_ends
+                && let Some(id) = turn_id
+                && let Some(change_set) = turn_change_sets.get(id)
+            {
+                new_rows.push(turn_change_row(id, entry.id.clone().into(), change_set));
+            }
         }
         for echo in &echoes {
             new_rows.extend(self.rows_for(echo, true));
@@ -1924,6 +1945,128 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The change card closes its Turn (ADR-0024 ticket 03): a row lands
+    /// after the Turn's last entry — before the NEXT user entry — whenever
+    /// the store holds a non-empty set for that Turn's user message, and a
+    /// live update resplices only the card row.
+    #[gpui::test]
+    fn change_cards_close_their_turns_and_render(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, IntoElement as _};
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+
+        let turn =
+            |id: &str, role: holt_doc::MessageRole, status: Option<holt_doc::MessageStatus>| {
+                SessionMessageEntry {
+                    id: id.into(),
+                    role,
+                    parts: vec![holt_doc::MessagePart::Text {
+                        id: "t0".into(),
+                        text: format!("entry {id}"),
+                    }],
+                    created_at: 0,
+                    device_id: "dev".into(),
+                    status,
+                    continuation_of: None,
+                }
+            };
+        state.update(cx, |s, cx| {
+            s.transcript = vec![
+                turn("m-1", holt_doc::MessageRole::User, None),
+                turn(
+                    "a-1",
+                    holt_doc::MessageRole::Assistant,
+                    Some(holt_doc::MessageStatus::Complete),
+                ),
+                turn("m-2", holt_doc::MessageRole::User, None),
+                turn(
+                    "a-2",
+                    holt_doc::MessageRole::Assistant,
+                    Some(holt_doc::MessageStatus::Streaming),
+                ),
+            ];
+            s.transcript_replayed = true;
+            s.turn_change_sets.insert(
+                "m-1".into(),
+                holt_proto::TurnChangeSet {
+                    chat_id: "chat-1".into(),
+                    message_id: "m-1".into(),
+                    phase: holt_proto::TurnChangeSetPhase::Final,
+                    files: vec![holt_proto::TurnFileChange {
+                        path: "src/lib.rs".into(),
+                        old_path: None,
+                        status: holt_proto::TurnFileChangeStatus::Modified,
+                        additions: 3,
+                        deletions: 1,
+                        binary: false,
+                    }],
+                    additions: 3,
+                    deletions: 1,
+                    truncated: false,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        transcript.update(cx, |this, _| {
+            let card_ix = this
+                .rows
+                .iter()
+                .position(|row| row.id.as_ref() == "m-1#tcs")
+                .expect("the settled Turn's card exists");
+            // The card follows the Turn's last entry and precedes the next
+            // user message's rows.
+            assert_eq!(this.rows[card_ix].entry_id.as_ref(), "a-1");
+            assert!(
+                this.rows[card_ix + 1].turn_start,
+                "the next user entry follows the card"
+            );
+            // The still-live turn with no changes yet has no card.
+            assert!(!this.rows.iter().any(|row| row.id.as_ref() == "m-2#tcs"));
+        });
+
+        // Draw the card (header, file row, counts) — a render panic fails
+        // the test; the visual review is manual.
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(800.0), gpui::px(600.0)),
+            |_, _| transcript.clone().into_any_element(),
+        );
+
+        // A live frame for a new Turn inserts exactly its own card row.
+        state.update(cx, |s, cx| {
+            s.apply_turn_change_set(holt_proto::TurnChangeSet {
+                chat_id: "chat-1".into(),
+                message_id: "m-2".into(),
+                phase: holt_proto::TurnChangeSetPhase::Live,
+                files: vec![holt_proto::TurnFileChange {
+                    path: "notes.md".into(),
+                    old_path: None,
+                    status: holt_proto::TurnFileChangeStatus::Added,
+                    additions: 5,
+                    deletions: 0,
+                    binary: false,
+                }],
+                additions: 5,
+                deletions: 0,
+                truncated: false,
+                updated_at: chrono::Utc::now(),
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        transcript.update(cx, |this, _| {
+            assert!(
+                this.rows.iter().any(|row| row.id.as_ref() == "m-2#tcs"),
+                "the live Turn's card now shows"
+            );
+        });
+    }
 
     #[test]
     fn restick_is_direction_aware() {

@@ -243,6 +243,15 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   baseline. A persistence failure never fails the Turn or its terminal
   event — the event then simply carries no `changeSet` — and deleting a
   chat reclaims its whole change-set history.
+  The UI consumer is the transcript's per-Turn change card (ticket 03):
+  `AppState` keeps the selected chat's sets keyed by Turn id — the watch's
+  live frames while the Turn runs, its final frame at settle (immutable in
+  the store; failed and interrupted Turns keep theirs), and history
+  restored by id when the transcript's opening reset lands — and the
+  transcript appends one card row after each Turn's last entry. Empty sets
+  (including a net-zero settle retiring a live card) and non-Git
+  workspaces render no card; binary entries show status only with no line
+  counts; the Review/Open actions are ticket 04.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktrees, change requests, and uploads.
 

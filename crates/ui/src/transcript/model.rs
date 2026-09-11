@@ -273,6 +273,16 @@ pub enum RowKind {
     CompactionDivider {
         summary: SharedString,
     },
+    /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
+    /// Turn changed so far — or, once it settled (success, failure, or
+    /// interruption), what it froze as. Appended after the Turn's last row,
+    /// never part of the entry rows themselves: it rides app state keyed by
+    /// the Turn's user-message id, not the doc. An empty change set builds
+    /// no row — an empty card is not a result. Review/Open actions are
+    /// ticket 04.
+    TurnChangeCard {
+        change_set: Arc<holt_proto::TurnChangeSet>,
+    },
 }
 
 /// A transcript row: stable id + content version (diff key) + block payload.
@@ -980,11 +990,11 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
         render::MD_BLOCK_GAP
     } else if matches!(
         row.kind,
-        RowKind::ToolGroup { .. } | RowKind::Approval { .. }
+        RowKind::ToolGroup { .. } | RowKind::Approval { .. } | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
         matches!(
             row.kind,
-            RowKind::ToolGroup { .. } | RowKind::Approval { .. }
+            RowKind::ToolGroup { .. } | RowKind::Approval { .. } | RowKind::TurnChangeCard { .. }
         )
     }) {
         Theme::SPACE_MD
@@ -1011,6 +1021,50 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
         suffix += 1;
     }
     Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
+}
+
+/// The card row for one Turn's change set (ADR-0024 ticket 03). `entry_id`
+/// is the last entry the Turn rendered — the row the card visually follows.
+/// The version keys the row diff and moves only when the change set's
+/// content does, so a live update resplices exactly the one card it moved.
+pub fn turn_change_row(
+    turn_id: &str,
+    entry_id: SharedString,
+    change_set: &holt_proto::TurnChangeSet,
+) -> Row {
+    Row {
+        id: SharedString::from(format!("{turn_id}#tcs")),
+        version: turn_change_version(change_set),
+        turn_start: false,
+        kind: RowKind::TurnChangeCard {
+            change_set: Arc::new(change_set.clone()),
+        },
+        entry_id,
+        timestamp: None,
+        copy_text: None,
+    }
+}
+
+/// Content fingerprint of one change set. Intra-session stability is all the
+/// row diff needs; hashing the payload directly (rather than a map epoch)
+/// keeps a live Turn's updates from resplicing every historical card.
+fn turn_change_version(change_set: &holt_proto::TurnChangeSet) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    change_set.files.len().hash(&mut hasher);
+    change_set.additions.hash(&mut hasher);
+    change_set.deletions.hash(&mut hasher);
+    change_set.truncated.hash(&mut hasher);
+    std::mem::discriminant(&change_set.phase).hash(&mut hasher);
+    for file in &change_set.files {
+        file.path.hash(&mut hasher);
+        file.old_path.hash(&mut hasher);
+        std::mem::discriminant(&file.status).hash(&mut hasher);
+        file.additions.hash(&mut hasher);
+        file.deletions.hash(&mut hasher);
+        file.binary.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u64 {
@@ -1916,5 +1970,70 @@ mod tests {
             vec![text_part("t0", ""), text_part("t1", "   ")],
         );
         assert!(rows_for_entry(&entry, false, &mut parse).is_empty());
+    }
+
+    /// A card row carries the Turn's change set, never opens a turn gap, and
+    /// sits under the entry it follows — while its version moves ONLY with
+    /// the change set's content, so a live frame resplices exactly its card.
+    #[test]
+    fn turn_change_row_carries_the_set_and_versions_its_content() {
+        let file = holt_proto::TurnFileChange {
+            path: "src/lib.rs".into(),
+            old_path: None,
+            status: holt_proto::TurnFileChangeStatus::Modified,
+            additions: 3,
+            deletions: 1,
+            binary: false,
+        };
+        let live = change_set(
+            "m-1",
+            holt_proto::TurnChangeSetPhase::Live,
+            vec![file.clone()],
+        );
+        let row = turn_change_row("m-1", "a-1".into(), &live);
+        assert_eq!(row.id.as_ref(), "m-1#tcs");
+        assert_eq!(row.entry_id.as_ref(), "a-1");
+        assert!(!row.turn_start, "the card closes a turn, never opens one");
+        assert!(row.timestamp.is_none() && row.copy_text.is_none());
+        let RowKind::TurnChangeCard { change_set: stored } = &row.kind else {
+            panic!("expected a change-card row")
+        };
+        assert_eq!(stored.message_id, "m-1");
+        assert_eq!(stored.files, vec![file.clone()]);
+
+        // Same payload (phase flip aside): a content change moves the
+        // version, an identical rebuild does not.
+        let same_live = turn_change_row("m-1", "a-1".into(), &live);
+        assert_eq!(same_live.version, row.version);
+        let final_set = change_set(
+            "m-1",
+            holt_proto::TurnChangeSetPhase::Final,
+            vec![holt_proto::TurnFileChange {
+                additions: 4,
+                ..file.clone()
+            }],
+        );
+        let settled = turn_change_row("m-1", "a-1".into(), &final_set);
+        assert_ne!(settled.version, row.version);
+        // A different Turn's card has its own identity.
+        let other = turn_change_row("m-2", "a-1".into(), &final_set);
+        assert_ne!(other.id, row.id);
+    }
+
+    fn change_set(
+        message_id: &str,
+        phase: holt_proto::TurnChangeSetPhase,
+        files: Vec<holt_proto::TurnFileChange>,
+    ) -> holt_proto::TurnChangeSet {
+        holt_proto::TurnChangeSet {
+            chat_id: "chat-1".into(),
+            message_id: message_id.into(),
+            phase,
+            additions: files.iter().map(|file| file.additions).sum(),
+            deletions: files.iter().map(|file| file.deletions).sum(),
+            truncated: false,
+            updated_at: chrono::Utc::now(),
+            files,
+        }
     }
 }

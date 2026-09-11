@@ -243,6 +243,13 @@ pub struct AppState {
     pub transcript_replayed: bool,
     pub message_queue: Option<holt_proto::MessageQueue>,
     message_queue_task: Option<Task<()>>,
+    /// The selected chat's Turn change sets (ADR-0024), keyed by each Turn's
+    /// user-message id: the live current Turn's moving set from
+    /// `WatchTurnChangeSet`, its frozen final at settle, and history restored
+    /// by id after a restart. Empty sets never enter — an empty card is not a
+    /// result.
+    pub turn_change_sets: HashMap<String, holt_proto::TurnChangeSet>,
+    turn_change_set_task: Option<Task<()>>,
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
     /// the same message id arrives (client-minted ids make dedup exact).
     echoes: HashMap<String, Vec<SessionMessageEntry>>,
@@ -299,6 +306,8 @@ impl AppState {
             transcript_replayed: false,
             message_queue: None,
             message_queue_task: None,
+            turn_change_sets: HashMap::new(),
+            turn_change_set_task: None,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
             upload_progress: None,
@@ -381,6 +390,8 @@ impl AppState {
             self.transcript_task = None;
             self.message_queue = None;
             self.message_queue_task = None;
+            self.turn_change_sets.clear();
+            self.turn_change_set_task = None;
         }
     }
 
@@ -496,6 +507,76 @@ impl AppState {
         self.transcript = entries;
         self.transcript_replayed = true;
         self.ack_pending_send_from_transcript();
+    }
+
+    /// One `WatchTurnChangeSet` frame for the selected chat (ADR-0024): the
+    /// live current Turn's moving set, or a settled Turn's frozen final —
+    /// success, failure, and interruption all settle to a final set. A final
+    /// set is immutable: later frames for the same Turn never move it. An
+    /// empty set renders no card — a live one that was never shown stores
+    /// nothing, and a final one that emptied out (net zero at settle)
+    /// retires the live card it replaces.
+    pub fn apply_turn_change_set(&mut self, change_set: holt_proto::TurnChangeSet) {
+        if self
+            .turn_change_sets
+            .get(&change_set.message_id)
+            .is_some_and(|existing| existing.phase == holt_proto::TurnChangeSetPhase::Final)
+        {
+            return;
+        }
+        if change_set.files.is_empty() {
+            self.turn_change_sets.remove(&change_set.message_id);
+            return;
+        }
+        self.turn_change_sets
+            .insert(change_set.message_id.clone(), change_set);
+    }
+
+    /// After the transcript's opening reset (chat open, restart, reconnect),
+    /// fetch each Turn's persisted change set by its user-message id — the
+    /// restore path the engine's `GetTurnChangeSet` serves. "No turn
+    /// recorded" is the common answer (pre-feature Turns, a non-Git history)
+    /// and simply leaves that Turn without a card.
+    fn restore_turn_change_sets(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        let Some(chat_id) = self.selected_chat.clone() else {
+            return;
+        };
+        let turn_ids: Vec<String> = self
+            .transcript
+            .iter()
+            .filter(|entry| entry.role == holt_doc::MessageRole::User)
+            .map(|entry| entry.id.clone())
+            .collect();
+        if turn_ids.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            for message_id in turn_ids {
+                let params = serde_json::json!({ "chatId": chat_id, "messageId": message_id });
+                let Ok(value) = handle
+                    .client()
+                    .call(methods::GET_TURN_CHANGE_SET, params)
+                    .await
+                else {
+                    continue;
+                };
+                let Ok(holt_proto::TurnChangeSetReply::Captured(change_set)) =
+                    serde_json::from_value(value)
+                else {
+                    continue;
+                };
+                let _ = this.update(cx, |state, cx| {
+                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        state.apply_turn_change_set(change_set);
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     /// Apply a `WatchDocMessages` delta frame in place. `Err` = this copy has
@@ -888,6 +969,8 @@ impl AppState {
         self.transcript_task = None;
         self.message_queue = None;
         self.message_queue_task = None;
+        self.turn_change_sets.clear();
+        self.turn_change_set_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
@@ -992,6 +1075,11 @@ impl AppState {
         if let Some(chat_id) = self.selected_chat.clone() {
             self.message_queue = None;
             self.message_queue_task = Some(spawn_message_queue_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
+            self.turn_change_set_task = Some(spawn_turn_change_set_watch(
                 cx,
                 handle.clone(),
                 chat_id.clone(),
@@ -1121,6 +1209,8 @@ impl AppState {
         self.transcript_task = None;
         self.message_queue = None;
         self.message_queue_task = None;
+        self.turn_change_sets.clear();
+        self.turn_change_set_task = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its project (or the lack of one); `select_chat(None)`
             // (the new-session canvas) keeps the current project pick.
@@ -1139,6 +1229,11 @@ impl AppState {
         }
         if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
             self.message_queue_task = Some(spawn_message_queue_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
+            self.turn_change_set_task = Some(spawn_turn_change_set_watch(
                 cx,
                 handle.clone(),
                 chat_id.clone(),
@@ -1463,6 +1558,62 @@ fn spawn_message_queue_watch(
     })
 }
 
+fn spawn_turn_change_set_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    chat_id: String,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        loop {
+            if let Ok(mut rx) = handle
+                .client()
+                .subscribe(
+                    methods::WATCH_TURN_CHANGE_SET,
+                    serde_json::json!({"chatId": chat_id}),
+                )
+                .await
+            {
+                while let Some(value) = rx.recv().await {
+                    let reply =
+                        match WatchCoordinator::decode::<holt_proto::TurnChangeSetReply>(value) {
+                            Ok(reply) => reply,
+                            Err(err) => {
+                                tracing::warn!(error = %err, "dropping malformed change-set frame");
+                                continue;
+                            }
+                        };
+                    // `Unsupported` — a non-Git workspace — is not a change
+                    // set: no card, never an empty stand-in.
+                    let holt_proto::TurnChangeSetReply::Captured(change_set) = reply else {
+                        continue;
+                    };
+                    if this
+                        .update(cx, |state, cx| {
+                            if state.selected_chat.as_deref() == Some(&chat_id) {
+                                state.apply_turn_change_set(change_set);
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            // The stream ends on a non-Git root (after its one `unsupported`
+            // frame) or an engine drop. Unlike the queue watch nothing clears
+            // here: the stored sets are settled history, and the next
+            // subscription's opening frame refreshes the live one.
+            if this.update(cx, |_, _| {}).is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
+        }
+    })
+}
+
 fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
@@ -1511,6 +1662,7 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
+                let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
@@ -1518,6 +1670,11 @@ fn spawn_transcript_watch(
                         if let Err(err) = state.apply_transcript_frame(frame) {
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
+                        }
+                        if is_reset {
+                            // The replayed transcript names the Turns whose
+                            // persisted cards must come back (ADR-0024).
+                            state.restore_turn_change_sets(cx);
                         }
                         cx.notify();
                     }
@@ -1787,6 +1944,75 @@ mod tests {
             status: None,
             continuation_of: None,
         }
+    }
+
+    fn turn_change_set(
+        message_id: &str,
+        phase: holt_proto::TurnChangeSetPhase,
+        files: Vec<holt_proto::TurnFileChange>,
+    ) -> holt_proto::TurnChangeSet {
+        holt_proto::TurnChangeSet {
+            chat_id: "chat-1".into(),
+            message_id: message_id.into(),
+            phase,
+            additions: files.iter().map(|file| file.additions).sum(),
+            deletions: files.iter().map(|file| file.deletions).sum(),
+            truncated: false,
+            updated_at: Utc::now(),
+            files,
+        }
+    }
+
+    fn turn_file(path: &str, additions: u32) -> holt_proto::TurnFileChange {
+        holt_proto::TurnFileChange {
+            path: path.into(),
+            old_path: None,
+            status: holt_proto::TurnFileChangeStatus::Modified,
+            additions,
+            deletions: 0,
+            binary: false,
+        }
+    }
+
+    /// The card store's lifecycle (ADR-0024 ticket 03): a live set updates in
+    /// place, the final freezes it (nothing moves it afterwards — not even a
+    /// stale live frame), an empty set never shows a card, and a final that
+    /// emptied out (net zero at settle) retires the live card it replaces.
+    #[test]
+    fn turn_change_sets_store_live_freeze_and_retire() {
+        use holt_proto::TurnChangeSetPhase::{Final, Live};
+
+        let mut s = AppState::new();
+        // An empty live set (baseline captured, nothing touched yet): no card.
+        s.apply_turn_change_set(turn_change_set("m-1", Live, Vec::new()));
+        assert!(s.turn_change_sets.is_empty());
+
+        // Edits land: the live card shows and keeps updating in place.
+        s.apply_turn_change_set(turn_change_set("m-1", Live, vec![turn_file("a.rs", 1)]));
+        s.apply_turn_change_set(turn_change_set("m-1", Live, vec![turn_file("a.rs", 2)]));
+        assert_eq!(
+            s.turn_change_sets["m-1"].files,
+            vec![turn_file("a.rs", 2)],
+            "a live set is the latest frame"
+        );
+
+        // The final freezes; a late frame for the same Turn never moves it.
+        s.apply_turn_change_set(turn_change_set("m-1", Final, vec![turn_file("a.rs", 3)]));
+        s.apply_turn_change_set(turn_change_set("m-1", Live, vec![turn_file("a.rs", 9)]));
+        assert_eq!(
+            s.turn_change_sets["m-1"].files,
+            vec![turn_file("a.rs", 3)],
+            "the frozen final is immutable"
+        );
+        assert_eq!(s.turn_change_sets["m-1"].phase, Final);
+
+        // A net-zero settle retires the live card, and an empty final over
+        // nothing stores nothing.
+        s.apply_turn_change_set(turn_change_set("m-2", Live, vec![turn_file("b.rs", 1)]));
+        s.apply_turn_change_set(turn_change_set("m-2", Final, Vec::new()));
+        assert!(!s.turn_change_sets.contains_key("m-2"));
+        s.apply_turn_change_set(turn_change_set("m-3", Final, Vec::new()));
+        assert!(!s.turn_change_sets.contains_key("m-3"));
     }
 
     #[test]

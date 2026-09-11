@@ -17,6 +17,10 @@ use gpui::{
 };
 use holt_doc::{MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
+use holt_proto::TurnChangeSet;
+use holt_proto::TurnChangeSetPhase;
+use holt_proto::TurnFileChange;
+use holt_proto::TurnFileChangeStatus;
 use holt_proto::view::tool_chip_content;
 
 use super::model::{
@@ -483,6 +487,100 @@ impl Transcript {
             );
         }
         column.into_any_element()
+    }
+
+    /// The Turn file-change card (ADR-0024 ticket 03): what one Turn changed,
+    /// at the end of the Turn's reply — per file its status, path, and line
+    /// counts, with the totals in the header. Live while the Turn runs (the
+    /// engine's debounced frames), frozen at settle; failed and interrupted
+    /// Turns keep their cards. Binary files show status only — no invented
+    /// line counts — and files render in the engine's path-sorted order. The
+    /// Review/Open actions are ticket 04's.
+    fn render_turn_change_card(
+        &mut self,
+        change_set: &Arc<TurnChangeSet>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let live = change_set.phase == TurnChangeSetPhase::Live;
+        let mut header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .min_w_0();
+        header = if live {
+            header.child(crate::loaders::mini_mono_spinner(
+                "turn-change-live",
+                2.0,
+                theme.text_muted,
+                cx.entity_id(),
+                cx,
+            ))
+        } else {
+            header.child(
+                crate::icons::icon(crate::icons::DOCUMENT)
+                    .size(px(12.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(0.75)),
+            )
+        };
+        header = header
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .line_height(px(18.0))
+                    .text_color(theme.text_dim)
+                    .child(SharedString::from(format!(
+                        "Changed {} file{}",
+                        change_set.files.len(),
+                        if change_set.files.len() == 1 { "" } else { "s" }
+                    ))),
+            )
+            .when(change_set.truncated, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_faint)
+                        .child("diff truncated"),
+                )
+            })
+            .when(change_set.additions > 0, |el| {
+                el.child(turn_change_count(change_set.additions, true, theme))
+            })
+            .when(change_set.deletions > 0, |el| {
+                el.child(turn_change_count(change_set.deletions, false, theme))
+            });
+
+        div()
+            .py(px(4.0))
+            .w_full()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .overflow_hidden()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.input_glass_bg())
+                    .px(px(12.0))
+                    .py(px(9.0))
+                    .child(header)
+                    .children(
+                        change_set
+                            .files
+                            .iter()
+                            .map(|file| turn_change_file_row(file, theme)),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// A `/skill` invocation inside the user bubble: the skill title as an
@@ -1057,6 +1155,9 @@ impl Transcript {
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, cx)
+            }
+            RowKind::TurnChangeCard { change_set } => {
+                self.render_turn_change_card(change_set, &theme, cx)
             }
         };
 
@@ -2050,6 +2151,89 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .child(message),
         )
         .into_any_element()
+}
+
+/// One file row of the Turn change card: status letter in a fixed lane,
+/// mono path (a rename shows `old → new`), then `+n`/`−n`. A binary entry
+/// carries its status and a `BIN` tag — never invented line counts — so its
+/// zeros stay absent instead of falsified.
+fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
+    let (letter, color) = turn_change_marker(file.status, theme);
+    let path = match &file.old_path {
+        Some(old) => format!("{old} → {}", file.path),
+        None => file.path.clone(),
+    };
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .min_w_0()
+        .child(
+            div()
+                .flex_none()
+                .w(px(10.0))
+                .font_family(theme.font_mono.clone())
+                .text_size(px(10.0))
+                .text_color(color)
+                .child(letter),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .font_family(theme.font_mono.clone())
+                .text_size(px(12.0))
+                .text_color(theme.text_dim)
+                .child(SharedString::from(path)),
+        )
+        .when(file.binary, |el| {
+            el.child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_faint)
+                    .child("BIN"),
+            )
+        })
+        .when(!file.binary && file.additions > 0, |el| {
+            el.child(turn_change_count(file.additions, true, theme))
+        })
+        .when(!file.binary && file.deletions > 0, |el| {
+            el.child(turn_change_count(file.deletions, false, theme))
+        })
+}
+
+/// The change card's status vocabulary: new content green, modification
+/// amber, deletion red, a move accent — the file tree/git panel's marker
+/// idiom over the Turn's own statuses (it adds `Renamed`).
+fn turn_change_marker(status: TurnFileChangeStatus, theme: &Theme) -> (&'static str, gpui::Hsla) {
+    match status {
+        TurnFileChangeStatus::Added => ("A", theme.success),
+        TurnFileChangeStatus::Modified => ("M", theme.warning),
+        TurnFileChangeStatus::Deleted => ("D", theme.danger),
+        TurnFileChangeStatus::Renamed => ("R", theme.accent),
+    }
+}
+
+/// A `+n`/`−n` count in the diff palette — the Changes pane's header idiom.
+fn turn_change_count(count: u32, added: bool, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .font_family(theme.font_mono.clone())
+        .text_size(px(11.0))
+        .text_color(if added {
+            theme.diff_add
+        } else {
+            theme.diff_del
+        })
+        .child(SharedString::from(if added {
+            format!("+{count}")
+        } else {
+            format!("−{count}")
+        }))
 }
 
 /// A passive one-line chip marking a question the agent asked — the
