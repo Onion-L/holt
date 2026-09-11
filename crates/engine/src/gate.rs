@@ -665,6 +665,10 @@ mod tests {
         assert!(is_mutating_tool("bash"));
         assert!(!is_mutating_tool("read"));
         assert!(!is_mutating_tool("grep"));
+        // The web tools are read-tier (ADR-0023): fetch reads a page and
+        // search queries one, so neither ever meets the gate.
+        assert!(!is_mutating_tool("web_fetch"));
+        assert!(!is_mutating_tool("web_search"));
         // Tool identity means identity: lookalikes are not the trio.
         assert!(!is_mutating_tool("Bash"));
         assert!(!is_mutating_tool("bash_safe"));

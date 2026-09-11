@@ -758,6 +758,16 @@ fn decode_tool_call(
             pattern: arg("pattern").unwrap_or_default(),
             path: arg("path"),
         },
+        // ADR-0023: the web tools decode onto the sync-era chips. `prompt`
+        // is never populated — full-text fetch has no summarizer — and the
+        // search chip carries only its query.
+        "web_fetch" => TranscriptToolCall::WebFetch {
+            url: arg("url").unwrap_or_default(),
+            prompt: None,
+        },
+        "web_search" => TranscriptToolCall::WebSearch {
+            query: arg("query").unwrap_or_default(),
+        },
         other => TranscriptToolCall::Unknown {
             name: other.to_owned(),
             input: Some(serde_json::Value::Object(arguments.clone())),
@@ -2133,15 +2143,38 @@ mod tests {
                 new_string: None,
             }
         );
+        // ADR-0023: the two web tools fold onto the sync-era chips. A
+        // `prompt` argument is dropped — full-text fetch never summarizes,
+        // and the field stays `None` forever.
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "web_fetch",
+                serde_json::json!({ "url": "https://example.test/page", "prompt": "summarize" })
+            )),
+            TranscriptToolCall::WebFetch {
+                url: "https://example.test/page".into(),
+                prompt: None,
+            }
+        );
+        // Only the query rides the chip; `max_results` has no slot.
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "web_search",
+                serde_json::json!({ "query": "holt", "max_results": 3 })
+            )),
+            TranscriptToolCall::WebSearch {
+                query: "holt".into(),
+            }
+        );
         // Unknown tools degrade to a named chip, input intact (the policy
         // strips non-spawn inputs).
         let decoded = transcript_tool_call(&tool_call(
-            "web_search",
+            "whats_new",
             serde_json::json!({ "query": "holt" }),
         ));
         assert!(matches!(
             decoded,
-            TranscriptToolCall::Unknown { ref name, input: None } if name == "web_search"
+            TranscriptToolCall::Unknown { ref name, input: None } if name == "whats_new"
         ));
     }
 

@@ -30,6 +30,12 @@
 - **Staging**: git's index as operated from the Git panel. Staging marks a path's current changes for the next commit; unstaging removes them from the index. Neither touches file contents. A path can carry staged and unstaged changes at once, and then appears in both sections. A conflicted path can be neither staged nor unstaged from the panel. Ignored paths never appear.
   _Avoid_: tracked (the middle section is Unstaged), checkbox state as a source of truth (the index is)
 - **Content search**: regex search over file contents, rooted at the chat's working directory by default and scoped by a path prefix and a filename filter. Relative paths resolve against that directory; absolute paths may select another search root. The agent-facing tool is named `grep`; the transcript renders it as a Search chip. Hidden files are searched; ignored files are not.
+- **Web fetch**: the agent-facing retrieval of one web URL over http(s), returned as readable content within the tool's size limits. It reads pages; finding them is Web search's job.
+  _Avoid_: fetch (that is git vocabulary), browse
+- **Web search**: the agent-facing query for web results — a list of titles, URLs, and snippets from the configured Search backend. It finds pages; Web fetch reads them.
+  _Avoid_: search on its own (Content search is the local one)
+- **Search backend**: the external search service Web search queries, chosen by the user in Settings and carrying its own key. When none is configured, the Web search tool is absent from the model's toolset — never an error.
+  _Avoid_: search provider (a Provider is a model provider)
 - **Path reference**: a file or folder location attached to a user message for the agent to consult. It refers to whatever exists at that location when the agent reads it, including a missing target; it does not preserve a snapshot of the contents.
 - **Managed image**: a local image owned by Holt, created from pasted image content that has no source file path. After submission it is retained with its chat so a Path reference can still preview or read it after restart.
 - **Slash command**: a composer directive starting with `/` that the UI intercepts and handles itself — sent as a typed command (`/skill`, `/compact`) or answered locally, never as prompt text.
@@ -49,7 +55,7 @@
 - **Terminal**: an interactive shell session owned by one Chat and operated directly by the user inside Holt; switching chats or hiding its view keeps it running. It is independent of the agent's bash tool calls and does not automatically contribute to History or Transcript.
 - **Subagent**: an agent delegated a bounded task by a parent agent, with its own History. It receives a Task brief and applicable project instructions, and returns a final summary to its waiting parent; several Subagents may work in parallel.
 - **Task brief**: the goal, necessary background, and acceptance criteria a parent agent supplies to a Subagent. It does not include the parent's entire History.
-- **Explorer**: a Subagent that investigates and reports findings using only reading and Content search.
+- **Explorer**: a Subagent that investigates and reports findings using only reading, Content search, another Chat's Transcript, and the web tools; it cannot change files or execute commands.
 - **Worker**: a Subagent that can change files and execute commands under its parent Turn's Permission mode.
 - **Permission mode**: the per-chat standing policy that stands between a Turn's mutating tool calls and execution — which gatekeeper judges each one: the user (confirm changes), a model review pass (auto-review), or none (full access). Reads are never gated. New chats inherit the last mode used on the device.
 - **Approval**: a mutating tool call paused for the user's verdict in confirm-changes mode — allow once, always-allow, deny, or deny with a written note (the note becomes the reason the model sees). Rendered as an approval chip in the Transcript that settles to its verdict.

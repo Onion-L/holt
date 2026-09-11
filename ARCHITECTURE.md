@@ -78,10 +78,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   through the same transport the run uses (the chat's own model, no
   separately-configured reviewer): a pass executes, a rejection blocks
   with the reviewer's reason, an unclear or failed review rejects
-  closed, and no Approval is created. Reads, grep, and full-access
-  never gate. The gate rides the agent loop's `before_tool_call` hook
-  (no upstream changes); the Title task and Compaction mount no tools
-  and never see it.
+  closed, and no Approval is created. Reads, grep, the web tools, and
+  full-access never gate. The gate rides the agent loop's
+  `before_tool_call` hook (no upstream changes); the Title task and
+  Compaction mount no tools and never see it.
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal
@@ -255,21 +255,28 @@ provider/model discovery, `createChat`/`renameChat`, chat/session watches, `Queu
 run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run loop mounts pi-core's
 built-in read/write/edit/bash tools (via `engine::tools`, a local
 `ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
-named `grep` (ripgrep's crates in process, ADR-0004), and the Workspace-aware
-`read_chat` tool for another Chat's user-visible Transcript (ADR-0018); the
-transcript folds their calls and results into `MessagePart::Tool` chips. Parent
-runs also mount the foreground `Agent` delegation tool (ADR-0016).
+named `grep` (ripgrep's crates in process, ADR-0004), the Workspace-aware
+`read_chat` tool for another Chat's user-visible Transcript (ADR-0018), and the
+two web tools (ADR-0023): `web_fetch` retrieves one http(s) URL and returns its
+full converted text, bounded but never summarized, while `web_search` queries
+the user-configured backend — resolved once per Turn admission, absent from
+the toolset (not erroring) when none is configured. Neither enters the
+ADR-0014 gate: fetching reads a page the way `read` reads a file. The
+transcript folds their calls and results into `MessagePart::Tool` chips.
+Parent runs also mount the foreground `Agent` delegation tool (ADR-0016).
 
 ## Subagents
 
 `engine::subagents` owns foreground delegation through the existing pi-core-rs
 loop, without upstream changes. The fixed Explorer and Worker roles inherit
 the parent Turn's model, reasoning, working directory, and Permission mode.
-Explorers mount only read/grep; Workers also mount write/edit/bash. Neither
-can delegate. Each child starts with independent History, a Task brief,
-applicable ancestor AGENTS.md instructions, and a fresh skills listing.
-Workers share the actual working directory; the parent assigns file ownership,
-without automatic worktrees, merging, or rollback.
+Explorers keep only the read-only set — `read`, `grep`, `read_chat`,
+`web_fetch`, and the configured `web_search`; Workers mount the full toolset,
+write/edit/bash included. Neither can delegate. Each child starts with
+independent History, a Task brief, applicable ancestor AGENTS.md instructions,
+and a fresh skills listing. Workers share the actual working directory; the
+parent assigns file ownership, without automatic worktrees, merging, or
+rollback.
 
 An engine-wide semaphore allows four running children; a parent Turn may
 create eight in total. There is no fixed child request-count or total-runtime

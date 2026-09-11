@@ -808,3 +808,63 @@ pub fn summarize(messages: &[Message]) -> Vec<String> {
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// The in-process loopback HTTP server (whole-Turn web-tool tests)
+// ---------------------------------------------------------------------------
+
+/// A loopback HTTP/1.1 server answering every request with one fixed
+/// response, so a whole Turn's `web_fetch` reaches a page without touching
+/// the real network. The engine's own `tools::test_http` is `cfg(test)`
+/// and invisible to integration binaries; this is its integration-side
+/// twin, trimmed to the one response shape these tests need.
+pub struct LoopbackServer {
+    /// `http://127.0.0.1:<port>` — the base a scripted call's URL builds on.
+    pub base: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LoopbackServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+pub async fn serve_loopback(content_type: &'static str, body: &'static [u8]) -> LoopbackServer {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                // The head is never parsed — draining it is what keeps the
+                // client's write from colliding with the response.
+                let mut request = [0u8; 2048];
+                let mut filled = 0;
+                while filled < request.len() {
+                    match socket.read(&mut request[filled..]).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            filled += read;
+                            if request[..filled].windows(4).any(|head| head == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    LoopbackServer { base, task }
+}
