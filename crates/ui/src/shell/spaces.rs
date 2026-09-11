@@ -90,6 +90,37 @@ pub(super) struct SpacesMenu {
     _search_events: Subscription,
 }
 
+/// The sidebar view-options card's rows, in draw order. The keyboard cursor
+/// indexes THIS list, so the section headings are painted between rows rather
+/// than living in it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarViewRow {
+    Sort(SidebarSort),
+    ShowProvider,
+    ShowBranch,
+    ShowPullRequest,
+}
+
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 5] = [
+    SidebarViewRow::Sort(SidebarSort::LastUpdated),
+    SidebarViewRow::Sort(SidebarSort::Created),
+    SidebarViewRow::ShowProvider,
+    SidebarViewRow::ShowBranch,
+    SidebarViewRow::ShowPullRequest,
+];
+
+/// Index into [`SIDEBAR_VIEW_ROWS`] where the Show section starts.
+const SIDEBAR_VIEW_SHOW_START: usize = 2;
+
+/// The sidebar view-options dropdown (session sort order and which metadata a
+/// session row carries), `Some` while open.
+pub(super) struct SidebarViewMenu {
+    /// Keyboard highlight within [`SIDEBAR_VIEW_ROWS`].
+    active: usize,
+    /// Tracked on the card — the keyboard dispatch path while it holds focus.
+    focus: FocusHandle,
+}
+
 struct SidebarViewOptionsTooltip;
 
 impl Render for SidebarViewOptionsTooltip {
@@ -403,6 +434,8 @@ impl Shell {
     }
 
     fn open_spaces_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The trigger row hosts two cards — only one may float beneath it.
+        self.close_sidebar_view_menu(cx);
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
         let search =
@@ -578,10 +611,12 @@ impl Shell {
             trigger
         };
 
-        // Sidebar view-options entry: the button stays (user request) but the
-        // organize/sort/show menu is gone — the trigger is inert until new
-        // content lands.
+        // Sidebar view-options entry: which sessions sort where, and which
+        // metadata each row carries. The card is right-aligned to the
+        // trigger's right edge — a trailing sidebar control opens leftward
+        // rather than out over the conversation.
         let view_focus = self.sidebar_view_trigger_focus.clone();
+        let view_open = self.sidebar_view_menu.is_open();
         let view_trigger = div()
             .id("sidebar-view-options")
             .role(gpui::Role::Button)
@@ -598,8 +633,37 @@ impl Shell {
             .in_focus(|el| el.border_color(theme.border_strong))
             .cursor_pointer()
             .text_color(theme.text_muted)
-            .bg(theme.glass_hover().opacity(0.0))
+            .bg(if view_open {
+                theme.glass_hover()
+            } else {
+                theme.glass_hover().opacity(0.0)
+            })
             .hover(|el| el.bg(theme.glass_hover()))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    window.prevent_default();
+                    this.sidebar_view_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.sidebar_view_menu.take_press_was_open() {
+                    this.close_sidebar_view_menu(cx);
+                } else {
+                    this.open_sidebar_view_menu(window, cx);
+                }
+            }))
+            // The button is the sidebar row's one tab stop, so it also opens
+            // from the keyboard; the card takes focus and owns the rest.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    if this.sidebar_view_menu.is_open() {
+                        this.close_sidebar_view_menu(cx);
+                    } else {
+                        this.open_sidebar_view_menu(window, cx);
+                    }
+                }
+            }))
             .tooltip(|_, cx| cx.new(|_| SidebarViewOptionsTooltip).into())
             .tooltip_show_delay(std::time::Duration::from_millis(350))
             .child(
@@ -607,6 +671,19 @@ impl Shell {
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             );
+        let view_trigger = if self.sidebar_view_menu.get().is_some() {
+            let closing = self.sidebar_view_menu.closing_since();
+            let menu = self.render_sidebar_view_menu(theme, cx);
+            view_trigger
+                .relative()
+                .child(popover::anchored_menu_below_end(
+                    "sidebar-view-menu",
+                    menu,
+                    closing,
+                ))
+        } else {
+            view_trigger
+        };
 
         div()
             .flex_none()
@@ -723,6 +800,180 @@ impl Shell {
                 search.into_any_element(),
             ))
             .child(list)
+            .into_any_element()
+    }
+
+    // ---- sidebar view options ----
+
+    /// Open the view-options card, parking the keyboard cursor on the standing
+    /// sort row.
+    fn open_sidebar_view_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The trigger row hosts two cards — only one may float beneath it.
+        self.close_spaces_menu(cx);
+        let active = SIDEBAR_VIEW_ROWS
+            .iter()
+            .position(|row| {
+                matches!(row, SidebarViewRow::Sort(sort) if *sort == self.settings.sidebar_sort)
+            })
+            .unwrap_or(0);
+        let focus = cx.focus_handle();
+        self.sidebar_view_menu.open(SidebarViewMenu {
+            active,
+            focus: focus.clone(),
+        });
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Close the view-options card through the exit animation (no-op when it
+    /// isn't open).
+    fn close_sidebar_view_menu(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_view_menu.begin_close() {
+            popover::reap_popup(cx, |shell: &mut Self| &mut shell.sidebar_view_menu);
+            cx.notify();
+        }
+    }
+
+    /// Whether a row reads as chosen: the standing sort, or a shown metadata
+    /// line.
+    fn sidebar_view_row_selected(&self, row: SidebarViewRow) -> bool {
+        match row {
+            SidebarViewRow::Sort(sort) => sort == self.settings.sidebar_sort,
+            SidebarViewRow::ShowProvider => self.settings.sidebar_show_provider,
+            SidebarViewRow::ShowBranch => self.settings.sidebar_show_branch,
+            SidebarViewRow::ShowPullRequest => self.settings.sidebar_show_pull_request,
+        }
+    }
+
+    /// Apply a row. A sort pick is a single choice, so the card closes onto the
+    /// reordered list; a Show row is a toggle, so the card stays up for the
+    /// next one.
+    fn activate_sidebar_view_menu_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
+        match row {
+            SidebarViewRow::Sort(sort) => {
+                self.settings.sidebar_sort = sort;
+                self.schedule_save(cx);
+                self.close_sidebar_view_menu(cx);
+            }
+            SidebarViewRow::ShowProvider => {
+                self.settings.sidebar_show_provider = !self.settings.sidebar_show_provider;
+                self.schedule_save(cx);
+            }
+            SidebarViewRow::ShowBranch => {
+                self.settings.sidebar_show_branch = !self.settings.sidebar_show_branch;
+                self.schedule_save(cx);
+            }
+            SidebarViewRow::ShowPullRequest => {
+                let visible = !self.settings.sidebar_show_pull_request;
+                self.settings.sidebar_show_pull_request = visible;
+                // The coupling boot applies, kept live: hidden badges mean no
+                // watch, instead of fetching what the sidebar never paints.
+                self.state.update(cx, |state, cx| {
+                    state.set_change_requests_visible(visible, cx)
+                });
+                self.schedule_save(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Card keys: ↑↓ navigate, ⏎ activates the highlighted row, esc closes.
+    fn sidebar_view_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        // The card stays mounted (and focused) through its exit animation —
+        // keys must not drive a dying card.
+        if !self.sidebar_view_menu.is_open() {
+            return;
+        }
+        let key = popover::classify_key(
+            event.keystroke.key.as_str(),
+            event.keystroke.modifiers.platform,
+            event.keystroke.modifiers.control,
+        );
+        match key {
+            popover::MenuKey::Escape => self.close_sidebar_view_menu(cx),
+            popover::MenuKey::Up | popover::MenuKey::Down => {
+                let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
+                if let Some(menu) = self.sidebar_view_menu.open_mut() {
+                    menu.active =
+                        popover::menu_step(Some(menu.active), SIDEBAR_VIEW_ROWS.len(), delta)
+                            .unwrap_or(0);
+                }
+                cx.notify();
+            }
+            popover::MenuKey::Enter | popover::MenuKey::ModEnter => {
+                let row = self
+                    .sidebar_view_menu
+                    .get()
+                    .map(|menu| SIDEBAR_VIEW_ROWS[menu.active]);
+                if let Some(row) = row {
+                    self.activate_sidebar_view_menu_row(row, cx);
+                }
+            }
+            popover::MenuKey::Backspace | popover::MenuKey::Other => {}
+        }
+    }
+
+    /// The view-options card: Sort (single choice) over Show (toggles), each
+    /// section under a menu heading.
+    fn render_sidebar_view_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some((active, focus)) = self
+            .sidebar_view_menu
+            .get()
+            .map(|menu| (menu.active, menu.focus.clone()))
+        else {
+            return div().into_any_element();
+        };
+
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(SIDEBAR_VIEW_ROWS.len() + 2);
+        for (ix, row) in SIDEBAR_VIEW_ROWS.into_iter().enumerate() {
+            if ix == 0 {
+                rows.push(popover::menu_heading(theme, "Sort").into_any_element());
+            } else if ix == SIDEBAR_VIEW_SHOW_START {
+                rows.push(popover::menu_separator().into_any_element());
+                rows.push(popover::menu_heading(theme, "Show").into_any_element());
+            }
+            let selected = self.sidebar_view_row_selected(row);
+            let label: SharedString = match row {
+                SidebarViewRow::Sort(SidebarSort::LastUpdated) => "Last updated".into(),
+                SidebarViewRow::Sort(SidebarSort::Created) => "Created".into(),
+                SidebarViewRow::ShowProvider => "Provider logo".into(),
+                SidebarViewRow::ShowBranch => "Branch".into(),
+                SidebarViewRow::ShowPullRequest => "Pull request".into(),
+            };
+            rows.push(
+                popover::menu_row_nav(
+                    theme,
+                    selected,
+                    ix == active,
+                    format!("sidebar-view-row-{ix}"),
+                )
+                .id(("sidebar-view-row", ix))
+                .debug_selector(move || format!("sidebar-view-row-{ix}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.activate_sidebar_view_menu_row(row, cx);
+                }))
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .when(selected, |row| {
+                    row.child(
+                        icon(icons::CHECK)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+                })
+                .into_any_element(),
+            );
+        }
+
+        popover::popover_card(theme)
+            .w(px(200.0))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                this.sidebar_view_menu_key(event, cx)
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.close_sidebar_view_menu(cx);
+            }))
+            .child(div().flex().flex_col().gap(px(2.0)).children(rows))
             .into_any_element()
     }
 
@@ -2259,7 +2510,7 @@ impl Shell {
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::{SidebarDisclosureMotion, compare_sidebar_chats, motion};
+    use super::*;
     use crate::settings::SidebarSort;
 
     fn chat(id: &str) -> holt_proto::Chat {
@@ -2299,5 +2550,159 @@ mod tests {
         tween.started = std::time::Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
         assert_eq!(tween.current(), 0.0);
         assert!(!tween.animating());
+    }
+
+    // ---- sidebar view options ----
+
+    /// [`chat`] with the two timestamps the sort orders read.
+    fn chat_at(id: &str, updated: i64, created: i64) -> holt_proto::Chat {
+        holt_proto::Chat {
+            last_message_at: Some(Utc.timestamp_opt(updated, 0).unwrap()),
+            created_at: Utc.timestamp_opt(created, 0).unwrap(),
+            ..chat(id)
+        }
+    }
+
+    /// Renders just the view-options card (its real render path) so the test
+    /// can drive its rows without standing up the whole sidebar.
+    struct ViewMenuHarness {
+        shell: Entity<Shell>,
+        _observe: Subscription,
+    }
+
+    impl Render for ViewMenuHarness {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::of(cx).clone();
+            let menu = self
+                .shell
+                .update(cx, |shell, cx| shell.render_sidebar_view_menu(&theme, cx));
+            div().size_full().child(menu)
+        }
+    }
+
+    /// Boots a shell over two project-less sessions whose recency order and
+    /// creation order disagree — the two sort rows must read differently.
+    fn view_menu_shell(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<AppState>, Entity<Shell>, tempfile::TempDir) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        cx.update(|cx| crate::settings::init(UiSettings::default(), data_dir.clone(), cx));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
+            state.local_device_id = Some("test-device".into());
+            // "recent" was touched last; "older" was created last.
+            state.chats.push(chat_at("recent", 10, 1));
+            state.chats.push(chat_at("older", 5, 9));
+            state
+        });
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        (state, shell, dir)
+    }
+
+    /// A sort pick is a single choice: it reorders the sidebar list, persists,
+    /// and closes the card.
+    #[gpui::test]
+    fn view_menu_sort_reorders_the_list_and_closes(cx: &mut gpui::TestAppContext) {
+        let (_, shell, _dir) = view_menu_shell(cx);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            shell.update(cx, |shell, cx| shell.open_sidebar_view_menu(window, cx));
+            ViewMenuHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+        shell.update(cx, |shell, cx| {
+            assert_eq!(
+                shell.sidebar_visible_order(cx),
+                vec!["recent".to_string(), "older".to_string()]
+            )
+        });
+
+        let created = cx
+            .debug_bounds("sidebar-view-row-1")
+            .expect("the card is up")
+            .center();
+        cx.simulate_click(created, Default::default());
+        cx.run_until_parked();
+
+        shell.update(cx, |shell, cx| {
+            assert_eq!(shell.settings.sidebar_sort, SidebarSort::Created);
+            assert_eq!(
+                shell.sidebar_visible_order(cx),
+                vec!["older".to_string(), "recent".to_string()]
+            );
+            assert!(shell.sidebar_view_menu.closing_since().is_some());
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                crate::settings::current(cx).sidebar_sort,
+                SidebarSort::Created
+            )
+        });
+    }
+
+    /// Show rows are toggles: keyboard and mouse both flip one, the card stays
+    /// up, and each flip reaches the persisted record.
+    #[gpui::test]
+    fn view_menu_show_rows_toggle_and_stay_open(cx: &mut gpui::TestAppContext) {
+        let (_, shell, _dir) = view_menu_shell(cx);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            shell.update(cx, |shell, cx| shell.open_sidebar_view_menu(window, cx));
+            ViewMenuHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+
+        // ↓↓ from the cursor's start (the sort row) lands on "Provider logo".
+        cx.simulate_keystrokes("down down enter");
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(!shell.settings.sidebar_show_provider);
+            assert!(shell.sidebar_view_menu.closing_since().is_none());
+        });
+
+        let branch = cx
+            .debug_bounds("sidebar-view-row-3")
+            .expect("the card is up")
+            .center();
+        cx.simulate_click(branch, Default::default());
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(!shell.settings.sidebar_show_provider);
+            assert!(!shell.settings.sidebar_show_branch);
+            assert!(shell.sidebar_view_menu.closing_since().is_none());
+        });
+        cx.update(|_, cx| {
+            let current = crate::settings::current(cx);
+            assert!(!current.sidebar_show_provider);
+            assert!(!current.sidebar_show_branch);
+        });
+
+        // Esc closes — re-opened first, since a mouse pick does not re-focus
+        // the card.
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| shell.open_sidebar_view_menu(window, cx))
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.sidebar_view_menu.closing_since().is_some())
+        });
     }
 }

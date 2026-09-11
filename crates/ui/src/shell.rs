@@ -719,6 +719,9 @@ pub struct Shell {
     add_space: Option<AddSpaceFlow>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
+    /// The sidebar's view-options dropdown (session sort order + which row
+    /// metadata each session shows).
+    sidebar_view_menu: popover::Popup<spaces::SidebarViewMenu>,
     /// Natural-tab-order focus target for the icon-only view-options button.
     sidebar_view_trigger_focus: gpui::FocusHandle,
     /// Chat id whose STATUS CORNER is under the pointer — just that corner
@@ -835,6 +838,10 @@ struct ShellSettingsFields {
     file_tree_width: f32,
     last_space_id: Option<String>,
     space_filter: Option<String>,
+    sidebar_sort: SidebarSort,
+    sidebar_show_provider: bool,
+    sidebar_show_branch: bool,
+    sidebar_show_pull_request: bool,
     keymap: settings::KeymapConfig,
     external_app: String,
     appearance: crate::appearance::AppearanceMode,
@@ -856,6 +863,10 @@ impl ShellSettingsFields {
             file_tree_width: settings.file_tree_width,
             last_space_id: settings.last_space_id.clone(),
             space_filter: settings.space_filter.clone(),
+            sidebar_sort: settings.sidebar_sort,
+            sidebar_show_provider: settings.sidebar_show_provider,
+            sidebar_show_branch: settings.sidebar_show_branch,
+            sidebar_show_pull_request: settings.sidebar_show_pull_request,
             keymap: settings.keymap.clone(),
             external_app: settings.external_app.clone(),
             appearance: settings.appearance,
@@ -876,6 +887,10 @@ impl ShellSettingsFields {
         current.file_tree_width = self.file_tree_width;
         current.last_space_id = self.last_space_id;
         current.space_filter = self.space_filter;
+        current.sidebar_sort = self.sidebar_sort;
+        current.sidebar_show_provider = self.sidebar_show_provider;
+        current.sidebar_show_branch = self.sidebar_show_branch;
+        current.sidebar_show_pull_request = self.sidebar_show_pull_request;
         current.keymap = self.keymap;
         current.external_app = self.external_app;
         current.appearance = self.appearance;
@@ -1052,6 +1067,7 @@ impl Shell {
             delete_space_confirm: None,
             add_space: None,
             spaces_menu: popover::Popup::default(),
+            sidebar_view_menu: popover::Popup::default(),
             sidebar_view_trigger_focus: cx.focus_handle().tab_stop(true),
             chat_status_hover: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
