@@ -744,27 +744,41 @@ impl EngineService {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
-                let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                // The iteration settles the queue only if the picked head
-                // reached its admission checkpoint. A delete that removed it
-                // mid-prep leaves no run to finish: keep the winning
-                // mutation's state and consider the next head directly.
-                let vanished = !started
-                    && queue
-                        .record
-                        .pending
-                        .iter()
-                        .all(|m| m.message_id != picked_id);
-                let settled = if !vanished && !worker_chat.is_removed() && !queue.unreadable {
-                    // Stop already changed the pause state. A subsequent
-                    // Continue must survive the canceled Turn's cleanup.
-                    Some(queue.finish(
-                        (success || cancel.is_cancelled()) && persistence_error.is_none(),
-                        persistence_error.clone().or(error),
-                    ))
-                } else {
-                    None
+                let settled = {
+                    let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    // The iteration settles the queue only if the picked head
+                    // reached its admission checkpoint. A delete that removed it
+                    // mid-prep leaves no run to finish: keep the winning
+                    // mutation's state and consider the next head directly.
+                    let vanished = !started
+                        && queue
+                            .record
+                            .pending
+                            .iter()
+                            .all(|m| m.message_id != picked_id);
+                    if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                        // The real Turn is over before its settled queue
+                        // becomes observable (ADR-0024): freeze the change
+                        // set's phase first, so no reader sees an idle queue
+                        // beside a live change set. The captured content
+                        // follows in `finish`.
+                        if turn_end.is_some() {
+                            service
+                                .turn_changes
+                                .settle(&worker_chat.chat_id, &picked_id);
+                        }
+                        // Stop already changed the pause state. A subsequent
+                        // Continue must survive the canceled Turn's cleanup.
+                        Some(queue.finish(
+                            (success || cancel.is_cancelled()) && persistence_error.is_none(),
+                            persistence_error.clone().or(error),
+                        ))
+                    } else {
+                        None
+                    }
+                    // The guard is not `Send`: it drops here, before the
+                    // change-set capture below awaits.
                 };
                 if started {
                     // A failed or interrupted Compaction settles Idle like a
@@ -779,6 +793,20 @@ impl EngineService {
                             SessionStatus::Errored
                         },
                     );
+                }
+                // A settled real Turn captures its final change set now,
+                // whether or not the terminal event's durable gate below
+                // passes. A capture failure never fails the Turn.
+                if turn_end.is_some() && settled.is_some() {
+                    service
+                        .turn_changes
+                        .finish(
+                            &service.git,
+                            &service.engine_info.device_id,
+                            &worker_chat.chat_id,
+                            &picked_id,
+                        )
+                        .await;
                 }
                 // The Turn terminal event (ADR-0019): exactly one per real
                 // main-chat Turn, only AFTER Transcript and History settled

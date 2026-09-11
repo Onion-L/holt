@@ -21,7 +21,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the in-memory Turn change-set baseline and frozen result (ADR-0024) in its `turn_changes`/`turn_change_watch` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -212,6 +212,17 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   paths, and mid-merge/rebase/revert/cherry-pick states all refuse
   engine-side; commit identity is the repo's git config, author ==
   committer; the agent tool surface stays read-only).
+- Turn change sets (ADR-0024): `GetTurnChangeSet` (`{chatId}`) and the
+  `WatchTurnChangeSet` stream (`{chatId}`) serve the current main-chat
+  Turn's net Git change from its admission baseline to the live or final
+  working tree. Both reply `holt_proto::TurnChangeSetReply` — an explicit
+  `unsupported` for a non-Git working directory, never an empty change set,
+  otherwise Git-derived file status, line counts, and the `live` / `final`
+  phase. Subagent edits ride the parent Turn's set (a child shares the
+  parent's working directory). The engine owns the in-memory baseline and
+  frozen result (`engine::turn_changes`); `engine::turn_change_watch` is the
+  debounced live stream whose settled frame is driven by the ADR-0019 Turn
+  terminal event. Persisting settled Turns is future work.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktrees, change requests, and uploads.
 

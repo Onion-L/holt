@@ -9,7 +9,8 @@ use holt_doc::{
 };
 use holt_proto::{
     AuthState, Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSettings,
-    TitleSettingsState, TitleSource, WebSearchBackendOption, WebSearchSettingsState,
+    TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
+    WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
@@ -29,6 +30,14 @@ use crate::{EngineService, LocalEngine};
 /// The sidebar title ceiling shared by the first-line fallback, manual
 /// renames, and automatic titles.
 pub(crate) const TITLE_CHAR_LIMIT: usize = 60;
+
+/// The explicit non-Git answer `GetTurnChangeSet`/`WatchTurnChangeSet`
+/// share (ADR-0024): an empty change set must never stand in for it.
+const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a Git work tree";
+
+/// The turn-diff scopes' soft-matchable phrase for a chat whose current Turn
+/// has no recorded baseline (never ran, engine restarted).
+const NO_TURN_RECORDED: &str = "no turn recorded for this chat yet";
 
 impl EngineService {
     fn watch_spaces(&self) -> RpcReply {
@@ -214,6 +223,16 @@ impl EngineService {
         self.runtime.chat(&params.chat_id);
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// The working directory whose Git state a Turn change set reads: the
+    /// chat's stamped cwd, else its space's path.
+    fn turn_change_root(&self, chat_id: &str) -> Result<String, RpcError> {
+        self.search_files_root(&SearchFilesParams {
+            query: String::new(),
+            chat_id: Some(chat_id.to_string()),
+            space_id: None,
+        })
     }
 
     /// The directory `SearchFiles` walks: the chat's own cwd when set,
@@ -756,7 +775,8 @@ impl EngineService {
         )
         .map_err(|error| RpcError::Failed(error.to_string()))?;
         if let Some(baseline) = baseline {
-            self.turns.insert(chat_id, baseline);
+            self.turn_changes
+                .begin(chat_id, &message_id, &request.cwd, baseline);
         }
         chat.transcript
             .write()
@@ -2063,10 +2083,12 @@ impl RpcService for EngineService {
                         let chat_id = required_string(&params, "chatId")?;
                         // No snapshot (never ran, engine restarted) is an
                         // explicit error — never a silent empty diff.
-                        let Some(baseline) = self.turns.get(chat_id) else {
-                            return Err(RpcError::Failed(
-                                "no turn recorded for this chat yet".into(),
-                            ));
+                        let Some(baseline) = self
+                            .turn_changes
+                            .snapshot(chat_id)
+                            .map(|record| record.baseline)
+                        else {
+                            return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
                         };
                         let diff = self
                             .git
@@ -2099,10 +2121,12 @@ impl RpcService for EngineService {
                                 "chatId is required for turn diffs".into(),
                             ));
                         };
-                        let Some(baseline) = self.turns.get(chat_id) else {
-                            return Err(RpcError::Failed(
-                                "no turn recorded for this chat yet".into(),
-                            ));
+                        let Some(baseline) = self
+                            .turn_changes
+                            .snapshot(chat_id)
+                            .map(|record| record.baseline)
+                        else {
+                            return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
                         };
                         let text = self
                             .git
@@ -2128,6 +2152,51 @@ impl RpcService for EngineService {
                         "{other} diffs are not available yet"
                     ))),
                 }
+            }
+
+            // Turn change sets (ADR-0024, ticket 01): the net Git change
+            // from a Turn's admission baseline to its live or final working
+            // tree. Separate from the checkout-diff scopes, which the UI's
+            // Changes pane owns; this family feeds the Turn card.
+            methods::GET_TURN_CHANGE_SET => {
+                let chat_id = required_string(&params, "chatId")?;
+                let root = self.turn_change_root(chat_id)?;
+                if !self.git.is_work_tree(&root).await {
+                    return RpcReply::value(&TurnChangeSetReply::Unsupported {
+                        reason: NON_GIT_CHANGE_SET_REASON.into(),
+                    });
+                }
+                match self
+                    .turn_changes
+                    .read(&self.git, &self.engine_info.device_id, chat_id)
+                    .await
+                    .map_err(git_fault)?
+                {
+                    Some(change_set) => RpcReply::value(&TurnChangeSetReply::Captured(change_set)),
+                    None => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
+                }
+            }
+            methods::WATCH_TURN_CHANGE_SET => {
+                let chat_id = required_string(&params, "chatId")?.to_string();
+                let root = self.turn_change_root(&chat_id)?;
+                if !self.git.is_work_tree(&root).await {
+                    use futures::StreamExt;
+                    let value = serde_json::to_value(TurnChangeSetReply::Unsupported {
+                        reason: NON_GIT_CHANGE_SET_REASON.into(),
+                    })
+                    .map_err(|error| RpcError::Failed(format!("serialize response: {error}")))?;
+                    return Ok(RpcReply::Stream(futures::stream::iter([value]).boxed()));
+                }
+                let stream = crate::turn_change_watch::subscribe(
+                    std::path::PathBuf::from(root),
+                    chat_id,
+                    self.git.clone(),
+                    self.engine_info.device_id.clone(),
+                    self.turn_changes.clone(),
+                    self.turn_events.clone(),
+                )
+                .map_err(RpcError::Failed)?;
+                Ok(RpcReply::Stream(Box::pin(stream)))
             }
 
             // History: the topologically ordered commit graph with refs,

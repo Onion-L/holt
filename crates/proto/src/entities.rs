@@ -830,6 +830,73 @@ pub struct CheckoutFileDiffText {
     pub stale: bool,
 }
 
+/// How one path changed inside a Turn change set (ADR-0024). `Renamed`
+/// carries the previous path; a move Git could not pair arrives as separate
+/// `Added` and `Deleted` entries instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnFileChangeStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+/// One changed path in a Turn change set: Git-derived status and line
+/// counts. A binary entry keeps its status but carries no content diff, so
+/// its line counts stay zero rather than being invented.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFileChange {
+    /// Current path — the destination for a rename.
+    pub path: String,
+    /// Previous path when Git paired a rename; `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    pub status: TurnFileChangeStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    #[serde(default)]
+    pub binary: bool,
+}
+
+/// Whether a Turn change set is still moving (the Turn runs) or frozen (the
+/// Turn settled, succeeded, failed, or interrupted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnChangeSetPhase {
+    Live,
+    Final,
+}
+
+/// The net file changes between one main-chat Turn's baseline and its live
+/// or final working tree (ADR-0024). Empty files mean a zero net change —
+/// never a non-Git workspace, which is [`TurnChangeSetReply::Unsupported`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnChangeSet {
+    pub chat_id: String,
+    /// The Turn's identity: the queued user message it started from.
+    pub message_id: String,
+    pub phase: TurnChangeSetPhase,
+    pub files: Vec<TurnFileChange>,
+    pub additions: u32,
+    pub deletions: u32,
+    #[serde(default)]
+    pub truncated: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `GetTurnChangeSet` / `WatchTurnChangeSet` reply. `Unsupported` is
+/// explicit: a non-Git working directory has no change set, and an empty
+/// card must never stand in for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum TurnChangeSetReply {
+    Unsupported { reason: String },
+    Captured(TurnChangeSet),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {
@@ -1025,6 +1092,49 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn turn_change_set_contract_is_camel_case_and_tagged() {
+        let change_set = TurnChangeSet {
+            chat_id: "chat-1".into(),
+            message_id: "m-1".into(),
+            phase: TurnChangeSetPhase::Final,
+            files: vec![TurnFileChange {
+                path: "src/new.rs".into(),
+                old_path: Some("src/old.rs".into()),
+                status: TurnFileChangeStatus::Renamed,
+                additions: 3,
+                deletions: 1,
+                binary: false,
+            }],
+            additions: 3,
+            deletions: 1,
+            truncated: false,
+            updated_at: Utc::now(),
+        };
+        let value = serde_json::to_value(TurnChangeSetReply::Captured(change_set.clone())).unwrap();
+        assert_eq!(value["state"], "captured");
+        assert_eq!(value["chatId"], "chat-1");
+        assert_eq!(value["messageId"], "m-1");
+        assert_eq!(value["phase"], "final");
+        assert_eq!(value["files"][0]["oldPath"], "src/old.rs");
+        assert_eq!(value["files"][0]["status"], "renamed");
+        assert_eq!(
+            serde_json::from_value::<TurnChangeSetReply>(value).unwrap(),
+            TurnChangeSetReply::Captured(change_set)
+        );
+
+        let unsupported = TurnChangeSetReply::Unsupported {
+            reason: "not a work tree".into(),
+        };
+        let value = serde_json::to_value(&unsupported).unwrap();
+        assert_eq!(value["state"], "unsupported");
+        assert_eq!(value["reason"], "not a work tree");
+        assert_eq!(
+            serde_json::from_value::<TurnChangeSetReply>(value).unwrap(),
+            unsupported
         );
     }
 }

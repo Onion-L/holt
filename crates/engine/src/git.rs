@@ -13,7 +13,7 @@ use std::{
 };
 
 use git2::{BranchType, Repository};
-use holt_proto::{CheckoutDiff, DiffFileSummary, RepoRef};
+use holt_proto::{CheckoutDiff, DiffFileSummary, RepoRef, TurnFileChange, TurnFileChangeStatus};
 use sha2::{Digest, Sha256};
 
 /// Patch text is capped at 3 MiB; per-file diff sides at 1 MiB each.
@@ -425,6 +425,37 @@ impl Git {
             Ok(text)
         })
         .await
+    }
+
+    /// The Turn change set (ADR-0024): the net change from a Turn's
+    /// baseline to the live working tree, as the typed vocabulary the Turn
+    /// card and its Review render. Reuses the turn capture's Git path —
+    /// dirty-start net-change filtering, rename detection, and the patch
+    /// cap — and re-keys nothing: the caller adds Turn identity and phase.
+    pub(crate) async fn turn_change_capture(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        baseline: &TurnBaseline,
+    ) -> Result<TurnChangeCapture, GitFault> {
+        let diff = self.turn_diff(repo_path, device_id, baseline).await?;
+        let mut files: Vec<TurnFileChange> = diff.files.iter().map(turn_file_change).collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(TurnChangeCapture {
+            files,
+            additions: diff.additions,
+            deletions: diff.deletions,
+            truncated: diff.truncated,
+        })
+    }
+
+    /// Whether `repo_path` resolves to a Git work tree. The change set's
+    /// non-Git answer keys on this, never on a capture error.
+    pub(crate) async fn is_work_tree(&self, repo_path: &str) -> bool {
+        let path = repo_path.to_string();
+        tokio::task::spawn_blocking(move || Repository::discover(&path).is_ok())
+            .await
+            .unwrap_or(false)
     }
 
     /// Run `op` against the repository resolved from `repo_path`: resolve
@@ -1468,30 +1499,37 @@ pub(crate) struct TurnBaseline {
     pub patch: String,
 }
 
-/// Latest turn baseline per chat.
-#[derive(Default)]
-pub(crate) struct TurnBaselines {
-    inner: Mutex<HashMap<String, TurnBaseline>>,
+/// One Turn's captured net change (ADR-0024): the typed files plus their
+/// totals, ready for the `TurnChangeSet` wire shape.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TurnChangeCapture {
+    pub files: Vec<TurnFileChange>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub truncated: bool,
 }
 
-impl TurnBaselines {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn insert(&self, chat_id: &str, baseline: TurnBaseline) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(chat_id.to_string(), baseline);
-    }
-
-    pub(crate) fn get(&self, chat_id: &str) -> Option<TurnBaseline> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(chat_id)
-            .cloned()
+/// Map a Git-derived summary to the change-set vocabulary. A detected
+/// rename keeps its previous path; a move Git could not pair never reaches
+/// here as one delta — it is already a separate delete plus add, the
+/// fallback. A copy is a new file on its new-side path.
+fn turn_file_change(file: &DiffFileSummary) -> TurnFileChange {
+    let status = match file.status.as_str() {
+        "added" => TurnFileChangeStatus::Added,
+        "deleted" => TurnFileChangeStatus::Deleted,
+        "renamed" => TurnFileChangeStatus::Renamed,
+        "copied" => TurnFileChangeStatus::Added,
+        _ => TurnFileChangeStatus::Modified,
+    };
+    TurnFileChange {
+        path: file.path.clone(),
+        old_path: (status == TurnFileChangeStatus::Renamed)
+            .then(|| file.old_path.clone())
+            .flatten(),
+        status,
+        additions: file.additions,
+        deletions: file.deletions,
+        binary: file.binary,
     }
 }
 
@@ -1534,6 +1572,16 @@ fn section_of(lines: &[&str]) -> PatchSection {
             lines
                 .iter()
                 .find_map(|line| line.strip_prefix("rename to "))
+        })
+        // Binary deltas carry neither pair — only the header. Take the
+        // new-side path so a binary file still keys as a changed path
+        // instead of vanishing from the net-change filter.
+        .or_else(|| {
+            lines.iter().find_map(|line| {
+                line.strip_prefix("diff --git ")
+                    .and_then(|rest| rest.rsplit_once(" b/"))
+                    .map(|(_, path)| path)
+            })
         })
         .unwrap_or_default()
         .trim()
@@ -2325,6 +2373,21 @@ mod tests {
         assert!(patch.contains("+agent work"));
         assert!(!patch.contains("dirty.txt"));
         assert!(!patch.contains("net.txt"));
+    }
+
+    #[test]
+    fn turn_filter_keys_a_binary_section_by_its_header_path() {
+        // Binary deltas carry neither a ---/+++ pair nor a rename line:
+        // only the `diff --git a/x b/x` header names the file. Keying off
+        // it keeps the binary file in the net-change filter instead of
+        // dropping it as an empty path.
+        let binary = "diff --git a/image.bin b/image.bin\nnew file mode 100644\nindex 000..111\nBinary files /dev/null and b/image.bin differ\n";
+        let (patch, kept) = filter_turn_patch("", binary);
+        assert_eq!(kept, ["image.bin"]);
+        assert!(patch.contains("Binary files"));
+
+        let (patch, kept) = filter_turn_patch(binary, binary);
+        assert!(kept.is_empty(), "an untouched binary drops: {patch}");
     }
 
     #[test]

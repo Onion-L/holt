@@ -25,6 +25,11 @@
 - **Diff scope**: which comparison a Changes pane shows. Four flavors: **working tree** (uncommitted changes vs HEAD), **branch** (everything the branch adds over the merge-base with a base ref, working tree included), **latest turn** (net changes since the chat's last turn started), **history** (the commit graph); a fifth, **commit**, exists only as a pinned per-commit pane.
 - **Base ref**: the branch a branch diff is taken against; defaults to the repo's default branch.
 - **Turn diff**: the net working-tree changes since the chat's last turn started. Pre-existing uncommitted changes are not part of a turn unless the turn touched them.
+- **Turn baseline**: the working-tree state captured immediately after a Turn is admitted and before its execution begins. It defines the comparison boundary for that Turn's change set.
+- **Turn change set**: the net file changes produced between a Turn baseline and its current or final working-tree state. It belongs to the parent main-chat Turn; subagent edits are included in the parent's set.
+- **File change**: one added, modified, deleted, or rename-detected path within a Turn change set, with Git-derived line counts where applicable.
+- **Review**: a read-only view of a Turn change set's per-file diff in the right sidebar.
+- **Open**: opening the current post-Turn file in the right sidebar; deleted files remain reviewable through their diff.
 - **Git panel**: the right-pane panel for a working directory's uncommitted git state. It lists changed files in three sections — Staged, Unstaged, Untracked — and lets the user stage, unstage, and commit files; its History tab shows the commit graph. The Changes diff viewer stays a separate surface.
   _Avoid_: calling the status list "Changes" (Changes is the Diff scope viewer)
 - **Staging**: git's index as operated from the Git panel. Staging marks a path's current changes for the next commit; unstaging removes them from the index. Neither touches file contents. A path can carry staged and unstaged changes at once, and then appears in both sections. A conflicted path can be neither staged nor unstaged from the panel. Ignored paths never appear.

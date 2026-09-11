@@ -50,6 +50,8 @@ mod title_settings;
 mod title_task;
 mod tools;
 mod trash;
+mod turn_change_watch;
+mod turn_changes;
 mod turn_events;
 mod web_search_settings;
 mod workspace_watch;
@@ -136,9 +138,9 @@ struct EngineService {
     /// The `WatchCheckoutDiffs` hub — live checkout-diff awareness over the
     /// git-detected spaces.
     watch: Arc<git_watch::WatchHub>,
-    /// Latest Turn baseline per chat (ADR-0003): in-memory, dropped on
-    /// restart.
-    turns: Arc<git::TurnBaselines>,
+    /// Latest Turn baseline per chat (ADR-0024): in-memory, dropped on
+    /// restart. Also carries each Turn's frozen final change set.
+    turn_changes: Arc<turn_changes::TurnChanges>,
     /// The skills capability (ADR-0005/0006): root resolution and catalog
     /// assembly over the upstream loader.
     skills: skills::Skills,
@@ -219,7 +221,7 @@ impl LocalEngine {
                 providers,
                 git,
                 watch,
-                turns: Arc::new(git::TurnBaselines::new()),
+                turn_changes: Arc::new(turn_changes::TurnChanges::new()),
                 skills,
                 images: images::assemble(&config.data_dir),
                 title_settings,

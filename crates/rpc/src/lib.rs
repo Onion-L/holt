@@ -278,6 +278,19 @@ pub mod methods {
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
+    /// The current main-chat Turn's change set (ADR-0024): the net Git
+    /// change between the Turn's admission baseline and its live or final
+    /// working tree. Params `{chatId}`; replies `holt_proto::TurnChangeSetReply`
+    /// — an explicit `unsupported` for a non-Git working directory, otherwise
+    /// the change set with its `live` / `final` phase. No Turn recorded yet is
+    /// an error, exactly like the turn diff scope.
+    pub const GET_TURN_CHANGE_SET: &str = "GetTurnChangeSet";
+    /// Live Turn change-set stream (ADR-0024): params `{chatId}`; the first
+    /// frame is the current set, then one frame per debounced working-tree
+    /// change and one when the Turn settles (`final`). Stays open across
+    /// Turns until the UI drops it. A non-Git root streams a single
+    /// `unsupported` frame and ends.
+    pub const WATCH_TURN_CHANGE_SET: &str = "WatchTurnChangeSet";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
