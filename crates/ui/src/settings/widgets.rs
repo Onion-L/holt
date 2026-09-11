@@ -107,28 +107,50 @@ pub fn row_description(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Di
         .child(copy.into())
 }
 
-/// Section card: `mt-6 overflow-hidden rounded-xl border border-border bg-card`
-/// — the card tone, thinned to a translucent tint over glass so the card
-/// reads as frost instead of a solid slab ([`Theme::card_glass_bg`]).
+/// Section caption above a card ("Notifications", "Web search"): 14px
+/// semibold — between the 16px page headline and the 13px row titles, so the
+/// group's name reads as a heading and never as another row title.
+pub fn section_label(theme: &Theme, label: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(crate::typography::ui_rems(14.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme.text)
+        .child(label.into())
+}
+
+/// Section card: `overflow-hidden rounded-xl bg-card` — fill-only grouping
+/// with no border: the card tone, thinned to a translucent tint over glass
+/// so the card reads as frost instead of a solid slab
+/// ([`Theme::card_glass_bg`]). The caller owns the section's spacing above
+/// it.
 pub fn section_card(theme: &Theme) -> gpui::Div {
     div()
-        .mt(px(24.0))
         .rounded(px(12.0))
-        .border_1()
-        .border_color(theme.border)
         .bg(theme.card_glass_bg())
         .overflow_hidden()
         .flex()
         .flex_col()
 }
 
-/// One card row: `border-t border-border px-5 py-3.5 first:border-t-0` with the
-/// quiet hover wash.
-pub fn card_row(theme: &Theme, first: bool) -> gpui::Div {
+/// Card footer holding a section's actions (Save / Remove): right-aligned,
+/// so the buttons anchor to the group instead of floating loose under it.
+pub fn card_footer() -> gpui::Div {
+    div()
+        .px(px(20.0))
+        .py(px(10.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap(px(8.0))
+}
+
+/// One card row: `px-5 py-3.5` with the quiet hover wash. Rows separate by
+/// rhythm alone — no dividers.
+pub fn card_row() -> gpui::Div {
     div()
         .px(px(20.0))
         .py(px(14.0))
-        .when(!first, |el| el.border_t_1().border_color(theme.border))
         .hover(|s| s.bg(ink(0.015)))
         .flex()
         .flex_row()

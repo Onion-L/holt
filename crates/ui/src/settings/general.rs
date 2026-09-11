@@ -625,59 +625,63 @@ impl GeneralPage {
         };
 
         div()
-            .mt(px(24.0))
-            .child(widgets::field_label(theme, "Notifications"))
+            .mt(px(28.0))
+            .child(widgets::section_label(theme, "Notifications"))
             .child(div().mt(px(4.0)).child(widgets::row_description(
                 theme,
                 "Device-local. Banners appear only while no Holt window is active.",
             )))
             .child(
-                widgets::flat_row()
+                widgets::section_card(theme)
+                    .mt(px(12.0))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(widgets::row_title(theme, "Completion notifications"))
-                            .child(widgets::row_description(
-                                theme,
-                                "Show a system banner when a background Turn succeeds or fails.",
-                            )),
+                        widgets::card_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(widgets::row_title(theme, "Completion notifications"))
+                                    .child(widgets::row_description(
+                                        theme,
+                                        "Show a system banner when a background Turn succeeds or fails.",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("completion-notifications-toggle")
+                                    .debug_selector(|| "completion-notifications-toggle".into())
+                                    .flex_none()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        settings::update(SavePolicy::Immediate, cx, |settings| {
+                                            settings.completion_notifications =
+                                                !settings.completion_notifications;
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child(widgets::toggle_switch(theme, master_on)),
+                            ),
                     )
                     .child(
-                        div()
-                            .id("completion-notifications-toggle")
-                            .debug_selector(|| "completion-notifications-toggle".into())
-                            .flex_none()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                settings::update(SavePolicy::Immediate, cx, |settings| {
-                                    settings.completion_notifications =
-                                        !settings.completion_notifications;
-                                });
-                                cx.notify();
-                            }))
-                            .child(widgets::toggle_switch(theme, master_on)),
+                        widgets::card_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(widgets::row_title(theme, "Play sound"))
+                                    .child(widgets::row_description(
+                                        theme,
+                                        "Play the system notification sound with each banner.",
+                                    )),
+                            )
+                            .child(sound_switch),
                     ),
-            )
-            .child(
-                widgets::flat_row()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(widgets::row_title(theme, "Play sound"))
-                            .child(widgets::row_description(
-                                theme,
-                                "Play the system notification sound with each banner.",
-                            )),
-                    )
-                    .child(sound_switch),
             )
     }
 
@@ -843,66 +847,55 @@ impl GeneralPage {
                         ))
                     });
 
-                let mut column = div().flex().flex_col();
-                if unconfigured {
-                    column = column.child(
-                        div()
-                            .id("web-search-unconfigured")
-                            .debug_selector(|| "web-search-unconfigured".into())
-                            .mt(px(8.0))
-                            .child(widgets::row_description(
+                let mut card = widgets::section_card(theme)
+                    .child(
+                        widgets::card_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(widgets::row_title(theme, "Backend"))
+                                    .child(widgets::row_description(
+                                        theme,
+                                        "The search service the agent queries.",
+                                    )),
+                            )
+                            .child(backend_trigger),
+                    )
+                    .child(
+                        widgets::card_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(widgets::row_title(theme, "API key"))
+                                    .child(widgets::row_description(
+                                        theme,
+                                        "Stored on this device, separate from your provider keys.",
+                                    )),
+                            )
+                            .child(web_search_key_field(
                                 theme,
-                                "No backend configured — the agent has no web search tool.",
+                                self.web_search_key.clone(),
+                                self.key_field_state(cx),
+                                self.web_search_draft_concealed,
+                                cx,
                             )),
                     );
-                }
-                column = column.child(
-                    widgets::card_row(theme, true)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(theme, "Backend"))
-                                .child(widgets::row_description(
-                                    theme,
-                                    "The search service the agent queries.",
-                                )),
-                        )
-                        .child(backend_trigger),
-                );
-                column = column.child(
-                    widgets::card_row(theme, false)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(theme, "API key"))
-                                .child(widgets::row_description(
-                                    theme,
-                                    "Stored on this device, separate from your provider keys.",
-                                )),
-                        )
-                        .child(web_search_key_field(
-                            theme,
-                            self.web_search_key.clone(),
-                            self.key_field_state(cx),
-                            self.web_search_draft_concealed,
-                            cx,
-                        )),
-                );
                 if hint {
-                    column = column.child(
+                    card = card.child(
                         div()
                             .id("web-search-hint")
                             .debug_selector(|| "web-search-hint".into())
+                            .mt(px(-6.0))
                             .px(px(20.0))
-                            .pb(px(4.0))
+                            .pb(px(12.0))
                             .child(widgets::row_description(
                                 theme,
                                 "An existing Zhipu provider key is configured; it works for \
@@ -928,16 +921,22 @@ impl GeneralPage {
                     .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
                     .on_click(cx.listener(|page, _, _, cx| page.remove_web_search(cx)))
                     .child("Remove");
-                column = column.child(
-                    div()
-                        .mt(px(12.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(remove)
-                        .child(save),
-                );
+                card = card.child(widgets::card_footer().child(remove).child(save));
+
+                let mut column = div().flex().flex_col();
+                if unconfigured {
+                    column = column.child(
+                        div()
+                            .id("web-search-unconfigured")
+                            .debug_selector(|| "web-search-unconfigured".into())
+                            .pb(px(8.0))
+                            .child(widgets::row_description(
+                                theme,
+                                "No backend configured — the agent has no web search tool.",
+                            )),
+                    );
+                }
+                column = column.child(card);
                 if let Some(error) = self.web_search_error.clone() {
                     column = column.child(
                         widgets::error_strip(theme, error)
@@ -950,14 +949,14 @@ impl GeneralPage {
         };
         div()
             .id("web-search-group")
-            .mt(px(24.0))
-            .child(widgets::field_label(theme, "Web search"))
+            .mt(px(32.0))
+            .child(widgets::section_label(theme, "Web search"))
             .child(div().mt(px(4.0)).child(widgets::row_description(
                 theme,
                 "One search service, chosen by you, with its own key. Without one the agent has \
                  no web search tool; reading a page is a separate tool.",
             )))
-            .child(body)
+            .child(div().mt(px(12.0)).child(body))
             .into_any_element()
     }
 }
@@ -989,7 +988,9 @@ fn web_search_key_field(
         .border_1()
         .border_color(theme.border)
         .bg(theme.input_glass_bg())
-        .child(input)
+        // The input's root is `w_full`: without a shrinkable track it claims
+        // the whole content box and pushes the flex-none eye past the border.
+        .child(div().flex_1().min_w_0().child(input))
         .child(
             widgets::ghost_action(theme)
                 .flex_none()
@@ -1154,32 +1155,27 @@ impl Render for GeneralPage {
                         ))
                     });
 
-                let model_card = div().mt(px(24.0)).child(
-                    widgets::card_row(&theme, true)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(&theme, "Title model"))
-                                .child(widgets::row_description(
-                                    &theme,
-                                    "Choose a configured provider model. Disabled keeps the fallback title.",
-                                )),
-                        )
-                        .child(model_trigger),
-                );
-
-                let mut column = div().flex().flex_col().child(model_card);
-                if let Some(warning) = state.warning.clone() {
-                    column = column.child(widgets::warning_strip(&theme, warning));
-                }
-
-                column = column.child(
-                    div().mt(px(24.0)).child(
-                        widgets::card_row(&theme, true)
+                let save_theme = theme.clone();
+                let mut card = widgets::section_card(&theme)
+                    .child(
+                        widgets::card_row()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.0))
+                                    .child(widgets::row_title(&theme, "Title model"))
+                                    .child(widgets::row_description(
+                                        &theme,
+                                        "Choose a configured provider model. Disabled keeps the fallback title.",
+                                    )),
+                            )
+                            .child(model_trigger),
+                    )
+                    .child(
+                        widgets::card_row()
                             .child(
                                 div()
                                     .flex_1()
@@ -1207,50 +1203,55 @@ impl Render for GeneralPage {
                                         self.custom_instruction_enabled,
                                     )),
                             ),
-                    ),
-                );
+                    );
                 if self.custom_instruction_enabled {
                     let restore_theme = theme.clone();
-                    column = column.child(
+                    card = card.child(
                         div()
-                            .mt(px(8.0))
+                            .px(px(20.0))
+                            .py(px(14.0))
                             .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .child(widgets::field_label(&theme, "Title prompt"))
+                            .flex_col()
+                            .gap(px(10.0))
                             .child(
-                                widgets::ghost_action(&theme)
-                                    .id("restore-title-instruction")
-                                    .hover(move |style| widgets::ghost_hover(&restore_theme, style))
-                                    .on_click(cx.listener(|page, _, _, cx| {
-                                        page.instruction.update(cx, |input, cx| {
-                                            input.set_text(
-                                                holt_proto::DEFAULT_TITLE_INSTRUCTION,
-                                                cx,
-                                            );
-                                        });
-                                        cx.notify();
-                                    }))
-                                    .child("Restore default"),
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(widgets::field_label(&theme, "Title prompt"))
+                                    .child(
+                                        widgets::ghost_action(&theme)
+                                            .id("restore-title-instruction")
+                                            .hover(move |style| {
+                                                widgets::ghost_hover(&restore_theme, style)
+                                            })
+                                            .on_click(cx.listener(|page, _, _, cx| {
+                                                page.instruction.update(cx, |input, cx| {
+                                                    input.set_text(
+                                                        holt_proto::DEFAULT_TITLE_INSTRUCTION,
+                                                        cx,
+                                                    );
+                                                });
+                                                cx.notify();
+                                            }))
+                                            .child("Restore default"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(12.0))
+                                    .py(px(8.0))
+                                    .rounded(px(Theme::CONTROL_RADIUS))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .bg(theme.input_glass_bg())
+                                    .child(self.instruction.clone()),
                             ),
                     );
-                    column = column.child(
-                        div()
-                            .mt(px(8.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.input_glass_bg())
-                            .child(self.instruction.clone()),
-                    );
                 }
-
-                let save_theme = theme.clone();
-                column = column.child(
-                    div().mt(px(16.0)).flex().flex_row().justify_end().child(
+                card = card.child(
+                    widgets::card_footer().child(
                         widgets::ghost_action(&theme)
                             .id("save-title-settings")
                             .border_1()
@@ -1260,6 +1261,11 @@ impl Render for GeneralPage {
                             .child("Save"),
                     ),
                 );
+
+                let mut column = div().flex().flex_col().child(card);
+                if let Some(warning) = state.warning.clone() {
+                    column = column.child(widgets::warning_strip(&theme, warning));
+                }
                 if let Some(error) = self.save_error.clone() {
                     column = column.child(widgets::error_strip(&theme, error));
                 }
@@ -1280,8 +1286,8 @@ impl Render for GeneralPage {
                     .child(Self::render_notifications(&theme, cx))
                     .child(
                         div()
-                            .mt(px(24.0))
-                            .child(widgets::field_label(&theme, "Automatic chat titles")),
+                            .mt(px(32.0))
+                            .child(widgets::section_label(&theme, "Automatic chat titles")),
                     )
                     .child(div().mt(px(4.0)).child(widgets::row_description(
                         &theme,
@@ -1289,7 +1295,7 @@ impl Render for GeneralPage {
                              background request to this model can replace it. Your manual \
                              renames always win.",
                     )))
-                    .child(body)
+                    .child(div().mt(px(12.0)).child(body))
                     .child(self.render_web_search(&theme, cx)),
             )
     }
@@ -1863,6 +1869,35 @@ mod tests {
                 .is_some()
         );
         assert_eq!(harness.key_text(), "");
+    }
+
+    /// Layout invariant: the in-field eye toggle stays inside the key field's
+    /// box. The input's `w_full` root in a fixed-width flex row pushed the
+    /// `flex_none` toggle out past the field's right border (user report).
+    #[gpui::test]
+    fn the_eye_toggle_stays_inside_the_key_field(cx: &mut gpui::TestAppContext) {
+        let harness = web_search_harness(
+            cx,
+            WebSearchSettingsState {
+                backend: Some("zhipu".into()),
+                api_key_masked: Some("sk-1…cdef".into()),
+                backends: launch_backends(),
+            },
+            Some("sk-1234567890abcdef"),
+            vec![],
+        );
+        let field = harness
+            .visual
+            .debug_bounds("web-search-key-field")
+            .expect("key field renders");
+        let eye = harness
+            .visual
+            .debug_bounds("toggle-web-search-key")
+            .expect("eye toggle renders");
+        assert!(
+            eye.right() <= field.right(),
+            "eye toggle {eye:?} escapes the key field {field:?}"
+        );
     }
 
     /// Unconfigured is not an error: the group explains the missing tool, the

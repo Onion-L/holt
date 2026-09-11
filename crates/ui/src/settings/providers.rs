@@ -710,7 +710,9 @@ fn secret_field(
         .border_1()
         .border_color(theme.border)
         .bg(theme.input_glass_bg())
-        .child(input)
+        // The input's root is `w_full`: without a shrinkable track it claims
+        // the whole content box and pushes the flex-none eye past the border.
+        .child(div().flex_1().min_w_0().child(input))
         .child(
             widgets::ghost_action(theme)
                 .flex_none()
