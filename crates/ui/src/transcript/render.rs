@@ -11,9 +11,9 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, BorderStyle, ClipboardItem, Context, MouseButton, ObjectFit, SharedString,
-    StyledImage as _, StyledText, Task, TextRun, Window, canvas, div, img, list, prelude::*, px,
-    quad,
+    AnyElement, BorderStyle, ClipboardItem, Context, CursorStyle, MouseButton, ObjectFit,
+    SharedString, StyledImage as _, StyledText, Task, TextRun, Window, canvas, div, img, list,
+    prelude::*, px, quad,
 };
 use holt_doc::{MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
@@ -1949,6 +1949,9 @@ fn user_bubble_text_with_chip(
     .size_full();
     div()
         .relative()
+        // Selectable text reads as such on hover (mention/skill chips keep
+        // their own cursor via their interactive elements).
+        .cursor(CursorStyle::IBeam)
         .child(underlay)
         .child(text_el)
         .into_any_element()

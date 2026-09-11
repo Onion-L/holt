@@ -15,9 +15,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, InteractiveText, SharedString,
-    StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, quad,
-    size,
+    AnyElement, BorderStyle, Bounds, CursorStyle, FontStyle, FontWeight, Hsla, InteractiveText,
+    SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point,
+    prelude::*, px, quad, size,
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
@@ -730,6 +730,9 @@ fn flat_text_element(
     .size_full();
     div()
         .relative()
+        // Selectable text reads as such on hover (links override with their
+        // own pointing hand inside InteractiveText).
+        .cursor(CursorStyle::IBeam)
         .child(underlay)
         .child(text_el)
         .into_any_element()
