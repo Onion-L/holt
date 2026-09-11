@@ -5,8 +5,7 @@
 <h1 align="center">Holt</h1>
 
 <p align="center">
-  A desktop coding agent with a Rust UI and an in-process Rust agent loop.<br />
-  One agent. Your models. No cloud.
+  A native desktop coding agent built with Rust and GPUI.
 </p>
 
 <p align="center">
@@ -75,6 +74,12 @@ cargo clippy --workspace
 cargo fmt --all
 cargo test --workspace
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — and please follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Report it
+privately via [SECURITY.md](SECURITY.md).
 
 ## Credits
 
