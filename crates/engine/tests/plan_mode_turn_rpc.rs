@@ -841,3 +841,71 @@ async fn exiting_with_a_pending_card_settles_it_as_dismissed() {
         "the pending card settles as dismissed on exit: {snapshot}"
     );
 }
+
+#[tokio::test]
+async fn the_full_planning_cycle_end_to_end() {
+    // The whole ADR-0025 loop in one flow: enter → planning turn (write +
+    // submit) → reject with feedback → revision turn on a NEW revision →
+    // submit again → approve → implementation turn with the plan injected.
+    let fixture = Fixture::new();
+    let mut script: Vec<ScriptedReply> = Vec::new();
+    // Cycle 1 (the /plan <task> input arrives as an ordinary run).
+    script.extend(write_submit());
+    // Cycle 2 (the feedback drives the revision; text-only reply earns the
+    // corrective continuation, whose second text-only reply ends it — wait,
+    // the revision WRITES and SUBMITS: no continuation).
+    script.extend(write_submit());
+    // The implementation turn after approval.
+    script.push(ScriptedReply::text("implementing"));
+    let provider = ScriptedProvider::new(script);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan the refactor").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let first_id = get_state(&engine, "chat-1").await["activePlan"]["planId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    resolve(
+        &engine,
+        "chat-1",
+        &first_id,
+        "reject",
+        Some("split the plan into two phases"),
+    )
+    .await
+    .unwrap();
+
+    // The feedback's revision turn runs to a second submission.
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let state = get_state(&engine, "chat-1").await;
+    let second_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+    assert_ne!(second_id, first_id);
+    assert_eq!(
+        state["activePlan"]["state"],
+        serde_json::json!("awaitingApproval"),
+        "the revision is submitted and awaiting approval"
+    );
+    // Both documents exist: the rejected one and the revision.
+    let plans_dir = std::path::Path::new(&fixture.cwd()).join(".holt/plans");
+    assert_eq!(std::fs::read_dir(&plans_dir).unwrap().count(), 2);
+
+    resolve(&engine, "chat-1", &second_id, "approve", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        get_state(&engine, "chat-1").await["active"],
+        serde_json::json!(false)
+    );
+
+    // The implementation turn carries the revision's plan.
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    let fresh_prompt = format!("{:?}", requests.last().unwrap().messages.last().unwrap());
+    assert!(fresh_prompt.contains("<approved-plan>"));
+    assert!(fresh_prompt.contains("step one"));
+}
