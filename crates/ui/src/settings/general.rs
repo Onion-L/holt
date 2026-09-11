@@ -632,56 +632,52 @@ impl GeneralPage {
                 "Device-local. Banners appear only while no Holt window is active.",
             )))
             .child(
-                widgets::section_card(theme)
-                    .mt(px(12.0))
+                widgets::flat_row()
                     .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(theme, "Completion notifications"))
-                                    .child(widgets::row_description(
-                                        theme,
-                                        "Show a system banner when a background Turn succeeds or fails.",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .id("completion-notifications-toggle")
-                                    .debug_selector(|| "completion-notifications-toggle".into())
-                                    .flex_none()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        settings::update(SavePolicy::Immediate, cx, |settings| {
-                                            settings.completion_notifications =
-                                                !settings.completion_notifications;
-                                        });
-                                        cx.notify();
-                                    }))
-                                    .child(widgets::toggle_switch(theme, master_on)),
-                            ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(widgets::row_title(theme, "Completion notifications"))
+                            .child(widgets::row_description(
+                                theme,
+                                "Show a system banner when a background Turn succeeds or fails.",
+                            )),
                     )
                     .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(theme, "Play sound"))
-                                    .child(widgets::row_description(
-                                        theme,
-                                        "Play the system notification sound with each banner.",
-                                    )),
-                            )
-                            .child(sound_switch),
+                        div()
+                            .id("completion-notifications-toggle")
+                            .debug_selector(|| "completion-notifications-toggle".into())
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                settings::update(SavePolicy::Immediate, cx, |settings| {
+                                    settings.completion_notifications =
+                                        !settings.completion_notifications;
+                                });
+                                cx.notify();
+                            }))
+                            .child(widgets::toggle_switch(theme, master_on)),
                     ),
+            )
+            .child(
+                widgets::flat_row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(widgets::row_title(theme, "Play sound"))
+                            .child(widgets::row_description(
+                                theme,
+                                "Play the system notification sound with each banner.",
+                            )),
+                    )
+                    .child(sound_switch),
             )
     }
 
@@ -847,55 +843,65 @@ impl GeneralPage {
                         ))
                     });
 
-                let mut card = widgets::section_card(theme)
-                    .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(theme, "Backend"))
-                                    .child(widgets::row_description(
-                                        theme,
-                                        "The search service the agent queries.",
-                                    )),
-                            )
-                            .child(backend_trigger),
-                    )
-                    .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(theme, "API key"))
-                                    .child(widgets::row_description(
-                                        theme,
-                                        "Stored on this device, separate from your provider keys.",
-                                    )),
-                            )
-                            .child(web_search_key_field(
+                let mut column = div().flex().flex_col();
+                if unconfigured {
+                    column = column.child(
+                        div()
+                            .id("web-search-unconfigured")
+                            .debug_selector(|| "web-search-unconfigured".into())
+                            .pb(px(4.0))
+                            .child(widgets::row_description(
                                 theme,
-                                self.web_search_key.clone(),
-                                self.key_field_state(cx),
-                                self.web_search_draft_concealed,
-                                cx,
+                                "No backend configured — the agent has no web search tool.",
                             )),
                     );
+                }
+                column = column.child(
+                    widgets::flat_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(theme, "Backend"))
+                                .child(widgets::row_description(
+                                    theme,
+                                    "The search service the agent queries.",
+                                )),
+                        )
+                        .child(backend_trigger),
+                );
+                column = column.child(
+                    widgets::flat_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(theme, "API key"))
+                                .child(widgets::row_description(
+                                    theme,
+                                    "Stored on this device, separate from your provider keys.",
+                                )),
+                        )
+                        .child(web_search_key_field(
+                            theme,
+                            self.web_search_key.clone(),
+                            self.key_field_state(cx),
+                            self.web_search_draft_concealed,
+                            cx,
+                        )),
+                );
                 if hint {
-                    card = card.child(
+                    column = column.child(
                         div()
                             .id("web-search-hint")
                             .debug_selector(|| "web-search-hint".into())
                             .mt(px(-6.0))
-                            .px(px(20.0))
-                            .pb(px(12.0))
                             .child(widgets::row_description(
                                 theme,
                                 "An existing Zhipu provider key is configured; it works for \
@@ -921,22 +927,16 @@ impl GeneralPage {
                     .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
                     .on_click(cx.listener(|page, _, _, cx| page.remove_web_search(cx)))
                     .child("Remove");
-                card = card.child(widgets::card_footer().child(remove).child(save));
-
-                let mut column = div().flex().flex_col();
-                if unconfigured {
-                    column = column.child(
-                        div()
-                            .id("web-search-unconfigured")
-                            .debug_selector(|| "web-search-unconfigured".into())
-                            .pb(px(8.0))
-                            .child(widgets::row_description(
-                                theme,
-                                "No backend configured — the agent has no web search tool.",
-                            )),
-                    );
-                }
-                column = column.child(card);
+                column = column.child(
+                    div()
+                        .mt(px(8.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(remove)
+                        .child(save),
+                );
                 if let Some(error) = self.web_search_error.clone() {
                     column = column.child(
                         widgets::error_strip(theme, error)
@@ -1156,102 +1156,97 @@ impl Render for GeneralPage {
                     });
 
                 let save_theme = theme.clone();
-                let mut card = widgets::section_card(&theme)
-                    .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(&theme, "Title model"))
-                                    .child(widgets::row_description(
-                                        &theme,
-                                        "Choose a configured provider model. Disabled keeps the fallback title.",
-                                    )),
-                            )
-                            .child(model_trigger),
-                    )
-                    .child(
-                        widgets::card_row()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(widgets::row_title(&theme, "Custom title prompt"))
-                                    .child(widgets::row_description(
-                                        &theme,
-                                        "Use a custom instruction instead of the built-in prompt.",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .id("custom-title-prompt-toggle")
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|page, _, _, cx| {
-                                        page.custom_instruction_enabled =
-                                            !page.custom_instruction_enabled;
-                                        cx.notify();
-                                    }))
-                                    .child(widgets::toggle_switch(
-                                        &theme,
-                                        self.custom_instruction_enabled,
-                                    )),
-                            ),
-                    );
+                let mut column = div().flex().flex_col();
+                column = column.child(
+                    widgets::flat_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(&theme, "Title model"))
+                                .child(widgets::row_description(
+                                    &theme,
+                                    "Choose a configured provider model. Disabled keeps the fallback title.",
+                                )),
+                        )
+                        .child(model_trigger),
+                );
+                if let Some(warning) = state.warning.clone() {
+                    column = column.child(widgets::warning_strip(&theme, warning));
+                }
+                column = column.child(
+                    widgets::flat_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(&theme, "Custom title prompt"))
+                                .child(widgets::row_description(
+                                    &theme,
+                                    "Use a custom instruction instead of the built-in prompt.",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .id("custom-title-prompt-toggle")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|page, _, _, cx| {
+                                    page.custom_instruction_enabled =
+                                        !page.custom_instruction_enabled;
+                                    cx.notify();
+                                }))
+                                .child(widgets::toggle_switch(
+                                    &theme,
+                                    self.custom_instruction_enabled,
+                                )),
+                        ),
+                );
                 if self.custom_instruction_enabled {
                     let restore_theme = theme.clone();
-                    card = card.child(
+                    column = column.child(
                         div()
-                            .px(px(20.0))
-                            .py(px(14.0))
+                            .mt(px(8.0))
                             .flex()
-                            .flex_col()
-                            .gap(px(10.0))
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(widgets::field_label(&theme, "Title prompt"))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(widgets::field_label(&theme, "Title prompt"))
-                                    .child(
-                                        widgets::ghost_action(&theme)
-                                            .id("restore-title-instruction")
-                                            .hover(move |style| {
-                                                widgets::ghost_hover(&restore_theme, style)
-                                            })
-                                            .on_click(cx.listener(|page, _, _, cx| {
-                                                page.instruction.update(cx, |input, cx| {
-                                                    input.set_text(
-                                                        holt_proto::DEFAULT_TITLE_INSTRUCTION,
-                                                        cx,
-                                                    );
-                                                });
-                                                cx.notify();
-                                            }))
-                                            .child("Restore default"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .px(px(12.0))
-                                    .py(px(8.0))
-                                    .rounded(px(Theme::CONTROL_RADIUS))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .bg(theme.input_glass_bg())
-                                    .child(self.instruction.clone()),
+                                widgets::ghost_action(&theme)
+                                    .id("restore-title-instruction")
+                                    .hover(move |style| widgets::ghost_hover(&restore_theme, style))
+                                    .on_click(cx.listener(|page, _, _, cx| {
+                                        page.instruction.update(cx, |input, cx| {
+                                            input.set_text(
+                                                holt_proto::DEFAULT_TITLE_INSTRUCTION,
+                                                cx,
+                                            );
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child("Restore default"),
                             ),
                     );
+                    column = column.child(
+                        div()
+                            .mt(px(8.0))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.input_glass_bg())
+                            .child(self.instruction.clone()),
+                    );
                 }
-                card = card.child(
-                    widgets::card_footer().child(
+                column = column.child(
+                    div().mt(px(8.0)).flex().flex_row().justify_end().child(
                         widgets::ghost_action(&theme)
                             .id("save-title-settings")
                             .border_1()
@@ -1261,11 +1256,6 @@ impl Render for GeneralPage {
                             .child("Save"),
                     ),
                 );
-
-                let mut column = div().flex().flex_col().child(card);
-                if let Some(warning) = state.warning.clone() {
-                    column = column.child(widgets::warning_strip(&theme, warning));
-                }
                 if let Some(error) = self.save_error.clone() {
                     column = column.child(widgets::error_strip(&theme, error));
                 }
