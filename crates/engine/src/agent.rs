@@ -636,7 +636,11 @@ impl AgentRuntime {
         {
             session.status = status;
             session.updated_at = now;
-            if status == SessionStatus::Working && session.started_at.is_none() {
+            // Settle never clears `started_at`, and every Working transition
+            // opens a new Turn — re-stamp unconditionally, or the row stays on
+            // the first Turn's start time and later turns open counting from
+            // it (the UI's send→turn bridge expects the fresh stamp).
+            if status == SessionStatus::Working {
                 session.started_at = Some(now);
             }
         } else {
@@ -1854,6 +1858,33 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
         }
+    }
+
+    #[test]
+    fn set_session_restamps_started_at_on_each_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.path().to_path_buf(),
+            vec![session_chat("chat-1")],
+            None,
+        );
+        runtime.set_session("chat-1", SessionStatus::Working);
+        let first = runtime.sessions.read().unwrap()[0].started_at.unwrap();
+
+        // Settle keeps the stamp — the UI's send→turn bridge reads the
+        // previous Turn's `started_at` while the next send is in flight.
+        runtime.set_session("chat-1", SessionStatus::Idle);
+        assert_eq!(runtime.sessions.read().unwrap()[0].started_at, Some(first));
+
+        // The next Turn re-bases the timer instead of counting from the
+        // previous Turn's start (a stale stamp showed "293m" on a fresh Turn).
+        let stale = first - chrono::Duration::minutes(293);
+        runtime.sessions.write().unwrap()[0].started_at = Some(stale);
+        runtime.set_session("chat-1", SessionStatus::Working);
+        let restamped = runtime.sessions.read().unwrap()[0].started_at.unwrap();
+        assert!(restamped > Utc::now() - chrono::Duration::seconds(5));
     }
 
     #[tokio::test]
