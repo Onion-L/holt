@@ -1,11 +1,12 @@
-//! The permission Approval surface (ADR-0014, prototype 3-A): a pending
-//! confirm-changes gate renders as a card in the transcript flow — pulsing
-//! header, the gated command/path in a mono block with a neutral left edge,
-//! the working directory as metadata, and the four verdict affordances
-//! (Allow once / Always allow · this session / Deny / Note…). Settled gates
-//! render their verdict as a small marker on the ordinary tool chip
-//! ([`verdict_chip`]). The card speaks in the composer input's neutral
-//! scheme (user call: no accent, no amber) — `danger` only for denials.
+//! The permission Approval surface (ADR-0014): a pending confirm-changes
+//! gate renders as a flat strip in the transcript flow — no card, no nested
+//! boxes, just top/bottom hairlines. The gated command/path leads as a bare
+//! mono line, the working directory follows as faint metadata, and the four
+//! verdict affordances (Allow once / Always allow · this session / Deny /
+//! Note…) sit bottom-right. Settled gates render their verdict as a small
+//! marker on the ordinary tool chip ([`verdict_chip`]). The strip speaks in
+//! the neutral scheme (user call: no accent, no amber) — `danger` only for
+//! denials.
 //!
 //! Interactive state (the note editor) lives on the `Transcript` entity
 //! keyed by approval id — never in `RowKind`, so a row re-splice can't
@@ -25,7 +26,6 @@ use holt_rpc::methods;
 use super::model::{RowKind, ToolItem, skill_file_display};
 use super::{ApprovalNote, Transcript, tool_chip_content};
 use crate::composer::{ComposerInput, ComposerInputEvent};
-use crate::motion;
 use crate::theme::Theme;
 
 /// The latest still-pending gate in a transcript, if any — the Esc-interrupt
@@ -43,18 +43,8 @@ pub fn pending_approval_gate(transcript: &[SessionMessageEntry]) -> Option<ToolG
         })
 }
 
-/// The card header's tool noun (prototype 3-A: "Waiting for approval · bash").
-pub fn approval_tool_name(call: &ToolCall) -> &'static str {
-    match call {
-        ToolCall::Exec { .. } => "bash",
-        ToolCall::WriteFile { .. } => "write",
-        ToolCall::EditFile { .. } => "edit",
-        _ => tool_chip_content(call).0,
-    }
-}
-
-/// The gated target rendered in the mono block. Bash commands get the
-/// shell's `$ ` prefix.
+/// The gated target rendered as the strip's mono lead line. Bash commands
+/// get the shell's `$ ` prefix.
 pub fn approval_target(call: &ToolCall) -> String {
     match call {
         ToolCall::Exec { command } => format!("$ {command}"),
@@ -113,9 +103,9 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
 }
 
 impl Transcript {
-    /// The pending-approval card (prototype 3-A). Styled after the composer
-    /// input pill: the neutral input surface fill under a neutral hairline —
-    /// a quiet row, never a tinted banner nor a shadow behind translucency.
+    /// The pending-approval strip: flat transcript content delimited by a
+    /// top and bottom hairline (flat-by-default) — never a card, a tinted
+    /// banner, or a shadow behind translucency.
     pub(super) fn render_approval_card(
         &mut self,
         row_id: &SharedString,
@@ -128,10 +118,7 @@ impl Transcript {
             return gpui::Empty.into_any_element();
         };
         let approval_id = gate.id;
-        let tool_name = approval_tool_name(&tool.call);
         let target = approval_target(&tool.call);
-        let pulse =
-            motion::pulse_wave(motion::pulse_delta(&motion::HOLT_PULSE, cx.entity_id(), cx));
         // cwd metadata comes from the chat row; an override (subagent) doc
         // has none and omits the prefix.
         let cwd = if self.doc_override.is_none() {
@@ -158,6 +145,84 @@ impl Transcript {
         let id_always = approval_id.clone();
         let id_deny = approval_id.clone();
         let id_note = approval_id.clone();
+        // The four verdict affordances, placed at the strip's bottom-right.
+        // Small ghost-family buttons (the strip is compact chrome); only
+        // Deny carries hue.
+        // Allow once — the primary action in the app's subtle-raised idiom
+        // (wizard picked-option language: faint ink plate + hairline), not
+        // the dialogs' solid plate.
+        let allow_once = div()
+            .id(format!("approval-once-{id_once}"))
+            .flex_none()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.hairline(0.14))
+            .bg(theme.ink(0.09))
+            .text_size(crate::typography::ui_rems(11.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.ink(0.14)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.resolve_approval(id_once.clone(), ApprovalVerdict::Allow, cx);
+            }))
+            .child("Allow once");
+        // Always allow · this session — a neutral ghost like Note…, but a
+        // solid hairline so the four buttons read as one family.
+        let always_allow = div()
+            .id(format!("approval-always-{id_always}"))
+            .flex_none()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.hairline(0.14))
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.ink(0.05)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.resolve_approval(id_always.clone(), ApprovalVerdict::AlwaysAllow, cx);
+            }))
+            .child("Always allow · this session");
+        // Deny — restrained danger (the strip's only hue: the app's error
+        // language).
+        let deny = div()
+            .id(format!("approval-deny-{id_deny}"))
+            .flex_none()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.danger.opacity(0.3))
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.danger_muted)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.danger.opacity(0.06)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.resolve_approval(id_deny.clone(), ApprovalVerdict::Deny { note: None }, cx);
+            }))
+            .child("Deny");
+        // Note… — dashed ghost; opens the note editor.
+        let note = div()
+            .id(format!("approval-note-{id_note}"))
+            .flex_none()
+            .px(px(10.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_dashed()
+            .border_color(theme.hairline(0.14))
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.ink(0.05)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.toggle_approval_note(id_note.clone(), window, cx);
+            }))
+            .child(if note_open { "Hide note" } else { "Note…" });
         div()
             .py(px(4.0))
             .w_full()
@@ -166,13 +231,9 @@ impl Transcript {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
-                    .overflow_hidden()
-                    .rounded(px(10.0))
-                    .border_1()
+                    .border_t_1()
+                    .border_b_1()
                     .border_color(theme.border)
-                    .bg(theme.input_glass_bg())
-                    .px(px(12.0))
                     .py(px(10.0))
                     .text_size(crate::typography::ui_rems(12.0))
                     .when_some(gate.origin, |card, origin| {
@@ -211,169 +272,39 @@ impl Transcript {
                                 ))),
                         )
                     })
-                    // Header: pulsing dot + "Waiting for approval · {tool}".
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .size(px(7.0))
-                                    .flex_none()
-                                    .rounded_full()
-                                    .bg(theme.text_muted)
-                                    .opacity(0.25 + 0.75 * pulse),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(format!(
-                                        "Waiting for approval · {tool_name}"
-                                    ))),
-                            ),
-                    )
-                    // The gated target: mono block framed like the
-                    // transcript's own code blocks (neutral hairline + faint
-                    // ink wash) with a quiet neutral 3px left edge.
+                    // The gated target leads: a bare mono line — no
+                    // framing box; the strip's hairlines are the only chrome.
                     .child(
                         div()
                             .w_full()
-                            .flex()
-                            .flex_row()
-                            .overflow_hidden()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(theme.hairline(0.1))
-                            .bg(theme.ink(0.045))
-                            .child(
-                                div()
-                                    .w(px(3.0))
-                                    .flex_none()
-                                    .bg(theme.text_muted.opacity(0.5)),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .px(px(12.0))
-                                    .py(px(10.0))
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .line_height(px(18.0))
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(target)),
-                            ),
+                            .font_family(theme.font_mono.clone())
+                            .text_size(crate::typography::ui_rems(12.5))
+                            .line_height(px(18.0))
+                            .text_color(theme.text)
+                            .child(SharedString::from(target)),
                     )
                     .child(
                         div()
+                            .mt(px(4.0))
                             .text_size(crate::typography::ui_rems(11.0))
                             .line_height(px(15.0))
                             .text_color(theme.text_faint)
                             .child(SharedString::from(meta)),
                     )
-                    // The four verdict affordances (prototype 3-A).
+                    // The verdict affordances, bottom-right; the row wraps
+                    // under narrow widths.
                     .child(
                         div()
+                            .mt(px(8.0))
                             .flex()
                             .flex_row()
+                            .justify_end()
                             .flex_wrap()
-                            .gap(px(8.0))
-                            // Allow once — the primary action in the app's
-                            // subtle-raised idiom (wizard picked-option
-                            // language: faint ink plate + hairline), not the
-                            // dialogs' solid plate.
-                            .child(
-                                div()
-                                    .id(format!("approval-once-{id_once}"))
-                                    .flex_none()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_color(theme.hairline(0.14))
-                                    .bg(theme.ink(0.09))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(theme.ink(0.14)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.resolve_approval(
-                                            id_once.clone(),
-                                            ApprovalVerdict::Allow,
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Allow once"),
-                            )
-                            // Always allow · this session — a neutral ghost
-                            // like Note…, but a solid hairline so the four
-                            // buttons read as one family.
-                            .child(
-                                div()
-                                    .id(format!("approval-always-{id_always}"))
-                                    .flex_none()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_color(theme.hairline(0.14))
-                                    .text_color(theme.text_muted)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(theme.ink(0.05)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.resolve_approval(
-                                            id_always.clone(),
-                                            ApprovalVerdict::AlwaysAllow,
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Always allow · this session"),
-                            )
-                            // Deny — restrained danger (the card's only hue:
-                            // the app's error language).
-                            .child(
-                                div()
-                                    .id(format!("approval-deny-{id_deny}"))
-                                    .flex_none()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_color(theme.danger.opacity(0.3))
-                                    .text_color(theme.danger_muted)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(theme.danger.opacity(0.06)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.resolve_approval(
-                                            id_deny.clone(),
-                                            ApprovalVerdict::Deny { note: None },
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Deny"),
-                            )
-                            // Note… — dashed ghost; opens the note editor.
-                            .child(
-                                div()
-                                    .id(format!("approval-note-{id_note}"))
-                                    .flex_none()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(px(8.0))
-                                    .border_1()
-                                    .border_dashed()
-                                    .border_color(theme.hairline(0.14))
-                                    .text_color(theme.text_muted)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(theme.ink(0.05)))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_approval_note(id_note.clone(), window, cx);
-                                    }))
-                                    .child(if note_open { "Hide note" } else { "Note…" }),
-                            ),
+                            .gap(px(6.0))
+                            .child(allow_once)
+                            .child(always_allow)
+                            .child(deny)
+                            .child(note),
                     )
                     .when_some(note_input, |card, input| {
                         card.child(self.render_approval_note(
@@ -388,10 +319,10 @@ impl Transcript {
             .into_any_element()
     }
 
-    /// The expanding note editor under the card's actions (prototype 3-A):
-    /// the denial reason goes back to the model as the call's error result.
-    /// Enter submits (= Deny with note), Escape cancels the editor WITHOUT
-    /// reaching the composer's Esc-interrupt.
+    /// The expanding note editor at the strip's foot: the denial reason
+    /// goes back to the model as the call's error result. Enter submits
+    /// (= Deny with note), Escape cancels the editor WITHOUT reaching the
+    /// composer's Esc-interrupt.
     fn render_approval_note(
         &mut self,
         row_id: &SharedString,
@@ -405,6 +336,7 @@ impl Transcript {
         div()
             .id(SharedString::from(format!("approval-note-{approval_id}")))
             .w_full()
+            .mt(px(10.0))
             .flex()
             .flex_col()
             .gap(px(8.0))
@@ -500,7 +432,7 @@ impl Transcript {
     }
 
     /// Send the verdict (fire-and-forget: failures are no-ops engine-side,
-    /// and the doc's settled gate is what settles the card). The note
+    /// and the doc's settled gate is what settles the strip). The note
     /// editor, if open, closes with the verdict.
     fn resolve_approval(
         &mut self,
@@ -621,40 +553,6 @@ mod tests {
         assert!(pending_approval_gate(&[]).is_none());
         let settled_only = vec![entry("m1", vec![tool_part("p1", None)])];
         assert!(pending_approval_gate(&settled_only).is_none());
-    }
-
-    #[test]
-    fn tool_names_match_the_prototype() {
-        assert_eq!(
-            approval_tool_name(&ToolCall::Exec {
-                command: "ls".into()
-            }),
-            "bash"
-        );
-        assert_eq!(
-            approval_tool_name(&ToolCall::WriteFile {
-                path: "a.rs".into(),
-                content: None,
-            }),
-            "write"
-        );
-        assert_eq!(
-            approval_tool_name(&ToolCall::EditFile {
-                path: "a.rs".into(),
-                old_string: None,
-                new_string: None,
-            }),
-            "edit"
-        );
-        assert_eq!(
-            approval_tool_name(&ToolCall::ReadFile {
-                path: "a.rs".into()
-            }),
-            tool_chip_content(&ToolCall::ReadFile {
-                path: "a.rs".into()
-            })
-            .0
-        );
     }
 
     #[test]
@@ -855,7 +753,7 @@ mod tests {
     /// Entity + render test: the pending gate lands as an Approval row; the
     /// note editor opens/submits/closes keyed by approval id; the settle
     /// prunes a stale editor; and the whole transcript draws in both states
-    /// (card while pending, verdict chip once settled).
+    /// (strip while pending, verdict chip once settled).
     #[gpui::test]
     fn child_approval_opens_its_source_transcript(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
@@ -919,7 +817,7 @@ mod tests {
             );
             assert!(this.approval_notes.is_empty());
         });
-        // Draw the pending card (pulse, mono block, four affordances).
+        // Draw the pending strip (mono lead line, four affordances).
         cx.draw(
             gpui::point(gpui::px(0.0), gpui::px(0.0)),
             gpui::size(gpui::px(800.0), gpui::px(600.0)),
