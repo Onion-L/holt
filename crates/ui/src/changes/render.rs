@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable as _, SharedString, Window, div, font, list,
-    prelude::*, px,
+    AnyElement, App, Context, CursorStyle, Entity, Focusable as _, SharedString, Window, div, font,
+    list, prelude::*, px,
 };
 
 use holt_rpc::methods;
@@ -1413,6 +1413,7 @@ fn diff_line_row(
                 .font_family(theme.font_mono.clone())
                 .text_size(px(DIFF_TEXT_SIZE))
                 .whitespace_nowrap()
+                .cursor(CursorStyle::IBeam)
                 .relative()
                 .child(underlay)
                 .child(styled),
@@ -1571,6 +1572,7 @@ fn split_line_cell(
                 .font_family(theme.font_mono.clone())
                 .text_size(px(DIFF_TEXT_SIZE))
                 .whitespace_nowrap()
+                .cursor(CursorStyle::IBeam)
                 .relative()
                 .child(underlay)
                 .child(styled),
