@@ -196,7 +196,7 @@ fn read_chat(
     if link.workspace != expected_workspace {
         return Err("This Chat link belongs to another Workspace".into());
     }
-    if !crate::store::chat_id_is_path_safe(&link.chat_id) {
+    if !crate::store::id_is_path_safe(&link.chat_id) {
         return Err("Invalid Chat id".into());
     }
     if link.chat_id == current_chat_id {

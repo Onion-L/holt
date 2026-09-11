@@ -81,7 +81,7 @@ impl Default for Subagents {
 
 pub(crate) fn parent_id(id: &str) -> Option<&str> {
     let (parent, child) = id.split_once("--sub--")?;
-    (crate::store::chat_id_is_path_safe(parent) && uuid::Uuid::parse_str(child).is_ok())
+    (crate::store::id_is_path_safe(parent) && uuid::Uuid::parse_str(child).is_ok())
         .then_some(parent)
 }
 
@@ -127,7 +127,7 @@ impl Subagents {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|id, _| parent_id(id) != Some(parent));
-        if crate::store::chat_id_is_path_safe(parent) {
+        if crate::store::id_is_path_safe(parent) {
             let _ = std::fs::remove_dir_all(directory(data_dir, parent));
         }
     }
@@ -291,9 +291,7 @@ async fn execute(
     tool_id: String,
     args: serde_json::Value,
 ) -> Result<AgentToolResult, String> {
-    if !crate::store::chat_id_is_path_safe(&d.parent.chat_id)
-        || d.parent.chat_id.contains("--sub--")
-    {
+    if !crate::store::id_is_path_safe(&d.parent.chat_id) || d.parent.chat_id.contains("--sub--") {
         return Err("Invalid parent chat id for delegation".into());
     }
     let role = args["subagent_type"]

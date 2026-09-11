@@ -373,6 +373,7 @@ mod tests {
             outcome,
             finished_at: 1_760_000_000_000,
             internal_reason: None,
+            change_set: None,
         }
     }
 

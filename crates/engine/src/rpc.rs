@@ -409,7 +409,7 @@ impl EngineService {
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: QueueCommandParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
-        if !crate::store::chat_id_is_path_safe(&params.chat_id) {
+        if !crate::store::id_is_path_safe(&params.chat_id) {
             return Err(RpcError::BadParams("invalid chatId".into()));
         }
         let chat = self.runtime.chat(&params.chat_id);
@@ -1328,6 +1328,15 @@ fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a
         .ok_or_else(|| RpcError::BadParams(format!("{field} is required")))
 }
 
+/// An optional string param: blank counts as absent.
+fn optional_string(params: &serde_json::Value, field: &str) -> Option<String> {
+    params
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
 /// Mask a stored search key for display: the first and last four
 /// characters joined by an ellipsis. At least one character must stay
 /// hidden, so keys of eight or fewer characters reveal nothing at all.
@@ -1461,7 +1470,7 @@ impl RpcService for EngineService {
             }
             methods::WATCH_MESSAGE_QUEUE => {
                 let chat_id = required_string(&params, "chatId")?;
-                if !crate::store::chat_id_is_path_safe(chat_id) {
+                if !crate::store::id_is_path_safe(chat_id) {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let chat = self.runtime.chat(chat_id);
@@ -1500,7 +1509,7 @@ impl RpcService for EngineService {
             }
             methods::CONTINUE_MESSAGE_QUEUE => {
                 let chat_id = required_string(&params, "chatId")?;
-                if !crate::store::chat_id_is_path_safe(chat_id) {
+                if !crate::store::id_is_path_safe(chat_id) {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let chat = self.runtime.chat(chat_id);
@@ -1522,7 +1531,7 @@ impl RpcService for EngineService {
                 let chat_id = required_string(&params, "chatId")?;
                 let message_id = required_string(&params, "messageId")?;
                 let prompt = required_string(&params, "prompt")?;
-                if !crate::store::chat_id_is_path_safe(chat_id) {
+                if !crate::store::id_is_path_safe(chat_id) {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let chat = self.runtime.chat(chat_id);
@@ -1539,7 +1548,7 @@ impl RpcService for EngineService {
             methods::DELETE_QUEUED_MESSAGE => {
                 let chat_id = required_string(&params, "chatId")?;
                 let message_id = required_string(&params, "messageId")?;
-                if !crate::store::chat_id_is_path_safe(chat_id) {
+                if !crate::store::id_is_path_safe(chat_id) {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let chat = self.runtime.chat(chat_id);
@@ -2121,6 +2130,48 @@ impl RpcService for EngineService {
                                 "chatId is required for turn diffs".into(),
                             ));
                         };
+                        // A Turn-addressed read (ADR-0024 ticket 02) serves
+                        // the settled Turn's immutable before/after pair
+                        // from its persisted record: restarts and later
+                        // workspace edits cannot move history. Without a
+                        // record — the Turn still runs, or its write failed —
+                        // only the chat's CURRENT Turn may fall through to
+                        // the live baseline; an older Turn has no reviewable
+                        // pair to invent.
+                        let addressed = request
+                            .message_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty());
+                        if let Some(message_id) = addressed {
+                            if let Some(record) =
+                                crate::turn_change_store::load(&self.data_dir, chat_id, message_id)
+                            {
+                                let Some(content) = record.content_for(&request.path) else {
+                                    return Err(RpcError::Failed(format!(
+                                        "{} is not part of that turn's changes",
+                                        request.path
+                                    )));
+                                };
+                                return RpcReply::value(&holt_proto::CheckoutFileDiffText {
+                                    diff_checksum: request.diff_checksum.clone(),
+                                    old_text: content.old_text.clone(),
+                                    new_text: content.new_text.clone(),
+                                    old_content_hash: content.old_content_hash.clone(),
+                                    new_content_hash: content.new_content_hash.clone(),
+                                    binary: content.binary,
+                                    truncated: content.truncated,
+                                    stale: false,
+                                });
+                            }
+                            let is_current = self
+                                .turn_changes
+                                .snapshot(chat_id)
+                                .is_some_and(|record| record.message_id == message_id);
+                            if !is_current {
+                                return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+                            }
+                        }
                         let Some(baseline) = self
                             .turn_changes
                             .snapshot(chat_id)
@@ -2154,26 +2205,65 @@ impl RpcService for EngineService {
                 }
             }
 
-            // Turn change sets (ADR-0024, ticket 01): the net Git change
-            // from a Turn's admission baseline to its live or final working
-            // tree. Separate from the checkout-diff scopes, which the UI's
-            // Changes pane owns; this family feeds the Turn card.
+            // Turn change sets (ADR-0024): the net Git change from a Turn's
+            // admission baseline to its live or final working tree. Separate
+            // from the checkout-diff scopes, which the UI's Changes pane
+            // owns; this family feeds the Turn card. With `messageId` the
+            // read addresses one specific Turn — the in-memory record while
+            // the engine knows it, else the persisted record a restart
+            // restores (ticket 02).
             methods::GET_TURN_CHANGE_SET => {
                 let chat_id = required_string(&params, "chatId")?;
                 let root = self.turn_change_root(chat_id)?;
+                let message_id = optional_string(&params, "messageId");
+                let Some(message_id) = message_id else {
+                    // The chat's current Turn is a live Git read: the non-Git
+                    // answer keys on the working directory, never on a
+                    // capture error.
+                    if !self.git.is_work_tree(&root).await {
+                        return RpcReply::value(&TurnChangeSetReply::Unsupported {
+                            reason: NON_GIT_CHANGE_SET_REASON.into(),
+                        });
+                    }
+                    return match self
+                        .turn_changes
+                        .read(&self.git, &self.engine_info.device_id, chat_id)
+                        .await
+                        .map_err(git_fault)?
+                    {
+                        Some(change_set) => {
+                            RpcReply::value(&TurnChangeSetReply::Captured(change_set))
+                        }
+                        None => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
+                    };
+                };
+                // Memory first (a live Turn, or the frozen current/last
+                // one); a restart — or a working tree that can no longer be
+                // captured — falls back to the persisted record, which
+                // outlives the repository it came from: only a Turn with no
+                // record anywhere answers by its working directory.
+                let memory = self
+                    .turn_changes
+                    .read_message(&self.git, &self.engine_info.device_id, chat_id, &message_id)
+                    .await;
+                if let Ok(Some(change_set)) = memory {
+                    return RpcReply::value(&TurnChangeSetReply::Captured(change_set));
+                }
+                if let Some(record) =
+                    crate::turn_change_store::load(&self.data_dir, chat_id, &message_id)
+                {
+                    return RpcReply::value(&TurnChangeSetReply::Captured(
+                        record.change_set(chat_id),
+                    ));
+                }
                 if !self.git.is_work_tree(&root).await {
                     return RpcReply::value(&TurnChangeSetReply::Unsupported {
                         reason: NON_GIT_CHANGE_SET_REASON.into(),
                     });
                 }
-                match self
-                    .turn_changes
-                    .read(&self.git, &self.engine_info.device_id, chat_id)
-                    .await
-                    .map_err(git_fault)?
-                {
-                    Some(change_set) => RpcReply::value(&TurnChangeSetReply::Captured(change_set)),
-                    None => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
+                match memory {
+                    Err(fault) => Err(git_fault(fault)),
+                    Ok(_) => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
                 }
             }
             methods::WATCH_TURN_CHANGE_SET => {

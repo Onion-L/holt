@@ -141,6 +141,10 @@ async fn an_ordinary_turn_publishes_one_succeeded_event_after_settlement() {
     let finished_at = event["finishedAt"].as_i64().expect("finishedAt");
     assert!(finished_at >= submitted_at && finished_at <= now_millis());
     assert!(event.get("internalReason").is_none());
+    // The fixture's working directory is not a Git work tree: no change set
+    // is available, so none rides the event (ADR-0024) — absence means
+    // "unavailable", never "no changes".
+    assert!(event.get("changeSet").is_none());
 
     // The durable records already describe the final state when the event
     // arrives: the settled transcript, and the on-disk queue with its

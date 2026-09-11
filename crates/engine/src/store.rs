@@ -58,20 +58,21 @@ pub(crate) fn persist_spaces(data_dir: &Path, spaces: &[Space]) -> Result<(), En
     Ok(())
 }
 
-/// The chat-id path-safety rule shared by the per-chat files (transcript,
-/// History): uuid-shaped ids only — anything that could escape the file's
-/// directory (path separators, dots) disables the file instead of being
-/// sanitized into a colliding name.
-pub(crate) fn chat_id_is_path_safe(chat_id: &str) -> bool {
-    !chat_id.is_empty()
-        && chat_id
+/// The id path-safety rule shared by the per-record files (transcript,
+/// History, Turn change sets — chat ids and Turn message ids alike):
+/// uuid-shaped ids only — anything that could escape the file's directory
+/// (path separators, dots) disables the file instead of being sanitized
+/// into a colliding name.
+pub(crate) fn id_is_path_safe(id: &str) -> bool {
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Per-chat transcript file.
 pub(crate) fn transcript_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
-    if !chat_id_is_path_safe(chat_id) {
+    if !id_is_path_safe(chat_id) {
         return None;
     }
     Some(data_dir.join("transcripts").join(format!("{chat_id}.json")))

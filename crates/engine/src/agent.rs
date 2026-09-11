@@ -542,8 +542,9 @@ impl AgentRuntime {
         }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
+        crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
-        if crate::store::chat_id_is_path_safe(chat_id) {
+        if crate::store::id_is_path_safe(chat_id) {
             let _ =
                 std::fs::remove_file(self.data_dir.join("queues").join(format!("{chat_id}.json")));
         }

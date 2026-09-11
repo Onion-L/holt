@@ -16,7 +16,7 @@ use pi_core::ai::types::{
     AssistantContent, AssistantMessage, BlockContent, StopReason, TextContent, ToolResultMessage,
 };
 
-use crate::store::chat_id_is_path_safe;
+use crate::store::id_is_path_safe;
 
 /// The History format version carried by the header line.
 const HISTORY_VERSION: u32 = 1;
@@ -24,7 +24,7 @@ const HISTORY_VERSION: u32 = 1;
 /// Per-chat History file, guarded by the same chat-id path-safety rule as
 /// the Transcript (see [`crate::store::transcript_path`]).
 pub(crate) fn history_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
-    if !chat_id_is_path_safe(chat_id) {
+    if !id_is_path_safe(chat_id) {
         return None;
     }
     Some(data_dir.join("history").join(format!("{chat_id}.jsonl")))

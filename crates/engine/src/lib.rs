@@ -50,6 +50,7 @@ mod title_settings;
 mod title_task;
 mod tools;
 mod trash;
+mod turn_change_store;
 mod turn_change_watch;
 mod turn_changes;
 mod turn_events;
@@ -139,7 +140,8 @@ struct EngineService {
     /// git-detected spaces.
     watch: Arc<git_watch::WatchHub>,
     /// Latest Turn baseline per chat (ADR-0024): in-memory, dropped on
-    /// restart. Also carries each Turn's frozen final change set.
+    /// restart. Also carries each Turn's frozen final change set; settled
+    /// Turns persist through `turn_change_store`.
     turn_changes: Arc<turn_changes::TurnChanges>,
     /// The skills capability (ADR-0005/0006): root resolution and catalog
     /// assembly over the upstream loader.

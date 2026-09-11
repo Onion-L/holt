@@ -809,6 +809,11 @@ pub struct GetCheckoutFileDiffTextRequest {
     /// the live working tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
+    /// The Turn whose immutable change set answers a `turn`-mode read
+    /// (ADR-0024): a settled Turn serves its persisted before/after pair;
+    /// the live current Turn reads the working tree against its baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub diff_checksum: String,
 }
 
@@ -872,7 +877,7 @@ pub enum TurnChangeSetPhase {
 /// The net file changes between one main-chat Turn's baseline and its live
 /// or final working tree (ADR-0024). Empty files mean a zero net change —
 /// never a non-Git workspace, which is [`TurnChangeSetReply::Unsupported`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnChangeSet {
     pub chat_id: String,
@@ -1083,12 +1088,14 @@ mod tests {
             base_ref: Some("main".into()),
             chat_id: None,
             commit_sha: Some("deadbeef".into()),
+            message_id: Some("m-1".into()),
             diff_checksum: "abc".into(),
         };
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["checkoutId"], "checkout");
         assert_eq!(value["diffChecksum"], "abc");
         assert_eq!(value["commitSha"], "deadbeef");
+        assert_eq!(value["messageId"], "m-1");
         assert_eq!(
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
             request

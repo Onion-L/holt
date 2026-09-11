@@ -14,6 +14,7 @@ use std::{
 
 use git2::{BranchType, Repository};
 use holt_proto::{CheckoutDiff, DiffFileSummary, RepoRef, TurnFileChange, TurnFileChangeStatus};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Patch text is capped at 3 MiB; per-file diff sides at 1 MiB each.
@@ -447,6 +448,59 @@ impl Git {
             deletions: diff.deletions,
             truncated: diff.truncated,
         })
+    }
+
+    /// The immutable per-file before/after content of a frozen change set
+    /// (ADR-0024 ticket 02), captured once at Turn settlement: the old side
+    /// is each file's turn-start content — read at its turn-start path for a
+    /// rename — and the new side the working-tree file at settle time. This
+    /// is the pair that persists, so later workspace edits and restarts
+    /// cannot move a settled Turn's history. Captured together with the
+    /// summary in ONE locked Git pass, so the two can never disagree about
+    /// what the tree held at settlement.
+    pub(crate) async fn turn_change_freeze(
+        &self,
+        repo_path: &str,
+        device_id: &str,
+        baseline: &TurnBaseline,
+    ) -> Result<TurnChangeFreeze, GitFault> {
+        let device_id = device_id.to_string();
+        let baseline = baseline.clone();
+        self.with_repo(repo_path, move |repo| {
+            let diff = turn_capture(&repo, &device_id, &baseline)?;
+            let mut files: Vec<TurnFileChange> = diff.files.iter().map(turn_file_change).collect();
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            let content = files
+                .iter()
+                .map(|file| {
+                    let old = turn_start_side(
+                        &repo,
+                        file.old_path.as_deref().unwrap_or(&file.path),
+                        &baseline,
+                    )?;
+                    let new = workdir_side(&repo, &file.path);
+                    Ok(TurnFileContent {
+                        path: file.path.clone(),
+                        old_text: old.text,
+                        old_content_hash: old.content_hash,
+                        new_text: new.text,
+                        new_content_hash: new.content_hash,
+                        binary: old.binary || new.binary,
+                        truncated: old.truncated || new.truncated,
+                    })
+                })
+                .collect::<Result<Vec<_>, GitFault>>()?;
+            Ok(TurnChangeFreeze {
+                capture: TurnChangeCapture {
+                    files,
+                    additions: diff.additions,
+                    deletions: diff.deletions,
+                    truncated: diff.truncated,
+                },
+                content,
+            })
+        })
+        .await
     }
 
     /// Whether `repo_path` resolves to a Git work tree. The change set's
@@ -1509,6 +1563,33 @@ pub(crate) struct TurnChangeCapture {
     pub truncated: bool,
 }
 
+/// The settle-time freeze of one Turn's change set (ADR-0024 ticket 02):
+/// the summary and its immutable per-file content, captured from one
+/// working-tree snapshot in one locked Git pass.
+#[derive(Debug, Clone)]
+pub(crate) struct TurnChangeFreeze {
+    pub capture: TurnChangeCapture,
+    pub content: Vec<TurnFileContent>,
+}
+
+/// One file's immutable before/after pair inside a settled Turn's persisted
+/// change-set record (ADR-0024 ticket 02): the turn-start content on the old
+/// side, the settle-time working-tree file on the new side. Binary entries
+/// keep their hashes and carry no text; each side is capped at
+/// [`MAX_FILE_SIDE_BYTES`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TurnFileContent {
+    /// The file's current path — the rename destination.
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    pub old_content_hash: Option<String>,
+    pub new_content_hash: Option<String>,
+    pub binary: bool,
+    pub truncated: bool,
+}
+
 /// Map a Git-derived summary to the change-set vocabulary. A detected
 /// rename keeps its previous path; a move Git could not pair never reaches
 /// here as one delta — it is already a separate delete plus add, the
@@ -1806,16 +1887,15 @@ fn turn_capture(
     })
 }
 
-/// Per-file text for the turn scope: old side is the file's TURN-START
-/// content (baseline section applied over the HEAD blob; the HEAD blob
-/// where the file was clean at turn start), new side the working-tree
-/// file.
-fn turn_file_text_blocking(
+/// The turn-start side of one path: the file's TURN-START content (baseline
+/// section applied over the HEAD blob; the HEAD blob where the file was
+/// clean at turn start; absent when the file did not exist then).
+fn turn_start_side(
     repo: &Repository,
-    request: &holt_proto::GetCheckoutFileDiffTextRequest,
+    path: &str,
     baseline: &TurnBaseline,
-) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
-    let path = Path::new(&request.path);
+) -> Result<FileSide, GitFault> {
+    let path = Path::new(path);
     let base_tree = if baseline.head_sha == EMPTY_HEAD {
         None
     } else {
@@ -1837,7 +1917,7 @@ fn turn_file_text_blocking(
     });
     let baseline_section = split_sections(&baseline.patch)
         .into_iter()
-        .find(|section| section.path == request.path)
+        .find(|section| section.path == path.display().to_string())
         .map(|section| section.text);
     let old_bytes: Option<Vec<u8>> = match &baseline_section {
         None => head_blob,
@@ -1850,12 +1930,30 @@ fn turn_file_text_blocking(
         )
         .map(String::into_bytes),
     };
+    Ok(file_side(old_bytes))
+}
+
+/// The working-tree side of one path: the file's current bytes, absent when
+/// it is deleted.
+fn workdir_side(repo: &Repository, path: &str) -> FileSide {
     let new_bytes = repo
         .workdir()
-        .map(|workdir| workdir.join(path))
+        .map(|workdir| workdir.join(Path::new(path)))
         .and_then(|full| std::fs::read(full).ok());
-    let old = file_side(old_bytes);
-    let new = file_side(new_bytes);
+    file_side(new_bytes)
+}
+
+/// Per-file text for the turn scope: old side is the file's TURN-START
+/// content (baseline section applied over the HEAD blob; the HEAD blob
+/// where the file was clean at turn start), new side the working-tree
+/// file.
+fn turn_file_text_blocking(
+    repo: &Repository,
+    request: &holt_proto::GetCheckoutFileDiffTextRequest,
+    baseline: &TurnBaseline,
+) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
+    let old = turn_start_side(repo, &request.path, baseline)?;
+    let new = workdir_side(repo, &request.path);
 
     Ok(holt_proto::CheckoutFileDiffText {
         diff_checksum: request.diff_checksum.clone(),

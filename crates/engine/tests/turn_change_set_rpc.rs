@@ -1,8 +1,11 @@
-//! Handle-seam tests for Turn change sets (ADR-0024, ticket 01): a real
+//! Handle-seam tests for Turn change sets (ADR-0024, tickets 01+02): a real
 //! engine on a temp data dir, a real fixture repository built with git2,
 //! driven through `RpcService` exactly as the UI drives it. The change set
 //! is the net Git change between a Turn's admission baseline and its live
-//! or final working tree — separate from the checkout-diff scopes.
+//! or final working tree — separate from the checkout-diff scopes. Ticket 02
+//! freezes settled Turns durably: the summary and the immutable per-file
+//! before/after content persist under the data dir, survive a restart, and
+//! never move with later workspace edits.
 
 mod common;
 
@@ -13,7 +16,10 @@ use common::{ScriptedProvider, ScriptedReply, next_frame, run_prompt, wait_for_r
 use futures::StreamExt as _;
 use git2::Repository;
 use holt_engine::{EngineConfig, LocalEngine};
-use holt_proto::{TurnChangeSet, TurnChangeSetPhase, TurnChangeSetReply, TurnFileChangeStatus};
+use holt_proto::{
+    CheckoutFileDiffText, TurnChangeSet, TurnChangeSetPhase, TurnChangeSetReply,
+    TurnFileChangeStatus,
+};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use tempfile::TempDir;
 use tokio::sync::Notify;
@@ -240,6 +246,94 @@ async fn setup(fixture: &Fixture, engine: &LocalEngine) {
     register_space(engine, &fixture.repo_path(), "space-1").await;
     create_chat(engine, "chat-1", "space-1").await;
     save_key(engine).await;
+}
+
+/// Queue a `run` command with an explicit message id — the identity the
+/// persisted change-set record and the terminal event are keyed by.
+async fn queue_run(engine: &LocalEngine, chat_id: &str, cwd: &str, message_id: &str, prompt: &str) {
+    engine
+        .handle(
+            methods::QUEUE_COMMAND,
+            serde_json::json!({
+                "chatId": chat_id,
+                "command": {
+                    "kind": "run",
+                    "messageId": message_id,
+                    "request": {
+                        "prompt": prompt,
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": cwd,
+                        "sandbox": "workspace-write"
+                    }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+/// The change set of one specific Turn by message id.
+async fn captured_message(
+    engine: &LocalEngine,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<TurnChangeSetReply, RpcError> {
+    match engine
+        .handle(
+            methods::GET_TURN_CHANGE_SET,
+            serde_json::json!({ "chatId": chat_id, "messageId": message_id }),
+        )
+        .await
+    {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Ok(_) => panic!("GetTurnChangeSet did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+/// The turn-scope per-file diff text, addressed by Turn identity.
+async fn file_diff_text(
+    engine: &LocalEngine,
+    chat_id: &str,
+    message_id: &str,
+    path: &str,
+    cwd: &str,
+) -> Result<CheckoutFileDiffText, RpcError> {
+    match engine
+        .handle(
+            methods::GET_CHECKOUT_FILE_DIFF_TEXT,
+            serde_json::json!({
+                "checkoutId": "",
+                "cwd": cwd,
+                "path": path,
+                "mode": "turn",
+                "chatId": chat_id,
+                "messageId": message_id,
+                "diffChecksum": "",
+            }),
+        )
+        .await
+    {
+        Ok(RpcReply::Value(value)) => Ok(serde_json::from_value(value).unwrap()),
+        Ok(_) => panic!("GetCheckoutFileDiffText did not return a value"),
+        Err(error) => Err(error),
+    }
+}
+
+async fn subscribe_events(
+    engine: &LocalEngine,
+) -> futures::stream::BoxStream<'static, serde_json::Value> {
+    let RpcReply::Stream(events) = engine
+        .handle(methods::WATCH_TURN_TERMINAL_EVENTS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchTurnTerminalEvents did not return a stream");
+    };
+    events
 }
 
 // ---------------------------------------------------------------------------
@@ -751,4 +845,395 @@ async fn the_watch_reports_unsupported_and_ends_on_a_non_git_root() {
         .await
         .expect("the non-Git stream ends promptly");
     assert!(end.is_none(), "the stream ends after its one frame");
+}
+
+// ---------------------------------------------------------------------------
+// Persistence (ticket 02): settled Turns freeze durably, survive a restart,
+// and never move with later workspace edits.
+// ---------------------------------------------------------------------------
+
+/// The barrier every persistence assertion waits on: the Turn terminal
+/// event publishes only after queue completion AND the change-set record
+/// are durable, while the queue watch alone can settle one await earlier.
+async fn await_settled(
+    engine: &LocalEngine,
+    events: &mut futures::stream::BoxStream<'static, serde_json::Value>,
+) -> serde_json::Value {
+    settle_queue(engine, "chat-1", true).await;
+    next_frame(events).await
+}
+
+#[tokio::test]
+async fn a_settled_turn_change_set_is_restored_by_message_id_after_a_restart() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+    let settled = await_settled(&engine, &mut events).await;
+    assert_eq!(settled["messageId"], "m-1");
+
+    let before = captured(&engine, "chat-1").await;
+    assert_eq!(before.phase, TurnChangeSetPhase::Final);
+    assert_eq!(before.message_id, "m-1");
+    drop(engine);
+
+    // A fresh engine on the same data dir: the settled Turn's summary comes
+    // back from the persisted record, not from any live baseline.
+    let engine = fixture.engine(&provider);
+    match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => {
+            assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+            assert_eq!(change_set.message_id, "m-1");
+            assert_eq!(change_set.files, before.files, "the frozen files survive");
+            assert_eq!(change_set.additions, before.additions);
+            assert_eq!(change_set.deletions, before.deletions);
+        }
+        TurnChangeSetReply::Unsupported { reason } => {
+            panic!("expected a restored change set, got unsupported: {reason}")
+        }
+    }
+
+    // An unknown message id stays an explicit error, not an empty set.
+    let error = captured_message(&engine, "chat-1", "never-ran")
+        .await
+        .expect_err("no record for that Turn");
+    assert!(
+        error.to_string().contains("no turn recorded"),
+        "the UI soft-matches this phrase: {error}"
+    );
+}
+
+#[tokio::test]
+async fn the_persisted_file_diff_is_immutable_under_later_edits_and_restarts() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    drop(engine);
+
+    // Later workspace edits must not pollute the settled Turn's history:
+    // the persisted before/after pair is the answer, not the live tree.
+    std::fs::write(
+        fixture.path("README.md"),
+        "hello\nuser rewrote everything\n",
+    )
+    .unwrap();
+
+    let engine = fixture.engine(&provider);
+    let text = file_diff_text(&engine, "chat-1", "m-1", "README.md", &fixture.repo_path())
+        .await
+        .unwrap();
+    assert_eq!(text.old_text.as_deref(), Some("hello\n"));
+    assert_eq!(text.new_text.as_deref(), Some("hello\nagent edit\n"));
+    assert!(!text.stale, "an immutable pair is never stale");
+    assert!(!text.binary);
+
+    // And the same answer after a second restart, with the file changed
+    // again: history does not move.
+    std::fs::write(fixture.path("README.md"), "hello\nand again\n").unwrap();
+    drop(engine);
+    let engine = fixture.engine(&provider);
+    let again = file_diff_text(&engine, "chat-1", "m-1", "README.md", &fixture.repo_path())
+        .await
+        .unwrap();
+    assert_eq!(again.new_text, text.new_text);
+}
+
+#[tokio::test]
+async fn a_deleted_file_stays_reviewable_from_the_persisted_record() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "delete a file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::remove_file(fixture.path("movable.txt")).unwrap();
+    gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let change_set = match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => change_set,
+        TurnChangeSetReply::Unsupported { reason } => panic!("unsupported: {reason}"),
+    };
+    assert_eq!(
+        change_set
+            .files
+            .iter()
+            .find(|file| file.path == "movable.txt")
+            .map(|file| file.status),
+        Some(TurnFileChangeStatus::Deleted)
+    );
+    let text = file_diff_text(
+        &engine,
+        "chat-1",
+        "m-1",
+        "movable.txt",
+        &fixture.repo_path(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text.old_text.as_deref(), Some(movable_body().as_str()));
+    assert_eq!(text.new_text, None, "the file is gone on the new side");
+}
+
+#[tokio::test]
+async fn a_rename_persists_its_pre_move_old_side() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "move a file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    // An unmodified move Git pairs as a rename.
+    std::fs::rename(fixture.path("movable.txt"), fixture.path("moved-away.txt")).unwrap();
+    gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let change_set = match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => change_set,
+        TurnChangeSetReply::Unsupported { reason } => panic!("unsupported: {reason}"),
+    };
+    let moved = change_set
+        .files
+        .iter()
+        .find(|file| file.path == "moved-away.txt")
+        .expect("the rename destination");
+    assert_eq!(moved.status, TurnFileChangeStatus::Renamed);
+    assert_eq!(moved.old_path.as_deref(), Some("movable.txt"));
+
+    // The old side is the pre-move content, not an invented empty file.
+    let text = file_diff_text(
+        &engine,
+        "chat-1",
+        "m-1",
+        "moved-away.txt",
+        &fixture.repo_path(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text.old_text.as_deref(), Some(movable_body().as_str()));
+    assert_eq!(text.new_text.as_deref(), Some(movable_body().as_str()));
+}
+
+#[tokio::test]
+async fn history_outlives_the_repository_disappearing() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+    let settled = await_settled(&engine, &mut events).await;
+    let frozen_files = settled["changeSet"]["files"].clone();
+    assert!(frozen_files.is_array(), "{settled}");
+    drop(engine);
+
+    // The working directory stops being a Git work tree entirely: the
+    // persisted bytes still answer — history never depended on the repo
+    // surviving.
+    std::fs::remove_dir_all(fixture.repo_dir.path().join(".git")).unwrap();
+    let engine = fixture.engine(&provider);
+    let change_set = match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => change_set,
+        TurnChangeSetReply::Unsupported { reason } => {
+            panic!("a persisted record outranks the non-Git answer: {reason}")
+        }
+    };
+    assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+    assert_eq!(
+        serde_json::to_value(&change_set.files).unwrap(),
+        frozen_files,
+        "the frozen files survive the repository"
+    );
+    let text = file_diff_text(&engine, "chat-1", "m-1", "README.md", &fixture.repo_path())
+        .await
+        .unwrap();
+    assert_eq!(text.new_text.as_deref(), Some("hello\nagent edit\n"));
+}
+
+#[tokio::test]
+async fn the_terminal_event_carries_the_final_change_set_after_persistence() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+
+    let event = await_settled(&engine, &mut events).await;
+    assert_eq!(event["messageId"], "m-1");
+    let change_set = &event["changeSet"];
+    assert!(
+        change_set.is_object(),
+        "the event carries the final set: {event}"
+    );
+    assert_eq!(change_set["messageId"], "m-1");
+    assert_eq!(change_set["phase"], "final");
+    assert_eq!(change_set["files"][0]["path"], "README.md", "{change_set}");
+
+    // The payload implies durability: the record was on disk before the
+    // event was published.
+    assert!(
+        fixture
+            .data_dir
+            .path()
+            .join("turn-changes/chat-1/m-1.json")
+            .exists(),
+        "the persisted record exists by the time the event arrives"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_change_set_persistence_failure_never_fails_the_turn_or_the_event() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    // Break the turn-changes directory so the durable write cannot land.
+    let records = fixture.data_dir.path().join("turn-changes");
+    std::fs::create_dir_all(&records).unwrap();
+    std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o500)).unwrap();
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+
+    // The Turn still settles cleanly and its event still publishes — the
+    // change set is history, never Turn correctness — but the event carries
+    // no payload it could not durably back.
+    settle_queue(&engine, "chat-1", true).await;
+    let event = next_frame(&mut events).await;
+    assert_eq!(event["messageId"], "m-1");
+    assert!(
+        event.get("changeSet").is_none(),
+        "no payload without a durable record: {event}"
+    );
+    let change_set = captured(&engine, "chat-1").await;
+    assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+
+    std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[tokio::test]
+async fn deleting_the_chat_removes_its_persisted_change_sets() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    let mut events = subscribe_events(&engine).await;
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "edit the file",
+    )
+    .await;
+    wait_for_requests(&provider, 1).await;
+    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    assert!(
+        fixture
+            .data_dir
+            .path()
+            .join("turn-changes/chat-1/m-1.json")
+            .exists()
+    );
+
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({ "op": "deleteChat", "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !fixture.data_dir.path().join("turn-changes/chat-1").exists(),
+        "chat deletion reclaims the chat's change-set history"
+    );
 }

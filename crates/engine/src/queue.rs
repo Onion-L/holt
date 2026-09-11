@@ -77,7 +77,7 @@ pub(crate) struct Queue {
 impl Queue {
     pub fn load(data_dir: &Path, chat_id: &str) -> Self {
         let path = data_dir.join("queues").join(format!("{chat_id}.json"));
-        let result = if !crate::store::chat_id_is_path_safe(chat_id) {
+        let result = if !crate::store::id_is_path_safe(chat_id) {
             Err("invalid chatId".into())
         } else {
             match std::fs::read(&path) {
@@ -621,6 +621,54 @@ impl EngineService {
         }
     }
 
+    /// Freeze one settled Turn's change set, in memory and durably (ADR-0024
+    /// ticket 02): capture the summary and its immutable per-file
+    /// before/after content in ONE Git pass, freeze it, and atomically write
+    /// the record under the data dir before anything may publish it. Returns
+    /// the wire change set only when the record is on disk — the terminal
+    /// event carries nothing it cannot durably back. Every failure is
+    /// logged and swallowed: this is history, never Turn correctness.
+    async fn settle_turn_change_set(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Option<holt_proto::TurnChangeSet> {
+        // An id that cannot name a record file has no durable history to
+        // claim: skip before capturing, so success always means on-disk.
+        crate::turn_change_store::record_path(&self.data_dir, chat_id, message_id)?;
+        let snapshot = self.turn_changes.snapshot_message(chat_id, message_id)?;
+        let freeze = self
+            .git
+            .turn_change_freeze(
+                &snapshot.cwd,
+                &self.engine_info.device_id,
+                &snapshot.baseline,
+            )
+            .await
+            .ok()?;
+        self.turn_changes
+            .freeze(chat_id, message_id, freeze.capture.clone());
+        let record =
+            crate::turn_change_store::TurnChangeRecord::frozen(message_id, &snapshot.cwd, &freeze);
+        if let Err(error) = crate::turn_change_store::save(&self.data_dir, chat_id, &record) {
+            tracing::warn!(
+                target: "holt::turn_changes",
+                chat_id,
+                message_id,
+                %error,
+                "could not persist the Turn change set"
+            );
+            return None;
+        }
+        Some(crate::turn_changes::change_set(
+            chat_id,
+            message_id,
+            holt_proto::TurnChangeSetPhase::Final,
+            &freeze.capture,
+            record.settled_at,
+        ))
+    }
+
     pub(crate) fn kick_queue(&self, chat: Arc<ChatRuntime>) {
         if chat.driver_running.swap(true, Ordering::AcqRel) {
             return;
@@ -794,20 +842,22 @@ impl EngineService {
                         },
                     );
                 }
-                // A settled real Turn captures its final change set now,
+                // A settled real Turn freezes its final change set now,
                 // whether or not the terminal event's durable gate below
                 // passes. A capture failure never fails the Turn.
-                if turn_end.is_some() && settled.is_some() {
+                let final_change_set = if turn_end.is_some() && settled.is_some() {
+                    // The frozen set persists before anything publishes it
+                    // (ADR-0024 ticket 02): the terminal event carries a
+                    // change set only once its record is durable, so
+                    // history survives restarts and later edits. Also
+                    // best-effort — a failed write costs the payload, never
+                    // the Turn.
                     service
-                        .turn_changes
-                        .finish(
-                            &service.git,
-                            &service.engine_info.device_id,
-                            &worker_chat.chat_id,
-                            &picked_id,
-                        )
-                        .await;
-                }
+                        .settle_turn_change_set(&worker_chat.chat_id, &picked_id)
+                        .await
+                } else {
+                    None
+                };
                 // The Turn terminal event (ADR-0019): exactly one per real
                 // main-chat Turn, only AFTER Transcript and History settled
                 // and queue completion was durably recorded. A completion
@@ -834,6 +884,7 @@ impl EngineService {
                         outcome,
                         finished_at: chrono::Utc::now().timestamp_millis(),
                         internal_reason: reason,
+                        change_set: final_change_set,
                     });
                 }
             }

@@ -987,6 +987,7 @@ async fn file_diff_text_serves_old_new_sides_binary_and_staleness() {
         base_ref: None,
         chat_id: Some("chat-1".into()),
         commit_sha: None,
+        message_id: None,
         diff_checksum: checksum,
     };
 
@@ -1287,6 +1288,7 @@ async fn branch_scope_file_text_reads_the_merge_base_blob() {
         base_ref: Some("feature".into()),
         chat_id: Some("chat-1".into()),
         commit_sha: None,
+        message_id: None,
         diff_checksum: diff.checksum.clone(),
     };
     let RpcReply::Value(value) = engine
@@ -1584,6 +1586,7 @@ async fn commit_mode_file_text_reads_parent_and_commit_blobs() {
         base_ref: None,
         chat_id: Some("chat-1".into()),
         commit_sha: Some(feature_oid.to_string()),
+        message_id: None,
         diff_checksum: diff.checksum.clone(),
     };
     let RpcReply::Value(value) = engine
@@ -2010,6 +2013,7 @@ async fn turn_file_text_reads_turn_start_content_and_the_workdir() {
         base_ref: None,
         chat_id: Some("chat-1".into()),
         commit_sha: None,
+        message_id: None,
         diff_checksum: diff.checksum.clone(),
     };
     let RpcReply::Value(value) = engine

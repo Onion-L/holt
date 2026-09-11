@@ -209,6 +209,7 @@ impl Changes {
                     base_ref,
                     chat_id,
                     commit_sha,
+                    message_id: None,
                     diff_checksum: diff.checksum,
                 };
                 let params = serde_json::to_value(request)

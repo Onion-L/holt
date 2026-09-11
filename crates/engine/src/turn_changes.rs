@@ -1,9 +1,10 @@
 //! Turn change sets (ADR-0024, ticket 01): the net Git change between a
 //! main-chat Turn's admission baseline and its live or final working tree.
 //!
-//! In-memory: a chat's record is replaced when its next Turn is admitted,
-//! and an engine restart drops every record. Persisting settled Turns and
-//! replaying their per-file content is ticket 02's slice.
+//! This module is the in-memory handoff: a chat's record is replaced when
+//! its next Turn is admitted, and an engine restart drops every record.
+//! Settled Turns persist through `turn_change_store` (ticket 02), whose
+//! records answer by message id once these are gone.
 //!
 //! Two records per chat are kept so the final result survives an
 //! auto-advanced next Turn: the current Turn, plus the most recently settled
@@ -155,27 +156,20 @@ impl TurnChanges {
     /// Mark the chat's current Turn settled (ADR-0024) the instant its
     /// durable records do, so a reader can never see a settled queue beside
     /// a still-live change set. The frozen capture lands with
-    /// [`TurnChanges::finish`] or the first read.
+    /// [`TurnChanges::freeze`] or the first read.
     pub(crate) fn settle(&self, chat_id: &str, message_id: &str) {
         self.update(chat_id, message_id, |record| record.settled = true);
     }
 
-    /// Freeze the settled Turn's final change set (ADR-0024): capture from
-    /// the still-current baseline and store it immutably, only while the
-    /// record still belongs to `message_id`. Runs before the Turn terminal
-    /// event is published, so the final set is what consumers see with the
-    /// Turn result. A capture failure never fails the Turn — the first
+    /// Freeze the settled Turn's final change set (ADR-0024): store an
+    /// already-captured change set immutably, only while the record still
+    /// belongs to `message_id`. The caller captures once — summary and
+    /// content in one Git pass (`Git::turn_change_freeze`) — then freezes
+    /// and persists; the freeze runs before the Turn terminal event is
+    /// published, so the final set is what consumers see with the Turn
+    /// result. A capture failure never fails the Turn — the first
     /// successful read freezes instead.
-    pub(crate) async fn finish(&self, git: &Git, device_id: &str, chat_id: &str, message_id: &str) {
-        let Some(snapshot) = self.snapshot_message(chat_id, message_id) else {
-            return;
-        };
-        let Ok(capture) = git
-            .turn_change_capture(&snapshot.cwd, device_id, &snapshot.baseline)
-            .await
-        else {
-            return;
-        };
+    pub(crate) fn freeze(&self, chat_id: &str, message_id: &str, capture: TurnChangeCapture) {
         self.update(chat_id, message_id, |record| {
             record.settled = true;
             if record.final_change.is_none() {
@@ -221,6 +215,7 @@ impl TurnChanges {
             &snapshot.message_id,
             phase,
             &capture,
+            chrono::Utc::now(),
         )))
     }
 
@@ -262,12 +257,15 @@ impl TurnSnapshot {
     }
 }
 
-/// Compose the wire change set for one capture.
+/// Compose the wire change set for one capture. `updated_at` is the read
+/// time for a live capture, or the persisted settle time for a restored
+/// record.
 pub(crate) fn change_set(
     chat_id: &str,
     message_id: &str,
     phase: TurnChangeSetPhase,
     capture: &TurnChangeCapture,
+    updated_at: chrono::DateTime<chrono::Utc>,
 ) -> TurnChangeSet {
     TurnChangeSet {
         chat_id: chat_id.to_string(),
@@ -277,7 +275,7 @@ pub(crate) fn change_set(
         additions: capture.additions,
         deletions: capture.deletions,
         truncated: capture.truncated,
-        updated_at: chrono::Utc::now(),
+        updated_at,
     }
 }
 
