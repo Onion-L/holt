@@ -630,6 +630,12 @@ impl ComposerInput {
         self.content.is_empty()
     }
 
+    /// Whether the secret projection is on (content renders as bullets), as
+    /// last set by [`Self::set_masked`] or [`Self::new_secret`].
+    pub fn is_masked(&self) -> bool {
+        self.masked
+    }
+
     /// Set (or clear) the inline completion preview. Only paints while the
     /// caret sits at the end of a non-empty draft — see the prepaint gate.
     pub fn set_ghost(&mut self, ghost: Option<SharedString>, cx: &mut Context<Self>) {
