@@ -392,6 +392,7 @@ async fn execute(
                 skills: d.skills,
                 invocation: None,
                 permission_mode: d.permission_mode,
+                plan: None,
                 search_backend: d.search_backend,
                 stream_fn: Some(stream_fn),
             })
