@@ -2014,10 +2014,11 @@ impl RpcService for EngineService {
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))
             }
-            // The composer's slash menu (ADR-0011): the one command this
+            // The composer's slash menu (ADR-0011/0025): the commands this
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
-                { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" }
+                { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" },
+                { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task | off | status]" }
             ])),
             // The skills catalog (ADR-0005): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.

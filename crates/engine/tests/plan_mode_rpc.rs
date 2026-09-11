@@ -280,3 +280,26 @@ async fn plan_mode_state_survives_restart_without_starting_a_turn() {
     );
     assert_eq!(provider.requests().len(), 0);
 }
+
+#[tokio::test]
+async fn the_command_catalog_advertises_plan() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    let RpcReply::Value(commands) = engine
+        .handle(methods::LIST_COMMANDS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("ListCommands did not return a value");
+    };
+    let commands = commands.as_array().unwrap();
+    let plan = commands
+        .iter()
+        .find(|command| command["name"] == "plan")
+        .expect("the catalog advertises /plan");
+    assert_eq!(
+        plan["inputHint"],
+        serde_json::json!("[task | off | status]"),
+        "the catalog advertises all four /plan forms"
+    );
+}

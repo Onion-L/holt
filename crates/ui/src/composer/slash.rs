@@ -25,6 +25,25 @@ pub(crate) enum Parsed {
     /// `/compact` with arguments — still intercepted, with the usage
     /// message for the composer to surface.
     MalformedCompact,
+    /// `/plan [off | status | <task>]` — intercepted; the raw directive
+    /// never becomes prompt text (ADR-0025). Bare `/plan` and `/plan off`
+    /// and `/plan status` travel alone; `/plan <task>` sends the task as
+    /// the ordinary planning input.
+    Plan { action: PlanAction },
+}
+
+/// One `/plan` form (ADR-0025).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlanAction {
+    /// `/plan` — enter Plan Mode on the current chat.
+    Enter,
+    /// `/plan off` — leave Plan Mode (plan documents stay).
+    Off,
+    /// `/plan status` — show the chat's Plan Mode state.
+    Status,
+    /// `/plan <task>` — enter Plan Mode and send the task as the first
+    /// planning input.
+    Task(String),
 }
 
 /// One `/` popup row, from either source: a catalog skill (ADR-0005 —
@@ -172,10 +191,10 @@ pub(crate) fn parse(text: &str) -> Parsed {
 }
 
 /// `/compact` takes no arguments; `/compacted`-style longer words stay
-/// plain text.
+/// plain text (and `/plan` gets its turn next in the chain).
 fn parse_compact(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/compact") else {
-        return Parsed::Plain;
+        return parse_plan(text);
     };
     if rest.is_empty() || rest.trim().is_empty() {
         return Parsed::Compact;
@@ -185,6 +204,39 @@ fn parse_compact(text: &str) -> Parsed {
     }
     // `/compacted …` and friends are ordinary text.
     Parsed::Plain
+}
+
+/// `/plan` forms (ADR-0025): bare `/plan` enters, `/plan off` leaves,
+/// `/plan status` queries, and `/plan <task>` enters with the task as the
+/// first planning input. `/planner`-style longer words and mid-text
+/// directives stay ordinary text.
+fn parse_plan(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/plan") else {
+        return Parsed::Plain;
+    };
+    if rest.is_empty() || rest.trim().is_empty() {
+        return Parsed::Plan {
+            action: PlanAction::Enter,
+        };
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        // `/planner` and friends are ordinary text.
+        return Parsed::Plain;
+    }
+    let rest = rest.trim();
+    if rest == "off" {
+        return Parsed::Plan {
+            action: PlanAction::Off,
+        };
+    }
+    if rest == "status" {
+        return Parsed::Plan {
+            action: PlanAction::Status,
+        };
+    }
+    Parsed::Plan {
+        action: PlanAction::Task(rest.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +279,55 @@ mod tests {
         assert_eq!(parse("/compaction please"), Parsed::Plain);
         // Mid-text directives stay ordinary text.
         assert_eq!(parse("please /compact"), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_the_four_plan_forms() {
+        assert_eq!(
+            parse("/plan"),
+            Parsed::Plan {
+                action: PlanAction::Enter
+            }
+        );
+        assert_eq!(
+            parse("  /plan   "),
+            Parsed::Plan {
+                action: PlanAction::Enter
+            }
+        );
+        assert_eq!(
+            parse("/plan off"),
+            Parsed::Plan {
+                action: PlanAction::Off
+            }
+        );
+        assert_eq!(
+            parse("/plan status"),
+            Parsed::Plan {
+                action: PlanAction::Status
+            }
+        );
+        assert_eq!(
+            parse("/plan redesign the ingest pipeline"),
+            Parsed::Plan {
+                action: PlanAction::Task("redesign the ingest pipeline".into())
+            }
+        );
+        // Task text is verbatim (trimmed), not split.
+        assert_eq!(
+            parse("  /plan  add /plan-aware docs "),
+            Parsed::Plan {
+                action: PlanAction::Task("add /plan-aware docs".into())
+            }
+        );
+    }
+
+    #[test]
+    fn plan_longer_words_and_mid_text_stay_plain() {
+        assert_eq!(parse("/planner"), Parsed::Plain);
+        assert_eq!(parse("/plans status"), Parsed::Plain);
+        assert_eq!(parse("please /plan off"), Parsed::Plain);
+        assert_eq!(parse(""), Parsed::Plain);
     }
 
     #[test]

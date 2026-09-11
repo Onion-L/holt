@@ -13,7 +13,7 @@
 
 use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 
-use holt_proto::PermissionMode;
+use holt_proto::{Chat, PermissionMode};
 use holt_rpc::methods;
 
 use crate::popover;
@@ -118,6 +118,19 @@ pub(crate) async fn set_chat_permission_mode(
     }
 }
 
+/// The Plan Mode footer label (ADR-0025): `None` when the chat is not
+/// planning; otherwise the mode plus the active revision's lifecycle.
+pub(crate) fn plan_label(chat: Option<&Chat>) -> Option<String> {
+    let state = chat?.plan_mode.as_ref()?;
+    Some(match state.active_plan.as_ref() {
+        Some(plan) => match plan.state {
+            holt_proto::PlanLifecycle::Planning => "Plan · drafting".to_string(),
+            holt_proto::PlanLifecycle::AwaitingApproval => "Plan · awaiting approval".to_string(),
+        },
+        None => "Plan".to_string(),
+    })
+}
+
 impl Pickers {
     /// The mode the chip advertises: the selected chat's stored mode; on the
     /// new-chat canvas the draft pick, else confirm-changes (the first-launch
@@ -175,6 +188,18 @@ impl Pickers {
             theme,
             cx,
         )
+    }
+
+    /// The Plan Mode chip (ADR-0025): shown beside the permission chip while
+    /// the selected chat is planning — a read-only label (entry/exit ride
+    /// `/plan`; the transcript's approval card resolves submissions).
+    pub(super) fn plan_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let label = plan_label(self.state.read(cx).selected_chat_row())?;
+        Some(Self::footer_label(
+            crate::icons::CHECKLIST,
+            SharedString::from(label),
+            theme,
+        ))
     }
 
     /// The tier menu (prototype 1-B): one row per tier — icon, name, one-line
@@ -257,6 +282,38 @@ impl Pickers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_label_reflects_the_lifecycle() {
+        let none = chat("chat-1", PermissionMode::ConfirmChanges);
+        assert_eq!(plan_label(Some(&none)), None);
+        assert_eq!(plan_label(None), None);
+
+        let mut planning = chat("chat-1", PermissionMode::ConfirmChanges);
+        planning.plan_mode = Some(holt_proto::ChatPlanState {
+            entry_permission_mode: PermissionMode::ConfirmChanges,
+            active_plan: None,
+        });
+        assert_eq!(plan_label(Some(&planning)).as_deref(), Some("Plan"));
+
+        planning.plan_mode.as_mut().unwrap().active_plan = Some(holt_proto::ActivePlan {
+            plan_id: "p1".into(),
+            state: holt_proto::PlanLifecycle::Planning,
+        });
+        assert_eq!(
+            plan_label(Some(&planning)).as_deref(),
+            Some("Plan · drafting")
+        );
+
+        planning.plan_mode.as_mut().unwrap().active_plan = Some(holt_proto::ActivePlan {
+            plan_id: "p1".into(),
+            state: holt_proto::PlanLifecycle::AwaitingApproval,
+        });
+        assert_eq!(
+            plan_label(Some(&planning)).as_deref(),
+            Some("Plan · awaiting approval")
+        );
+    }
 
     fn chat(id: &str, mode: PermissionMode) -> holt_proto::Chat {
         holt_proto::Chat {

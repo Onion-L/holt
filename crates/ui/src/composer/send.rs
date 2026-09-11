@@ -14,6 +14,30 @@ use crate::attachments;
 use crate::state::Indicator;
 use crate::theme::Theme;
 
+/// The `/plan status` notice line from a `PlanModeState` reply — humanized
+/// the way the footer chip words it, never raw serde tokens.
+fn plan_status_notice(state: &serde_json::Value) -> String {
+    if state["active"] != serde_json::json!(true) {
+        return "Plan Mode: off".into();
+    }
+    let plan = match &state["activePlan"] {
+        serde_json::Value::Null => None,
+        plan => Some(plan),
+    };
+    let plan_line = match plan.map(|plan| (&plan["planId"], &plan["state"])) {
+        Some((serde_json::Value::String(id), serde_json::Value::String(st))) => {
+            let lifecycle = match st.as_str() {
+                "planning" => "drafting",
+                "awaitingApproval" => "awaiting approval",
+                other => other,
+            };
+            format!(" · plan {id} · {lifecycle}")
+        }
+        _ => " · no plan yet".to_string(),
+    };
+    format!("Plan Mode: on{plan_line}")
+}
+
 fn failure_restore_text(parsed: &super::slash::Parsed, typed: String) -> Option<String> {
     (!matches!(parsed, super::slash::Parsed::Compact)).then_some(typed)
 }
@@ -117,6 +141,25 @@ impl Composer {
                 cx.notify();
                 return;
             }
+            // The mode-only /plan forms dispatch themselves (ADR-0025):
+            // Enter on the current chat; Off and Status query or clear it.
+            // They send no message, so they never reach the send path —
+            // a draft chat has nothing to enter or query yet.
+            super::slash::Parsed::Plan { action } => match action {
+                super::slash::PlanAction::Enter => {
+                    self.plan_command("enter", None, cx);
+                    return;
+                }
+                super::slash::PlanAction::Off => {
+                    self.plan_command("exit", None, cx);
+                    return;
+                }
+                super::slash::PlanAction::Status => {
+                    self.plan_command("status", None, cx);
+                    return;
+                }
+                super::slash::PlanAction::Task(_) => {}
+            },
             _ => {}
         }
         let no_content = !composer_has_content(
@@ -135,7 +178,7 @@ impl Composer {
     /// thread the picked config in: worktree creation (when the isolated toggle
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
-    fn send(&mut self, text: String, cx: &mut Context<Self>) {
+    fn send(&mut self, mut text: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None; // global — meaningful on every chat
@@ -199,7 +242,29 @@ impl Composer {
         // for the next ordinary message; path references do NOT travel
         // alone — a skill invocation consumes them into its extra
         // instructions (spec: skills receive both reference forms).
-        let slash = super::slash::parse(&text);
+        let mut slash = super::slash::parse(&text);
+        // `/plan <task>` (ADR-0025): the task IS the outgoing planning
+        // input — an ordinary message — so the content is rewritten here
+        // and the directive itself never reaches the model. The enter RPC
+        // rides the async block below (after createChat, before the queue);
+        // a failed enter restores the ORIGINAL directive (with it), never
+        // the bare task — resubmitting that as an ordinary message would
+        // silently skip Plan Mode.
+        let mut plan_enter = false;
+        let restore_text;
+        if let super::slash::Parsed::Plan {
+            action: super::slash::PlanAction::Task(task),
+        } = &slash
+        {
+            restore_text = Some(text.clone());
+            text = task.clone();
+            // Normalize the parsed shape so the downstream ordinary-message
+            // path (references, stashes, echo) applies untouched.
+            slash = super::slash::Parsed::Plain;
+            plan_enter = true;
+        } else {
+            restore_text = None;
+        }
         // Both intercepted commands travel alone (ADR-0006/0011): staged
         // attachments and diff-comment folding stay put for the next
         // ordinary message.
@@ -213,7 +278,7 @@ impl Composer {
         // acknowledgement must leave every stash untouched — the frozen
         // payload already carries those references, and consuming the chips
         // here would drop the newer staging without sending it.
-        let typed = text.clone();
+        let typed = restore_text.unwrap_or_else(|| text.clone());
         let retry = self
             .failed_submissions
             .get(&chat_id)
@@ -414,6 +479,26 @@ impl Composer {
                     )
                     .await;
                 }
+                // `/plan <task>` (ADR-0025): Plan Mode is ON before the run
+                // is queued, so the task's Turn admits as a planning Turn
+                // (read-only tools + the plan document). Idempotent —
+                // entering an already-planning chat is a no-op. FATAL on a
+                // new chat, unlike the best-effort createChat above: the
+                // engine refuses an unknown chatId, so a createChat failure
+                // fails the send instead of silently downgrading to an
+                // ordinary implementation message.
+                if plan_enter
+                    && let Err(err) = attachments::call_with_timeout(
+                        &engine,
+                        cx.background_executor(),
+                        methods::ENTER_PLAN_MODE,
+                        serde_json::json!({ "chatId": chat_id }),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+                {
+                    return Err(format!("/plan failed: {err}"));
+                }
 
                 let command = match &slash {
                     // The engine builds the model-visible prompt from the
@@ -609,6 +694,62 @@ impl Composer {
         self.interrupt(cx);
     }
 
+    /// The mode-only `/plan` forms (ADR-0025): Enter / Off / Status over
+    /// the current chat. They carry no message, so the composer surfaces
+    /// the outcome on its notice line and never reaches the send path.
+    /// On the new-chat canvas there is nothing to enter or query yet —
+    /// `/plan <task>` is the way to start planning there.
+    fn plan_command(&mut self, action: &'static str, _task: Option<()>, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.failure = Some("Engine not connected".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            self.failure = Some("Start a conversation first — or use /plan <task>".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let method = match action {
+            "enter" => methods::ENTER_PLAN_MODE,
+            "exit" => methods::EXIT_PLAN_MODE,
+            _ => methods::GET_PLAN_MODE,
+        };
+        cx.spawn(async move |this, cx| {
+            match engine
+                .client()
+                .call(method, serde_json::json!({ "chatId": chat_id }))
+                .await
+            {
+                Ok(state) => {
+                    let notice = match action {
+                        "enter" => "Plan Mode on — planning turns are read-only; submit a plan to start implementation".to_string(),
+                        "exit" => "Plan Mode off — plan documents are kept".to_string(),
+                        _ => plan_status_notice(&state),
+                    };
+                    let _ = this.update(cx, |this, cx| {
+                        this.failure = Some(notice.into());
+                        // Chat-scoped like failed sends: chat A's Plan Mode
+                        // status must not render under chat B.
+                        this.failure_key = Some(chat_id.clone());
+                        cx.notify();
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "/plan command failed");
+                    let _ = this.update(cx, |this, cx| {
+                        this.failure = Some(format!("/plan failed: {err}").into());
+                        this.failure_key = Some(chat_id.clone());
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(super) fn interrupt(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -706,7 +847,7 @@ impl Composer {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::slash, failure_restore_text};
+    use super::{super::slash, failure_restore_text, plan_status_notice};
 
     #[test]
     fn compact_failure_does_not_restore_the_command_as_draft() {
@@ -720,6 +861,44 @@ mod tests {
         assert_eq!(
             failure_restore_text(&parsed, "keep working".into()),
             Some("keep working".into())
+        );
+    }
+
+    #[test]
+    fn a_failed_task_send_restores_the_full_directive() {
+        // The restore hands back the ORIGINAL input — directive included —
+        // so a retry re-enters Plan Mode instead of sending the bare task
+        // as an ordinary implementation message.
+        let parsed = slash::parse("/plan redesign the ingest pipeline");
+        assert_eq!(
+            failure_restore_text(&parsed, "/plan redesign the ingest pipeline".into()),
+            Some("/plan redesign the ingest pipeline".into())
+        );
+    }
+
+    #[test]
+    fn plan_status_notices_render_state_and_lifecycle() {
+        assert_eq!(
+            plan_status_notice(&serde_json::json!({ "active": false })),
+            "Plan Mode: off"
+        );
+        assert_eq!(
+            plan_status_notice(&serde_json::json!({ "active": true })),
+            "Plan Mode: on · no plan yet"
+        );
+        assert_eq!(
+            plan_status_notice(&serde_json::json!({
+                "active": true,
+                "activePlan": { "planId": "p1", "state": "awaitingApproval" },
+            })),
+            "Plan Mode: on · plan p1 · awaiting approval"
+        );
+        assert_eq!(
+            plan_status_notice(&serde_json::json!({
+                "active": true,
+                "activePlan": { "planId": "p2", "state": "planning" },
+            })),
+            "Plan Mode: on · plan p2 · drafting"
         );
     }
 }

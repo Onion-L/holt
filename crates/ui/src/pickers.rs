@@ -973,6 +973,10 @@ impl Pickers {
                 _ => None,
             };
             let mode_chip = self.mode_chip(&theme, cx);
+            // Plan Mode rides beside the permission chip (ADR-0025):
+            // planning state and the active revision's lifecycle, read from
+            // the same chat row the mode chip renders.
+            let plan_chip = self.plan_chip(&theme, cx);
             let mut left = div()
                 .flex()
                 .flex_row()
@@ -984,7 +988,8 @@ impl Pickers {
                     PickerKind::Mode,
                     "mode-popover",
                     closing,
-                ));
+                ))
+                .children(plan_chip);
             // Mirrors the draft chips: mode + checkout hug the left edge, ref
             // the right.
             let mut right = div()
