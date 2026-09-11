@@ -712,8 +712,12 @@ impl EngineService {
         let mut mode = self.mode_default.get();
         // The Turn's Plan Mode snapshot (ADR-0025): planning at admission
         // makes this a planning Turn; a mid-Turn switch lands from the
-        // next Turn exactly like the mode beside it.
-        let mut planning = false;
+        // next Turn exactly like the mode beside it. A planning cycle
+        // without an active revision gets one minted here — minted ONCE
+        // per cycle and persisted on the row, so a continuation Turn
+        // (after a rejection, a remain, or a restart) revises the SAME
+        // plan id and never overwrites an older revision's document.
+        let mut plan_revision = None;
         {
             let mut chats = self
                 .runtime
@@ -726,7 +730,19 @@ impl EngineService {
                     row.branch = Some(source.branch.clone());
                     row.source_context = Some(source);
                 }
-                planning = row.plan_mode.is_some();
+                if let Some(plan_state) = row.plan_mode.as_mut() {
+                    if plan_state.active_plan.is_none() {
+                        plan_state.active_plan = Some(crate::plan_mode::mint_active_plan());
+                    }
+                    plan_revision = Some(
+                        plan_state
+                            .active_plan
+                            .as_ref()
+                            .expect("active plan minted")
+                            .plan_id
+                            .clone(),
+                    );
+                }
                 // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -807,11 +823,15 @@ impl EngineService {
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();
-        // A planning Turn mints its plan revision now (ADR-0025): a unique
-        // id per planning cycle, the document under the chat's working
-        // directory. Issue 03 persists the revision on the chat row.
-        let plan = planning.then(|| {
-            crate::plan_mode::mint_turn_plan(&crate::local_fs::expand_tilde(&request.cwd), &chat_id)
+        // The planning Turn's document: the persisted revision's id and
+        // its path under the chat's working directory.
+        let plan = plan_revision.map(|plan_id| crate::plan_mode::TurnPlan {
+            plan_path: crate::plan_mode::plan_path(
+                &crate::local_fs::expand_tilde(&request.cwd),
+                &chat_id,
+                &plan_id,
+            ),
+            plan_id,
         });
         Ok(AgentRun {
             runtime,

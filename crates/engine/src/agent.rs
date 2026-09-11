@@ -1648,7 +1648,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         system_prompt.push('\n');
         system_prompt.push_str(&crate::plan_mode::planning_system_block(&plan.plan_path));
         tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
-        tools.extend(crate::plan_mode::plan_tools(plan, Arc::clone(&submitted)));
+        tools.extend(crate::plan_mode::plan_tools(
+            plan,
+            Arc::clone(&runtime),
+            &chat_id,
+            Arc::clone(&submitted),
+        ));
     }
     let stop_after_submit: Option<pi_core::agent::types::ShouldStopAfterTurnFn> =
         plan.is_some().then(|| {

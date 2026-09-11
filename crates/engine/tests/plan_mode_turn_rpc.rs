@@ -162,17 +162,27 @@ async fn a_text_only_planning_reply_gets_one_corrective_continuation_then_stops(
         panic!("GetPlanMode did not return a value");
     };
     assert_eq!(state["active"], serde_json::json!(true));
-    assert_eq!(state.get("activePlan"), None);
+    assert_eq!(state["activePlan"]["state"], serde_json::json!("planning"));
 }
 
 #[tokio::test]
 async fn a_submit_plan_call_ends_the_planning_turn_without_a_continuation() {
     let fixture = Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::ToolCalls(vec![tool_call(
-        "submit-1",
-        "submit_plan",
-        serde_json::json!({}),
-    )])]);
+    // The model writes the document, then submits: the loop stops at the
+    // close of the submitting round (no corrective continuation, no third
+    // request).
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "write-1",
+            "write_plan",
+            serde_json::json!({ "content": "# Plan" }),
+        )]),
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "submit-1",
+            "submit_plan",
+            serde_json::json!({}),
+        )]),
+    ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -183,7 +193,7 @@ async fn a_submit_plan_call_ends_the_planning_turn_without_a_continuation() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         provider.requests().len(),
-        1,
+        2,
         "submission ends the planning Turn at the close of the tool round: no continuation"
     );
 }
@@ -266,4 +276,229 @@ async fn an_interrupted_planning_turn_gets_no_continuation() {
         1,
         "an interrupted planning turn gets no corrective continuation"
     );
+}
+
+#[tokio::test]
+async fn the_submitted_revision_persists_and_survives_restart() {
+    let fixture = Fixture::new();
+    let data_dir = fixture.data_dir.path().to_path_buf();
+    let personal = fixture.personal_dir.path().to_path_buf();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "write-1",
+            "write_plan",
+            serde_json::json!({ "content": "# The plan" }),
+        )]),
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "submit-1",
+            "submit_plan",
+            serde_json::json!({}),
+        )]),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let RpcReply::Value(state) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    assert_eq!(
+        state["activePlan"]["state"],
+        serde_json::json!("awaitingApproval")
+    );
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+    let plan_path = state["planPath"].as_str().unwrap().to_string();
+    assert!(plan_path.contains(&format!(".holt/plans/chat-1-{plan_id}.md")));
+    assert!(std::path::Path::new(&plan_path).exists());
+    drop(engine);
+
+    // Restart: the awaiting-approval state (and its revision id) is
+    // restored, and recovery still starts no Turn.
+    let restarted = ScriptedProvider::new(vec![]);
+    let engine = holt_engine::LocalEngine::assemble(&holt_engine::EngineConfig {
+        data_dir,
+        personal_skills_dir: Some(personal),
+        stream_fn: Some(restarted.stream_fn()),
+        search_backend_resolver: None,
+    })
+    .unwrap();
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    let frame = common::next_frame(&mut sessions).await;
+    assert!(
+        !frame
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["chatId"] == "chat-1" && row["status"] == "working")
+    );
+    let RpcReply::Value(state) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    assert_eq!(
+        state["activePlan"]["state"],
+        serde_json::json!("awaitingApproval")
+    );
+    assert_eq!(state["activePlan"]["planId"], serde_json::json!(plan_id));
+}
+
+#[tokio::test]
+async fn a_follow_up_planning_turn_revises_the_same_revision() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "write-1",
+            "write_plan",
+            serde_json::json!({ "content": "# The plan" }),
+        )]),
+        ScriptedReply::ToolCalls(vec![tool_call(
+            "submit-1",
+            "submit_plan",
+            serde_json::json!({}),
+        )]),
+        // The user sent another message without resolving: a continuation
+        // planning turn on the SAME revision. Its text-only reply earns the
+        // one corrective continuation, whose reply ends the turn.
+        ScriptedReply::text("refining"),
+        ScriptedReply::text("still text"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let RpcReply::Value(state) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "also consider X").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let RpcReply::Value(state) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    assert_eq!(
+        state["activePlan"]["planId"],
+        serde_json::json!(plan_id),
+        "the planning cycle keeps ONE revision id across its turns"
+    );
+    let plans_dir = std::path::Path::new(&fixture.cwd()).join(".holt/plans");
+    assert_eq!(
+        std::fs::read_dir(&plans_dir).unwrap().count(),
+        1,
+        "a continuation turn never mints a second document"
+    );
+}
+
+#[tokio::test]
+async fn exit_then_reenter_mints_a_new_revision_keeping_old_documents() {
+    let fixture = Fixture::new();
+    let write_submit = || {
+        vec![
+            ScriptedReply::ToolCalls(vec![tool_call(
+                "write-x",
+                "write_plan",
+                serde_json::json!({ "content": "# The plan" }),
+            )]),
+            ScriptedReply::ToolCalls(vec![tool_call(
+                "submit-x",
+                "submit_plan",
+                serde_json::json!({}),
+            )]),
+        ]
+    };
+    let mut script = write_submit();
+    script.extend(write_submit());
+    let provider = ScriptedProvider::new(script);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let RpcReply::Value(first) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    let first_id = first["activePlan"]["planId"].as_str().unwrap().to_string();
+
+    // Leaving Plan Mode retires the revision; re-entering mints a new one
+    // for the next cycle. The old document stays on disk.
+    engine
+        .handle(
+            methods::EXIT_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+    enter_plan_mode(&engine, "chat-1").await;
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan differently").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let RpcReply::Value(second) = engine
+        .handle(
+            methods::GET_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetPlanMode did not return a value");
+    };
+    let second_id = second["activePlan"]["planId"].as_str().unwrap().to_string();
+    assert_ne!(first_id, second_id, "a new cycle mints a new revision");
+    let plans_dir = std::path::Path::new(&fixture.cwd()).join(".holt/plans");
+    let files: Vec<String> = std::fs::read_dir(&plans_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files.len(), 2, "older revisions are retained: {files:?}");
+    assert!(files.iter().any(|name| name.contains(&first_id)));
+    assert!(files.iter().any(|name| name.contains(&second_id)));
 }
