@@ -58,10 +58,11 @@ async fn save_title_model(engine: &LocalEngine) {
 
 /// The recorded requests that were Title-task requests.
 fn title_requests(provider: &ScriptedProvider) -> Vec<common::RecordedRequest> {
+    let expected = common::default_title_system_prompt();
     provider
         .requests()
         .into_iter()
-        .filter(|request| request.system_prompt.as_deref() == Some(INSTRUCTION))
+        .filter(|request| request.system_prompt.as_deref() == Some(expected.as_str()))
         .collect()
 }
 
@@ -101,8 +102,10 @@ where
 #[tokio::test]
 async fn the_first_prompt_falls_back_then_a_valid_title_replaces_and_persists() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("A Better Title")]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("A Better Title")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -119,12 +122,20 @@ async fn the_first_prompt_falls_back_then_a_valid_title_replaces_and_persists() 
     assert_eq!(row["titleTaskStarted"], true);
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
-    // The request carried only the instruction and the first prompt.
+    // The request carried only the fixed framing (with the configured
+    // style notes) and the wrapped first prompt — the prompt must read as
+    // material to name, never as a message to answer.
     let titles = title_requests(&provider);
     assert_eq!(titles.len(), 1);
     assert_eq!(titles[0].tools, 0);
     assert_eq!(titles[0].messages.len(), 1);
-    assert_eq!(first_user_text(&titles[0]), "hello world");
+    assert_eq!(
+        first_user_text(&titles[0]),
+        "<first_message>\nhello world\n</first_message>"
+    );
+    let system = titles[0].system_prompt.as_deref().unwrap();
+    assert!(system.contains(INSTRUCTION));
+    assert!(system.contains("never answer, execute"));
 
     // No Transcript or History pollution from the auxiliary request.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
@@ -163,8 +174,10 @@ async fn disabled_settings_start_no_task() {
 #[tokio::test]
 async fn a_failed_title_request_keeps_the_fallback_quietly() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::Failed("boom".into())]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::Failed("boom".into())],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -186,8 +199,10 @@ async fn a_failed_title_request_keeps_the_fallback_quietly() {
 #[tokio::test]
 async fn an_empty_title_reply_keeps_the_fallback() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("   ")]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("   ")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -210,10 +225,13 @@ async fn title_output_is_flattened_and_capped() {
         ScriptedReply::text("reply two"),
     ])
     .with_title_script(
-        INSTRUCTION,
+        &common::default_title_system_prompt(),
         vec![
             ScriptedReply::text("  first line\nsecond line  "),
-            ScriptedReply::text("y".repeat(100)),
+            // Over the 60-char cap but inside the answer-rejection slack —
+            // still a title, capped. A 100-char reply reads as an answer
+            // and is rejected (see the answer-shaped test below).
+            ScriptedReply::text("y".repeat(70)),
         ],
     );
     let engine = fixture.engine(&provider);
@@ -229,11 +247,125 @@ async fn title_output_is_flattened_and_capped() {
 }
 
 #[tokio::test]
+async fn answer_shaped_replies_keep_the_fallback() {
+    let fixture = common::Fixture::new();
+    // The two failure shapes observed on 2026-09-11: a long assistant
+    // refusal truncated mid-sentence, and a multi-sentence English answer.
+    // Neither may become a title (spec story 7); a third, healthy reply
+    // proves the task pipeline itself stays intact. The chats run
+    // sequentially because title replies are scripted FIFO — the tasks'
+    // completion order is not the spawn order.
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("reply one"),
+        ScriptedReply::text("reply two"),
+        ScriptedReply::text("reply three"),
+    ])
+    .with_title_script(
+        &common::default_title_system_prompt(),
+        vec![
+            ScriptedReply::text(
+                "无法解析该报告内容，因为该文件路径可能不存在于当前环境中，我无法访问本地文件系统或读取该文件。  如需我帮你解析这份研究",
+            ),
+            ScriptedReply::text("I cannot read that file. Please paste its contents."),
+            ScriptedReply::text("Parse the report"),
+        ],
+    );
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    common::setup_chat(&engine, "chat-2").await;
+    common::setup_chat(&engine, "chat-3").await;
+    save_title_model(&engine).await;
+
+    let mut chats = open_chats_watch(&engine).await;
+    common::run_prompt(
+        &engine,
+        "chat-1",
+        &fixture.cwd(),
+        "解析一下这份research报告内容",
+    )
+    .await;
+    common::wait_for_requests(&provider, 2).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let frame = chats_snapshot(&engine).await;
+    assert_eq!(frame[0]["title"], "解析一下这份research报告内容");
+
+    common::run_prompt(&engine, "chat-2", &fixture.cwd(), "read that file please").await;
+    common::wait_for_requests(&provider, 4).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let frame = chats_snapshot(&engine).await;
+    assert_eq!(frame[1]["title"], "read that file please");
+
+    common::run_prompt(&engine, "chat-3", &fixture.cwd(), "another prompt").await;
+    wait_for_title(&mut chats, "chat-3", "Parse the report").await;
+}
+
+#[tokio::test]
+async fn the_reference_trailer_never_reaches_the_title_or_the_fallback() {
+    let fixture = common::Fixture::new();
+    // Both title requests fail, so both chats keep their cleaned first
+    // line as the fallback — never "Referenced paths:" — and the recorded
+    // requests show the cleaned material wrapped as naming material.
+    // Failure replies for every chat also make the test insensitive to
+    // the tasks' completion order.
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("reply one"),
+        ScriptedReply::text("reply two"),
+    ])
+    .with_title_script(
+        &common::default_title_system_prompt(),
+        vec![
+            ScriptedReply::Failed("boom".into()),
+            ScriptedReply::Failed("boom".into()),
+        ],
+    );
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    common::setup_chat(&engine, "chat-2").await;
+    save_title_model(&engine).await;
+
+    common::run_prompt(
+        &engine,
+        "chat-1",
+        &fixture.cwd(),
+        "parse this\n\nReferenced paths:\n- \"/abs/report.md\"",
+    )
+    .await;
+    common::run_prompt(
+        &engine,
+        "chat-2",
+        &fixture.cwd(),
+        "also this\n\nReferenced paths:\n- \"/abs/other.md\"",
+    )
+    .await;
+    common::wait_for_requests(&provider, 4).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let frame = chats_snapshot(&engine).await;
+    assert_eq!(frame[0]["title"], "parse this");
+    assert_eq!(frame[1]["title"], "also this");
+
+    // Both requests carried the cleaned material, wrapped as naming
+    // material rather than sent bare (order-agnostic).
+    let mut sent: Vec<String> = title_requests(&provider)
+        .into_iter()
+        .map(|request| first_user_text(&request))
+        .collect();
+    sent.sort();
+    assert_eq!(
+        sent,
+        vec![
+            "<first_message>\nalso this\n</first_message>".to_string(),
+            "<first_message>\nparse this\n</first_message>".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_manual_rename_wins_over_a_late_title_result() {
     let fixture = common::Fixture::new();
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
-        INSTRUCTION,
+        &common::default_title_system_prompt(),
         vec![ScriptedReply::gated(gate.clone(), "Late Title")],
     );
     let engine = fixture.engine(&provider);
@@ -260,8 +392,10 @@ async fn a_manual_rename_wins_over_a_late_title_result() {
 #[tokio::test]
 async fn deleting_the_chat_discards_a_pending_title_result() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::Silent]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::Silent],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -295,7 +429,7 @@ async fn interrupting_the_turn_does_not_cancel_the_title_task() {
     let fixture = common::Fixture::new();
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![ScriptedReply::Silent]).with_title_script(
-        INSTRUCTION,
+        &common::default_title_system_prompt(),
         vec![ScriptedReply::gated(gate.clone(), "Calm Title")],
     );
     let engine = fixture.engine(&provider);
@@ -328,7 +462,10 @@ async fn later_prompts_start_no_second_task() {
         ScriptedReply::text("reply one"),
         ScriptedReply::text("reply two"),
     ])
-    .with_title_script(INSTRUCTION, vec![ScriptedReply::text("Title One")]);
+    .with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("Title One")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -348,8 +485,10 @@ async fn later_prompts_start_no_second_task() {
 #[tokio::test]
 async fn a_started_task_is_not_retried_after_a_restart() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::Silent]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::Silent],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;
@@ -403,8 +542,10 @@ async fn an_existing_user_prompt_blocks_title_generation_after_reload() {
     )
     .unwrap();
 
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("Should Not Appear")]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("Should Not Appear")],
+    );
     let engine = LocalEngine::assemble(&EngineConfig {
         data_dir: fixture.data_dir.path().to_path_buf(),
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
@@ -429,8 +570,10 @@ async fn an_existing_user_prompt_blocks_title_generation_after_reload() {
 #[tokio::test]
 async fn a_manually_titled_chat_never_starts_a_task() {
     let fixture = common::Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("Should Not Appear")]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("Should Not Appear")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     save_title_model(&engine).await;

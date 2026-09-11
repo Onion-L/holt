@@ -150,6 +150,13 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// The full Title-task system prompt for the built-in instruction: the
+/// engine's fixed framing with the default style notes embedded. Tests
+/// route and identify Title-task requests by this exact string.
+pub fn default_title_system_prompt() -> String {
+    holt_engine::title_system_prompt(holt_proto::DEFAULT_TITLE_INSTRUCTION)
+}
+
 /// A scripted provider: records the message list of every request, replies
 /// from a queue of [`ScriptedReply`]s. The usage reported by every reply is
 /// fixed at construction so compaction thresholds in tests are
@@ -194,10 +201,11 @@ impl ScriptedProvider {
     }
 
     /// Route Title-task requests — the ones whose system prompt is exactly
-    /// `instruction` — to their own reply queue.
-    pub fn with_title_script(mut self, instruction: &str, replies: Vec<ScriptedReply>) -> Self {
+    /// `system_prompt` (the engine's fixed framing; see
+    /// [`default_title_system_prompt`]) — to their own reply queue.
+    pub fn with_title_script(mut self, system_prompt: &str, replies: Vec<ScriptedReply>) -> Self {
         self.title = Some(TitleScript {
-            instruction: instruction.to_string(),
+            instruction: system_prompt.to_string(),
             replies: Arc::new(Mutex::new(replies.into())),
         });
         self

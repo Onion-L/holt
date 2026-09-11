@@ -27,10 +27,6 @@ use crate::store::{persist_chats, persist_spaces};
 use crate::title_settings::MAX_TITLE_INSTRUCTION_CHARS;
 use crate::{EngineService, LocalEngine};
 
-/// The sidebar title ceiling shared by the first-line fallback, manual
-/// renames, and automatic titles.
-pub(crate) const TITLE_CHAR_LIMIT: usize = 60;
-
 /// The explicit non-Git answer `GetTurnChangeSet`/`WatchTurnChangeSet`
 /// share (ADR-0024): an empty change set must never stand in for it.
 const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a Git work tree";
@@ -746,15 +742,10 @@ impl EngineService {
                 row.last_message_preview = Some(preview.chars().take(120).collect());
                 row.last_message_at = Some(now);
                 if row.title.is_none() {
-                    row.title = Some(
-                        preview
-                            .lines()
-                            .find(|line| !line.trim().is_empty())
-                            .unwrap_or("New chat")
-                            .chars()
-                            .take(TITLE_CHAR_LIMIT)
-                            .collect(),
-                    );
+                    // The fallback skips the composer's path-list trailer
+                    // — a references-only send must not title the chat
+                    // "Referenced paths:".
+                    row.title = Some(crate::title_task::first_line_title(&preview));
                     // The first prompt is the only eligibility window:
                     // stamp the one-shot marker in the same write as the
                     // fallback title, so a second prompt can never start a

@@ -2,9 +2,9 @@
 //! preferences that aren't tied to a provider or the agent runtime, starting
 //! with the engine-owned title-task settings. The user picks an optional
 //! provider-qualified model (empty = automatic titles disabled) and edits the
-//! fixed instruction, both read and saved only through typed RPC — the engine
-//! owns `title-settings.json`, validation, and the missing-credentials
-//! warning.
+//! instruction's style notes, both read and saved only through typed RPC —
+//! the engine owns `title-settings.json`, validation, and the
+//! missing-credentials warning.
 //!
 //! It also hosts the Web search group (web-tools ticket 07): the user's
 //! search backend and its own key, read and saved through the four
@@ -1186,10 +1186,11 @@ impl Render for GeneralPage {
                                 .flex()
                                 .flex_col()
                                 .gap(px(3.0))
-                                .child(widgets::row_title(&theme, "Custom title prompt"))
+                                .child(widgets::row_title(&theme, "Custom title style"))
                                 .child(widgets::row_description(
                                     &theme,
-                                    "Use a custom instruction instead of the built-in prompt.",
+                                    "Style notes for automatic titles — language, tone, naming \
+                                     conventions. The core naming rules are built in.",
                                 )),
                         )
                         .child(
@@ -1216,7 +1217,7 @@ impl Render for GeneralPage {
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .child(widgets::field_label(&theme, "Title prompt"))
+                            .child(widgets::field_label(&theme, "Title style notes"))
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("restore-title-instruction")

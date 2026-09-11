@@ -411,11 +411,15 @@ async fn a_restart_mid_approval_settles_the_gate_on_load() {
 #[tokio::test]
 async fn the_title_task_is_unaffected_by_an_open_gate() {
     let fixture = Fixture::new();
+    let instruction = "Name this chat.";
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::tool_call("call-1", "bash", serde_json::json!({ "command": "echo x" })),
         ScriptedReply::text("done"),
     ])
-    .with_title_script("Name this chat.", vec![ScriptedReply::text("A tidy title")]);
+    .with_title_script(
+        &holt_engine::title_system_prompt(instruction),
+        vec![ScriptedReply::text("A tidy title")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     engine
@@ -423,7 +427,7 @@ async fn the_title_task_is_unaffected_by_an_open_gate() {
             methods::SAVE_TITLE_SETTINGS,
             serde_json::json!({
                 "modelId": "openai/gpt-5.4",
-                "instruction": "Name this chat.",
+                "instruction": instruction,
             }),
         )
         .await

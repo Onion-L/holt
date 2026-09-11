@@ -87,11 +87,19 @@ pub struct ChatConfig {
     pub permission_mode: PermissionMode,
 }
 
-/// The built-in Title-task instruction (ADR-0012) — the single source the
+/// The sidebar title ceiling shared by the first-line fallback, manual
+/// renames, and automatic titles. Lived in `crates/engine` before the
+/// 2026-09-11 title-quality fix; moved here so the engine's framing,
+/// enforcement, and this file's naming material quote one number.
+pub const TITLE_CHAR_LIMIT: usize = 60;
+
+/// The built-in Title-task style notes (ADR-0012) — the single source the
 /// engine's defaulting and the settings UI's restore-default button share.
-/// The 60-character ceiling it names is enforced as `TITLE_CHAR_LIMIT` in
-/// `crates/engine` (a string here can't reference a const across crates).
-pub const DEFAULT_TITLE_INSTRUCTION: &str = "Write a short, scannable title (one line, at most 60 characters) for a chat that begins with this message. Reply with the title text only.";
+/// Style notes only: the engine wraps every title request in a fixed
+/// framing (see `title_system_prompt` in `crates/engine`), and the stored
+/// instruction rides inside it as user customization that refines, never
+/// replaces, the framing.
+pub const DEFAULT_TITLE_INSTRUCTION: &str = "Prefer concrete nouns from the user's own words; skip filler like \"chat about\" or \"question about\".";
 
 fn default_title_instruction() -> String {
     DEFAULT_TITLE_INSTRUCTION.to_string()
@@ -106,7 +114,7 @@ pub struct TitleSettings {
     /// automatic titles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
-    /// The fixed instruction sent alongside the first user prompt.
+    /// Style notes sent inside the engine's fixed title framing.
     #[serde(default = "default_title_instruction")]
     pub instruction: String,
 }

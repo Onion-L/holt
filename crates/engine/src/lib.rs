@@ -63,6 +63,7 @@ pub use instance_lock::InstanceLock;
 use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 use store::{load_chats, load_or_create_device_id, load_spaces};
+pub use title_task::{title_system_prompt, title_user_message};
 pub use tools::{SearchBackend, SearchHit};
 
 /// Maps a configured search-backend id (the `web-search.json` record's

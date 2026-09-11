@@ -444,8 +444,10 @@ async fn a_manual_compaction_publishes_no_event() {
 async fn a_title_task_publishes_no_event() {
     const INSTRUCTION: &str = holt_proto::DEFAULT_TITLE_INSTRUCTION;
     let fixture = Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")])
-        .with_title_script(INSTRUCTION, vec![ScriptedReply::text("A Better Title")]);
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("reply")]).with_title_script(
+        &common::default_title_system_prompt(),
+        vec![ScriptedReply::text("A Better Title")],
+    );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     engine
