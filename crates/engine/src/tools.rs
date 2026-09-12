@@ -13,7 +13,7 @@ pub(crate) mod test_http;
 mod web_fetch;
 pub(crate) mod web_search;
 
-use crate::shell_env::login_shell_path;
+use crate::shell_env::login_shell;
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
 use futures::future::BoxFuture;
@@ -32,6 +32,7 @@ use pi_core::agent::{
             FileKind, FileSystem, ReadTextLinesOptions, RemoveOptions, Shell, ShellExecOptions,
             ShellExecResult, WriteContent,
         },
+        utils::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES},
     },
     types::AgentTool,
 };
@@ -57,11 +58,25 @@ pub(crate) const USER_AGENT: &str = concat!("holt/", env!("CARGO_PKG_VERSION"));
 /// method, runs its walk on `spawn_blocking` instead (see [`grep`]).
 pub(crate) struct LocalExecutionEnv {
     cwd: String,
+    /// The login shell resolved once per environment; every agent command
+    /// runs under it (see [`Shell::exec`]).
+    shell: String,
 }
 
 impl LocalExecutionEnv {
     pub(crate) fn new(cwd: impl Into<String>) -> Self {
-        Self { cwd: cwd.into() }
+        Self {
+            cwd: cwd.into(),
+            shell: login_shell(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_shell(cwd: impl Into<String>, shell: impl Into<String>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            shell: shell.into(),
+        }
     }
 }
 
@@ -464,8 +479,12 @@ impl Shell for LocalExecutionEnv {
             let cwd = options
                 .and_then(|options| options.cwd.clone())
                 .unwrap_or_else(|| self.cwd.clone());
-            let mut cmd = Command::new("bash");
-            cmd.arg("-c")
+            // `-l` sources the user's login profiles — the shell owns PATH and
+            // the rest of its environment, so no probe or override here (see
+            // `shell_env`). `-c` keeps the session non-interactive: no prompt,
+            // no stdin reads, exit code straight from the command.
+            let mut cmd = Command::new(&self.shell);
+            cmd.arg("-lc")
                 .arg(command)
                 .current_dir(&cwd)
                 .stdin(Stdio::null())
@@ -508,7 +527,7 @@ impl Shell for LocalExecutionEnv {
                 .and_then(|options| options.timeout)
                 .map(Duration::from_secs_f64);
             let result = {
-                // Output pipes can outlive bash when descendants inherit
+                // Output pipes can outlive the shell when descendants inherit
                 // them. Keep the entire wait cancellable, with no detached readers.
                 let execution = async {
                     let (status, stdout, stderr) =
@@ -557,8 +576,8 @@ impl Shell for LocalExecutionEnv {
                         group.signal(libc::SIGKILL);
                         group.id = None;
                     }
-                    // Reap the direct child even if bash already exited and
-                    // it was only a descendant's output pipe holding us up.
+                    // Reap the direct child even if the shell already exited
+                    // and it was only a descendant's output pipe holding us up.
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                     return Err(error);
@@ -637,19 +656,7 @@ pub(crate) fn execution_tools_for_model(
         image_read_tool(&context, allow_images),
         with_execution_context(create_write_tool(), &context),
         with_execution_context(create_edit_tool(), &context),
-        with_execution_context(
-            create_bash_tool(BashToolOptions {
-                prepare: Some(Arc::new(|execution, _| {
-                    Box::pin(async move {
-                        execution
-                            .env
-                            .insert("PATH".into(), login_shell_path().into());
-                    })
-                })),
-                ..Default::default()
-            }),
-            &context,
-        ),
+        bash_tool(&context),
         grep::create_grep_tool(cwd),
         web_fetch::create_web_fetch_tool(),
     ];
@@ -661,6 +668,23 @@ pub(crate) fn execution_tools_for_model(
 
 pub(crate) use read_chat::create_read_chat_tool;
 pub use web_search::{SearchBackend, SearchHit};
+
+/// The pi-core bash tool, retargeted to the user's login shell. The harness
+/// fixes the tool *name* as `bash`; the executable choice is holt's (see
+/// [`LocalExecutionEnv::exec`]) and so is the description — the user's shell
+/// may be zsh or anything else, so the model must not assume bash syntax.
+fn bash_tool(context: &AgentToolContext) -> AgentTool {
+    let mut tool = with_execution_context(create_bash_tool(BashToolOptions::default()), context);
+    tool.description = format!(
+        "Execute a command in the user's login shell ({}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+        login_shell(),
+        DEFAULT_MAX_LINES,
+        DEFAULT_MAX_BYTES / 1024,
+    );
+    tool.parameters["properties"]["command"]["description"] =
+        "Command to execute in the user's login shell".into();
+    tool
+}
 
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;
@@ -793,6 +817,60 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_runs_commands_through_the_login_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (root, _guard) = temp_root();
+        let dir = tempfile::tempdir().unwrap();
+        // Stands in for a toolchain the user's profile puts on PATH.
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\necho fake-cargo 1.0\n").unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A stand-in login shell: its "profiles" set a variable and a PATH
+        // entry, then the command runs — what zsh/bash do after their startup
+        // files. It refuses anything but the `-lc` invocation exec must use.
+        let shell = dir.path().join("login-shell");
+        std::fs::write(
+            &shell,
+                format!(
+                    "#!/bin/sh\n[ \"$1\" = -lc ] || exit 97\nHOLT_PROFILE_VAR=from-profile\nexport HOLT_PROFILE_VAR\nPATH=\"{bin}:$PATH\"\nexport PATH\nexec /bin/sh -c \"$2\"\n",
+                    bin = bin.display()
+                ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let env = LocalExecutionEnv::with_shell(&root, shell.to_str().unwrap());
+        // A minimal parent environment: `cargo` must be found via the PATH the
+        // shell's profile builds, and the profile variable must be visible.
+        let options = ShellExecOptions {
+            inherit_env: Some(false),
+            ..Default::default()
+        };
+        let result = env
+            .exec(
+                "cargo --version; printf ' %s' \"$HOLT_PROFILE_VAR\"",
+                Some(&options),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+        assert!(
+            result.stdout.contains("fake-cargo 1.0"),
+            "unexpected output: {}",
+            result.stdout
+        );
+        assert!(
+            result.stdout.contains("from-profile"),
+            "unexpected output: {}",
+            result.stdout
+        );
+    }
+
+    #[cfg(unix)]
     struct TestChild(i32);
 
     #[cfg(unix)]
@@ -881,7 +959,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_output_wait_remains_interruptible_after_bash_exits() {
+    async fn exec_output_wait_remains_interruptible_after_the_shell_exits() {
         for cancel in [true, false] {
             let (root, _dir) = temp_root();
             let env = LocalExecutionEnv::new(&root);
@@ -894,7 +972,7 @@ mod tests {
             let command = format!("echo $$ > leader.pid; {WRITING_CHILD} &");
             let mut execution = env.exec(&command, Some(&options));
             let _child = tokio::select! {
-                result = &mut execution => panic!("command ended before bash exited: {result:?}"),
+                result = &mut execution => panic!("command ended before the shell exited: {result:?}"),
                 child = async {
                     let child = shell_child_ready(&root).await;
                     shell_leader_reaped(&root).await;
@@ -966,5 +1044,30 @@ mod tests {
             other => panic!("expected text block, got {other:?}"),
         };
         assert!(text.contains("from-bash"), "unexpected output: {text}");
+    }
+
+    #[test]
+    fn bash_tool_describes_the_login_shell() {
+        let (root, _guard) = temp_root();
+        let tools = execution_tools(&root);
+        let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
+        let description = &bash.description;
+        assert!(
+            description.contains("login shell"),
+            "description must name the login shell: {description}"
+        );
+        assert!(
+            !description.contains("Execute a bash command"),
+            "description still claims fixed bash execution: {description}"
+        );
+        assert!(
+            !bash.parameters["properties"]["command"]["description"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("bash"),
+            "command parameter still claims bash: {:?}",
+            bash.parameters["properties"]["command"]["description"]
+        );
     }
 }
