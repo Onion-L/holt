@@ -676,7 +676,14 @@ impl Composer {
             crate::popover::menu_step(self.slash.active, self.slash.filtered.len(), delta);
         if let Some(active) = self.slash.active {
             // Keep the keyboard cursor visible in the scrolled row stack.
-            self.slash_scroll.scroll_to_item(active);
+            // `scroll_to_item` indexes the scroll host's direct children,
+            // which include the section headers — map the row index to its
+            // rendered child index.
+            self.slash_scroll.scroll_to_item(slash_row_child_index(
+                &self.slash.candidates,
+                &self.slash.filtered,
+                active,
+            ));
         }
         self.sync_mention_controls(cx);
         cx.notify();
@@ -1013,6 +1020,35 @@ impl Composer {
     }
 }
 
+/// The scroll host child index of `filtered[row_ix]`'s rendered row.
+/// `ScrollHandle::scroll_to_item` targets the scroll host's direct
+/// children, and the render loop interleaves one `slash_section_header`
+/// child per contiguous group with the candidate rows — so replay that
+/// layout here (missing candidates render nothing and take no slot).
+fn slash_row_child_index(
+    candidates: &[SlashCandidate],
+    filtered: &[usize],
+    row_ix: usize,
+) -> usize {
+    let mut child = 0;
+    let mut in_skills_section: Option<bool> = None;
+    for (ix, &candidate_ix) in filtered.iter().enumerate().take(row_ix + 1) {
+        let Some(candidate) = candidates.get(candidate_ix) else {
+            continue;
+        };
+        let is_skill = matches!(candidate, SlashCandidate::Skill { .. });
+        if in_skills_section != Some(is_skill) {
+            in_skills_section = Some(is_skill);
+            child += 1;
+        }
+        if ix == row_ix {
+            break;
+        }
+        child += 1;
+    }
+    child
+}
+
 /// A slash popup section caption ("Skills" / "Commands"), reference-menu
 /// style: small, quiet, aligned with the rows' content column.
 fn slash_section_header(theme: &Theme, label: &'static str) -> gpui::AnyElement {
@@ -1075,6 +1111,59 @@ mod tests {
         // Bare "/" with cursor at 0 → closed; cursor after it → open-all.
         assert!(slash_token("/", 0).is_none());
         assert_eq!(slash_token("/", 1).map(|t| t.query), Some(String::new()));
+    }
+
+    fn command(name: &str) -> SlashCandidate {
+        SlashCandidate::Command {
+            name: name.into(),
+            description: String::new(),
+            input_hint: None,
+        }
+    }
+
+    fn skill(name: &str) -> SlashCandidate {
+        SlashCandidate::Skill {
+            name: name.into(),
+            description: String::new(),
+            root: holt_proto::SkillRoot::Personal,
+        }
+    }
+
+    #[test]
+    fn slash_row_child_index_counts_section_header_children() {
+        // The scroll host's children are [Commands header, cmd rows…,
+        // Skills header, skill rows…]; `scroll_to_item` must target the
+        // rendered child index, not the filtered row index.
+        let candidates = vec![
+            command("compact"),
+            command("plan"),
+            skill("grill"),
+            skill("tdd"),
+        ];
+        let filtered = vec![0, 1, 2, 3];
+        assert_eq!(slash_row_child_index(&candidates, &filtered, 0), 1);
+        assert_eq!(slash_row_child_index(&candidates, &filtered, 1), 2);
+        assert_eq!(slash_row_child_index(&candidates, &filtered, 2), 4);
+        assert_eq!(slash_row_child_index(&candidates, &filtered, 3), 5);
+    }
+
+    #[test]
+    fn slash_row_child_index_tracks_filtered_subsets() {
+        let candidates = vec![
+            command("compact"),
+            command("plan"),
+            skill("grill"),
+            skill("tdd"),
+        ];
+        // One section only: a single header precedes the rows.
+        assert_eq!(slash_row_child_index(&candidates, &[2, 3], 0), 1);
+        assert_eq!(slash_row_child_index(&candidates, &[2, 3], 1), 2);
+        // A subset spanning both sections gets both headers.
+        assert_eq!(slash_row_child_index(&candidates, &[1, 3], 0), 1);
+        assert_eq!(slash_row_child_index(&candidates, &[1, 3], 1), 3);
+        // Missing candidates render no row and take no child slot
+        // (mirrors the render loop's skip).
+        assert_eq!(slash_row_child_index(&candidates, &[0, 99, 1], 2), 2);
     }
 
     #[test]
