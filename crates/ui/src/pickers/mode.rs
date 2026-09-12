@@ -185,15 +185,90 @@ impl Pickers {
     }
 
     /// The Plan Mode chip (ADR-0025): shown beside the permission chip while
-    /// the selected chat is planning — a read-only label (entry/exit ride
-    /// `/plan`; the transcript's approval card resolves submissions).
+    /// the selected chat is planning. The label states the chat-level mode;
+    /// the × that appears on hover leaves it through the same `ExitPlanMode`
+    /// RPC `/plan off` sends — pending approval cards settle as dismissed,
+    /// and the transcript's approval card keeps resolving submissions.
     pub(super) fn plan_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let label = plan_label(self.state.read(cx).selected_chat_row())?;
-        Some(Self::footer_label(
-            crate::icons::CHECKLIST,
-            SharedString::from(label),
-            theme,
-        ))
+        // One group: the × reveals from the label's hover too, and stays put
+        // while the pointer is on the button itself.
+        let group: SharedString = "picker-plan-chip".into();
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .group(group.clone())
+                .child(Self::footer_label(
+                    crate::icons::CHECKLIST,
+                    SharedString::from(label),
+                    theme,
+                ))
+                .child(
+                    div()
+                        .id("picker-plan-exit")
+                        .debug_selector(|| "picker-plan-exit".into())
+                        .flex_none()
+                        .size(px(16.0))
+                        .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        // Hidden at rest: Plan Mode is chat state, not a
+                        // control the resting footer advertises. The slot is
+                        // reserved either way, so the reveal never shifts the
+                        // chips beside it.
+                        .opacity(0.0)
+                        .group_hover(group, |state| state.opacity(1.0))
+                        .hover(|state| state.bg(crate::theme::wash(0.10)))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| crate::image_viewer::ViewerTooltip("Exit Plan Mode".into()))
+                                .into()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.exit_plan_mode(cx)))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOSE)
+                                .size(px(11.0))
+                                .text_color(theme.text_muted),
+                        ),
+                ),
+        )
+    }
+
+    /// The Plan chip's close button: leave Plan Mode without the `/plan off`
+    /// detour. The outcome is announced through [`PickerEvent`] — the footer
+    /// row has nowhere to print it.
+    fn exit_plan_mode(&mut self, cx: &mut Context<Self>) {
+        let chat_id = self.state.read(cx).selected_chat.clone();
+        let Some(chat_id) = chat_id else {
+            return;
+        };
+        let Some(engine) = self.engine(cx) else {
+            cx.emit(super::PickerEvent::PlanModeExitFailed(
+                "Engine not connected".into(),
+            ));
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::EXIT_PLAN_MODE,
+                    serde_json::json!({ "chatId": chat_id }),
+                )
+                .await;
+            let event = match result {
+                Ok(_) => super::PickerEvent::PlanModeExited,
+                Err(error) => {
+                    tracing::warn!(error = %error, "ExitPlanMode failed");
+                    super::PickerEvent::PlanModeExitFailed(error.to_string())
+                }
+            };
+            this.update(cx, |_, cx| cx.emit(event)).ok();
+        })
+        .detach();
     }
 
     /// The tier menu (prototype 1-B): one row per tier — icon, name, one-line
@@ -506,5 +581,116 @@ mod tests {
             );
             pickers.update(cx, |this, cx| this.animate_close(cx));
         }
+    }
+
+    /// The Plan chip's × (the whole point of it): the button renders in the
+    /// footer row, and a click sends `ExitPlanMode` for the SELECTED chat and
+    /// announces it through `PickerEvent` — the Shell's toast, since the
+    /// footer has no notice line of its own.
+    #[gpui::test]
+    fn the_plan_chip_close_button_exits_plan_mode(cx: &mut gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        use crate::state::AppState;
+
+        /// Records the ExitPlanMode calls; every other method is unknown, so
+        /// the standing AppState watches just retry on their timer.
+        struct ExitEngine {
+            calls: Mutex<Vec<serde_json::Value>>,
+        }
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for ExitEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                if method == methods::EXIT_PLAN_MODE {
+                    self.calls.lock().unwrap().push(params);
+                    return holt_rpc::RpcReply::value(&serde_json::json!({ "active": false }));
+                }
+                Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+            }
+        }
+
+        struct PlanChipView {
+            pickers: gpui::Entity<Pickers>,
+        }
+        impl gpui::Render for PlanChipView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let theme = Theme::of(cx).clone();
+                let chip = self
+                    .pickers
+                    .update(cx, |this, cx| this.plan_chip(&theme, cx));
+                div().children(chip)
+            }
+        }
+
+        // `memory_client` spawns its dispatch loop with `tokio::spawn`,
+        // which needs a runtime context on this thread.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let engine = Arc::new(ExitEngine {
+            calls: Mutex::new(Vec::new()),
+        });
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            let mut planning = chat("chat-1", PermissionMode::ConfirmChanges);
+            planning.plan_mode = Some(holt_proto::ChatPlanState {
+                entry_permission_mode: PermissionMode::ConfirmChanges,
+            });
+            state.chats.push(planning);
+            state.selected_chat = Some("chat-1".into());
+            state
+        });
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        let exited = Arc::new(AtomicUsize::new(0));
+        let _events = cx.update(|cx| {
+            let exited = exited.clone();
+            cx.subscribe(
+                &pickers,
+                move |_, event: &crate::pickers::PickerEvent, _| {
+                    if matches!(event, crate::pickers::PickerEvent::PlanModeExited) {
+                        exited.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            )
+        });
+        let (_view, visual) = cx.add_window_view(|_, _| PlanChipView {
+            pickers: pickers.clone(),
+        });
+
+        let close = visual
+            .debug_bounds("picker-plan-exit")
+            .expect("the close button renders with the chip");
+        // The × is paint-hidden until the chip is hovered; its hitbox is laid
+        // out either way, so the click needs no pointer move first.
+        visual.simulate_click(close.center(), Default::default());
+        // The RPC is async over the in-memory transport: drive the dispatch
+        // loop on the test thread, then the gpui foreground executor.
+        for _ in 0..8 {
+            runtime.block_on(async { tokio::task::yield_now().await });
+            visual.run_until_parked();
+        }
+
+        assert_eq!(
+            engine.calls.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "chatId": "chat-1" })]
+        );
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
     }
 }

@@ -34,6 +34,7 @@ use crate::git_panel::{GitPanel, GitPanelEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
+use crate::pickers::{PickerEvent, Pickers};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::appearance::AppearancePage;
@@ -818,6 +819,9 @@ pub struct Shell {
     _ticker: Task<()>,
     _state_observation: Subscription,
     _composer_events: Subscription,
+    /// The composer footer's picker events (the Plan Mode chip's close
+    /// button).
+    _picker_events: Subscription,
     /// The primary transcript's spawn-chip events (subagent tabs).
     _transcript_events: Subscription,
 }
@@ -922,6 +926,10 @@ impl Shell {
                 }
             }
         });
+        // Plan Mode exit from the footer's Plan chip (ADR-0025): the chip
+        // reports it here — the footer row has no notice line of its own.
+        let pickers = composer.read(cx).pickers().clone();
+        let picker_events = cx.subscribe(&pickers, Self::on_picker_event);
         // Spawn chips open their subagent's transcript as a right-pane tab.
         let transcript_events = cx.subscribe(&transcript, Self::on_transcript_event);
         // Working-indicator heartbeat: notify once a second while a session is
@@ -1107,6 +1115,7 @@ impl Shell {
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
+            _picker_events: picker_events,
             _transcript_events: transcript_events,
         }
     }
@@ -1557,6 +1566,23 @@ impl Shell {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// Plan Mode exits raised by the composer footer's chips (ADR-0025): the
+    /// Plan chip's close button reports here because the footer has nowhere
+    /// to print the outcome — the confirmation (or the failure) rides the
+    /// notice strip.
+    fn on_picker_event(&mut self, _: Entity<Pickers>, event: &PickerEvent, cx: &mut Context<Self>) {
+        match event {
+            PickerEvent::PlanModeExited => {
+                self.push_holt_notice(HoltNoticeKind::Plain, "Plan Mode off".into(), cx)
+            }
+            PickerEvent::PlanModeExitFailed(error) => self.push_holt_notice(
+                HoltNoticeKind::Error,
+                format!("Leaving Plan Mode failed: {error}").into(),
+                cx,
+            ),
+        }
     }
 
     /// Push a top-right holt notice and arm its 2s auto-dismiss timer.
@@ -3793,6 +3819,52 @@ mod tests {
         );
         assert!(!nav.can_forward());
         assert_eq!(nav.forward(), None);
+    }
+
+    #[gpui::test]
+    fn plan_mode_exit_picker_events_ride_the_notice_strip(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| AppState::new());
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        let pickers = cx.read(|cx| shell.read(cx).composer.read(cx).pickers().clone());
+
+        shell.update(cx, |shell, cx| {
+            shell.on_picker_event(pickers.clone(), &PickerEvent::PlanModeExited, cx);
+        });
+        cx.read(|cx| {
+            let notices = &shell.read(cx).holt_notices;
+            assert_eq!(notices.len(), 1);
+            assert!(matches!(notices[0].kind, HoltNoticeKind::Plain));
+            assert_eq!(notices[0].message.as_ref(), "Plan Mode off");
+        });
+
+        // A refused exit keeps the chat planning, so the failure is reported
+        // rather than silently leaving the chip in place.
+        shell.update(cx, |shell, cx| {
+            shell.on_picker_event(
+                pickers,
+                &PickerEvent::PlanModeExitFailed("engine offline".into()),
+                cx,
+            );
+        });
+        cx.read(|cx| {
+            let notices = &shell.read(cx).holt_notices;
+            assert_eq!(notices.len(), 2);
+            assert!(matches!(notices[1].kind, HoltNoticeKind::Error));
+            assert!(notices[1].message.contains("engine offline"));
+        });
     }
 
     #[test]

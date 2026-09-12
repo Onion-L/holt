@@ -20,8 +20,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable as _, KeyDownEvent, SharedString,
-    Subscription, Task, Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable as _, KeyDownEvent,
+    SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
 use holt_proto::{Model, Provider, ProviderId, ReasoningLevel, RepoRef};
@@ -128,6 +128,21 @@ pub enum PickerKind {
     Space,
 }
 
+/// Events [`Pickers`] raises for its owner — the Shell subscribes exactly
+/// like it subscribes to `Composer`'s send event. The footer chips render
+/// from `AppState` and print nothing themselves, so a chip whose outcome the
+/// user must be TOLD about reports it here instead of drawing it into the
+/// row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerEvent {
+    /// The Plan Mode chip's close button left Plan Mode (ADR-0025); the
+    /// Shell confirms it.
+    PlanModeExited,
+    /// The same button's `ExitPlanMode` failed — the chat is still
+    /// planning — or there was no engine to send it to.
+    PlanModeExitFailed(String),
+}
+
 pub struct Pickers {
     state: Entity<AppState>,
     config: DraftConfig,
@@ -199,6 +214,8 @@ pub struct Pickers {
     _state_observe: Subscription,
     _catalog_observe: Subscription,
 }
+
+impl EventEmitter<PickerEvent> for Pickers {}
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
