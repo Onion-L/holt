@@ -88,7 +88,10 @@ mod model;
 mod approval;
 mod plan_card;
 
-pub use approval::{VerdictTint, pending_approval_gate, verdict_chip, verdict_tint_color};
+pub use approval::{
+    VerdictTint, approval_cwd_line, approval_meta, approval_target, pending_approval_gate,
+    pending_approval_tool, resolve_approval, verdict_chip, verdict_tint_color,
+};
 
 pub use markdown::{ParseOutcome, parse_for_row};
 use model::entry_fingerprint;
@@ -303,11 +306,6 @@ pub struct Transcript {
     /// recently (click "Show full output" after a diff → see the output).
     blob_fetch_order: HashMap<SharedString, u64>,
     blob_fetch_counter: u64,
-    /// Open approval note editors, keyed by approval id (ADR-0014). Entity
-    /// state, not row state: a row re-splice (streaming, settle) must not
-    /// drop a half-written note. Pruned per render to approvals still
-    /// pending in `rows`.
-    approval_notes: HashMap<String, ApprovalNote>,
     /// The plan card's feedback editors (ADR-0025), keyed by plan id —
     /// the plan component's own state, separate from the ADR-0014 gate
     /// notes.
@@ -315,8 +313,9 @@ pub struct Transcript {
     _observe: Subscription,
 }
 
-/// One approval's expanding note editor (prototype 3-A's Note…): the input
-/// plus its event subscription (Submitted = Deny with note, Edited = repaint).
+/// The plan feedback card's expanding note editor (ADR-0025): the input
+/// plus its event subscription (Submitted = send the feedback, Edited =
+/// repaint).
 pub struct ApprovalNote {
     pub input: Entity<crate::composer::ComposerInput>,
     _events: Subscription,
@@ -476,7 +475,6 @@ impl Transcript {
             blob_details: HashMap::new(),
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
-            approval_notes: HashMap::new(),
             plan_notes: HashMap::new(),
             _observe: observe,
         };

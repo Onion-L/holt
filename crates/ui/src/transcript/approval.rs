@@ -1,46 +1,97 @@
-//! The permission Approval surface (ADR-0014): a pending confirm-changes
-//! gate renders as a flat strip in the transcript flow — no card, no nested
-//! boxes, just top/bottom hairlines. The gated command/path leads as a bare
-//! mono line, the working directory follows as faint metadata, and the four
-//! verdict affordances (Allow once / Always allow · this session / Deny /
-//! Note…) sit bottom-right. Settled gates render their verdict as a small
-//! marker on the ordinary tool chip ([`verdict_chip`]). The strip speaks in
-//! the neutral scheme (user call: no accent, no amber) — `danger` only for
-//! denials.
+//! The permission Approval surface (ADR-0014). A pending confirm-changes
+//! gate has two cooperating views: this flat marker strip in the
+//! transcript flow — what is gated, in context — and the composer's
+//! approval bar (`composer::approval_bar`), where the verdict is chosen.
+//! The strip shows the gated command/path as a bare mono line plus the
+//! working directory as faint metadata and points at the bar; settled
+//! gates render their verdict as a small marker on the ordinary tool chip
+//! ([`verdict_chip`]). The strip speaks in the neutral scheme (user call:
+//! no accent, no amber) — `danger` only for denials.
 //!
-//! Interactive state (the note editor) lives on the `Transcript` entity
-//! keyed by approval id — never in `RowKind`, so a row re-splice can't
-//! drop a half-written note.
-
-use std::collections::HashSet;
+//! The resolve channel itself ([`resolve_approval`]) is shared by every
+//! surface that answers a gate.
 
 use gpui::{
-    AnyElement, Context, Entity, Focusable as _, Hsla, KeyDownEvent, SharedString, Window, div,
-    prelude::*, px,
+    AnyElement, App, Context, Entity, Hsla, KeyDownEvent, SharedString, Window, div, prelude::*, px,
 };
 
 use holt_doc::{GateVerdict, MessagePart, SessionMessageEntry, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, ToolCall};
 use holt_rpc::methods;
 
-use super::model::{RowKind, ToolItem, skill_file_display};
-use super::{ApprovalNote, Transcript, tool_chip_content};
-use crate::composer::{ComposerInput, ComposerInputEvent};
+use super::model::{ToolItem, skill_file_display};
+use super::{Transcript, tool_chip_content};
+use crate::state::AppState;
 use crate::theme::Theme;
 
-/// The latest still-pending gate in a transcript, if any — the Esc-interrupt
-/// hint and the composer's Esc handler key off this.
-pub fn pending_approval_gate(transcript: &[SessionMessageEntry]) -> Option<ToolGate> {
+/// The latest still-pending gate in a transcript AND its tool call — the
+/// composer approval bar's data source (the bar renders the gated target,
+/// not just the id), and the Esc-interrupt path's (via the gate-only
+/// [`pending_approval_gate`]).
+pub fn pending_approval_tool(transcript: &[SessionMessageEntry]) -> Option<(ToolCall, ToolGate)> {
     transcript
         .iter()
         .rev()
         .flat_map(|entry| entry.parts.iter().rev())
         .find_map(|part| match part {
             MessagePart::Tool {
-                gate: Some(gate), ..
-            } if gate.state == ToolGateState::Pending => Some(gate.clone()),
+                call,
+                gate: Some(gate),
+                ..
+            } if gate.state == ToolGateState::Pending => Some((call.clone(), gate.clone())),
             _ => None,
         })
+}
+
+/// The latest still-pending gate in a transcript, if any.
+pub fn pending_approval_gate(transcript: &[SessionMessageEntry]) -> Option<ToolGate> {
+    pending_approval_tool(transcript).map(|(_, gate)| gate)
+}
+
+/// Send the verdict (fire-and-forget: failures are no-ops engine-side,
+/// and the doc's settled gate is what settles the UI). Shared by the
+/// transcript strip and the composer approval bar.
+pub fn resolve_approval(
+    state: &Entity<AppState>,
+    approval_id: String,
+    verdict: ApprovalVerdict,
+    cx: &mut App,
+) {
+    let Some(engine) = state.read(cx).engine().cloned() else {
+        return;
+    };
+    cx.spawn(async move |_| {
+        let params = serde_json::json!({
+            "approvalId": approval_id,
+            "verdict": verdict,
+        });
+        if let Err(err) = engine
+            .client()
+            .call(methods::RESOLVE_APPROVAL, params)
+            .await
+        {
+            tracing::warn!(error = %err, "ResolveApproval failed");
+        }
+    })
+    .detach();
+}
+
+/// The strip/bar's shared metadata line: the working directory (when the
+/// chat row has one) plus the confirm-changes contract.
+pub fn approval_meta(cwd: Option<&str>) -> String {
+    match cwd {
+        Some(cwd) => format!(
+            "cwd: {} · Confirm changes: commands run only after you approve",
+            skill_file_display(cwd)
+        ),
+        None => "Confirm changes: commands run only after you approve".to_string(),
+    }
+}
+
+/// The bar's terse working-directory line (the strip carries the full
+/// confirm-changes contract; the bar's header already says it).
+pub fn approval_cwd_line(cwd: &str) -> String {
+    format!("cwd: {}", skill_file_display(cwd))
 }
 
 /// The gated target rendered as the strip's mono lead line. Bash commands
@@ -108,7 +159,6 @@ impl Transcript {
     /// banner, or a shadow behind translucency.
     pub(super) fn render_approval_card(
         &mut self,
-        row_id: &SharedString,
         tool: &ToolItem,
         theme: &Theme,
         _window: &mut Window,
@@ -117,7 +167,6 @@ impl Transcript {
         let Some(gate) = tool.gate.clone() else {
             return gpui::Empty.into_any_element();
         };
-        let approval_id = gate.id;
         let target = approval_target(&tool.call);
         // cwd metadata comes from the chat row; an override (subagent) doc
         // has none and omits the prefix.
@@ -129,100 +178,7 @@ impl Transcript {
         } else {
             None
         };
-        let meta = match cwd {
-            Some(cwd) => format!(
-                "cwd: {} · Confirm changes: commands run only after you approve",
-                skill_file_display(&cwd)
-            ),
-            None => "Confirm changes: commands run only after you approve".to_string(),
-        };
-        let note_input = self
-            .approval_notes
-            .get(&approval_id)
-            .map(|note| note.input.clone());
-        let note_open = note_input.is_some();
-        let id_once = approval_id.clone();
-        let id_always = approval_id.clone();
-        let id_deny = approval_id.clone();
-        let id_note = approval_id.clone();
-        // The four verdict affordances, placed at the strip's bottom-right.
-        // Small ghost-family buttons (the strip is compact chrome); only
-        // Deny carries hue.
-        // Allow once — the primary action in the app's subtle-raised idiom
-        // (wizard picked-option language: faint ink plate + hairline), not
-        // the dialogs' solid plate.
-        let allow_once = div()
-            .id(format!("approval-once-{id_once}"))
-            .flex_none()
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.hairline(0.14))
-            .bg(theme.ink(0.09))
-            .text_size(crate::typography::ui_rems(11.5))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(theme.text)
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.ink(0.14)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.resolve_approval(id_once.clone(), ApprovalVerdict::Allow, cx);
-            }))
-            .child("Allow once");
-        // Always allow · this session — a neutral ghost like Note…, but a
-        // solid hairline so the four buttons read as one family.
-        let always_allow = div()
-            .id(format!("approval-always-{id_always}"))
-            .flex_none()
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.hairline(0.14))
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.ink(0.05)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.resolve_approval(id_always.clone(), ApprovalVerdict::AlwaysAllow, cx);
-            }))
-            .child("Always allow · this session");
-        // Deny — restrained danger (the strip's only hue: the app's error
-        // language).
-        let deny = div()
-            .id(format!("approval-deny-{id_deny}"))
-            .flex_none()
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.danger.opacity(0.3))
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.danger_muted)
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.danger.opacity(0.06)))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.resolve_approval(id_deny.clone(), ApprovalVerdict::Deny { note: None }, cx);
-            }))
-            .child("Deny");
-        // Note… — dashed ghost; opens the note editor.
-        let note = div()
-            .id(format!("approval-note-{id_note}"))
-            .flex_none()
-            .px(px(10.0))
-            .py(px(4.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_dashed()
-            .border_color(theme.hairline(0.14))
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|el| el.bg(theme.ink(0.05)))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_approval_note(id_note.clone(), window, cx);
-            }))
-            .child(if note_open { "Hide note" } else { "Note…" });
+        let meta = approval_meta(cwd.as_deref());
         div()
             .py(px(4.0))
             .w_full()
@@ -247,7 +203,7 @@ impl Transcript {
                         let keyboard_open = open.clone();
                         card.child(
                             div()
-                                .id(format!("approval-source-{}", approval_id))
+                                .id(format!("approval-source-{}", gate.id))
                                 .debug_selector(|| "approval-subagent-source".to_string())
                                 .role(gpui::Role::Button)
                                 .aria_label("Open subagent")
@@ -291,196 +247,23 @@ impl Transcript {
                             .text_color(theme.text_faint)
                             .child(SharedString::from(meta)),
                     )
-                    // The verdict affordances, bottom-right; the row wraps
-                    // under narrow widths.
+                    // The verdict moved to the composer's approval bar; the
+                    // strip marks WHAT is gated and points at it.
                     .child(
                         div()
                             .mt(px(8.0))
-                            .flex()
-                            .flex_row()
-                            .justify_end()
-                            .flex_wrap()
-                            .gap(px(6.0))
-                            .child(allow_once)
-                            .child(always_allow)
-                            .child(deny)
-                            .child(note),
-                    )
-                    .when_some(note_input, |card, input| {
-                        card.child(self.render_approval_note(
-                            row_id,
-                            &approval_id,
-                            input,
-                            theme,
-                            cx,
-                        ))
-                    }),
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_faint)
+                            .child("Waiting for your approval — answer in the composer below"),
+                    ),
             )
             .into_any_element()
-    }
-
-    /// The expanding note editor at the strip's foot: the denial reason
-    /// goes back to the model as the call's error result. Enter submits
-    /// (= Deny with note), Escape cancels the editor WITHOUT reaching the
-    /// composer's Esc-interrupt.
-    fn render_approval_note(
-        &mut self,
-        row_id: &SharedString,
-        approval_id: &str,
-        input: Entity<ComposerInput>,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id_for_key = approval_id.to_string();
-        let id_for_submit = approval_id.to_string();
-        div()
-            .id(SharedString::from(format!("approval-note-{approval_id}")))
-            .w_full()
-            .mt(px(10.0))
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.approval_notes.remove(&id_for_key);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .child(
-                div()
-                    .w_full()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.hairline(0.12))
-                    .bg(theme.ink(0.04))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .child(input),
-            )
-            .child(
-                div().flex().flex_row().justify_end().child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "approval-deny-note-{approval_id}-{row_id}"
-                        )))
-                        .flex_none()
-                        .px(px(12.0))
-                        .py(px(6.0))
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(theme.danger.opacity(0.3))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.danger_muted)
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.danger.opacity(0.06)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.submit_approval_note(&id_for_submit, cx);
-                        }))
-                        .child("Deny with note"),
-                ),
-            )
-            .into_any_element()
-    }
-
-    /// Open (or close) the note editor for one approval. The editor entity
-    /// lives on the Transcript keyed by approval id; opening focuses it.
-    fn toggle_approval_note(
-        &mut self,
-        approval_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.approval_notes.remove(&approval_id).is_some() {
-            cx.notify();
-            return;
-        }
-        let input = cx.new(|cx| {
-            ComposerInput::new(
-                "Why denied — sent back to the model, e.g. use pnpm, not npm",
-                cx,
-            )
-        });
-        let id = approval_id.clone();
-        let events = cx.subscribe(&input, move |this: &mut Self, _, event, cx| match event {
-            ComposerInputEvent::Submitted => this.submit_approval_note(&id, cx),
-            ComposerInputEvent::Edited => cx.notify(),
-            _ => {}
-        });
-        let handle = input.read(cx).focus_handle(cx);
-        self.approval_notes.insert(
-            approval_id,
-            ApprovalNote {
-                input,
-                _events: events,
-            },
-        );
-        window.focus(&handle, cx);
-        cx.notify();
-    }
-
-    /// Enter in the note editor = Deny with note: a blank note degrades to a
-    /// plain deny.
-    fn submit_approval_note(&mut self, approval_id: &str, cx: &mut Context<Self>) {
-        let note = self
-            .approval_notes
-            .get(approval_id)
-            .map(|note| note.input.read(cx).text().trim().to_string())
-            .filter(|note| !note.is_empty());
-        self.resolve_approval(approval_id.to_string(), ApprovalVerdict::Deny { note }, cx);
-    }
-
-    /// Send the verdict (fire-and-forget: failures are no-ops engine-side,
-    /// and the doc's settled gate is what settles the strip). The note
-    /// editor, if open, closes with the verdict.
-    fn resolve_approval(
-        &mut self,
-        approval_id: String,
-        verdict: ApprovalVerdict,
-        cx: &mut Context<Self>,
-    ) {
-        self.approval_notes.remove(&approval_id);
-        cx.notify();
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        cx.spawn(async move |_, _| {
-            let params = serde_json::json!({
-                "approvalId": approval_id,
-                "verdict": verdict,
-            });
-            if let Err(err) = engine
-                .client()
-                .call(methods::RESOLVE_APPROVAL, params)
-                .await
-            {
-                tracing::warn!(error = %err, "ResolveApproval failed");
-            }
-        })
-        .detach();
-    }
-
-    /// Drop note editors whose approval is no longer pending (verdict landed,
-    /// chat switched, transcript switched docs) — called once per render.
-    pub(super) fn prune_approval_notes(&mut self) {
-        if self.approval_notes.is_empty() {
-            return;
-        }
-        let pending: HashSet<String> = self
-            .rows
-            .iter()
-            .filter_map(|row| match &row.kind {
-                RowKind::Approval { tool } => tool.gate.as_ref().map(|gate| gate.id.to_string()),
-                _ => None,
-            })
-            .collect();
-        self.approval_notes.retain(|id, _| pending.contains(id));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::RowKind;
     use super::*;
     use holt_doc::MessageRole;
 
@@ -795,8 +578,11 @@ mod tests {
         );
     }
 
+    /// Entity + render test: the pending gate lands as an Approval row and
+    /// the marker strip draws; once settled, the row folds back into the
+    /// tool group carrying the verdict chip.
     #[gpui::test]
-    fn approval_rows_note_editor_and_render(cx: &mut gpui::TestAppContext) {
+    fn approval_rows_render_pending_strip_and_settle(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
         let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(Theme::default()));
@@ -814,50 +600,15 @@ mod tests {
                     .iter()
                     .any(|row| matches!(row.kind, RowKind::Approval { .. }))
             );
-            assert!(this.approval_notes.is_empty());
         });
-        // Draw the pending strip (mono lead line, four affordances).
+        // Draw the pending marker strip (mono lead line, meta, bar hint).
         cx.draw(
             gpui::point(gpui::px(0.0), gpui::px(0.0)),
             gpui::size(gpui::px(800.0), gpui::px(600.0)),
             |_, _| transcript.clone().into_any_element(),
         );
 
-        // Note… opens the editor; toggling closes it.
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_approval_note("g1".into(), window, cx);
-            });
-        });
-        transcript.update(cx, |this, _| {
-            assert!(this.approval_notes.contains_key("g1"))
-        });
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_approval_note("g1".into(), window, cx);
-            });
-        });
-        transcript.update(cx, |this, _| assert!(this.approval_notes.is_empty()));
-
-        // Enter on a blank note = plain deny; the editor closes with the
-        // verdict (the RPC is a no-op without an engine — state-only here).
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_approval_note("g1".into(), window, cx);
-            });
-        });
-        transcript.update(cx, |this, cx| {
-            this.submit_approval_note("g1", cx);
-            assert!(this.approval_notes.is_empty());
-        });
-
-        // A stale editor is pruned once its approval settles: reopen, settle
-        // the gate, and the Approval row folds back into a tool group.
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_approval_note("g1".into(), window, cx);
-            });
-        });
+        // The settle folds the Approval row back into a tool group.
         state.update(cx, |s, cx| {
             s.transcript[0] = entry(
                 "m1",
@@ -881,8 +632,6 @@ mod tests {
                     .iter()
                     .any(|row| matches!(row.kind, RowKind::Approval { .. }))
             );
-            this.prune_approval_notes();
-            assert!(this.approval_notes.is_empty());
         });
         // Draw the settled verdict chip.
         cx.draw(

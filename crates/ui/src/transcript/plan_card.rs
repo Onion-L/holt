@@ -554,7 +554,7 @@ mod tests {
                 this.toggle_plan_feedback("s1#p1".into(), window, cx);
             });
         });
-        transcript.update(cx, |this, _| assert!(this.approval_notes.is_empty()));
+        transcript.update(cx, |this, _| assert!(this.plan_notes.is_empty()));
 
         // The settle prunes a stale editor and the settled card draws.
         cx.update(|window, cx| {

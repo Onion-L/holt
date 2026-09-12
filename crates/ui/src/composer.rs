@@ -9,6 +9,7 @@
 //! pending-input detection) lives in free functions/structs with unit tests;
 //! the gpui element only feeds them measurements.
 
+mod approval_bar;
 mod input;
 mod input_element;
 mod layout;
@@ -29,6 +30,7 @@ pub use morph::*;
 pub use send_mode::*;
 pub use wizard::{Wizard, WizardStep};
 
+use approval_bar::{ApprovalBar, approval_prompt};
 use layout::composer_width_changed;
 use popups::{FileMentionState, SlashState};
 
@@ -116,6 +118,18 @@ pub struct Composer {
     failure_key: Option<String>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
+    /// The confirm-changes approval bar that replaces the pill while a
+    /// gate pends (ADR-0014) — the wizard's takeover pattern over the
+    /// same shared input.
+    approval_bar: Option<ApprovalBar>,
+    approval_bar_focus: FocusHandle,
+    /// Gates answered locally: suppresses the bar until the doc frame
+    /// marks them settled (the wizard's `answered_requests` mirror).
+    answered_approvals: HashSet<String>,
+    /// Focus grab deferred to the bar's first frame: the bar's own focus
+    /// handle owns the keyboard by default, so arrows/Enter/digits never
+    /// reach the shared input's caret bindings.
+    approval_bar_focus_pending: bool,
     /// Inline editor for one pending queue message (queue.rs). Never touches
     /// `drafts` — the composer's own text is unrelated text being composed.
     queue_edit: Option<queue::QueueEdit>,
@@ -278,6 +292,10 @@ impl Composer {
             failure: None,
             wizard: None,
             wizard_focus: cx.focus_handle(),
+            approval_bar: None,
+            approval_bar_focus: cx.focus_handle(),
+            answered_approvals: HashSet::new(),
+            approval_bar_focus_pending: false,
             queue_edit: None,
             queue_task: None,
             queue_busy: false,
@@ -459,6 +477,44 @@ impl Composer {
                 }
             }
         }
+
+        // Approval bar lifecycle (the wizard's takeover pattern, keyed per
+        // gate id): a pending confirm-changes gate replaces the pill; the
+        // wizard, when also live, wins the surface.
+        let pending_gate = {
+            let s = self.state.read(cx);
+            crate::transcript::pending_approval_tool(&s.transcript)
+        };
+        let pending_gate_id = pending_gate.as_ref().map(|(_, gate)| gate.id.clone());
+        // Answered gates the doc caught up with leave the suppression set.
+        self.answered_approvals
+            .retain(|id| pending_gate_id.as_ref() == Some(id));
+        match pending_gate {
+            Some((call, gate)) if !self.answered_approvals.contains(&gate.id) => {
+                let same = self
+                    .approval_bar
+                    .as_ref()
+                    .is_some_and(|bar| bar.approval_id == gate.id);
+                if !same && self.wizard.is_none() {
+                    self.reset_mention(None, cx);
+                    self.approval_bar = Some(ApprovalBar::new(
+                        gate.id,
+                        approval_prompt(&call).options.len(),
+                    ));
+                    self.approval_bar_focus_pending = true;
+                    // The shared input becomes the bar's denial-note row.
+                    self.input.update(cx, |input, cx| {
+                        input.set_placeholder("Deny with a note…", cx)
+                    });
+                }
+            }
+            _ => {
+                if self.approval_bar.take().is_some() {
+                    self.input
+                        .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                }
+            }
+        }
         cx.notify();
     }
 }
@@ -474,13 +530,18 @@ impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let wizard_active = self.wizard.is_some();
+        let approval_bar_active = self.approval_bar.is_some();
         if self.mention.token.is_some()
-            && (wizard_active || !self.input.focus_handle(cx).is_focused(window))
+            && (wizard_active
+                || approval_bar_active
+                || !self.input.focus_handle(cx).is_focused(window))
         {
             self.reset_mention(None, cx);
         }
         if self.slash.token.is_some()
-            && (wizard_active || !self.input.focus_handle(cx).is_focused(window))
+            && (wizard_active
+                || approval_bar_active
+                || !self.input.focus_handle(cx).is_focused(window))
         {
             self.reset_slash(None, cx);
         }
@@ -757,6 +818,20 @@ impl Render for Composer {
         if wizard_active {
             let wizard = self.render_wizard(cx);
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
+        }
+        // A pending confirm-changes gate takes over the composer next
+        // (ADR-0014): the approval bar answers it where the pill was.
+        if let Some(bar) = self.render_approval_bar(&theme, window, cx) {
+            // The bar's own focus handle owns the keyboard by default —
+            // with the shared input focused, its caret bindings would eat
+            // the arrows before this panel ever saw them.
+            if std::mem::take(&mut self.approval_bar_focus_pending) {
+                window.focus(&self.approval_bar_focus, cx);
+            }
+            return container.child(motion::fade_quick(
+                "composer-approval-bar",
+                div().child(bar),
+            ));
         }
 
         // New chats always use the expanded layout: the repo/branch pickers

@@ -1213,9 +1213,7 @@ impl Transcript {
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
             }
-            RowKind::Approval { tool } => {
-                self.render_approval_card(&row.id, tool, &theme, window, cx)
-            }
+            RowKind::Approval { tool } => self.render_approval_card(tool, &theme, window, cx),
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
@@ -3017,9 +3015,8 @@ impl Render for Transcript {
         // Release gpui-side decoded copies of any images the attachment LRU
         // evicted since the last frame (no-op when nothing was evicted).
         crate::images::flush_evicted(Some(window), cx);
-        // Drop note editors whose approval settled or scrolled away with a
-        // chat switch (a verdict also closes its own editor eagerly).
-        self.prune_approval_notes();
+        // Drop plan feedback editors whose card settled or scrolled away
+        // with a chat switch.
         self.prune_plan_notes();
         // Own-turn driver: measurements are only authoritative after layout,
         // so reservation sizing, the send glide, and the outgrown-handoff

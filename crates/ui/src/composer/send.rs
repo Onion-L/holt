@@ -70,6 +70,14 @@ impl Composer {
     }
 
     pub(super) fn on_submit(&mut self, cx: &mut Context<Self>) {
+        if self.approval_bar.is_some() {
+            // Enter inside the approval bar's note row denies with the
+            // typed note (a blank note degrades to a plain deny).
+            let note = self.input.read(cx).text().trim().to_string();
+            let note = (!note.is_empty()).then_some(note);
+            self.resolve_approval_bar(holt_proto::ApprovalVerdict::Deny { note }, cx);
+            return;
+        }
         if self.wizard.is_some() {
             // Enter inside the panel's free-text input submits the page.
             let typed = self.input.read(cx).text().trim().to_string();
