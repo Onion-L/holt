@@ -30,7 +30,7 @@ pub use morph::*;
 pub use send_mode::*;
 pub use wizard::{Wizard, WizardStep};
 
-use approval_bar::{ApprovalBar, approval_prompt};
+use approval_bar::{ApprovalBar, PendingApproval};
 use layout::composer_width_changed;
 use popups::{FileMentionState, SlashState};
 
@@ -108,6 +108,8 @@ pub struct Composer {
     /// they never show at once (mutually exclusive by token shape).
     popup_bar: crate::popover::MenuScrollbarState,
     current_key: String,
+    /// Plan Mode selected on the new-chat canvas before a chat exists.
+    plan_mode_draft: bool,
     sending: bool,
     failed_submissions: std::collections::HashMap<String, (String, serde_json::Value)>,
     failure: Option<SharedString>,
@@ -287,6 +289,7 @@ impl Composer {
             mention_scroll: gpui::ScrollHandle::new(),
             popup_bar: crate::popover::MenuScrollbarState::default(),
             current_key,
+            plan_mode_draft: false,
             sending: false,
             failed_submissions: std::collections::HashMap::new(),
             failure: None,
@@ -479,32 +482,36 @@ impl Composer {
         }
 
         // Approval bar lifecycle (the wizard's takeover pattern, keyed per
-        // gate id): a pending confirm-changes gate replaces the pill; the
-        // wizard, when also live, wins the surface.
-        let pending_gate = {
+        // approval id): a pending approval — a confirm-changes gate
+        // (ADR-0014) or a submitted plan (ADR-0025) — replaces the pill;
+        // the wizard, when also live, wins the surface.
+        let pending = {
             let s = self.state.read(cx);
-            crate::transcript::pending_approval_tool(&s.transcript)
+            PendingApproval::from_transcript(&s.transcript)
         };
-        let pending_gate_id = pending_gate.as_ref().map(|(_, gate)| gate.id.clone());
-        // Answered gates the doc caught up with leave the suppression set.
+        let pending_id = pending.as_ref().map(|p| p.id().to_string());
+        // Answered approvals the doc caught up with leave the suppression
+        // set.
         self.answered_approvals
-            .retain(|id| pending_gate_id.as_ref() == Some(id));
-        match pending_gate {
-            Some((call, gate)) if !self.answered_approvals.contains(&gate.id) => {
+            .retain(|id| pending_id.as_ref() == Some(id));
+        match pending {
+            Some(p) if !self.answered_approvals.contains(p.id()) => {
                 let same = self
                     .approval_bar
                     .as_ref()
-                    .is_some_and(|bar| bar.approval_id == gate.id);
+                    .is_some_and(|bar| bar.id == p.id());
                 if !same && self.wizard.is_none() {
                     self.reset_mention(None, cx);
+                    let prompt = p.prompt();
                     self.approval_bar = Some(ApprovalBar::new(
-                        gate.id,
-                        approval_prompt(&call).options.len(),
+                        p.id().to_string(),
+                        prompt.kind,
+                        prompt.options.len(),
                     ));
                     self.approval_bar_focus_pending = true;
-                    // The shared input becomes the bar's denial-note row.
+                    // The shared input becomes the bar's note row.
                     self.input.update(cx, |input, cx| {
-                        input.set_placeholder("Deny with a note…", cx)
+                        input.set_placeholder(prompt.note_placeholder, cx)
                     });
                 }
             }

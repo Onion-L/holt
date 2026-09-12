@@ -1,58 +1,89 @@
-//! The approval bar (ADR-0014, prototype 4's variant 1): while a
-//! confirm-changes gate pends, the composer's pill is replaced by this
-//! panel — the gated target as a bare mono lead line, then a flat
-//! keyboard-first option list (Allow once / Always allow · this session /
-//! Deny) whose trailing row is the free-text denial note. The transcript
-//! builds no in-flow marker for the pending gate (user call: the strip
-//! duplicated this panel); the verdict itself rides the shared
-//! `ResolveApproval` channel.
+//! The approval bar: one composer-takeover panel for every user verdict.
+//! While something pends, the composer's pill is replaced by a flat
+//! keyboard-first option list whose trailing row is a free-text input.
+//! Two producers feed it (ADR-0014 / ADR-0025, prototype 4's variant 1):
+//!
+//! - **Gate** — a confirm-changes gate: the gated target as a bare mono
+//!   lead line, then Allow once / Always allow · this session / Deny, the
+//!   note row carrying the denial note. Escape interrupts the Turn (it
+//!   bubbles to the composer root's handler).
+//! - **Plan** — a submitted plan awaiting its verdict: Approve / Reject /
+//!   Stay in planning, the note row carrying the rejection feedback. No
+//!   target line (the plan document is the transcript card above); Escape
+//!   is inert (no Turn is blocked on a plan).
+//!
+//! The transcript builds no interactive counterpart for either (user
+//! call: a duplicated strip reads as noise); verdicts ride the shared
+//! `ResolveApproval` / `ResolvePlanApproval` channels.
 //!
 //! Keyboard contract: the bar's own focus handle owns the keyboard by
 //! default (stamped on open — arrows/Enter/digits never reach the shared
 //! input's caret bindings), arrows move the cursor, Enter on an option
 //! resolves it, Enter on the note row focuses the input, and Enter there
-//! (the input's Submit) denies with the typed note. Escape is NOT handled
-//! here — it bubbles to the composer root's Turn interrupt. Pure state
-//! (the option model, the cursor) is unit-tested; the gpui glue only
-//! feeds it keys and clicks.
+//! (the input's Submit) sends the note. Pure state (the prompt models,
+//! the cursor) is unit-tested; the gpui glue only feeds it keys and
+//! clicks.
 
 use super::Composer;
 
-use gpui::{Context, KeyDownEvent, SharedString, Window, div, prelude::*, px};
+use gpui::{App, Context, KeyDownEvent, SharedString, Window, div, prelude::*, px};
 
+use holt_doc::SessionMessageEntry;
 use holt_proto::{ApprovalVerdict, ToolCall};
 
 use crate::motion;
 use crate::theme::Theme;
 use crate::transcript::{
-    approval_cwd_line, approval_target, pending_approval_tool, resolve_approval,
+    approval_cwd_line, approval_target, pending_approval_tool, pending_plan_approval,
+    resolve_approval, resolve_plan_approval,
 };
 
 // ---------------------------------------------------------------------------
 // Pure model
 // ---------------------------------------------------------------------------
 
-/// One selectable option row: the verdict it resolves with, its label,
-/// and whether it speaks in the denial's danger tint (the surface's only
-/// hue, per `transcript::approval`).
+/// Which approval subsystem the open bar answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BarKind {
+    /// ADR-0014 confirm-changes gate.
+    Gate,
+    /// ADR-0025 plan approval.
+    Plan,
+}
+
+/// One option row's resolve payload: a gate verdict, or the plan
+/// verdict word (`"approve" | "reject" | "remain"` — rejection feedback
+/// arrives separately through the note row).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BarVerdict {
+    Gate(ApprovalVerdict),
+    Plan(&'static str),
+}
+
+/// One selectable option row: its label, its resolve payload, and whether
+/// it speaks in the rejection's danger tint (the surface's only hue).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApprovalOption {
     pub label: &'static str,
-    pub verdict: ApprovalVerdict,
+    pub verdict: BarVerdict,
     pub danger: bool,
 }
 
-/// What the bar renders for one pending gate, derived from the gated call.
+/// What the bar renders for one pending approval: the title, an optional
+/// mono target line (the plan's document is the transcript card, so it
+/// has none), the option rows, and the note row's placeholder.
 pub(crate) struct ApprovalPrompt {
+    pub kind: BarKind,
     pub title: &'static str,
-    pub target: String,
+    pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
+    pub note_placeholder: &'static str,
 }
 
-/// The bar's content for one gated call: the kind-specific title, the mono
-/// target line, and the three verdict options. The trailing note row is
-/// NOT an option — it is the free-text input.
-pub(crate) fn approval_prompt(call: &ToolCall) -> ApprovalPrompt {
+/// The gate's prompt (ADR-0014): the kind-specific title, the mono target
+/// line, and the three verdict options. The trailing note row is NOT an
+/// option — it is the free-text input.
+pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
     let title = match call {
         ToolCall::Exec { .. } => "Run this command?",
         ToolCall::WriteFile { .. } => "Write this file?",
@@ -61,25 +92,86 @@ pub(crate) fn approval_prompt(call: &ToolCall) -> ApprovalPrompt {
         _ => "Allow this action?",
     };
     ApprovalPrompt {
+        kind: BarKind::Gate,
         title,
-        target: approval_target(call),
+        target: Some(approval_target(call)),
         options: vec![
             ApprovalOption {
                 label: "Allow once",
-                verdict: ApprovalVerdict::Allow,
+                verdict: BarVerdict::Gate(ApprovalVerdict::Allow),
                 danger: false,
             },
             ApprovalOption {
                 label: "Always allow · this session",
-                verdict: ApprovalVerdict::AlwaysAllow,
+                verdict: BarVerdict::Gate(ApprovalVerdict::AlwaysAllow),
                 danger: false,
             },
             ApprovalOption {
                 label: "Deny",
-                verdict: ApprovalVerdict::Deny { note: None },
+                verdict: BarVerdict::Gate(ApprovalVerdict::Deny { note: None }),
                 danger: true,
             },
         ],
+        note_placeholder: "Deny with a note…",
+    }
+}
+
+/// The plan's prompt (ADR-0025): no target line (the submitted plan is
+/// the transcript card above) — title, three verdict options, and the
+/// rejection-feedback note row.
+pub(crate) fn plan_prompt() -> ApprovalPrompt {
+    ApprovalPrompt {
+        kind: BarKind::Plan,
+        title: "Approve this plan?",
+        target: None,
+        options: vec![
+            ApprovalOption {
+                label: "Approve",
+                verdict: BarVerdict::Plan("approve"),
+                danger: false,
+            },
+            ApprovalOption {
+                label: "Reject",
+                verdict: BarVerdict::Plan("reject"),
+                danger: true,
+            },
+            ApprovalOption {
+                label: "Stay in planning",
+                verdict: BarVerdict::Plan("remain"),
+                danger: false,
+            },
+        ],
+        note_placeholder: "Reject with feedback…",
+    }
+}
+
+/// The latest pending approval of either kind, gate first. The two are
+/// mutually exclusive in practice (Plan Mode mounts read-only tools, so
+/// no mutating call gates while planning) — the order only breaks ties.
+pub(crate) enum PendingApproval {
+    Gate { call: ToolCall, id: String },
+    Plan(String),
+}
+
+impl PendingApproval {
+    pub(crate) fn from_transcript(transcript: &[SessionMessageEntry]) -> Option<Self> {
+        pending_approval_tool(transcript)
+            .map(|(call, gate)| PendingApproval::Gate { call, id: gate.id })
+            .or_else(|| pending_plan_approval(transcript).map(PendingApproval::Plan))
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            PendingApproval::Gate { id, .. } => id,
+            PendingApproval::Plan(key) => key,
+        }
+    }
+
+    pub(crate) fn prompt(&self) -> ApprovalPrompt {
+        match self {
+            PendingApproval::Gate { call, .. } => gate_prompt(call),
+            PendingApproval::Plan(_) => plan_prompt(),
+        }
     }
 }
 
@@ -87,16 +179,18 @@ pub(crate) fn approval_prompt(call: &ToolCall) -> ApprovalPrompt {
 /// `options.len()` is the trailing note input.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApprovalBar {
-    pub approval_id: String,
+    pub id: String,
+    pub kind: BarKind,
     pub selection: usize,
     /// Total cursor rows (options + the note row), stamped at open.
     rows: usize,
 }
 
 impl ApprovalBar {
-    pub(crate) fn new(approval_id: String, options: usize) -> Self {
+    pub(crate) fn new(id: String, kind: BarKind, options: usize) -> Self {
         Self {
-            approval_id,
+            id,
+            kind,
             selection: 0,
             rows: options + 1,
         }
@@ -127,8 +221,21 @@ impl ApprovalBar {
 // ---------------------------------------------------------------------------
 
 impl Composer {
+    /// The content model for the open bar, rebuilt from its producer: the
+    /// gate's prompt derives from the gated call, the plan's is static.
+    fn bar_prompt(&self, cx: &App) -> Option<ApprovalPrompt> {
+        let bar = self.approval_bar.as_ref()?;
+        match bar.kind {
+            BarKind::Gate => {
+                let (call, _) = pending_approval_tool(&self.state.read(cx).transcript)?;
+                Some(gate_prompt(&call))
+            }
+            BarKind::Plan => Some(plan_prompt()),
+        }
+    }
+
     /// Confirm the cursor row: an option resolves with its verdict; the
-    /// note row hands the shared input focus for the denial note.
+    /// note row hands the shared input focus for the note.
     pub(super) fn approval_bar_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bar) = self.approval_bar.clone() else {
             return;
@@ -138,35 +245,57 @@ impl Composer {
             window.focus(&handle, cx);
             return;
         }
-        let Some((call, _)) = pending_approval_tool(&self.state.read(cx).transcript) else {
+        let Some(prompt) = self.bar_prompt(cx) else {
             return;
         };
-        let prompt = approval_prompt(&call);
         let Some(option) = prompt.options.get(bar.selection) else {
             return;
         };
-        self.resolve_approval_bar(option.verdict.clone(), cx);
+        self.resolve_approval_bar(option.verdict.clone(), None, cx);
     }
 
-    /// Resolve the pending gate and retire the bar. Suppression
+    /// Resolve the pending approval and retire the bar. Suppression
     /// (`answered_approvals`) keeps the bar down until the doc frame marks
-    /// the gate settled — the wizard's `answered_requests` mirror. The
-    /// borrowed input hands back its identity (text and placeholder).
+    /// it settled — the wizard's `answered_requests` mirror. The borrowed
+    /// input hands back its identity (text and placeholder).
     pub(super) fn resolve_approval_bar(
         &mut self,
-        verdict: ApprovalVerdict,
+        verdict: BarVerdict,
+        plan_feedback: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let Some(bar) = self.approval_bar.take() else {
             return;
         };
-        self.answered_approvals.insert(bar.approval_id.clone());
+        self.answered_approvals.insert(bar.id.clone());
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
             input.set_placeholder("Do anything…", cx);
         });
-        resolve_approval(&self.state, bar.approval_id, verdict, cx);
+        match verdict {
+            BarVerdict::Gate(verdict) => resolve_approval(&self.state, bar.id, verdict, cx),
+            BarVerdict::Plan(word) => resolve_plan_approval(&self.state, word, plan_feedback, cx),
+        }
         cx.notify();
+    }
+
+    /// Enter in the bar's note row sends the note with the kind's
+    /// negative verdict: the gate's denial (blank = plain deny), the
+    /// plan's rejection feedback (blank = plain reject).
+    pub(super) fn resolve_bar_note(&mut self, cx: &mut Context<Self>) {
+        let Some(bar) = self.approval_bar.clone() else {
+            return;
+        };
+        let note = self.input.read(cx).text().trim().to_string();
+        let note = (!note.is_empty()).then_some(note);
+        match bar.kind {
+            BarKind::Gate => self.resolve_approval_bar(
+                BarVerdict::Gate(ApprovalVerdict::Deny { note }),
+                None,
+                cx,
+            ),
+            BarKind::Plan => self.resolve_approval_bar(BarVerdict::Plan("reject"), note, cx),
+        }
     }
 
     /// Keys on the bar's root. The bar's own focus handle owns the
@@ -208,9 +337,9 @@ impl Composer {
         }
     }
 
-    /// The panel, rendered in place of the pill while a gate pends (the
-    /// wizard's chrome: the same floating pill — `rounded-[26px]` hairline
-    /// over a faint wash). `None` when no pending gate needs answering.
+    /// The panel, rendered in place of the pill while an approval pends
+    /// (the wizard's chrome: the same floating pill — `rounded-[26px]`
+    /// hairline over a faint wash). `None` when nothing needs answering.
     pub(super) fn render_approval_bar(
         &mut self,
         theme: &Theme,
@@ -218,14 +347,16 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let bar = self.approval_bar.clone()?;
-        let (call, cwd) = {
-            let state = self.state.read(cx);
-            let (call, _) = pending_approval_tool(&state.transcript)?;
-            let cwd = state.selected_chat_row().and_then(|chat| chat.cwd.clone());
-            (call, cwd)
+        let prompt = self.bar_prompt(cx)?;
+        let cwd_line = match prompt.kind {
+            BarKind::Gate => self
+                .state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|chat| chat.cwd.clone())
+                .map(|cwd| approval_cwd_line(&cwd)),
+            BarKind::Plan => None,
         };
-        let prompt = approval_prompt(&call);
-        let cwd_line = cwd.as_deref().map(approval_cwd_line);
         let selection = bar.selection.min(bar.note_row());
         let note_row = bar.note_row();
         let input_focused = self.input.read(cx).focus_handle.is_focused(window);
@@ -275,38 +406,37 @@ impl Composer {
                 })
         };
 
-        let options =
-            prompt.options.iter().enumerate().map(|(ix, option)| {
-                let selected = ix == selection;
-                let verdict = option.verdict.clone();
-                row_frame(selected, format!("approval-bar-option-{ix}"))
-                    .id(("approval-bar-option", ix))
-                    .on_hover(motion::hover_listener(format!("approval-bar-option-{ix}")))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.resolve_approval_bar(verdict.clone(), cx)
-                    }))
-                    .child(number_chip(ix, selected))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(if option.danger {
-                                theme.danger_muted
-                            } else if selected {
-                                theme.text
-                            } else {
-                                theme.text.opacity(0.9)
-                            })
-                            .child(option.label),
-                    )
-            });
+        let options = prompt.options.iter().enumerate().map(|(ix, option)| {
+            let selected = ix == selection;
+            let verdict = option.verdict.clone();
+            row_frame(selected, format!("approval-bar-option-{ix}"))
+                .id(("approval-bar-option", ix))
+                .on_hover(motion::hover_listener(format!("approval-bar-option-{ix}")))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.resolve_approval_bar(verdict.clone(), None, cx)
+                }))
+                .child(number_chip(ix, selected))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(crate::typography::ui_rems(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(if option.danger {
+                            theme.danger_muted
+                        } else if selected {
+                            theme.text
+                        } else {
+                            theme.text.opacity(0.9)
+                        })
+                        .child(option.label),
+                )
+        });
 
-        // The trailing row is the free-text denial note: the shared
-        // composer input (the wizard's borrowed-input pattern). Enter on
-        // the cursor row focuses it; Enter inside denies with the note.
+        // The trailing row is the free-text note: the shared composer
+        // input (the wizard's borrowed-input pattern). Enter on the
+        // cursor row focuses it; Enter inside sends the note.
         let note = row_frame(note_selected, "approval-bar-note".to_string())
             .id("approval-bar-note")
             .on_hover(motion::hover_listener("approval-bar-note"))
@@ -347,18 +477,21 @@ impl Composer {
                                 .text_color(theme.text)
                                 .child(prompt.title),
                         )
-                        // The gated target leads: a bare mono line — the
-                        // strip's idiom, no framing box.
-                        .child(
-                            div()
-                                .mt(px(8.0))
-                                .w_full()
-                                .font_family(theme.font_mono.clone())
-                                .text_size(crate::typography::ui_rems(12.5))
-                                .line_height(px(18.0))
-                                .text_color(theme.text)
-                                .child(SharedString::from(prompt.target)),
-                        )
+                        // The target leads when the producer has one: a
+                        // bare mono line — the strip's idiom, no framing
+                        // box. The plan's document is the transcript card.
+                        .when_some(prompt.target.clone(), |el, target| {
+                            el.child(
+                                div()
+                                    .mt(px(8.0))
+                                    .w_full()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .line_height(px(18.0))
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(target)),
+                            )
+                        })
                         .when_some(cwd_line, |el, line| {
                             el.child(
                                 div()
@@ -389,44 +522,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_titles_and_targets_follow_the_call_kind() {
-        let exec = approval_prompt(&ToolCall::Exec {
+    fn gate_prompt_titles_and_targets_follow_the_call_kind() {
+        let exec = gate_prompt(&ToolCall::Exec {
             command: "cargo test".into(),
         });
+        assert_eq!(exec.kind, BarKind::Gate);
         assert_eq!(exec.title, "Run this command?");
-        assert_eq!(exec.target, "$ cargo test");
+        assert_eq!(exec.target.as_deref(), Some("$ cargo test"));
         assert_eq!(exec.options.len(), 3);
+        assert_eq!(exec.note_placeholder, "Deny with a note…");
 
-        let write = approval_prompt(&ToolCall::WriteFile {
+        let write = gate_prompt(&ToolCall::WriteFile {
             path: "src/main.rs".into(),
             content: None,
         });
         assert_eq!(write.title, "Write this file?");
-        assert_eq!(write.target, "src/main.rs");
+        assert_eq!(write.target.as_deref(), Some("src/main.rs"));
 
-        let patch = approval_prompt(&ToolCall::ApplyPatch { path: None });
+        let patch = gate_prompt(&ToolCall::ApplyPatch { path: None });
         assert_eq!(patch.title, "Apply this patch?");
-        assert_eq!(patch.target, "workspace");
+        assert_eq!(patch.target.as_deref(), Some("workspace"));
     }
 
     #[test]
-    fn the_option_verdicts_map_to_the_gate_contract() {
-        let prompt = approval_prompt(&ToolCall::Exec {
+    fn the_gate_option_verdicts_map_to_the_gate_contract() {
+        let prompt = gate_prompt(&ToolCall::Exec {
             command: "ls".into(),
         });
-        assert_eq!(prompt.options[0].verdict, ApprovalVerdict::Allow);
-        assert_eq!(prompt.options[1].verdict, ApprovalVerdict::AlwaysAllow);
+        assert_eq!(
+            prompt.options[0].verdict,
+            BarVerdict::Gate(ApprovalVerdict::Allow)
+        );
+        assert_eq!(
+            prompt.options[1].verdict,
+            BarVerdict::Gate(ApprovalVerdict::AlwaysAllow)
+        );
         assert_eq!(
             prompt.options[2].verdict,
-            ApprovalVerdict::Deny { note: None }
+            BarVerdict::Gate(ApprovalVerdict::Deny { note: None })
         );
         assert!(prompt.options[2].danger);
         assert!(!prompt.options[0].danger);
     }
 
     #[test]
+    fn the_plan_prompt_maps_to_the_plan_contract() {
+        let prompt = plan_prompt();
+        assert_eq!(prompt.kind, BarKind::Plan);
+        assert_eq!(prompt.title, "Approve this plan?");
+        // No target line: the plan document is the transcript card.
+        assert_eq!(prompt.target, None);
+        assert_eq!(prompt.note_placeholder, "Reject with feedback…");
+        let verdicts: Vec<BarVerdict> = prompt
+            .options
+            .iter()
+            .map(|option| option.verdict.clone())
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![
+                BarVerdict::Plan("approve"),
+                BarVerdict::Plan("reject"),
+                BarVerdict::Plan("remain"),
+            ]
+        );
+        assert!(prompt.options[1].danger, "reject is the danger option");
+        assert!(!prompt.options[0].danger && !prompt.options[2].danger);
+    }
+
+    #[test]
     fn the_cursor_clamps_jumps_and_finds_the_note_row() {
-        let mut bar = ApprovalBar::new("g1".into(), 3);
+        let mut bar = ApprovalBar::new("g1".into(), BarKind::Gate, 3);
         assert_eq!(bar.note_row(), 3);
         assert_eq!(bar.selection, 0);
         bar.move_by(-1);
@@ -443,7 +609,7 @@ mod tests {
     }
 
     fn gated(state: holt_doc::ToolGateState) -> holt_doc::SessionMessageEntry {
-        use holt_doc::{MessagePart, SessionMessageEntry, ToolGate};
+        use holt_doc::{MessagePart, ToolGate};
         SessionMessageEntry {
             id: "m1".into(),
             role: holt_doc::MessageRole::Assistant,
@@ -476,6 +642,53 @@ mod tests {
         }
     }
 
+    fn plan_pending(state: holt_doc::PlanApprovalState) -> holt_doc::SessionMessageEntry {
+        use holt_doc::MessagePart;
+        SessionMessageEntry {
+            id: "s1".into(),
+            role: holt_doc::MessageRole::System,
+            parts: vec![MessagePart::PlanApproval {
+                id: "p1".into(),
+                content: "# The plan".into(),
+                state,
+            }],
+            created_at: 1,
+            device_id: "dev".into(),
+            status: None,
+            continuation_of: None,
+        }
+    }
+
+    #[test]
+    fn the_pending_scan_prefers_the_gate_then_the_plan() {
+        use holt_doc::{GateVerdict, PlanApprovalVerdict, ToolGateState};
+        // Gate and plan both pending: the gate wins the tie.
+        let both = vec![
+            plan_pending(holt_doc::PlanApprovalState::Pending),
+            gated(ToolGateState::Pending),
+        ];
+        let Some(PendingApproval::Gate { id, .. }) = PendingApproval::from_transcript(&both) else {
+            panic!("expected the gate to win")
+        };
+        assert_eq!(id, "g1");
+        // Plan only.
+        let plan_only = vec![plan_pending(holt_doc::PlanApprovalState::Pending)];
+        let Some(PendingApproval::Plan(key)) = PendingApproval::from_transcript(&plan_only) else {
+            panic!("expected the plan")
+        };
+        assert_eq!(key, "s1#p1");
+        // Nothing pending.
+        let settled = vec![
+            plan_pending(holt_doc::PlanApprovalState::Settled {
+                verdict: PlanApprovalVerdict::Approved,
+            }),
+            gated(ToolGateState::Settled {
+                verdict: GateVerdict::Allowed,
+            }),
+        ];
+        assert!(PendingApproval::from_transcript(&settled).is_none());
+    }
+
     #[gpui::test]
     fn the_bar_opens_on_a_pending_gate_and_retires_with_the_verdict(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
@@ -493,7 +706,8 @@ mod tests {
         });
         composer.update(cx, |this, _| {
             let bar = this.approval_bar.as_ref().expect("the bar opened");
-            assert_eq!(bar.approval_id, "g1");
+            assert_eq!(bar.id, "g1");
+            assert_eq!(bar.kind, BarKind::Gate);
             assert_eq!(bar.selection, 0);
             assert!(this.approval_bar_focus_pending);
         });
@@ -546,11 +760,54 @@ mod tests {
         });
         composer.update(cx, |this, _| {
             assert_eq!(
-                this.approval_bar
-                    .as_ref()
-                    .map(|bar| bar.approval_id.as_str()),
+                this.approval_bar.as_ref().map(|bar| bar.id.as_str()),
                 Some("g2")
             );
+        });
+    }
+
+    /// The plan producer: a pending plan approval opens the bar in Plan
+    /// kind (no target line in the prompt); the note row's Enter rejects,
+    /// and the bar stays suppressed until the card settles.
+    #[gpui::test]
+    fn the_bar_opens_on_a_pending_plan_and_rejects_from_the_note(cx: &mut gpui::TestAppContext) {
+        use crate::state::AppState;
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+
+        state.update(cx, |s, cx| {
+            s.transcript
+                .push(plan_pending(holt_doc::PlanApprovalState::Pending));
+            cx.notify();
+        });
+        composer.update(cx, |this, _| {
+            let bar = this.approval_bar.as_ref().expect("the bar opened");
+            assert_eq!(bar.id, "s1#p1");
+            assert_eq!(bar.kind, BarKind::Plan);
+        });
+        // Draw the plan bar (title + options + note row, no target line).
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(800.0), gpui::px(600.0)),
+            |_, _| composer.clone().into_any_element(),
+        );
+
+        composer.update(cx, |this, cx| {
+            this.on_submit(cx);
+            assert!(this.approval_bar.is_none());
+            assert!(this.answered_approvals.contains("s1#p1"));
+        });
+        // The settle re-arms the surface.
+        state.update(cx, |s, cx| {
+            s.transcript[0] = plan_pending(holt_doc::PlanApprovalState::Settled {
+                verdict: holt_doc::PlanApprovalVerdict::Remained,
+            });
+            cx.notify();
+        });
+        composer.update(cx, |this, _| {
+            assert!(!this.answered_approvals.contains("s1#p1"));
         });
     }
 

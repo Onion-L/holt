@@ -1,29 +1,77 @@
-//! The Plan Mode approval card (ADR-0025): a standalone transcript
-//! component for plan submissions — it borrows the permission gate strip's
-//! visual language (hairlines, mono lead, bottom-right affordances) but is
-//! its own component with its own editor state, not a reuse of the
-//! ADR-0014 card. The card leads with the document pointer, renders the
-//! submitted plan as a bounded scrollable block (snapshotted at
-//! submission, so it shows what was reviewed), and offers the three
-//! verdict affordances; settled cards render their marker only. The
-//! document path stays in the part's data — the card does not show it.
+//! The Plan Mode approval card (ADR-0025): the plan DOCUMENT in the
+//! transcript flow — the submitted plan as a bounded scrollable block
+//! (snapshotted at submission, so it shows what was reviewed). The verdict
+//! itself moved to the composer's approval bar (`composer::approval_bar`,
+//! the same surface the ADR-0014 gate uses): a pending card renders the
+//! document only, settled cards render their marker. The document path
+//! stays in the part's data — the card does not show it.
 //!
-//! Interactive state (the feedback editor) lives on the `Transcript`
-//! entity keyed by plan id — never in `RowKind`, so a row re-splice can't
-//! drop a half-written note.
+//! [`pending_plan_approval`] is the bar's pending scan;
+//! [`resolve_plan_approval`] its verdict channel.
 
-use gpui::{
-    AnyElement, Context, Entity, Focusable as _, KeyDownEvent, SharedString, Window, div,
-    prelude::*, px,
-};
+use gpui::{AnyElement, App, Entity, SharedString, div, prelude::*, px};
 
-use holt_doc::{PlanApprovalState, PlanApprovalVerdict};
+use holt_doc::{MessagePart, PlanApprovalState, PlanApprovalVerdict, SessionMessageEntry};
 use holt_rpc::methods;
 
+use super::Transcript;
 use super::approval::{VerdictTint, verdict_tint_color};
-use super::{ApprovalNote, Transcript};
-use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::state::AppState;
 use crate::theme::Theme;
+
+/// The latest still-pending plan approval in a transcript, keyed
+/// `{entry}#{part}` like its card row — the composer approval bar's
+/// ADR-0025 producer (one plan awaits a verdict at a time, and the engine
+/// resolves whatever is pending in the chat).
+pub fn pending_plan_approval(transcript: &[SessionMessageEntry]) -> Option<String> {
+    transcript
+        .iter()
+        .rev()
+        .flat_map(|entry| entry.parts.iter().rev().map(move |part| (entry, part)))
+        .find_map(|(entry, part)| match part {
+            MessagePart::PlanApproval {
+                id,
+                state: PlanApprovalState::Pending,
+                ..
+            } => Some(format!("{}#{}", entry.id, id)),
+            _ => None,
+        })
+}
+
+/// Send the plan verdict (fire-and-forget: failures warn; the doc's
+/// settled card is what settles the UI). Params `{chatId, verdict,
+/// feedback?}` per the engine contract: approve exits Plan Mode and
+/// restores the entry permission mode, reject keeps planning with a
+/// non-empty feedback enqueued as the revision's next planning input,
+/// remain returns to drafting.
+pub fn resolve_plan_approval(
+    state: &Entity<AppState>,
+    verdict: &'static str,
+    feedback: Option<String>,
+    cx: &mut App,
+) {
+    let (engine, chat_id) = {
+        let state = state.read(cx);
+        (state.engine().cloned(), state.selected_chat.clone())
+    };
+    let (Some(engine), Some(chat_id)) = (engine, chat_id) else {
+        return;
+    };
+    let mut params = serde_json::json!({ "chatId": chat_id, "verdict": verdict });
+    if let Some(feedback) = feedback {
+        params["feedback"] = serde_json::Value::String(feedback);
+    }
+    cx.spawn(async move |_| {
+        if let Err(err) = engine
+            .client()
+            .call(methods::RESOLVE_PLAN_APPROVAL, params)
+            .await
+        {
+            tracing::warn!(error = %err, "ResolvePlanApproval failed");
+        }
+    })
+    .detach();
+}
 
 /// The submitted plan's document, rendered inside the approval card: a
 /// bounded, scrollable mono block under the header — max width for
@@ -66,11 +114,7 @@ impl Transcript {
         content: &SharedString,
         state: &PlanApprovalState,
         theme: &Theme,
-        cx: &mut Context<Self>,
     ) -> AnyElement {
-        // The feedback editor keys off the card's row id — one editor per
-        // card, no shared-map prefixing.
-        let editor_key = row_id.to_string();
         let settled = |text: String, tint: VerdictTint| {
             div()
                 .py(px(4.0))
@@ -97,74 +141,9 @@ impl Transcript {
         let verdict = match state {
             PlanApprovalState::Settled { verdict } => verdict,
             PlanApprovalState::Pending => {
-                let feedback_input = self
-                    .plan_notes
-                    .get(&editor_key)
-                    .map(|note| note.input.clone());
-                let id_approve = row_id.clone();
-                let id_reject = row_id.clone();
-                let id_remain = row_id.clone();
-                // Approve — the primary action (subtle-raised idiom).
-                let approve = div()
-                    .id(SharedString::from(format!("plan-approve-{row_id}")))
-                    .debug_selector(move || format!("plan-approve-{row_id}"))
-                    .flex_none()
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.hairline(0.14))
-                    .bg(theme.ink(0.09))
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.ink(0.14)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.resolve_plan_verdict(&id_approve, "approve", None, cx);
-                    }))
-                    .child("Approve");
-                // Reject — restrained danger; opens the feedback editor.
-                let reject = div()
-                    .id(SharedString::from(format!("plan-reject-{row_id}")))
-                    .debug_selector(move || format!("plan-reject-{row_id}"))
-                    .flex_none()
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.danger.opacity(0.3))
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .text_color(theme.danger_muted)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.danger.opacity(0.06)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_plan_feedback(id_reject.to_string(), window, cx);
-                    }))
-                    .child(if feedback_input.is_some() {
-                        "Hide"
-                    } else {
-                        "Reject…"
-                    });
-                // Stay in planning — neutral ghost.
-                let remain = div()
-                    .id(SharedString::from(format!("plan-remain-{row_id}")))
-                    .debug_selector(move || format!("plan-remain-{row_id}"))
-                    .flex_none()
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.hairline(0.14))
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .text_color(theme.text_muted)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.ink(0.05)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.resolve_plan_verdict(&id_remain, "remain", None, cx);
-                    }))
-                    .child("Stay in planning");
-                let card_shape = div()
+                // Pending: the document only — the verdict lives in the
+                // composer's approval bar.
+                return div()
                     .py(px(4.0))
                     .w_full()
                     .child(
@@ -177,47 +156,10 @@ impl Transcript {
                             .border_color(theme.border)
                             .py(px(10.0))
                             .text_size(crate::typography::ui_rems(12.0))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_color(theme.text)
-                                    .child("Proposed plan"),
-                            )
-                            .child(render_plan_content(content, row_id, theme))
-                            .child(
-                                div()
-                                    .mt(px(4.0))
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .line_height(px(15.0))
-                                    .text_color(theme.text_faint)
-                                    .child(
-                                        "Approve to start implementation · reject with feedback to revise · stay to keep planning",
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .mt(px(8.0))
-                                    .flex()
-                                    .flex_row()
-                                    .justify_end()
-                                    .flex_wrap()
-                                    .gap(px(6.0))
-                                    .child(approve)
-                                    .child(reject)
-                                    .child(remain),
-                            ),
+                            .child(div().w_full().text_color(theme.text).child("Proposed plan"))
+                            .child(render_plan_content(content, row_id, theme)),
                     )
-                    .when_some(feedback_input, |card, input| {
-                        card.child(self.render_plan_feedback_editor(
-                            row_id,
-                            &editor_key,
-                            input,
-                            theme,
-                            cx,
-                        ))
-                    })
                     .into_any_element();
-                return card_shape;
             }
         };
         let (text, tint) = match verdict {
@@ -231,172 +173,6 @@ impl Transcript {
             }
         };
         settled(text, tint)
-    }
-
-    /// The rejection feedback editor at the strip's foot: the feedback is
-    /// enqueued as the revision loop's next planning input. Enter submits
-    /// (= Reject with feedback); a blank note is a plain reject.
-    fn render_plan_feedback_editor(
-        &mut self,
-        row_id: &SharedString,
-        editor_key: &str,
-        input: Entity<ComposerInput>,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id_for_key = editor_key.to_string();
-        let id_for_submit = row_id.to_string();
-        div()
-            .id(SharedString::from(format!(
-                "plan-feedback-{editor_key}-{row_id}"
-            )))
-            .w_full()
-            .mt(px(10.0))
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.plan_notes.remove(&id_for_key);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .child(
-                div()
-                    .w_full()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.hairline(0.12))
-                    .bg(theme.ink(0.04))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .child(input),
-            )
-            .child(
-                div().flex().flex_row().justify_end().child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "plan-reject-feedback-{editor_key}-{row_id}"
-                        )))
-                        .flex_none()
-                        .px(px(12.0))
-                        .py(px(6.0))
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(theme.danger.opacity(0.3))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.danger_muted)
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.danger.opacity(0.06)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.submit_plan_feedback(&id_for_submit, cx);
-                        }))
-                        .child("Reject with feedback"),
-                ),
-            )
-            .into_any_element()
-    }
-
-    /// Open (or close) the rejection feedback editor for one plan. The
-    /// editor entity lives on the Transcript keyed by the plan id — a row
-    /// re-splice can't drop a half-written note.
-    fn toggle_plan_feedback(
-        &mut self,
-        plan_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let editor_key = plan_id.to_string();
-        if self.plan_notes.remove(&editor_key).is_some() {
-            cx.notify();
-            return;
-        }
-        let input = cx.new(|cx| {
-            ComposerInput::new(
-                "What to change — enqueued as the revision's next planning input",
-                cx,
-            )
-        });
-        let id = plan_id.clone();
-        let events = cx.subscribe(&input, move |this: &mut Self, _, event, cx| match event {
-            ComposerInputEvent::Submitted => this.submit_plan_feedback(&id, cx),
-            ComposerInputEvent::Edited => cx.notify(),
-            _ => {}
-        });
-        let handle = input.read(cx).focus_handle(cx);
-        self.plan_notes.insert(
-            editor_key,
-            ApprovalNote {
-                input,
-                _events: events,
-            },
-        );
-        window.focus(&handle, cx);
-        cx.notify();
-    }
-
-    /// Enter in the feedback editor = Reject with feedback; a blank note is
-    /// a plain reject.
-    fn submit_plan_feedback(&mut self, editor_key: &str, cx: &mut Context<Self>) {
-        let feedback = self
-            .plan_notes
-            .get(editor_key)
-            .map(|note| note.input.read(cx).text().trim().to_string())
-            .filter(|note| !note.is_empty());
-        self.resolve_plan_verdict(editor_key, "reject", feedback, cx);
-    }
-
-    /// Send the plan verdict (fire-and-forget: failures warn; the doc's
-    /// settled card is what settles the strip). The feedback editor, if
-    /// open, closes with the verdict. Approve and stay carry no feedback.
-    fn resolve_plan_verdict(
-        &mut self,
-        editor_key: &str,
-        verdict: &'static str,
-        feedback: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.plan_notes.remove(editor_key);
-        cx.notify();
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let mut params = serde_json::json!({ "verdict": verdict });
-        if let Some(feedback) = feedback {
-            params["feedback"] = serde_json::Value::String(feedback);
-        }
-        cx.spawn(async move |_, _| {
-            if let Err(err) = engine
-                .client()
-                .call(methods::RESOLVE_PLAN_APPROVAL, params)
-                .await
-            {
-                tracing::warn!(error = %err, "ResolvePlanApproval failed");
-            }
-        })
-        .detach();
-    }
-    /// Drop plan feedback editors whose card no longer shows a pending
-    /// submission (verdict landed, chat switched, transcript switched docs)
-    /// — called once per render.
-    pub(super) fn prune_plan_notes(&mut self) {
-        if self.plan_notes.is_empty() {
-            return;
-        }
-        let pending: Vec<String> = self
-            .rows
-            .iter()
-            .filter_map(|row| match &row.kind {
-                super::model::RowKind::PlanApproval {
-                    state: PlanApprovalState::Pending,
-                    ..
-                } => Some(row.id.to_string()),
-                _ => None,
-            })
-            .collect();
-        self.plan_notes.retain(|id, _| pending.contains(id));
     }
 }
 
@@ -482,12 +258,34 @@ mod tests {
         ));
     }
 
-    /// Entity + render test: the pending card draws its three affordances
-    /// (Approve / Reject… / Stay in planning); the feedback editor opens
-    /// and closes keyed by plan id; the settle prunes a stale editor and
-    /// the settled card draws its marker.
+    #[test]
+    fn pending_plan_approval_scans_from_the_tail_keyed_like_the_row() {
+        let pending = plan_part("p1", PlanApprovalState::Pending);
+        let settled = plan_part(
+            "p2",
+            PlanApprovalState::Settled {
+                verdict: PlanApprovalVerdict::Approved,
+            },
+        );
+        let t = vec![
+            system_entry("s1", vec![pending.clone()]),
+            system_entry("s2", vec![settled]),
+        ];
+        assert_eq!(pending_plan_approval(&t), Some("s1#p1".to_string()));
+        // A settled card never reports; the latest pending wins.
+        let t = vec![
+            system_entry("s1", vec![pending.clone()]),
+            system_entry("s2", vec![plan_part("p9", PlanApprovalState::Pending)]),
+        ];
+        assert_eq!(pending_plan_approval(&t), Some("s2#p9".to_string()));
+        assert_eq!(pending_plan_approval(&[]), None);
+    }
+
+    /// Entity + render test: the pending card draws the plan document
+    /// with NO affordances (the verdict lives in the composer's approval
+    /// bar); the settled card draws its verdict marker.
     #[gpui::test]
-    fn plan_card_affordances_feedback_and_render(cx: &mut gpui::TestAppContext) {
+    fn plan_card_pending_document_and_settled_marker(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| AppState::new());
@@ -504,6 +302,7 @@ mod tests {
             ));
             cx.notify();
         });
+        cx.run_until_parked();
         transcript.update(cx, |this, _| {
             assert!(
                 this.rows
@@ -511,57 +310,16 @@ mod tests {
                     .any(|row| matches!(row.kind, RowKind::PlanApproval { .. }))
             );
         });
-        cx.run_until_parked();
-        transcript.update(cx, |this, _| {
-            assert!(
-                this.rows
-                    .iter()
-                    .any(|row| matches!(row.kind, RowKind::PlanApproval { .. })),
-                "rows rebuilt by the watch pump"
-            );
-        });
-        // The pending strip draws all three affordances.
-        for (selector, label) in [
-            ("plan-approve-s1#p1", "Approve"),
-            ("plan-reject-s1#p1", "Reject"),
-            ("plan-remain-s1#p1", "Stay in planning"),
-        ] {
-            assert!(
-                cx.debug_bounds(selector).is_some(),
-                "{label} affordance missing"
-            );
-        }
-        // The submitted plan renders inside the card, bounded (the block's
-        // height never exceeds the scroll cap, width the max width).
+        // The document block draws; nothing answerable remains in the
+        // transcript (no buttons, no feedback editor).
         let content = cx
             .debug_bounds("plan-content-s1#p1")
             .expect("plan content block missing");
         assert!(content.size.height <= gpui::px(321.0));
         assert!(content.size.width <= gpui::px(721.0));
+        assert!(cx.debug_bounds("plan-approve-s1#p1").is_none());
 
-        // Reject… opens the feedback editor keyed by plan id; toggling
-        // closes it.
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("s1#p1".into(), window, cx);
-            });
-        });
-        transcript.update(cx, |this, _| {
-            assert!(this.plan_notes.contains_key("s1#p1"));
-        });
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("s1#p1".into(), window, cx);
-            });
-        });
-        transcript.update(cx, |this, _| assert!(this.plan_notes.is_empty()));
-
-        // The settle prunes a stale editor and the settled card draws.
-        cx.update(|window, cx| {
-            transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("s1#p1".into(), window, cx);
-            });
-        });
+        // The settle swaps the document for the verdict marker.
         state.update(cx, |s, cx| {
             s.transcript[0] = system_entry(
                 "s1",
@@ -577,27 +335,16 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
         transcript.update(cx, |this, _| {
-            assert!(
-                !this.rows.iter().any(|row| {
-                    matches!(
-                        &row.kind,
-                        RowKind::PlanApproval {
-                            state: PlanApprovalState::Pending,
-                            ..
-                        }
-                    )
-                }),
-                "rows after settle: {:?}",
-                this.rows
-                    .iter()
-                    .map(|row| row.id.to_string())
-                    .collect::<Vec<_>>()
-            );
-            this.prune_plan_notes();
-            assert!(this.plan_notes.is_empty());
+            assert!(!this.rows.iter().any(|row| {
+                matches!(
+                    &row.kind,
+                    RowKind::PlanApproval {
+                        state: PlanApprovalState::Pending,
+                        ..
+                    }
+                )
+            }));
         });
-        cx.run_until_parked();
-        // The settled card draws its verdict marker.
-        assert!(cx.debug_bounds("plan-approve-s1#p1").is_none());
+        assert!(cx.debug_bounds("plan-content-s1#p1").is_none());
     }
 }

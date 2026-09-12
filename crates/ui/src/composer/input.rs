@@ -607,7 +607,7 @@ impl ComposerInput {
     ) {
         let next = self.content[range.end..].chars().next();
         let existing_separator = next.filter(|ch| ch.is_whitespace() && *ch != '\n' && *ch != '\r');
-        let inserted = if existing_separator.is_some() {
+        let inserted = if replacement.is_empty() || existing_separator.is_some() {
             replacement.to_owned()
         } else {
             format!("{replacement} ")

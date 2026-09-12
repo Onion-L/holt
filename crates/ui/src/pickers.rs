@@ -155,6 +155,7 @@ pub struct Pickers {
     /// Selection the draft picks belong to — switching chats drops them so a
     /// pick made in one chat never leaks into another.
     draft_owner: Option<String>,
+    pub(crate) plan_mode_draft: bool,
     /// Space the branch draft/cache belong to (see the state observer).
     space_owner: Option<String>,
     open: popover::Popup<PickerKind>,
@@ -335,6 +336,7 @@ impl Pickers {
             defaults,
             data_dir,
             draft_owner,
+            plan_mode_draft: false,
             open,
             model_rail: ModelRail::default(),
             providers: Loadable::Idle,
@@ -1086,6 +1088,7 @@ impl Pickers {
             _ => None,
         };
         let mode_chip = self.mode_chip(&theme, cx);
+        let plan_chip = self.plan_chip(&theme, cx);
         let mut left = div()
             .flex()
             .flex_row()
@@ -1098,6 +1101,7 @@ impl Pickers {
                 "mode-popover",
                 closing,
             ));
+        left = left.children(plan_chip);
         let mut right = div().flex().flex_row().items_center().min_w_0();
         if git {
             // Refs feed the draft labels — eager + idempotent.

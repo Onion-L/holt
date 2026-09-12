@@ -87,6 +87,7 @@ mod model;
 
 mod approval;
 mod plan_card;
+pub use plan_card::{pending_plan_approval, resolve_plan_approval};
 
 pub use approval::{
     VerdictTint, approval_cwd_line, approval_target, pending_approval_gate, pending_approval_tool,
@@ -306,19 +307,7 @@ pub struct Transcript {
     /// recently (click "Show full output" after a diff → see the output).
     blob_fetch_order: HashMap<SharedString, u64>,
     blob_fetch_counter: u64,
-    /// The plan card's feedback editors (ADR-0025), keyed by plan id —
-    /// the plan component's own state, separate from the ADR-0014 gate
-    /// notes.
-    plan_notes: HashMap<String, ApprovalNote>,
     _observe: Subscription,
-}
-
-/// The plan feedback card's expanding note editor (ADR-0025): the input
-/// plus its event subscription (Submitted = send the feedback, Edited =
-/// repaint).
-pub struct ApprovalNote {
-    pub input: Entity<crate::composer::ComposerInput>,
-    _events: Subscription,
 }
 
 /// One sidecar blob fetch's lifecycle.
@@ -475,7 +464,6 @@ impl Transcript {
             blob_details: HashMap::new(),
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
-            plan_notes: HashMap::new(),
             _observe: observe,
         };
         this.sync(cx);

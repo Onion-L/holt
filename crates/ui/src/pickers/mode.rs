@@ -190,7 +190,9 @@ impl Pickers {
     /// RPC `/plan off` sends — pending approval cards settle as dismissed,
     /// and the transcript's approval card keeps resolving submissions.
     pub(super) fn plan_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let label = plan_label(self.state.read(cx).selected_chat_row())?;
+        let state = self.state.read(cx);
+        let label = plan_label(state.selected_chat_row())
+            .or_else(|| self.plan_mode_draft.then(|| "Plan".to_string()))?;
         // One group: the × reveals from the label's hover too, and stays put
         // while the pointer is on the button itself.
         let group: SharedString = "picker-plan-chip".into();
@@ -241,8 +243,12 @@ impl Pickers {
     /// detour. The outcome is announced through [`PickerEvent`] — the footer
     /// row has nowhere to print it.
     fn exit_plan_mode(&mut self, cx: &mut Context<Self>) {
+        self.plan_mode_draft = false;
+        cx.notify();
         let chat_id = self.state.read(cx).selected_chat.clone();
         let Some(chat_id) = chat_id else {
+            self.plan_mode_draft = false;
+            cx.notify();
             return;
         };
         let Some(engine) = self.engine(cx) else {

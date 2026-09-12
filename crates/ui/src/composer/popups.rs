@@ -732,7 +732,15 @@ impl Composer {
             self.input.update(cx, |input, cx| {
                 input.replace_plain_token(token.range, "", cx)
             });
-            self.plan_command("enter", None, cx);
+            self.pickers.update(cx, |pickers, cx| {
+                pickers.plan_mode_draft = true;
+                cx.notify();
+            });
+            if self.state.read(cx).selected_chat.is_some() {
+                self.plan_command("enter", None, cx);
+            } else {
+                self.plan_mode_draft = true;
+            }
         } else if send_now {
             // Dispatch the completed command directly. Writing it into the
             // input first makes the command flash in the composer and also

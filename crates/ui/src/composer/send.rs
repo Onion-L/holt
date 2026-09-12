@@ -71,11 +71,10 @@ impl Composer {
 
     pub(super) fn on_submit(&mut self, cx: &mut Context<Self>) {
         if self.approval_bar.is_some() {
-            // Enter inside the approval bar's note row denies with the
-            // typed note (a blank note degrades to a plain deny).
-            let note = self.input.read(cx).text().trim().to_string();
-            let note = (!note.is_empty()).then_some(note);
-            self.resolve_approval_bar(holt_proto::ApprovalVerdict::Deny { note }, cx);
+            // Enter inside the approval bar's note row sends the typed
+            // note with the kind's negative verdict (blank degrades
+            // plainly).
+            self.resolve_bar_note(cx);
             return;
         }
         if self.wizard.is_some() {
@@ -141,7 +140,19 @@ impl Composer {
             // a draft chat has nothing to enter or query yet.
             super::slash::Parsed::Plan { action } => match action {
                 super::slash::PlanAction::Enter => {
-                    self.plan_command("enter", None, cx);
+                    self.pickers.update(cx, |pickers, cx| {
+                        pickers.plan_mode_draft = true;
+                        cx.notify();
+                    });
+                    if self.state.read(cx).selected_chat.is_some() {
+                        self.plan_command("enter", None, cx);
+                    } else {
+                        self.plan_mode_draft = true;
+                        self.pickers.update(cx, |pickers, cx| {
+                            pickers.plan_mode_draft = true;
+                            cx.notify();
+                        });
+                    }
                     return;
                 }
                 super::slash::PlanAction::Task(_) => {}
@@ -237,6 +248,10 @@ impl Composer {
         // the bare task — resubmitting that as an ordinary message would
         // silently skip Plan Mode.
         let mut plan_enter = false;
+        if is_new && self.plan_mode_draft {
+            plan_enter = true;
+            self.plan_mode_draft = false;
+        }
         let restore_text;
         if let super::slash::Parsed::Plan {
             action: super::slash::PlanAction::Task(task),
@@ -716,12 +731,14 @@ impl Composer {
             {
                 Ok(state) => {
                     let notice = match action {
-                        "enter" => "Plan Mode on — planning turns are read-only; submit a plan to start implementation".to_string(),
+                        "enter" => String::new(),
                         "exit" => "Plan Mode off — plan documents are kept".to_string(),
                         _ => plan_status_notice(&state),
                     };
                     let _ = this.update(cx, |this, cx| {
-                        this.failure = Some(notice.into());
+                        if !notice.is_empty() {
+                            this.failure = Some(notice.into());
+                        }
                         // Chat-scoped like failed sends: chat A's Plan Mode
                         // status must not render under chat B.
                         this.failure_key = Some(chat_id.clone());

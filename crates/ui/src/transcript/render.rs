@@ -1293,7 +1293,7 @@ impl Transcript {
                 self.render_compaction_divider(&row.id, summary, &theme, cx)
             }
             RowKind::PlanApproval { content, state } => {
-                self.render_plan_approval_card(&row.id, content, state, &theme, cx)
+                self.render_plan_approval_card(&row.id, content, state, &theme)
             }
             RowKind::TurnChangeCard { change_set } => {
                 self.render_turn_change_card(&row.id, change_set, &theme, cx)
@@ -3070,9 +3070,6 @@ impl Render for Transcript {
         // Release gpui-side decoded copies of any images the attachment LRU
         // evicted since the last frame (no-op when nothing was evicted).
         crate::images::flush_evicted(Some(window), cx);
-        // Drop plan feedback editors whose card settled or scrolled away
-        // with a chat switch.
-        self.prune_plan_notes();
         // Own-turn driver: measurements are only authoritative after layout,
         // so reservation sizing, the send glide, and the outgrown-handoff
         // each advance at most once per requested frame. Scheduled on every
