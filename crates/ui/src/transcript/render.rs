@@ -1242,8 +1242,10 @@ impl Transcript {
             RowKind::PlanApproval {
                 plan_id,
                 plan_path,
+                content,
                 state,
-            } => self.render_plan_approval_card(&row.id, plan_id, plan_path, state, &theme, cx),
+            } => self
+                .render_plan_approval_card(&row.id, plan_id, plan_path, content, state, &theme, cx),
             RowKind::TurnChangeCard { change_set } => {
                 self.render_turn_change_card(change_set, &theme, cx)
             }

@@ -203,6 +203,9 @@ async fn submit_plan(
     plan: &TurnPlan,
     submitted: Arc<AtomicBool>,
 ) -> Result<pi_core::agent::types::AgentToolResult, String> {
+    // The validated document text also snapshots into the approval card —
+    // the transcript renders what was reviewed, not a later state of the
+    // file.
     let text = std::fs::read_to_string(&plan.plan_path).map_err(|error| {
         format!("could not read the plan document (write it with `write_plan` first): {error}")
     })?;
@@ -276,6 +279,7 @@ Tighten the plan with `write_plan` before submitting."
             id: "p0".into(),
             plan_id: plan.plan_id.clone(),
             plan_path: plan.plan_path.display().to_string(),
+            content: Some(text),
             state: PlanApprovalState::Pending,
         },
     );

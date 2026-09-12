@@ -148,6 +148,10 @@ struct DocPartJson {
     /// `pending` | `settled:<approved|rejected|remained|dismissed>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_state: Option<String>,
+    /// Submitted-plan snapshot for `kind: "planApproval"` cards (additive):
+    /// the document text at submission, rendered by the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_content: Option<String>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -271,12 +275,14 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             id,
             plan_id,
             plan_path,
+            content,
             state,
         } => DocPartJson {
             id: id.clone(),
             kind: "planApproval".into(),
             plan_id: Some(plan_id.clone()),
             plan_path: Some(plan_path.clone()),
+            plan_content: content.clone(),
             plan_state: Some(match state {
                 crate::parts::PlanApprovalState::Pending => "pending".to_owned(),
                 crate::parts::PlanApprovalState::Settled { verdict } => format!(
@@ -363,6 +369,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             plan_id: p.plan_id.unwrap_or_default(),
             plan_path: p.plan_path.unwrap_or_default(),
+            content: p.plan_content,
             state: match p.plan_state.as_deref() {
                 Some("pending") | None => crate::parts::PlanApprovalState::Pending,
                 Some(rest) => {
@@ -854,6 +861,18 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(plan_id) = &doc_part.plan_id {
+        map.insert("planId", plan_id.as_str())?;
+    }
+    if let Some(plan_path) = &doc_part.plan_path {
+        map.insert("planPath", plan_path.as_str())?;
+    }
+    if let Some(plan_state) = &doc_part.plan_state {
+        map.insert("planState", plan_state.as_str())?;
+    }
+    if let Some(plan_content) = &doc_part.plan_content {
+        map.insert("planContent", plan_content.as_str())?;
+    }
     Ok(())
 }
 
@@ -1251,6 +1270,18 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(plan_id) = &doc_part.plan_id {
+        map.insert("planId", plan_id.as_str())?;
+    }
+    if let Some(plan_path) = &doc_part.plan_path {
+        map.insert("planPath", plan_path.as_str())?;
+    }
+    if let Some(plan_state) = &doc_part.plan_state {
+        map.insert("planState", plan_state.as_str())?;
+    }
+    if let Some(plan_content) = &doc_part.plan_content {
+        map.insert("planContent", plan_content.as_str())?;
+    }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
         if let Some(loro::ValueOrContainer::Container(loro::Container::Text(t))) = map.get("text") {
@@ -1343,6 +1374,56 @@ mod tests {
             }]
         );
         assert_eq!(doc.chat_id().as_deref(), Some("chat-1"));
+    }
+
+    #[test]
+    fn round_trips_plan_approval_cards_with_content() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.push_message(&SessionMessageEntry {
+            role: MessageRole::System,
+            parts: vec![
+                MessagePart::PlanApproval {
+                    id: "p0".into(),
+                    plan_id: "plan-1".into(),
+                    plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
+                    content: Some("# The plan\n- step one".into()),
+                    state: crate::parts::PlanApprovalState::Pending,
+                },
+                MessagePart::PlanApproval {
+                    id: "p1".into(),
+                    plan_id: "plan-1".into(),
+                    plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
+                    content: None,
+                    state: crate::parts::PlanApprovalState::Settled {
+                        verdict: crate::parts::PlanApprovalVerdict::Rejected,
+                    },
+                },
+            ],
+            ..user_entry("m1", "ignored")
+        })
+        .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(
+            entries[0].parts,
+            vec![
+                MessagePart::PlanApproval {
+                    id: "p0".into(),
+                    plan_id: "plan-1".into(),
+                    plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
+                    content: Some("# The plan\n- step one".into()),
+                    state: crate::parts::PlanApprovalState::Pending,
+                },
+                MessagePart::PlanApproval {
+                    id: "p1".into(),
+                    plan_id: "plan-1".into(),
+                    plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
+                    content: None,
+                    state: crate::parts::PlanApprovalState::Settled {
+                        verdict: crate::parts::PlanApprovalVerdict::Rejected,
+                    },
+                },
+            ]
+        );
     }
 
     #[test]

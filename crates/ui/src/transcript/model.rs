@@ -282,6 +282,9 @@ pub enum RowKind {
     PlanApproval {
         plan_id: SharedString,
         plan_path: SharedString,
+        /// The submitted document text, snapshotted at submission — the
+        /// card renders what was reviewed. Absent on pre-snapshot cards.
+        content: Option<SharedString>,
         state: holt_doc::parts::PlanApprovalState,
     },
     /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
@@ -956,6 +959,7 @@ pub fn rows_for_entry(
                         id: part_id,
                         plan_id,
                         plan_path,
+                        content,
                         state,
                     } => {
                         rows.push(Row {
@@ -967,6 +971,7 @@ pub fn rows_for_entry(
                             kind: RowKind::PlanApproval {
                                 plan_id: plan_id.clone().into(),
                                 plan_path: plan_path.clone().into(),
+                                content: content.clone().map(SharedString::from),
                                 state: state.clone(),
                             },
                             entry_id: entry_id.clone(),

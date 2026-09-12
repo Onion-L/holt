@@ -594,11 +594,17 @@ async fn approve_exits_plan_mode_restores_the_entry_mode_and_injects_the_plan() 
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let state = get_state(&engine, "chat-1").await;
     let plan_id = state["activePlan"]["planId"].as_str().unwrap().to_string();
-    // The card is in the transcript, pending.
+    // The card is in the transcript, pending, carrying the submitted
+    // plan's text as a snapshot (the card renders what was reviewed).
     let card = common::transcript_snapshot(&engine, "chat-1").await;
+    let card = card.to_string();
     assert!(
-        card.to_string().contains("planApproval") && card.to_string().contains(&plan_id),
+        card.contains("planApproval") && card.contains(&plan_id),
         "the submitted plan carries a transcript card: {card}"
+    );
+    assert!(
+        card.contains("step one"),
+        "the card embeds the submitted plan text: {card}"
     );
 
     resolve(&engine, "chat-1", &plan_id, "approve", None)

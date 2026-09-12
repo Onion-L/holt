@@ -349,13 +349,17 @@ pub enum MessagePart {
     /// The Plan Mode approval card (ADR-0025): the submitted plan's
     /// document pointer plus its resolution state. Approve / reject /
     /// remain ride `ResolvePlanApproval`; the card itself never edits the
-    /// document.
+    /// document. `content` snapshots the submitted document text at
+    /// submission — the card renders what was reviewed, even if the file
+    /// changes later; absent on cards from before the field existed.
     #[serde(rename_all = "camelCase")]
     PlanApproval {
         id: String,
         plan_id: String,
         /// Absolute path of the submitted plan document (display pointer).
         plan_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
         state: PlanApprovalState,
     },
 }
@@ -411,8 +415,15 @@ impl MessagePart {
             // differ here, which is what the transcript's entry
             // fingerprint keys its row cache on.
             MessagePart::PlanApproval {
-                plan_path, state, ..
-            } => plan_path.len() + serde_json::to_vec(state).map_or(0, |v| v.len()),
+                plan_path,
+                content,
+                state,
+                ..
+            } => {
+                plan_path.len()
+                    + content.as_ref().map_or(0, String::len)
+                    + serde_json::to_vec(state).map_or(0, |v| v.len())
+            }
         }
     }
 }

@@ -105,6 +105,35 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
     }
 }
 
+/// The submitted plan's document, rendered inside the approval card: a
+/// bounded, scrollable mono block under the header — max width for
+/// readable line lengths, max height so a long plan never stretches the
+/// transcript. `.occlude()` keeps one wheel gesture from scrolling both
+/// this block and the outer transcript list (ADR-0013).
+fn render_plan_content(text: &str, row_id: &SharedString, theme: &Theme) -> gpui::AnyElement {
+    div()
+        .id(SharedString::from(format!("plan-content-{row_id}")))
+        .debug_selector(move || format!("plan-content-{row_id}"))
+        .mt(px(8.0))
+        .max_w(px(720.0))
+        .max_h(px(320.0))
+        .w_full()
+        .overflow_y_scroll()
+        .occlude()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme.hairline(0.12))
+        .bg(theme.ink(0.04))
+        .px(px(12.0))
+        .py(px(10.0))
+        .font_family(theme.font_mono.clone())
+        .text_size(crate::typography::ui_rems(11.5))
+        .line_height(px(17.0))
+        .text_color(theme.text_muted)
+        .child(SharedString::from(text.to_string()))
+        .into_any_element()
+}
+
 impl Transcript {
     /// The pending-approval strip: flat transcript content delimited by a
     /// top and bottom hairline (flat-by-default) — never a card, a tinted
@@ -469,11 +498,13 @@ impl Transcript {
     /// verdict affordances bottom-right. Three user actions: Approve,
     /// Reject (with feedback), and Stay in planning. Settled cards render
     /// their verdict marker only.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_plan_approval_card(
         &mut self,
         row_id: &SharedString,
         plan_id: &SharedString,
         plan_path: &SharedString,
+        content: &Option<SharedString>,
         state: &PlanApprovalState,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -604,6 +635,9 @@ impl Transcript {
                                         &path_display,
                                     ))),
                             )
+                            .when_some(content.as_ref(), |card, text| {
+                                card.child(render_plan_content(text, row_id, theme))
+                            })
                             .child(
                                 div()
                                     .mt(px(4.0))
@@ -1239,10 +1273,19 @@ mod tests {
     }
 
     fn plan_part(id: &str, state: PlanApprovalState) -> MessagePart {
+        plan_part_with_content(id, Some("# The plan\n- step one"), state)
+    }
+
+    fn plan_part_with_content(
+        id: &str,
+        content: Option<&str>,
+        state: PlanApprovalState,
+    ) -> MessagePart {
         MessagePart::PlanApproval {
             id: id.into(),
             plan_id: "plan-1".into(),
             plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
+            content: content.map(str::to_string),
             state,
         }
     }
@@ -1269,10 +1312,17 @@ mod tests {
             &mut parse,
         );
         assert_eq!(rows.len(), 1);
-        let RowKind::PlanApproval { plan_id, state, .. } = &rows[0].kind else {
+        let RowKind::PlanApproval {
+            plan_id,
+            content,
+            state,
+            ..
+        } = &rows[0].kind
+        else {
             panic!("expected the plan approval row");
         };
         assert_eq!(plan_id.as_ref(), "plan-1");
+        assert_eq!(content.as_deref(), Some("# The plan\n- step one"));
         assert!(matches!(state, PlanApprovalState::Pending));
 
         let rows = crate::transcript::rows_for_entry(
@@ -1348,6 +1398,13 @@ mod tests {
                 "{label} affordance missing"
             );
         }
+        // The submitted plan renders inside the card, bounded (the block's
+        // height never exceeds the scroll cap, width the max width).
+        let content = cx
+            .debug_bounds("plan-content-s1#p1")
+            .expect("plan content block missing");
+        assert!(content.size.height <= gpui::px(321.0));
+        assert!(content.size.width <= gpui::px(721.0));
 
         // Reject… opens the feedback editor keyed by plan id; toggling
         // closes it.
