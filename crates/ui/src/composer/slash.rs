@@ -25,10 +25,8 @@ pub(crate) enum Parsed {
     /// `/compact` with arguments — still intercepted, with the usage
     /// message for the composer to surface.
     MalformedCompact,
-    /// `/plan [off | status | <task>]` — intercepted; the raw directive
-    /// never becomes prompt text (ADR-0025). Bare `/plan` and `/plan off`
-    /// and `/plan status` travel alone; `/plan <task>` sends the task as
-    /// the ordinary planning input.
+    /// `/plan [<task>]` — intercepted; the raw directive never becomes
+    /// prompt text (ADR-0025).
     Plan { action: PlanAction },
 }
 
@@ -37,10 +35,6 @@ pub(crate) enum Parsed {
 pub(crate) enum PlanAction {
     /// `/plan` — enter Plan Mode on the current chat.
     Enter,
-    /// `/plan off` — leave Plan Mode (plan documents stay).
-    Off,
-    /// `/plan status` — show the chat's Plan Mode state.
-    Status,
     /// `/plan <task>` — enter Plan Mode and send the task as the first
     /// planning input.
     Task(String),
@@ -206,9 +200,8 @@ fn parse_compact(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/plan` forms (ADR-0025): bare `/plan` enters, `/plan off` leaves,
-/// `/plan status` queries, and `/plan <task>` enters with the task as the
-/// first planning input. `/planner`-style longer words and mid-text
+/// `/plan` forms (ADR-0025): bare `/plan` enters, and `/plan <task>` enters
+/// with the task as the first planning input. `/planner`-style longer words and mid-text
 /// directives stay ordinary text.
 fn parse_plan(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/plan") else {
@@ -224,16 +217,6 @@ fn parse_plan(text: &str) -> Parsed {
         return Parsed::Plain;
     }
     let rest = rest.trim();
-    if rest == "off" {
-        return Parsed::Plan {
-            action: PlanAction::Off,
-        };
-    }
-    if rest == "status" {
-        return Parsed::Plan {
-            action: PlanAction::Status,
-        };
-    }
     Parsed::Plan {
         action: PlanAction::Task(rest.to_string()),
     }
@@ -282,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_the_four_plan_forms() {
+    fn recognizes_plan_forms() {
         assert_eq!(
             parse("/plan"),
             Parsed::Plan {
@@ -293,18 +276,6 @@ mod tests {
             parse("  /plan   "),
             Parsed::Plan {
                 action: PlanAction::Enter
-            }
-        );
-        assert_eq!(
-            parse("/plan off"),
-            Parsed::Plan {
-                action: PlanAction::Off
-            }
-        );
-        assert_eq!(
-            parse("/plan status"),
-            Parsed::Plan {
-                action: PlanAction::Status
             }
         );
         assert_eq!(

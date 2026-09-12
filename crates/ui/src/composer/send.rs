@@ -136,21 +136,12 @@ impl Composer {
                 cx.notify();
                 return;
             }
-            // The mode-only /plan forms dispatch themselves (ADR-0025):
-            // Enter on the current chat; Off and Status query or clear it.
+            // The bare /plan form dispatches itself (ADR-0025).
             // They send no message, so they never reach the send path —
             // a draft chat has nothing to enter or query yet.
             super::slash::Parsed::Plan { action } => match action {
                 super::slash::PlanAction::Enter => {
                     self.plan_command("enter", None, cx);
-                    return;
-                }
-                super::slash::PlanAction::Off => {
-                    self.plan_command("exit", None, cx);
-                    return;
-                }
-                super::slash::PlanAction::Status => {
-                    self.plan_command("status", None, cx);
                     return;
                 }
                 super::slash::PlanAction::Task(_) => {}
@@ -694,7 +685,12 @@ impl Composer {
     /// the outcome on its notice line and never reaches the send path.
     /// On the new-chat canvas there is nothing to enter or query yet —
     /// `/plan <task>` is the way to start planning there.
-    fn plan_command(&mut self, action: &'static str, _task: Option<()>, cx: &mut Context<Self>) {
+    pub(super) fn plan_command(
+        &mut self,
+        action: &'static str,
+        _task: Option<()>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None;

@@ -720,9 +720,20 @@ impl Composer {
         // `/compact` takes no arguments, so a selection sends it right
         // away instead of staging it in the input for review; anything
         // else (skills, argument-taking commands) still fills.
+        let plan_now = matches!(
+            super::slash::parse(&title),
+            super::slash::Parsed::Plan {
+                action: super::slash::PlanAction::Enter
+            }
+        );
         let send_now = matches!(super::slash::parse(&title), super::slash::Parsed::Compact);
         self.reset_slash(None, cx);
-        if send_now {
+        if plan_now {
+            self.input.update(cx, |input, cx| {
+                input.replace_plain_token(token.range, "", cx)
+            });
+            self.plan_command("enter", None, cx);
+        } else if send_now {
             // Dispatch the completed command directly. Writing it into the
             // input first makes the command flash in the composer and also
             // causes failed compact requests to be restored as draft text.
