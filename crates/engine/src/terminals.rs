@@ -105,33 +105,7 @@ fn failed(error: impl std::fmt::Display) -> RpcError {
     RpcError::Failed(error.to_string())
 }
 
-fn login_shell() -> String {
-    #[cfg(unix)]
-    {
-        // Reentrant lookup: GUI launches need not inherit SHELL from a login shell.
-        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-        let mut storage = vec![0u8; 16384];
-        let mut result = std::ptr::null_mut();
-        unsafe {
-            if libc::getpwuid_r(
-                libc::getuid(),
-                entry.as_mut_ptr(),
-                storage.as_mut_ptr().cast(),
-                storage.len(),
-                &mut result,
-            ) == 0
-                && !result.is_null()
-                && !(*result).pw_shell.is_null()
-            {
-                let shell = std::ffi::CStr::from_ptr((*result).pw_shell).to_string_lossy();
-                if !shell.is_empty() {
-                    return shell.into_owned();
-                }
-            }
-        }
-    }
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-}
+use crate::shell_env::login_shell;
 
 impl Terminals {
     pub fn open(

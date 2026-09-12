@@ -13,6 +13,7 @@ pub(crate) mod test_http;
 mod web_fetch;
 pub(crate) mod web_search;
 
+use crate::shell_env::login_shell_path;
 use std::{future::pending, path::Path, process::Stdio, sync::Arc};
 
 use futures::future::BoxFuture;
@@ -476,6 +477,7 @@ impl Shell for LocalExecutionEnv {
             match options.and_then(|options| options.inherit_env) {
                 Some(false) => {
                     cmd.env_clear();
+                    cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
                     if let Some(env) = options.and_then(|options| options.env.as_ref()) {
                         cmd.envs(env);
                     }
@@ -635,7 +637,19 @@ pub(crate) fn execution_tools_for_model(
         image_read_tool(&context, allow_images),
         with_execution_context(create_write_tool(), &context),
         with_execution_context(create_edit_tool(), &context),
-        with_execution_context(create_bash_tool(BashToolOptions::default()), &context),
+        with_execution_context(
+            create_bash_tool(BashToolOptions {
+                prepare: Some(Arc::new(|execution, _| {
+                    Box::pin(async move {
+                        execution
+                            .env
+                            .insert("PATH".into(), login_shell_path().into());
+                    })
+                })),
+                ..Default::default()
+            }),
+            &context,
+        ),
         grep::create_grep_tool(cwd),
         web_fetch::create_web_fetch_tool(),
     ];

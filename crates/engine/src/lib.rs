@@ -43,6 +43,7 @@ pub mod provider_settings;
 pub mod providers;
 mod queue;
 mod rpc;
+mod shell_env;
 mod skills;
 mod store;
 mod subagents;
