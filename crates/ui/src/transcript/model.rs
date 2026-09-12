@@ -281,7 +281,6 @@ pub enum RowKind {
     /// Transcript entity keyed by plan id, never here.
     PlanApproval {
         plan_id: SharedString,
-        plan_path: SharedString,
         /// The submitted document text, snapshotted at submission — the
         /// card renders what was reviewed. Absent on pre-snapshot cards.
         content: Option<SharedString>,
@@ -958,9 +957,9 @@ pub fn rows_for_entry(
                     MessagePart::PlanApproval {
                         id: part_id,
                         plan_id,
-                        plan_path,
                         content,
                         state,
+                        ..
                     } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
@@ -970,7 +969,6 @@ pub fn rows_for_entry(
                             turn_start: false,
                             kind: RowKind::PlanApproval {
                                 plan_id: plan_id.clone().into(),
-                                plan_path: plan_path.clone().into(),
                                 content: content.clone().map(SharedString::from),
                                 state: state.clone(),
                             },

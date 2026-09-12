@@ -5,7 +5,8 @@
 //! ADR-0014 card. The card leads with the document pointer, renders the
 //! submitted plan as a bounded scrollable block (snapshotted at
 //! submission, so it shows what was reviewed), and offers the three
-//! verdict affordances; settled cards render their marker only.
+//! verdict affordances; settled cards render their marker only. The
+//! document path stays in the part's data — the card does not show it.
 //!
 //! Interactive state (the feedback editor) lives on the `Transcript`
 //! entity keyed by plan id — never in `RowKind`, so a row re-splice can't
@@ -20,7 +21,6 @@ use holt_doc::{PlanApprovalState, PlanApprovalVerdict};
 use holt_rpc::methods;
 
 use super::approval::{VerdictTint, verdict_tint_color};
-use super::model::skill_file_display;
 use super::{ApprovalNote, Transcript};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::theme::Theme;
@@ -60,12 +60,10 @@ impl Transcript {
     /// verdict affordances bottom-right. Three user actions: Approve,
     /// Reject (with feedback), and Stay in planning. Settled cards render
     /// their verdict marker only.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_plan_approval_card(
         &mut self,
         row_id: &SharedString,
         plan_id: &SharedString,
-        plan_path: &SharedString,
         content: &Option<SharedString>,
         state: &PlanApprovalState,
         theme: &Theme,
@@ -165,7 +163,6 @@ impl Transcript {
                         this.resolve_plan_verdict(&id_remain, "remain", None, cx);
                     }))
                     .child("Stay in planning");
-                let path_display = plan_path.clone();
                 let card_shape = div()
                     .py(px(4.0))
                     .w_full()
@@ -184,18 +181,6 @@ impl Transcript {
                                     .w_full()
                                     .text_color(theme.text)
                                     .child("Plan submitted for approval"),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .mt(px(4.0))
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .line_height(px(18.0))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(skill_file_display(
-                                        &path_display,
-                                    ))),
                             )
                             .when_some(content.as_ref(), |card, text| {
                                 card.child(render_plan_content(text, row_id, theme))
