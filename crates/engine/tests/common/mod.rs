@@ -13,7 +13,7 @@
 
 #![allow(dead_code)] // each test binary links the module whole
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -168,6 +168,12 @@ pub struct ScriptedProvider {
     /// prompt), so a turn's multi-round script never interleaves with title
     /// replies.
     title: Option<TitleScript>,
+    /// Per-chat reply queues (plan 007): one shared sequential script cannot
+    /// serve two chats running at once — whichever chat requests next would
+    /// draw the other chat's reply, and a Turn scripted to answer with a tool
+    /// call never reaches its gate. Routed by the request's trailing user
+    /// message (the prompt), which rides every request of that chat's Turn.
+    chats: Arc<Mutex<HashMap<String, VecDeque<ScriptedReply>>>>,
     usage: Usage,
 }
 
@@ -196,8 +202,22 @@ impl ScriptedProvider {
             requests: Arc::new(Mutex::new(Vec::new())),
             script: Arc::new(Mutex::new(script.into())),
             title: None,
+            chats: Arc::new(Mutex::new(HashMap::new())),
             usage: fixed_usage(),
         }
+    }
+
+    /// Reserve a reply queue for one chat, keyed by the prompt that opens
+    /// its Turn (the request's trailing user message — the loop replays the
+    /// whole history, so the prompt routes every round of that Turn). Chats
+    /// running at once must draw from their own sequences; the shared
+    /// `script` stays the fallback for single-chat tests.
+    pub fn with_chat_script(self, prompt: &str, replies: Vec<ScriptedReply>) -> Self {
+        self.chats
+            .lock()
+            .unwrap()
+            .insert(prompt.to_string(), replies.into());
+        self
     }
 
     /// Route Title-task requests — the ones whose system prompt is exactly
@@ -223,6 +243,7 @@ impl ScriptedProvider {
         let requests = Arc::clone(&self.requests);
         let script = Arc::clone(&self.script);
         let title = self.title.clone();
+        let chats = Arc::clone(&self.chats);
         let usage = self.usage.clone();
         Arc::new(move |model: &Model, context: &Context, options| {
             requests.lock().unwrap().push(RecordedRequest {
@@ -248,7 +269,25 @@ impl ScriptedProvider {
                 {
                     title.replies.lock().unwrap().pop_front()
                 }
-                _ => script.lock().unwrap().pop_front(),
+                _ => {
+                    // The trailing user message is the Turn's prompt (the
+                    // loop replays history, so it rides every round); a
+                    // chat-registered prompt draws from that chat's queue.
+                    let prompt = context
+                        .messages
+                        .iter()
+                        .rev()
+                        .find_map(|message| match message {
+                            Message::User(user) => Some(user.content.text()),
+                            _ => None,
+                        });
+                    let mut chats = chats.lock().unwrap();
+                    prompt
+                        .as_deref()
+                        .and_then(|prompt| chats.get_mut(prompt))
+                        .and_then(|queue| queue.pop_front())
+                        .or_else(|| script.lock().unwrap().pop_front())
+                }
             }
             .unwrap_or_else(|| {
                 ScriptedReply::Failed("scripted provider ran out of replies".into())

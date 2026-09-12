@@ -4,6 +4,8 @@
 //! matching calls through the gate without asking, holds across mode
 //! switches, and disappears on restart.
 
+use std::sync::Arc;
+
 use common::{Fixture, ScriptedProvider, ScriptedReply};
 use holt_rpc::{RpcService, methods};
 
@@ -187,33 +189,83 @@ async fn grants_hold_across_mode_switches_and_die_on_restart() {
     );
 }
 
-/// Grants are chat-scoped: one chat's always-allow never passes another
-/// chat's calls.
+/// Grants are chat-scoped under concurrent Turns: both chats run at once,
+/// each gate carries its own approval id, and one chat's verdict or grant
+/// never reaches into the other chat. The fixture holds chat-1's Turn open
+/// past its own resolution across real elapsed time — the same window a
+/// slow bash preparation (the login-shell PATH probe) produces — so chat-2's
+/// whole approval flow runs while chat-1 is mid-Turn.
 #[tokio::test]
 async fn grants_are_scoped_to_their_chat() {
     let fixture = Fixture::new();
-    let provider = ScriptedProvider::new(vec![
-        ScriptedReply::tool_call(
-            "call-1",
-            "bash",
-            serde_json::json!({ "command": "echo shared" }),
-        ),
-        ScriptedReply::text("done"),
-        ScriptedReply::tool_call(
-            "call-2",
-            "bash",
-            serde_json::json!({ "command": "echo shared" }),
-        ),
-        ScriptedReply::text("done"),
-    ]);
+    // Holds chat-1's first-Turn reply: its gate has resolved and the tool
+    // has run, but the Turn stays open until the test releases the reply.
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(Vec::new())
+        .with_chat_script(
+            "go",
+            vec![
+                ScriptedReply::tool_call(
+                    "call-1",
+                    "bash",
+                    serde_json::json!({ "command": "echo one" }),
+                ),
+                ScriptedReply::gated(hold.clone(), "done"),
+            ],
+        )
+        .with_chat_script(
+            "me too",
+            vec![
+                ScriptedReply::tool_call(
+                    "call-2",
+                    "bash",
+                    serde_json::json!({ "command": "echo two" }),
+                ),
+                ScriptedReply::text("done"),
+            ],
+        )
+        .with_chat_script(
+            "go again",
+            vec![
+                // The command CHAT-2 always-allowed: chat-1 must still pause.
+                ScriptedReply::tool_call(
+                    "call-3",
+                    "bash",
+                    serde_json::json!({ "command": "echo two" }),
+                ),
+                ScriptedReply::text("done"),
+            ],
+        )
+        .with_chat_script(
+            "me too again",
+            vec![
+                // The command CHAT-1 always-allowed: chat-2 must still pause.
+                ScriptedReply::tool_call(
+                    "call-4",
+                    "bash",
+                    serde_json::json!({ "command": "echo one" }),
+                ),
+                ScriptedReply::text("done"),
+            ],
+        );
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     common::setup_chat(&engine, "chat-2").await;
     let _ = common::subscribe(&engine, "chat-1").await;
     let _ = common::subscribe(&engine, "chat-2").await;
 
+    // Both Turns run concurrently: chat-2 queues while chat-1's gate is
+    // still open.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
+    common::run_prompt(&engine, "chat-2", &fixture.cwd(), "me too").await;
     let first = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let second = common::wait_for_gate(&engine, "chat-2", "call-2", "pending").await;
+    assert_ne!(
+        first, second,
+        "each chat's gate carries its own approval id"
+    );
+
+    // chat-1 always-allows `echo one`: the grant belongs to chat-1 alone.
     common::resolve_approval(
         &engine,
         &first,
@@ -222,9 +274,46 @@ async fn grants_are_scoped_to_their_chat() {
     .await;
     common::wait_for_gate(&engine, "chat-1", "call-1", "settled:alwaysAllowed").await;
 
-    // The SAME command in the other chat still pauses.
-    common::run_prompt(&engine, "chat-2", &fixture.cwd(), "me too").await;
-    let second = common::wait_for_gate(&engine, "chat-2", "call-2", "pending").await;
-    common::resolve_approval(&engine, &second, serde_json::json!({ "kind": "allow" })).await;
-    common::wait_for_gate(&engine, "chat-2", "call-2", "settled:allowed").await;
+    // The held reply keeps chat-1 mid-Turn. Its approval id is spent:
+    // replaying it is rejected and must not release chat-2's gate.
+    let replay = engine
+        .handle(
+            methods::RESOLVE_APPROVAL,
+            serde_json::json!({ "approvalId": first, "verdict": { "kind": "allow" } }),
+        )
+        .await;
+    assert!(replay.is_err(), "a settled approval must not resolve again");
+    assert_eq!(
+        common::gate_state(&engine, "chat-2", "call-2").await,
+        "pending"
+    );
+
+    // chat-2 resolves on its own approval while chat-1 is still mid-Turn —
+    // and its verdict leaves chat-1's settled chip untouched.
+    common::resolve_approval(
+        &engine,
+        &second,
+        serde_json::json!({ "kind": "alwaysAllow" }),
+    )
+    .await;
+    common::wait_for_gate(&engine, "chat-2", "call-2", "settled:alwaysAllowed").await;
+    assert_eq!(
+        common::gate_state(&engine, "chat-1", "call-1").await,
+        "settled:alwaysAllowed"
+    );
+
+    // Release chat-1's first Turn and run both second Turns.
+    hold.notify_one();
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "go again").await;
+    common::run_prompt(&engine, "chat-2", &fixture.cwd(), "me too again").await;
+
+    // Grants never crossed chats: each chat's second call runs the OTHER
+    // chat's always-allowed command, and both still pause.
+    let third = common::wait_for_gate(&engine, "chat-1", "call-3", "pending").await;
+    let fourth = common::wait_for_gate(&engine, "chat-2", "call-4", "pending").await;
+    assert_ne!(third, fourth);
+    common::resolve_approval(&engine, &third, serde_json::json!({ "kind": "allow" })).await;
+    common::resolve_approval(&engine, &fourth, serde_json::json!({ "kind": "allow" })).await;
+    common::wait_for_gate(&engine, "chat-1", "call-3", "settled:allowed").await;
+    common::wait_for_gate(&engine, "chat-2", "call-4", "settled:allowed").await;
 }
