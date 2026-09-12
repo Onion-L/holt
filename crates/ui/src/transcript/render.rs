@@ -53,6 +53,11 @@ pub const ATT_THUMB_W: f32 = 112.0;
 pub const ATT_THUMB_H: f32 = 80.0;
 pub const ATT_STRIP_H: f32 = ATT_THUMB_H + 10.0;
 
+/// The change card's collapsed height (outer pad + border + card padding +
+/// one header line): the fold tween's base — the file list shrinks to zero,
+/// the header stays mounted.
+pub const CHANGE_CARD_COLLAPSED_H: f32 = 48.0;
+
 /// `HOLT_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
 /// over rolling windows of [`FRAME_STATS_WINDOW`] samples) at `warn` level —
 /// the smoothness measurement knob. Off by default; zero cost when off.
@@ -495,11 +500,14 @@ impl Transcript {
     /// runs (the engine's debounced frames), frozen at settle; failed and
     /// interrupted Turns keep their cards. Binary files show status only —
     /// no invented line counts — and files render in the engine's
-    /// path-sorted order. Clicking a row (or the header's Review) opens the
-    /// read-only review; a live file's Open affordance opens the post-Turn
-    /// file — deleted files offer Review only, never Open.
+    /// path-sorted order. The header toggles the file list's fold (default
+    /// expanded, the skill-invocation fold pattern). Clicking a row (or the
+    /// header's Review) opens the read-only review; a live file's Open
+    /// affordance opens the post-Turn file — deleted files offer Review
+    /// only, never Open.
     fn render_turn_change_card(
         &mut self,
+        row_id: &SharedString,
         change_set: &Arc<TurnChangeSet>,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -507,12 +515,29 @@ impl Transcript {
         let live = change_set.phase == TurnChangeSetPhase::Live;
         let chat_id = self.chat_id.clone().unwrap_or_default();
         let message_id = change_set.message_id.clone();
+        let fold = self.folds.get(row_id).copied().unwrap_or_default();
+        let open = fold.open.unwrap_or(true);
+        // A fresh COLLAPSE keeps the list mounted for one tween: the wrapper
+        // shrinks the measured height to zero over RESIZE, then the settled
+        // closed state unmounts it (the skill-invocation fold pattern).
+        let closing = !open
+            && fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
+        let toggle_row_id = row_id.clone();
         let mut header = div()
+            .id(SharedString::from(format!("{row_id}#tcs-toggle")))
+            .debug_selector(|| "turn-card-toggle".to_string())
             .flex()
             .flex_row()
             .items_center()
             .gap(px(7.0))
-            .min_w_0();
+            .min_w_0()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_change_card_fold(toggle_row_id.clone(), cx)
+            }));
         header = if live {
             header.child(crate::loaders::mini_mono_spinner(
                 "turn-change-live",
@@ -537,8 +562,8 @@ impl Transcript {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(px(12.0))
-                    .line_height(px(18.0))
+                    .text_size(px(13.0))
+                    .line_height(px(20.0))
                     .text_color(theme.text_dim)
                     .child(SharedString::from(format!(
                         "Changed {} file{}",
@@ -546,11 +571,22 @@ impl Transcript {
                         if change_set.files.len() == 1 { "" } else { "s" }
                     ))),
             )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_muted.opacity(0.8))
+                    .child(SharedString::from(if open {
+                        "\u{25be}"
+                    } else {
+                        "\u{25b8}"
+                    })),
+            )
             .when(change_set.truncated, |el| {
                 el.child(
                     div()
                         .flex_none()
-                        .text_size(px(10.0))
+                        .text_size(px(11.0))
                         .text_color(theme.text_faint)
                         .child("diff truncated"),
                 )
@@ -562,7 +598,8 @@ impl Transcript {
                 el.child(turn_change_count(change_set.deletions, false, theme))
             })
             // Review: the read-only per-file diff in the right pane — the
-            // first file until a row picks one.
+            // first file until a row picks one. Stop propagation: the
+            // header around it is the fold toggle.
             .child(
                 div()
                     .id("turn-change-review")
@@ -570,12 +607,13 @@ impl Transcript {
                     .flex_none()
                     .px(px(7.0))
                     .rounded(px(5.0))
-                    .text_size(px(10.5))
+                    .text_size(px(11.5))
                     .text_color(theme.text_muted)
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::wash(0.06)))
                     .child("Review")
                     .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
                         cx.emit(super::TranscriptEvent::ReviewTurnChanges {
                             chat_id: review_chat.clone(),
                             message_id: review_message.clone(),
@@ -584,86 +622,98 @@ impl Transcript {
                     })),
             );
 
-        div()
-            .py(px(4.0))
+        let files =
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .children(change_set.files.iter().map(|file| {
+                    let review_chat = chat_id.clone();
+                    let review_message = message_id.clone();
+                    let review_path = file.path.clone();
+                    let row_selector = review_path.clone();
+                    let row = div()
+                        .id(SharedString::from(format!(
+                            "turn-change-file-{}",
+                            file.path
+                        )))
+                        .debug_selector(move || format!("turn-card-file-{row_selector}"))
+                        .w_full()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .min_w_0()
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(crate::theme::wash(0.04)))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(super::TranscriptEvent::ReviewTurnChanges {
+                                chat_id: review_chat.clone(),
+                                message_id: review_message.clone(),
+                                path: Some(review_path.clone()),
+                            });
+                        }))
+                        .child(turn_change_file_row(file, theme));
+                    // Open: the post-Turn file in the workspace tab. A
+                    // deleted file has nothing on disk to open — Review
+                    // keeps its diff available instead.
+                    if file.status == TurnFileChangeStatus::Deleted {
+                        row
+                    } else {
+                        let open_path = file.path.clone();
+                        let open_selector = file.path.clone();
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "turn-change-open-{}",
+                                    file.path
+                                )))
+                                .debug_selector(move || format!("turn-card-open-{open_selector}"))
+                                .flex_none()
+                                .px(px(6.0))
+                                .rounded(px(4.0))
+                                .text_size(px(11.0))
+                                .text_color(theme.text_faint)
+                                .cursor_pointer()
+                                .hover(|el| el.bg(crate::theme::wash(0.08)))
+                                .child("Open")
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(super::TranscriptEvent::OpenTurnFile {
+                                        path: open_path.clone(),
+                                    });
+                                })),
+                        )
+                    }
+                }));
+
+        let mut card = div()
             .w_full()
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(5.0))
-                    .overflow_hidden()
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.input_glass_bg())
-                    .px(px(12.0))
-                    .py(px(9.0))
-                    .child(header)
-                    .children(change_set.files.iter().map(|file| {
-                        let review_chat = chat_id.clone();
-                        let review_message = message_id.clone();
-                        let review_path = file.path.clone();
-                        let row_selector = review_path.clone();
-                        let row = div()
-                            .id(SharedString::from(format!(
-                                "turn-change-file-{}",
-                                file.path
-                            )))
-                            .debug_selector(move || format!("turn-card-file-{row_selector}"))
-                            .w_full()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .min_w_0()
-                            .rounded(px(5.0))
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::wash(0.04)))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(super::TranscriptEvent::ReviewTurnChanges {
-                                    chat_id: review_chat.clone(),
-                                    message_id: review_message.clone(),
-                                    path: Some(review_path.clone()),
-                                });
-                            }))
-                            .child(turn_change_file_row(file, theme));
-                        // Open: the post-Turn file in the workspace tab. A
-                        // deleted file has nothing on disk to open — Review
-                        // keeps its diff available instead.
-                        if file.status == TurnFileChangeStatus::Deleted {
-                            row
-                        } else {
-                            let open_path = file.path.clone();
-                            let open_selector = file.path.clone();
-                            row.child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "turn-change-open-{}",
-                                        file.path
-                                    )))
-                                    .debug_selector(move || {
-                                        format!("turn-card-open-{open_selector}")
-                                    })
-                                    .flex_none()
-                                    .px(px(6.0))
-                                    .rounded(px(4.0))
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_faint)
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(crate::theme::wash(0.08)))
-                                    .child("Open")
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.stop_propagation();
-                                        cx.emit(super::TranscriptEvent::OpenTurnFile {
-                                            path: open_path.clone(),
-                                        });
-                                    })),
-                            )
-                        }
-                    })),
-            )
-            .into_any_element()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.input_glass_bg())
+            .px(px(12.0))
+            .py(px(9.0))
+            .child(header);
+        if open {
+            card = card.child(files);
+        } else if closing {
+            // The body's share of the painted card height starts the tween;
+            // the settled closed state measures the header alone.
+            let from = (fold.from - CHANGE_CARD_COLLAPSED_H).max(0.0);
+            card = card.child(div().overflow_hidden().child(files).with_animation(
+                SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
+                RESIZE.animation(),
+                move |el, t| el.h(px(motion::lerp(from, 0.0, t))),
+            ));
+        }
+        div().py(px(4.0)).w_full().child(card).into_any_element()
     }
 
     /// A `/skill` invocation inside the user bubble: the skill title as an
@@ -888,11 +938,17 @@ impl Transcript {
         let theme = Theme::of(cx).clone();
         // A pending Approval pauses the Turn; the trailer carries the
         // Esc-interrupt hint (prototype 3-A) so the keyboard path is
-        // discoverable next to the running status.
-        let approval_pending = self
-            .rows
-            .iter()
-            .any(|row| matches!(row.kind, RowKind::Approval { .. }));
+        // discoverable next to the running status. Pending gates build no
+        // row, so the check reads the doc this transcript follows.
+        let approval_pending = {
+            let state = self.state.read(cx);
+            match &self.doc_override {
+                Some(doc_id) => {
+                    super::pending_approval_gate(state.sub_transcript(doc_id)).is_some()
+                }
+                None => super::pending_approval_gate(&state.transcript).is_some(),
+            }
+        };
         Some(
             div()
                 .flex()
@@ -1213,7 +1269,6 @@ impl Transcript {
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
             }
-            RowKind::Approval { tool } => self.render_approval_card(tool, &theme, window, cx),
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
@@ -1241,7 +1296,7 @@ impl Transcript {
                 self.render_plan_approval_card(&row.id, content, state, &theme, cx)
             }
             RowKind::TurnChangeCard { change_set } => {
-                self.render_turn_change_card(change_set, &theme, cx)
+                self.render_turn_change_card(&row.id, change_set, &theme, cx)
             }
         };
 
@@ -2257,9 +2312,9 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
         .child(
             div()
                 .flex_none()
-                .w(px(10.0))
+                .w(px(12.0))
                 .font_family(theme.font_mono.clone())
-                .text_size(px(10.0))
+                .text_size(px(11.0))
                 .text_color(color)
                 .child(letter),
         )
@@ -2269,7 +2324,7 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
                 .flex_1()
                 .truncate()
                 .font_family(theme.font_mono.clone())
-                .text_size(px(12.0))
+                .text_size(px(13.0))
                 .text_color(theme.text_dim)
                 .child(SharedString::from(path)),
         )
@@ -2277,7 +2332,7 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
             el.child(
                 div()
                     .flex_none()
-                    .text_size(px(10.0))
+                    .text_size(px(11.0))
                     .text_color(theme.text_faint)
                     .child("BIN"),
             )
@@ -2307,7 +2362,7 @@ fn turn_change_count(count: u32, added: bool, theme: &Theme) -> gpui::Div {
     div()
         .flex_none()
         .font_family(theme.font_mono.clone())
-        .text_size(px(11.0))
+        .text_size(px(12.0))
         .text_color(if added {
             theme.diff_add
         } else {

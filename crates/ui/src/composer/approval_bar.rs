@@ -3,8 +3,9 @@
 //! panel — the gated target as a bare mono lead line, then a flat
 //! keyboard-first option list (Allow once / Always allow · this session /
 //! Deny) whose trailing row is the free-text denial note. The transcript
-//! keeps an in-flow marker strip (`transcript::approval`); the verdict
-//! itself rides the shared `ResolveApproval` channel.
+//! builds no in-flow marker for the pending gate (user call: the strip
+//! duplicated this panel); the verdict itself rides the shared
+//! `ResolveApproval` channel.
 //!
 //! Keyboard contract: the bar's own focus handle owns the keyboard by
 //! default (stamped on open — arrows/Enter/digits never reach the shared

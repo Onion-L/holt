@@ -89,8 +89,8 @@ mod approval;
 mod plan_card;
 
 pub use approval::{
-    VerdictTint, approval_cwd_line, approval_meta, approval_target, pending_approval_gate,
-    pending_approval_tool, resolve_approval, verdict_chip, verdict_tint_color,
+    VerdictTint, approval_cwd_line, approval_target, pending_approval_gate, pending_approval_tool,
+    resolve_approval, verdict_chip, verdict_tint_color,
 };
 
 pub use markdown::{ParseOutcome, parse_for_row};
@@ -102,8 +102,8 @@ pub use model::{
 
 mod render;
 
-use render::HighlightStore;
 pub use render::{ATT_STRIP_H, ATT_THUMB_H, ATT_THUMB_W, MAX_CONTENT_WIDTH};
+use render::{CHANGE_CARD_COLLAPSED_H, HighlightStore};
 
 // ---------------------------------------------------------------------------
 // Constants (mugen ports)
@@ -1907,6 +1907,29 @@ impl Transcript {
         cx.notify();
     }
 
+    /// Toggle the Turn change card's file list (user request). Unlike the
+    /// skill chip the card defaults EXPANDED; the same painted-height
+    /// capture drives the collapse tween, so the stick spring never steps.
+    fn toggle_change_card_fold(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
+        let painted = self
+            .rows
+            .iter()
+            .position(|row| row.id == row_id)
+            .and_then(|ix| self.list.bounds_for_item(ix))
+            .map(|bounds| f32::from(bounds.size.height));
+        let entry = self.folds.entry(row_id).or_default();
+        let collapsing = entry.open.unwrap_or(true);
+        entry.from = if collapsing {
+            painted.unwrap_or(CHANGE_CARD_COLLAPSED_H)
+        } else {
+            CHANGE_CARD_COLLAPSED_H
+        };
+        entry.open = Some(!collapsing);
+        entry.epoch += 1;
+        entry.toggled_at = Some(Instant::now());
+        cx.notify();
+    }
+
     /// The working loader, INSIDE the conversation flow: appended under the
     /// last row while the run is live (moved out of the shell's status strip
     /// — user request), so it reads as part of the streaming reply and
@@ -2215,6 +2238,94 @@ mod tests {
             "{:?}",
             events.borrow()
         );
+    }
+
+    /// The header toggles the card's file list (user request): default
+    /// expanded, a click pins the fold closed, a second click re-expands —
+    /// and a Review click inside the header does NOT toggle the fold
+    /// (stop-propagation). The closed state's DOM unmount lags the click by
+    /// the collapse tween window, so the assertions read the fold state.
+    #[gpui::test]
+    fn change_card_header_toggles_the_file_list(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: "edit things".into(),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: None,
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            s.turn_change_sets.insert(
+                "m-1".into(),
+                holt_proto::TurnChangeSet {
+                    chat_id: "chat-1".into(),
+                    message_id: "m-1".into(),
+                    phase: holt_proto::TurnChangeSetPhase::Final,
+                    files: vec![holt_proto::TurnFileChange {
+                        path: "a.rs".into(),
+                        old_path: None,
+                        status: holt_proto::TurnFileChangeStatus::Modified,
+                        additions: 1,
+                        deletions: 1,
+                        binary: false,
+                    }],
+                    additions: 1,
+                    deletions: 1,
+                    truncated: false,
+                    updated_at: chrono::Utc::now(),
+                },
+            );
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // Default: expanded, the file row draws, no pin recorded.
+        assert!(cx.debug_bounds("turn-card-file-a.rs").is_some());
+        transcript.update(cx, |this, _| {
+            assert_eq!(this.folds.get("m-1#tcs").and_then(|fold| fold.open), None);
+        });
+
+        let bounds = cx.debug_bounds("turn-card-toggle").expect("toggle drawn");
+        cx.simulate_click(bounds.center(), Default::default());
+        transcript.update(cx, |this, _| {
+            assert_eq!(
+                this.folds.get("m-1#tcs").and_then(|fold| fold.open),
+                Some(false),
+                "a header click pins the fold closed"
+            );
+        });
+
+        // Review lives INSIDE the toggle: its click must not re-open the
+        // fold it bubbles through.
+        let review = cx.debug_bounds("turn-card-review").expect("review drawn");
+        cx.simulate_click(review.center(), Default::default());
+        transcript.update(cx, |this, _| {
+            assert_eq!(
+                this.folds.get("m-1#tcs").and_then(|fold| fold.open),
+                Some(false)
+            );
+        });
+
+        let bounds = cx.debug_bounds("turn-card-toggle").expect("toggle drawn");
+        cx.simulate_click(bounds.center(), Default::default());
+        transcript.update(cx, |this, _| {
+            assert_eq!(
+                this.folds.get("m-1#tcs").and_then(|fold| fold.open),
+                Some(true)
+            );
+        });
     }
 
     #[test]

@@ -66,9 +66,9 @@ pub struct ToolItem {
     /// settled. `resolved == false` only marks the part as still streaming.
     pub is_thought: bool,
     /// The permission gate's record (ADR-0014), when this call was gated.
-    /// `Pending` never reaches a group — it splices into its own
-    /// [`RowKind::Approval`] row first — so a gate seen here is always
-    /// settled, and the chip carries its verdict.
+    /// A `Pending` gate renders only in the composer's approval bar — the
+    /// transcript skips the part — so a gate seen here is always settled,
+    /// and the chip carries its verdict.
     pub gate: Option<ToolGate>,
 }
 
@@ -222,17 +222,6 @@ pub enum RowKind {
     ToolGroup {
         tools: Arc<Vec<ToolItem>>,
         auto_open: bool,
-    },
-    /// A confirm-changes Approval awaiting the user's verdict (ADR-0014,
-    /// prototype 3-A): a tool part whose gate is `Pending` renders as a card
-    /// in the transcript flow, never inside a fold. When the verdict lands
-    /// the same part flows back into an ordinary tool group — the card
-    /// settles to its chip in place. Interactive state (the note editor)
-    /// lives on the Transcript entity keyed by approval id, never here.
-    /// Boxed: a pending gate is rare (one per chat at a time), and an inline
-    /// ToolItem would triple RowKind's stride for every markdown row.
-    Approval {
-        tool: Box<ToolItem>,
     },
     InputChip {
         /// First question's header (chat-view.tsx `InputChip`: the resolved
@@ -677,7 +666,7 @@ pub fn rows_for_entry(
                 group_last_part_ix = part_ix;
             }
             MessagePart::Tool {
-                id: part_id,
+                id: _,
                 call,
                 is_error,
                 resolved,
@@ -708,16 +697,17 @@ pub fn rows_for_entry(
                     is_thought: false,
                     gate: gate.clone(),
                 };
-                // A PENDING gate is the approval card (ADR-0014): it must
-                // stay visible, so it never joins a foldable group — flush
-                // and splice its own row. The settle replays the same part
-                // through the ordinary path below, which lands it in a group
-                // as the verdict chip.
+                // A PENDING gate builds no transcript row (ADR-0014): the
+                // composer's approval bar carries the gated target and the
+                // verdict affordances, so the part never joins a foldable
+                // group. The settle replays the same part through the
+                // ordinary path below, which lands it in a group as the
+                // verdict chip.
                 if matches!(
                     item.gate.as_ref().map(|gate| &gate.state),
                     Some(ToolGateState::Pending)
                 ) {
-                    // The splice steals the entry's TAIL part from the group
+                    // The skip steals the entry's TAIL part from the group
                     // above: without the gate that group IS the live tail of
                     // the still-streaming turn (a running bash call renders
                     // expanded), and the pause waiting on a verdict is not
@@ -730,23 +720,6 @@ pub fn rows_for_entry(
                         group_last_part_ix
                     };
                     flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
-                    let (label, detail) = tool_chip_content(&item.call);
-                    let gate_id = item.gate.as_ref().map(|g| g.id.as_str()).unwrap_or("");
-                    let version = fnv1a(
-                        format!("{gate_id}\u{0}{label}\u{0}{detail}\u{0}{}", item.resolved)
-                            .as_bytes(),
-                    );
-                    rows.push(Row {
-                        id: format!("{}#{}", entry.id, part_id).into(),
-                        version,
-                        turn_start: false,
-                        kind: RowKind::Approval {
-                            tool: Box::new(item),
-                        },
-                        entry_id: entry.id.clone().into(),
-                        timestamp: None,
-                        copy_text: None,
-                    });
                     continue;
                 }
                 // Agent chips don't share a fold with ordinary tools: flush
@@ -1023,15 +996,11 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
         render::MD_BLOCK_GAP
     } else if matches!(
         row.kind,
-        RowKind::ToolGroup { .. }
-            | RowKind::Approval { .. }
-            | RowKind::PlanApproval { .. }
-            | RowKind::TurnChangeCard { .. }
+        RowKind::ToolGroup { .. } | RowKind::PlanApproval { .. } | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
         matches!(
             row.kind,
             RowKind::ToolGroup { .. }
-                | RowKind::Approval { .. }
                 | RowKind::PlanApproval { .. }
                 | RowKind::TurnChangeCard { .. }
         )
