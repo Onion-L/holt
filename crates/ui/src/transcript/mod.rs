@@ -86,6 +86,7 @@ mod markdown;
 mod model;
 
 mod approval;
+mod plan_card;
 
 pub use approval::{VerdictTint, pending_approval_gate, verdict_chip, verdict_tint_color};
 
@@ -307,6 +308,10 @@ pub struct Transcript {
     /// drop a half-written note. Pruned per render to approvals still
     /// pending in `rows`.
     approval_notes: HashMap<String, ApprovalNote>,
+    /// The plan card's feedback editors (ADR-0025), keyed by plan id —
+    /// the plan component's own state, separate from the ADR-0014 gate
+    /// notes.
+    plan_notes: HashMap<String, ApprovalNote>,
     _observe: Subscription,
 }
 
@@ -472,6 +477,7 @@ impl Transcript {
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
             approval_notes: HashMap::new(),
+            plan_notes: HashMap::new(),
             _observe: observe,
         };
         this.sync(cx);

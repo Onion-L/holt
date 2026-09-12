@@ -3024,6 +3024,7 @@ impl Render for Transcript {
         // Drop note editors whose approval settled or scrolled away with a
         // chat switch (a verdict also closes its own editor eagerly).
         self.prune_approval_notes();
+        self.prune_plan_notes();
         // Own-turn driver: measurements are only authoritative after layout,
         // so reservation sizing, the send glide, and the outgrown-handoff
         // each advance at most once per requested frame. Scheduled on every
