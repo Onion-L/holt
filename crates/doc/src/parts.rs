@@ -346,20 +346,16 @@ pub enum MessagePart {
         /// Epoch millis.
         timestamp: i64,
     },
-    /// The Plan Mode approval card (ADR-0025): the submitted plan's
-    /// document pointer plus its resolution state. Approve / reject /
-    /// remain ride `ResolvePlanApproval`; the card itself never edits the
-    /// document. `content` snapshots the submitted document text at
-    /// submission — the card renders what was reviewed, even if the file
-    /// changes later; absent on cards from before the field existed.
+    /// The Plan Mode approval card (ADR-0025): the proposed plan plus its
+    /// resolution state. Approve / reject / remain ride
+    /// `ResolvePlanApproval`. The content is the plan's Markdown as
+    /// proposed by the model (a `<proposed_plan>` block from ordinary
+    /// assistant text) — the card renders what was proposed.
     #[serde(rename_all = "camelCase")]
     PlanApproval {
         id: String,
-        plan_id: String,
-        /// Absolute path of the submitted plan document (display pointer).
-        plan_path: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content: Option<String>,
+        #[serde(default)]
+        content: String,
         state: PlanApprovalState,
     },
 }
@@ -414,15 +410,8 @@ impl MessagePart {
             // The state rides the estimate: pending and settled cards
             // differ here, which is what the transcript's entry
             // fingerprint keys its row cache on.
-            MessagePart::PlanApproval {
-                plan_path,
-                content,
-                state,
-                ..
-            } => {
-                plan_path.len()
-                    + content.as_ref().map_or(0, String::len)
-                    + serde_json::to_vec(state).map_or(0, |v| v.len())
+            MessagePart::PlanApproval { content, state, .. } => {
+                content.len() + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
         }
     }

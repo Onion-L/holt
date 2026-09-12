@@ -1,62 +1,26 @@
 //! Plan Mode (ADR-0025): the chat-level planning checkpoint orthogonal to
 //! the permission mode. The state rides the chat row (`Chat::plan_mode`,
-//! restored by restart); this module owns the plan-document layout helpers
-//! and the planning-turn shaping the run loop applies to a Turn admitted
-//! under Plan Mode: the read-only tool whitelist, the strong submit
-//! requirement in the system prompt, the two plan tools, and the one-shot
-//! corrective continuation for a Turn that ends without a submission.
-
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+//! restored by restart); this module owns the planning-turn shaping the run
+//! loop applies to a Turn admitted under Plan Mode: the read-only tool
+//! whitelist and the system-prompt block that makes a `<proposed_plan>`
+//! Markdown block the only submission channel. The plan itself is ordinary
+//! assistant text — no plan documents, no plan tools — and the transcript
+//! folds each complete block into an approval card the user resolves.
 
 use holt_doc::MessagePart;
 use holt_doc::parts::{PlanApprovalState, PlanApprovalVerdict};
-use holt_proto::{ActivePlan, Chat, PlanLifecycle};
-use pi_core::agent::types::AgentTool;
 
-use crate::agent::AgentRuntime;
+use crate::agent::ChatRuntime;
 
-/// The workspace-relative directory plan documents live in, under the
-/// chat's working directory (`<cwd>/.holt/plans`).
-pub(crate) const PLAN_DIR: &str = ".holt/plans";
-
-/// Hard cap on a submitted plan document (chars): approval must stay
-/// reviewable, and the plan rides the implementation Turn's model context
-/// whole.
-pub(crate) const MAX_PLAN_CHARS: usize = 64 * 1024;
-
-/// The model-only corrective continuation (ADR-0025): appended as a user
-/// message and run once when a planning Turn ends without `submit_plan`.
-pub(crate) const CORRECTIVE_NUDGE: &str = "[Plan Mode] Your turn ended without calling \
-`submit_plan`. Ordinary text cannot submit the plan and the user has seen no approval \
-request. Finish the plan document with `write_plan` if needed, then call `submit_plan`.";
-
-/// The one planning Turn's plan context: the active revision's id (minted
-/// at admission when the chat carries none, kept across the planning
-/// cycle's turns and restarts) and the document path the plan tools
-/// address. Snapshot at Turn admission — entering or leaving Plan Mode
-/// mid-Turn cannot move it.
-#[derive(Clone, Debug)]
-pub(crate) struct TurnPlan {
-    pub(crate) plan_id: String,
-    pub(crate) plan_path: PathBuf,
-}
-
-/// Mint a fresh revision: a unique plan id per plan and per revision, so
-/// documents never overwrite each other and older revisions stay on disk.
-/// The revision is persisted on the chat row by the admission path.
-pub(crate) fn mint_active_plan() -> ActivePlan {
-    ActivePlan {
-        plan_id: uuid::Uuid::new_v4().to_string(),
-        state: PlanLifecycle::Planning,
-    }
-}
+/// The plan-proposal convention (ADR-0025): the model wraps its complete
+/// plan in this block; the transcript folds each block into an approval
+/// card.
+pub(crate) const PROPOSED_PLAN_OPEN: &str = "<proposed_plan>";
+pub(crate) const PROPOSED_PLAN_CLOSE: &str = "</proposed_plan>";
 
 /// The shared read-only tool predicate (ADR-0025): the exploration surface
 /// an Explorer subagent gets (ADR-0023) and a planning Turn keeps — nothing
-/// that can change files or execute commands. The plan tools ride beside it
-/// in Plan Mode, appended separately.
+/// that can change files or execute commands.
 pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
     matches!(
         name,
@@ -64,293 +28,136 @@ pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
     )
 }
 
-/// The planning system-prompt block: the strong runtime requirement that
-/// submission happens ONLY through the `submit_plan` tool call — ordinary
-/// text can never trigger approval (ADR-0025).
-pub(crate) fn planning_system_block(plan_path: &Path) -> String {
+/// The planning system-prompt block: read-only exploration plus the
+/// `<proposed_plan>` convention — ordinary text never reaches approval
+/// (ADR-0025), and each block fully replaces the previous one.
+pub(crate) fn planning_system_block() -> String {
     format!(
         "## Plan Mode (active)\n\n\
 This turn is a PLANNING turn. Explore the workspace and produce an \
 implementation plan for the user to review and approve. You must not \
 change the workspace.\n\n\
 - Your tools are read-only exploration (`read`, `grep`, `read_chat`, \
-`web_fetch`, and `web_search` when available) plus exactly two plan \
-tools: `write_plan` and `submit_plan`. `bash`, `write`, `edit`, and \
-subagent delegation are unavailable; do not attempt workarounds.\n\
-- Write the complete plan document with `write_plan`. It writes exactly \
-`{}` — the Markdown document the user reviews. Rewrite it as often as \
-your exploration changes the plan.\n\
-- When the plan document is complete you MUST call `submit_plan`. \
-Submission happens ONLY through the `submit_plan` tool call. Ending the \
-turn with ordinary text does NOT submit the plan, does NOT reach \
-approval, and is a protocol violation.\n",
-        plan_path.display()
+`web_fetch`, and `web_search` when available). `bash`, `write`, \
+`edit`, and subagent delegation are unavailable; do not attempt \
+workarounds.\n\
+- Settle intent and tradeoffs with the user in ordinary text before \
+finalizing; ask rather than guess when an ambiguity is high-impact.\n\
+- When the plan is decision complete, present it as ONE complete \
+Markdown block wrapped in `{PROPOSED_PLAN_OPEN}` and \
+`{PROPOSED_PLAN_CLOSE}`. Only a complete block reaches approval — \
+ordinary text, questions, and progress notes never do.\n\
+- Each new block fully replaces the previous one; never fragment a \
+plan across several blocks in one turn.\n\
+- Do not ask \"should I proceed?\". The user will approve the plan or \
+reply with feedback; revising on feedback is a normal planning turn.\n"
     )
 }
 
-/// The `write_plan` tool: the one write path Plan Mode permits, fixed to
-/// the active revision's document — the tool takes content only, so the
-/// model cannot aim it anywhere else.
-fn write_plan_tool(plan_path: PathBuf) -> AgentTool {
-    AgentTool {
-        name: "write_plan".into(),
-        label: "Write plan".into(),
-        description: "Write or replace the complete plan document for this planning session. \
-Takes the full Markdown content and writes it to the plan document the user reviews. \
-Keep the plan concrete: goal, approach, files to change, verification steps, and open \
-questions. Rewrite the whole document each time — partial edits are not supported."
-            .into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "content": {"type": "string", "minLength": 1}
-            },
-            "required": ["content"],
-            "additionalProperties": false
-        }),
-        constrained_sampling: None,
-        prepare_arguments: None,
-        execution_mode: None,
-        execute: Arc::new(move |_id, args, _signal, _update| {
-            let plan_path = plan_path.clone();
-            let args = args.clone();
-            Box::pin(async move {
-                let content = args
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|content| !content.trim().is_empty())
-                    .ok_or("content is required")?;
-                if let Some(parent) = plan_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|error| format!("could not create the plan directory: {error}"))?;
-                }
-                std::fs::write(&plan_path, content)
-                    .map_err(|error| format!("could not write the plan document: {error}"))?;
-                Ok(pi_core::agent::types::AgentToolResult {
-                    content: vec![pi_core::ai::types::BlockContent::Text(
-                        pi_core::ai::types::TextContent {
-                            text: format!("Plan document written to {}.", plan_path.display()),
-                            ..Default::default()
-                        },
-                    )],
-                    details: Default::default(),
-                    usage: None,
-                    added_tool_names: None,
-                    terminate: None,
-                })
-            })
-        }),
-    }
+/// One segment of assistant text split around `<proposed_plan>` blocks.
+#[derive(Debug, PartialEq)]
+pub(crate) enum PlanSegment {
+    /// Text outside any block — rendered as ordinary prose.
+    Text(String),
+    /// The Markdown inside one complete block — folded into an approval
+    /// card. Unterminated blocks stay ordinary text (a stream may cut a
+    /// message mid-block; only complete blocks propose).
+    Plan(String),
 }
 
-/// The `submit_plan` tool: the only submission channel (ADR-0025). It sets
-/// the flag the loop's `should_stop_after_turn` hook watches, so the
-/// planning Turn ends at the close of the tool round that submitted — the
-/// model cannot keep exploring or rewriting after submission.
-fn submit_plan_tool(
-    runtime: Arc<AgentRuntime>,
-    chat_id: String,
-    plan: TurnPlan,
-    submitted: Arc<AtomicBool>,
-) -> AgentTool {
-    AgentTool {
-        name: "submit_plan".into(),
-        label: "Submit plan".into(),
-        description: "Submit the plan document for user approval and end the planning turn. \
-Call this only after the plan document is written with write_plan. There are no \
-arguments; the plan itself lives in the document, not in this call."
-            .into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        }),
-        constrained_sampling: None,
-        prepare_arguments: None,
-        execution_mode: None,
-        execute: Arc::new(move |_id, _args, _signal, _update| {
-            let submitted = Arc::clone(&submitted);
-            let runtime = Arc::clone(&runtime);
-            let chat_id = chat_id.clone();
-            let plan = plan.clone();
-            Box::pin(async move { submit_plan(&runtime, &chat_id, &plan, submitted).await })
-        }),
-    }
-}
-
-/// The plan tools for one planning Turn: the fixed-path document write and
-/// the submission gate that validates the document, persists the
-/// awaiting-approval state, and stops the turn.
-pub(crate) fn plan_tools(
-    plan: &TurnPlan,
-    runtime: Arc<AgentRuntime>,
-    chat_id: &str,
-    submitted: Arc<AtomicBool>,
-) -> Vec<AgentTool> {
-    vec![
-        write_plan_tool(plan.plan_path.clone()),
-        submit_plan_tool(runtime, chat_id.to_string(), plan.clone(), submitted),
-    ]
-}
-
-/// The `submit_plan` execution: read the active revision's document,
-/// validate it, persist the awaiting-approval state, and flag the turn for
-/// its stop. Any failure is an error tool result the model reads — the
-/// planning turn keeps going and nothing awaiting-approval is recorded.
-async fn submit_plan(
-    runtime: &AgentRuntime,
-    chat_id: &str,
-    plan: &TurnPlan,
-    submitted: Arc<AtomicBool>,
-) -> Result<pi_core::agent::types::AgentToolResult, String> {
-    // The validated document text also snapshots into the approval card —
-    // the transcript renders what was reviewed, not a later state of the
-    // file.
-    let text = std::fs::read_to_string(&plan.plan_path).map_err(|error| {
-        format!("could not read the plan document (write it with `write_plan` first): {error}")
-    })?;
-    if text.trim().is_empty() {
-        return Err(
-            "The plan document is empty — write the plan with `write_plan` before submitting."
-                .into(),
-        );
-    }
-    let chars = text.chars().count();
-    if chars > MAX_PLAN_CHARS {
-        return Err(format!(
-            "The plan document is {chars} characters; the limit is {MAX_PLAN_CHARS}. \
-Tighten the plan with `write_plan` before submitting."
+/// Split assistant text around complete `<proposed_plan>` blocks. The tags
+/// themselves are dropped; adjacent non-block text merges into single
+/// segments.
+pub(crate) fn split_plan_blocks(text: &str) -> Vec<PlanSegment> {
+    let mut segments: Vec<PlanSegment> = Vec::new();
+    let mut tail = text;
+    while let Some(open) = tail.find(PROPOSED_PLAN_OPEN) {
+        let content_start = open + PROPOSED_PLAN_OPEN.len();
+        let close = tail[content_start..]
+            .find(PROPOSED_PLAN_CLOSE)
+            .map(|i| content_start + i);
+        let Some(close) = close else {
+            // Unterminated block: ordinary text for now.
+            break;
+        };
+        push_text(&mut segments, &tail[..open]);
+        segments.push(PlanSegment::Plan(
+            tail[content_start..close].trim().to_string(),
         ));
+        tail = &tail[close + PROPOSED_PLAN_CLOSE.len()..];
     }
-    // The persisted awaiting-approval state: the single fact the
-    // ResolveApproval RPC (and the UI card) address. The in-memory state
-    // moves first and rolls back if the file write fails.
-    let outcome = {
-        let mut chats = runtime
-            .chats
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) else {
-            return Err("this chat no longer exists".into());
-        };
-        let Some(state) = row.plan_mode.as_mut() else {
-            return Err("Plan Mode is no longer active for this chat".into());
-        };
-        let Some(active) = state
-            .active_plan
-            .as_mut()
-            .filter(|active| active.plan_id == plan.plan_id)
-        else {
-            return Err("this planning turn's plan revision is no longer the active one".into());
-        };
-        let previous = std::mem::replace(&mut active.state, PlanLifecycle::AwaitingApproval);
-        (
-            previous,
-            crate::store::persist_chats(&runtime.data_dir, &chats),
-        )
-    };
-    match outcome {
-        (_, Ok(())) => {}
-        (previous, Err(error)) => {
-            let mut chats = runtime
-                .chats
-                .write()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id)
-                && let Some(state) = row.plan_mode.as_mut()
-                && let Some(active) = state.active_plan.as_mut()
-                && active.plan_id == plan.plan_id
-            {
-                active.state = previous;
+    push_text(&mut segments, tail);
+    segments
+}
+
+fn push_text(segments: &mut Vec<PlanSegment>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(PlanSegment::Text(existing)) = segments.last_mut() {
+        existing.push_str(text);
+    } else {
+        segments.push(PlanSegment::Text(text.to_string()));
+    }
+}
+
+/// Fold assistant text into transcript parts: ordinary text stays prose,
+/// each complete `<proposed_plan>` block becomes a pending approval card.
+/// `next_id` mints unique part ids within the entry.
+pub(crate) fn plan_aware_text_parts(
+    text: &str,
+    next_id: &mut dyn FnMut() -> String,
+) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    for segment in split_plan_blocks(text) {
+        match segment {
+            PlanSegment::Text(text) if !text.trim().is_empty() => parts.push(MessagePart::Text {
+                id: next_id(),
+                text,
+            }),
+            PlanSegment::Text(_) => {}
+            PlanSegment::Plan(content) if !content.is_empty() => {
+                parts.push(MessagePart::PlanApproval {
+                    id: next_id(),
+                    content,
+                    state: PlanApprovalState::Pending,
+                });
             }
-            return Err(format!("could not record the submission: {error}"));
+            PlanSegment::Plan(_) => {}
         }
     }
-    runtime.publish_chats();
-    // The approval card (ADR-0025): its own transcript entry at the tail,
-    // answerable through ResolvePlanApproval. Unlike the ADR-0014 gate this
-    // resolution is pure state, so the card survives a restart.
-    let chat = runtime.chat(chat_id);
-    crate::agent::push_system_part(
-        &chat,
-        &runtime.device_id,
-        format!("plan-approval-{}", uuid::Uuid::new_v4()),
-        MessagePart::PlanApproval {
-            id: "p0".into(),
-            plan_id: plan.plan_id.clone(),
-            plan_path: plan.plan_path.display().to_string(),
-            content: Some(text),
-            state: PlanApprovalState::Pending,
-        },
-    );
-    submitted.store(true, Ordering::Release);
-    Ok(pi_core::agent::types::AgentToolResult {
-        content: vec![pi_core::ai::types::BlockContent::Text(
-            pi_core::ai::types::TextContent {
-                text: "Plan submitted for approval. The planning turn ends here; wait for the \
-user's verdict."
-                    .into(),
-                ..Default::default()
-            },
-        )],
-        details: Default::default(),
-        usage: None,
-        added_tool_names: None,
-        terminate: None,
-    })
+    parts
 }
 
-/// The chat-id stem for plan file names: path-safe ids pass through, and
-/// anything else (legacy ids may carry arbitrary text) collapses to its
-/// safe characters — collisions are impossible in practice because the
-/// unique plan id still separates the files.
-pub(crate) fn chat_file_stem(chat_id: &str) -> String {
-    if crate::store::id_is_path_safe(chat_id) {
-        return chat_id.to_string();
-    }
-    let collapsed: String = chat_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
+/// Whether the chat's transcript carries at least one pending approval
+/// card — the guard `ResolvePlanApproval` refuses on.
+pub(crate) fn has_pending_plan_cards(chat_id: &str, runtime: &crate::agent::AgentRuntime) -> bool {
+    let Some(chat) = runtime.loaded_chat(chat_id) else {
+        return false;
+    };
+    chat.transcript
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .any(|entry| {
+            entry.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    MessagePart::PlanApproval {
+                        state: PlanApprovalState::Pending,
+                        ..
+                    }
+                )
+            })
         })
-        .collect();
-    collapsed.trim_matches('-').to_string()
 }
 
-/// The document for one plan revision: `<cwd>/.holt/plans/<chat>-<plan>.md`.
-pub(crate) fn plan_path(cwd: &str, chat_id: &str, plan_id: &str) -> PathBuf {
-    PathBuf::from(cwd)
-        .join(PLAN_DIR)
-        .join(format!("{}-{plan_id}.md", chat_file_stem(chat_id)))
-}
-
-/// The active plan's resolved document, when the chat is planning, carries a
-/// revision, and has a working directory to resolve it against.
-pub(crate) fn active_plan_path(chat: &Chat) -> Option<PathBuf> {
-    let plan = chat.plan_mode.as_ref()?.active_plan.as_ref()?;
-    let plan_id = &plan.plan_id;
-    let cwd = chat.cwd.as_deref()?;
-    Some(plan_path(
-        &crate::local_fs::expand_tilde(cwd),
-        &chat.id,
-        plan_id,
-    ))
-}
-
-/// Settle every still-pending approval card for `plan_id` to `verdict`
+/// Settle every still-pending approval card in the transcript to `verdict`
 /// (ADR-0025). A resolution is pure display state — the lifecycle moved
-/// through the RPC — so this is a transcript edit only. A resubmission of
-/// the same revision appends a NEW card; the older pending cards of the
-/// same id settle with it (they address the same plan).
-pub(crate) fn settle_plan_cards(
-    chat: &crate::agent::ChatRuntime,
-    plan_id: &str,
-    verdict: PlanApprovalVerdict,
-) {
+/// through the RPC — so this is a transcript edit only. Blocks proposed
+/// across turns all address the chat's Plan Mode; a verdict settles them
+/// together.
+pub(crate) fn settle_plan_cards(chat: &ChatRuntime, verdict: PlanApprovalVerdict) {
     let mut transcript = chat
         .transcript
         .write()
@@ -358,12 +165,7 @@ pub(crate) fn settle_plan_cards(
     let mut changed = false;
     for entry in transcript.iter_mut() {
         for part in entry.parts.iter_mut() {
-            if let MessagePart::PlanApproval {
-                plan_id: card_plan,
-                state,
-                ..
-            } = part
-                && card_plan == plan_id
+            if let MessagePart::PlanApproval { state, .. } = part
                 && *state == PlanApprovalState::Pending
             {
                 *state = PlanApprovalState::Settled { verdict };
@@ -380,23 +182,6 @@ pub(crate) fn settle_plan_cards(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentRuntime;
-    use holt_proto::WorkspaceScope;
-
-    #[test]
-    fn plan_paths_live_under_the_cwd_holt_plans_dir() {
-        let path = plan_path("/repo", "chat-1", "abc");
-        assert_eq!(path, PathBuf::from("/repo/.holt/plans/chat-1-abc.md"));
-    }
-
-    #[test]
-    fn unsafe_chat_ids_collapse_to_a_path_safe_stem() {
-        assert_eq!(chat_file_stem("chat-1"), "chat-1");
-        assert_eq!(chat_file_stem("../../etc/passwd"), "etc-passwd");
-        assert_eq!(chat_file_stem("a/b\\c d"), "a-b-c-d");
-        let path = plan_path("/repo", "a/b", "p1");
-        assert_eq!(path, PathBuf::from("/repo/.holt/plans/a-b-p1.md"));
-    }
 
     #[test]
     fn the_planning_whitelist_keeps_reads_and_drops_everything_mutating() {
@@ -409,209 +194,133 @@ mod tests {
     }
 
     #[test]
-    fn the_planning_block_names_the_document_and_the_only_submission_channel() {
-        let block = planning_system_block(Path::new("/repo/.holt/plans/c-1-p.md"));
+    fn the_planning_block_makes_the_block_the_only_submission_channel() {
+        let block = planning_system_block();
         assert!(block.contains("## Plan Mode (active)"));
-        assert!(block.contains("/repo/.holt/plans/c-1-p.md"));
-        assert!(block.contains("`submit_plan`"));
-        assert!(block.contains("ONLY through the `submit_plan` tool call"));
-        assert!(block.contains("does NOT submit the plan"));
+        assert!(block.contains(PROPOSED_PLAN_OPEN));
+        assert!(block.contains("Only a complete block reaches approval"));
+        assert!(block.contains("read-only exploration"));
     }
 
-    #[tokio::test]
-    async fn write_plan_writes_only_its_fixed_document() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".holt/plans/c-1-p.md");
-        let write = write_plan_tool(path.clone());
-        let ok = (write.execute)(
-            "call-1",
-            &serde_json::json!({ "content": "# Plan\n- step" }),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Plan\n- step");
-        let text = match ok.content.first().unwrap() {
-            pi_core::ai::types::BlockContent::Text(text) => text.text.clone(),
-            other => panic!("expected text, got {other:?}"),
-        };
-        assert!(text.contains(&path.display().to_string()));
-
-        // Empty content is refused and writes nothing.
-        assert!(
-            (write.execute)("call-2", &serde_json::json!({}), None, None)
-                .await
-                .is_err()
-        );
-    }
-
-    /// A runtime with one planning chat (`chat-1`) carrying the `p1`
-    /// revision in Planning state, over `dir` as the data dir.
-    fn planning_runtime(dir: &std::path::Path) -> Arc<AgentRuntime> {
-        let chat = holt_proto::Chat {
-            id: "chat-1".into(),
-            device_id: "device".into(),
-            title: None,
-            title_source: Default::default(),
-            title_task_started: false,
-            archived: false,
-            cwd: Some(dir.to_string_lossy().into_owned()),
-            branch: None,
-            checkout_id: None,
-            source_context: None,
-            config: None,
-            last_message_preview: None,
-            last_message_at: None,
-            created_at: chrono::Utc::now(),
-            space_id: None,
-            last_seen_at: None,
-            room_gen: None,
-            compact_before_next_turn: false,
-            approved_plan_path: None,
-            plan_mode: Some(holt_proto::ChatPlanState {
-                entry_permission_mode: Default::default(),
-                active_plan: Some(ActivePlan {
-                    plan_id: "p1".into(),
-                    state: PlanLifecycle::Planning,
-                }),
-            }),
-        };
-        Arc::new(AgentRuntime::new(
-            "device".into(),
-            WorkspaceScope::Local,
-            dir.to_path_buf(),
-            vec![chat],
-            None,
-        ))
-    }
-
-    fn submit_tool(dir: &std::path::Path, path: PathBuf, flag: Arc<AtomicBool>) -> AgentTool {
-        submit_plan_tool(
-            planning_runtime(dir),
-            "chat-1".into(),
-            TurnPlan {
-                plan_id: "p1".into(),
-                plan_path: path,
-            },
-            flag,
-        )
-    }
-
-    #[tokio::test]
-    async fn submit_plan_rejects_missing_empty_and_oversized_documents() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".holt/plans/c-1-p.md");
-        let flag = Arc::new(AtomicBool::new(false));
-        let submit = submit_tool(dir.path(), path.clone(), Arc::clone(&flag));
-
-        // Missing document: the model must write before submitting.
-        assert!(
-            (submit.execute)("call-1", &serde_json::json!({}), None, None)
-                .await
-                .is_err()
-        );
-        assert!(!flag.load(Ordering::Acquire));
-
-        // An empty document is not a plan.
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "   \n").unwrap();
-        assert!(
-            (submit.execute)("call-2", &serde_json::json!({}), None, None)
-                .await
-                .is_err()
-        );
-
-        // An oversized document is refused whole: approval stays reviewable.
-        std::fs::write(&path, "x".repeat(MAX_PLAN_CHARS + 1)).unwrap();
-        let error = (submit.execute)("call-3", &serde_json::json!({}), None, None)
-            .await
-            .unwrap_err();
-        assert!(error.contains("limit is"), "{error}");
-
-        // None of the failures persisted anything: no chats.json exists,
-        // so the awaiting-approval flip was never recorded.
-        assert!(crate::store::load_chats(dir.path()).unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn submit_plan_persists_awaiting_approval_and_flags_the_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".holt/plans/c-1-p.md");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "# Plan\n- step").unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let submit = submit_tool(dir.path(), path, Arc::clone(&flag));
-
-        (submit.execute)("call-1", &serde_json::json!({}), None, None)
-            .await
-            .unwrap();
-        assert!(flag.load(Ordering::Acquire));
-
-        // The flip is durable: a fresh load of the data dir sees it.
-        let chats = crate::store::load_chats(dir.path()).unwrap();
+    #[test]
+    fn splits_blocks_from_ordinary_text() {
+        let text = "intro\n\n<proposed_plan>\n# Plan\n- step\n</proposed_plan>\n\noutro";
         assert_eq!(
-            chats[0]
-                .plan_mode
-                .as_ref()
-                .unwrap()
-                .active_plan
-                .as_ref()
-                .unwrap()
-                .state,
-            PlanLifecycle::AwaitingApproval
-        );
-    }
-
-    #[tokio::test]
-    async fn submit_plan_refuses_a_revision_that_is_no_longer_active() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".holt/plans/c-1-p.md");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "# Plan").unwrap();
-        // A chat whose active revision is a DIFFERENT id (the turn was
-        // admitted, then a resolution/revision replaced it underneath).
-        let runtime = planning_runtime(dir.path());
-        runtime.chats.write().unwrap()[0]
-            .plan_mode
-            .as_mut()
-            .unwrap()
-            .active_plan = Some(ActivePlan {
-            plan_id: "other".into(),
-            state: PlanLifecycle::Planning,
-        });
-        let submit = submit_plan_tool(
-            Arc::clone(&runtime),
-            "chat-1".into(),
-            TurnPlan {
-                plan_id: "p1".into(),
-                plan_path: path,
-            },
-            Arc::new(AtomicBool::new(false)),
-        );
-        assert!(
-            (submit.execute)("call-1", &serde_json::json!({}), None, None)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            runtime.chats.read().unwrap()[0]
-                .plan_mode
-                .as_ref()
-                .unwrap()
-                .active_plan
-                .as_ref()
-                .unwrap()
-                .state,
-            PlanLifecycle::Planning
+            split_plan_blocks(text),
+            vec![
+                PlanSegment::Text("intro\n\n".into()),
+                PlanSegment::Plan("# Plan\n- step".into()),
+                PlanSegment::Text("\n\noutro".into()),
+            ]
         );
     }
 
     #[test]
-    fn minted_revision_ids_are_unique_per_call() {
-        let first = mint_active_plan();
-        let second = mint_active_plan();
-        assert_ne!(first.plan_id, second.plan_id);
-        assert_eq!(first.state, PlanLifecycle::Planning);
+    fn unterminated_blocks_stay_ordinary_text() {
+        let text = "<proposed_plan>\npartial";
+        assert_eq!(
+            split_plan_blocks(text),
+            vec![PlanSegment::Text(text.into())]
+        );
+    }
+
+    #[test]
+    fn every_complete_block_becomes_a_card_even_in_a_series() {
+        let text = "<proposed_plan>a</proposed_plan>mid<proposed_plan>b</proposed_plan>";
+        assert_eq!(
+            split_plan_blocks(text),
+            vec![
+                PlanSegment::Plan("a".into()),
+                PlanSegment::Text("mid".into()),
+                PlanSegment::Plan("b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_aware_parts_strip_tags_and_name_cards() {
+        let mut counter = 0usize;
+        let parts = plan_aware_text_parts(
+            "thinking\n<proposed_plan>\n# Plan\n</proposed_plan>",
+            &mut || {
+                counter += 1;
+                format!("p{counter}")
+            },
+        );
+        assert_eq!(
+            parts,
+            vec![
+                MessagePart::Text {
+                    id: "p1".into(),
+                    text: "thinking\n".into(),
+                },
+                MessagePart::PlanApproval {
+                    id: "p2".into(),
+                    content: "# Plan".into(),
+                    state: PlanApprovalState::Pending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_cards_settle_together_across_entries() {
+        use holt_doc::MessageRole;
+        use holt_proto::WorkspaceScope;
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = crate::agent::AgentRuntime::new(
+            "dev".into(),
+            WorkspaceScope::Local,
+            dir.path().to_path_buf(),
+            Vec::new(),
+            None,
+        );
+        let chat = runtime.chat("chat-1");
+        let part = |id: &str, state: PlanApprovalState| MessagePart::PlanApproval {
+            id: id.into(),
+            content: "# plan".into(),
+            state,
+        };
+        for id in ["p1", "p2"] {
+            chat.transcript
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(holt_doc::SessionMessageEntry {
+                    id: id.into(),
+                    role: MessageRole::System,
+                    parts: vec![part(id, PlanApprovalState::Pending)],
+                    created_at: 0,
+                    device_id: "dev".into(),
+                    status: None,
+                    continuation_of: None,
+                });
+        }
+        settle_plan_cards(&chat, PlanApprovalVerdict::Approved);
+        for entry in chat
+            .transcript
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            let MessagePart::PlanApproval { state, .. } = &entry.parts[0] else {
+                panic!("expected a card");
+            };
+            assert!(matches!(
+                state,
+                PlanApprovalState::Settled {
+                    verdict: PlanApprovalVerdict::Approved
+                }
+            ));
+        }
+        // The chat row keeps its planning state untouched: the card settle
+        // is display-only (the row was never involved).
+        assert!(
+            runtime
+                .chats
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
     }
 }

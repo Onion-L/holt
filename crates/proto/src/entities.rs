@@ -259,57 +259,25 @@ pub struct Chat {
     /// restart; recovery never starts a Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_mode: Option<ChatPlanState>,
-    /// ADR-0025: an approved plan awaiting injection — the absolute path of
-    /// its document, pinned at approval. The next admitted Turn rides the
-    /// document's full text in model context, and the reference is consumed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_plan_path: Option<String>,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on
-/// entry — restored on plan approval, never on explicit exit — plus the
-/// active plan revision, when one exists.
+/// entry — restored on plan approval, never on explicit exit. The plan
+/// itself lives in the conversation (a `<proposed_plan>` block in the
+/// assistant's text); there is no per-revision state to track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPlanState {
     pub entry_permission_mode: PermissionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_plan: Option<ActivePlan>,
 }
 
-/// One plan revision (ADR-0025): a unique id per plan and per revision, so
-/// the documents under the working directory's `.holt/plans` never overwrite
-/// each other and older revisions stay on disk. Lifecycle: the agent drafts
-/// (`planning`), submits, and the plan waits for the user's verdict
-/// (`awaitingApproval`). Approving exits Plan Mode; rejecting retires the
-/// revision (the file remains) so the next planning Turn mints a new id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivePlan {
-    pub plan_id: String,
-    pub state: PlanLifecycle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PlanLifecycle {
-    Planning,
-    AwaitingApproval,
-}
-
-/// The `GetPlanMode` reply: the chat's Plan Mode view. `planPath` resolves
-/// the active revision's document under the chat's working directory when
-/// both a plan and a working directory exist.
+/// The `GetPlanMode` reply: the chat's Plan Mode view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanModeState {
     pub active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_permission_mode: Option<PermissionMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_plan: Option<ActivePlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_path: Option<String>,
 }
 
 impl Chat {

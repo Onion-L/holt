@@ -280,10 +280,9 @@ pub enum RowKind {
     /// marker. Interactive state (the feedback editor) lives on the
     /// Transcript entity keyed by plan id, never here.
     PlanApproval {
-        plan_id: SharedString,
-        /// The submitted document text, snapshotted at submission — the
-        /// card renders what was reviewed. Absent on pre-snapshot cards.
-        content: Option<SharedString>,
+        /// The proposed plan's Markdown — the card renders what was
+        /// proposed (a `<proposed_plan>` block from the assistant text).
+        content: SharedString,
         state: holt_doc::parts::PlanApprovalState,
     },
     /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
@@ -956,7 +955,6 @@ pub fn rows_for_entry(
                     }
                     MessagePart::PlanApproval {
                         id: part_id,
-                        plan_id,
                         content,
                         state,
                         ..
@@ -968,8 +966,7 @@ pub fn rows_for_entry(
                             ),
                             turn_start: false,
                             kind: RowKind::PlanApproval {
-                                plan_id: plan_id.clone().into(),
-                                content: content.clone().map(SharedString::from),
+                                content: content.clone().into(),
                                 state: state.clone(),
                             },
                             entry_id: entry_id.clone(),

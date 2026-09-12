@@ -83,18 +83,27 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `before_tool_call` hook (no upstream changes); the Title task and
   Compaction mount no tools and never see it.
 - Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
-  permission mode, carried on the chat row (`planMode`: the permission
-  mode recorded on entry — restored on plan approval, never moved by the
-  entry itself — plus the active plan revision).
-  `EnterPlanMode` / `ExitPlanMode` (`{chatId}`; both idempotent) and
-  `GetPlanMode` reply the `PlanModeState` view (`active`, the entry mode,
-  the active plan, and its resolved document path under the chat working
-  directory's `.holt/plans`). Exiting retires the active plan reference
-  but keeps the plan documents on disk; switches during a running Turn
-  take effect from the next Turn; restart restores the state without
-  auto-starting a Turn. The planning-turn shaping (read-only exploration
-  tools, the plan write, `SubmitPlan` enforcement) and the approval flow
-  land with the plan lifecycle issues (ADR-0025).
+  permission mode, carried on the chat row (`planMode`: just the
+  permission mode recorded on entry — restored on plan approval, never
+  moved by the entry itself). `EnterPlanMode` / `ExitPlanMode`
+  (`{chatId}`; both idempotent) and `GetPlanMode` reply the
+  `PlanModeState` view (`active`, the entry mode). A planning Turn runs
+  the read-only exploration toolset with a prompt that makes a complete
+  `<proposed_plan>` Markdown block in the assistant's ordinary text the
+  only submission channel; the transcript folds each block into an
+  approval card. `ResolvePlanApproval` (`{chatId, verdict, feedback?}`,
+  verdict `approve | reject | remain`, requires a planning chat with a
+  pending card) applies the verdict: approve exits Plan Mode restoring
+  the entry mode — the plan is already in the conversation History, so
+  the implementation Turn carries it naturally; reject keeps planning
+  and a non-empty feedback is enqueued as the revision loop's next
+  planning input; remain changes nothing but the cards. Exiting settles
+  pending cards as dismissed; switches during a running Turn take effect
+  from the next Turn; restart restores the state without auto-starting a
+  Turn. (2026-09-12: simplified from plan documents on disk +
+  write/submit tools + injection to the conversational `<proposed_plan>`
+  convention after reviewing Codex's plan mode; the enforced read-only
+  toolset and the approval cards stay.)
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

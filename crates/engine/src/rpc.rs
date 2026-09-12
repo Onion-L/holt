@@ -210,7 +210,6 @@ impl EngineService {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
-            approved_plan_path: None,
         });
         drop(chats);
         persist_chats(
@@ -713,16 +712,8 @@ impl EngineService {
         let mut mode = self.mode_default.get();
         // The Turn's Plan Mode snapshot (ADR-0025): planning at admission
         // makes this a planning Turn; a mid-Turn switch lands from the
-        // next Turn exactly like the mode beside it. A planning cycle
-        // without an active revision gets one minted here — minted ONCE
-        // per cycle and persisted on the row, so a continuation Turn
-        // (after a rejection, a remain, or a restart) revises the SAME
-        // plan id and never overwrites an older revision's document.
-        let mut plan_revision = None;
-        // An approved plan awaiting injection (ADR-0025) is consumed by the
-        // next admitted Turn — taken now, injected below, and persisted as
-        // consumed by this Turn's own chats write.
-        let mut approved_plan_path = None;
+        // next Turn exactly like the mode beside it.
+        let mut planning = false;
         {
             let mut chats = self
                 .runtime
@@ -731,24 +722,11 @@ impl EngineService {
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(row) = chats.iter_mut().find(|row| row.id == chat_id) {
                 row.cwd = Some(request.cwd.clone());
-                approved_plan_path = row.approved_plan_path.take();
                 if let Some(source) = source {
                     row.branch = Some(source.branch.clone());
                     row.source_context = Some(source);
                 }
-                if let Some(plan_state) = row.plan_mode.as_mut() {
-                    if plan_state.active_plan.is_none() {
-                        plan_state.active_plan = Some(crate::plan_mode::mint_active_plan());
-                    }
-                    plan_revision = Some(
-                        plan_state
-                            .active_plan
-                            .as_ref()
-                            .expect("active plan minted")
-                            .plan_id
-                            .clone(),
-                    );
-                }
+                planning = row.plan_mode.is_some();
                 // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -787,37 +765,6 @@ impl EngineService {
                     }
                 }
             }
-        }
-        // The approved plan rides the implementation Turn's model context
-        // whole (ADR-0025): wrapped into the prompt the History records and
-        // the model reads — the transcript entry keeps the user's own text.
-        // A missing or emptied document injects nothing; the reference is
-        // consumed either way.
-        let approved_plan =
-            approved_plan_path
-                .clone()
-                .and_then(|path| match std::fs::read_to_string(&path) {
-                    Ok(text) if !text.trim().is_empty() => Some(text),
-                    _ => None,
-                });
-        if let Some(text) = &approved_plan {
-            prompt = format!("{prompt}\n\n<approved-plan>\n{text}\n</approved-plan>");
-        } else if let Some(path) = &approved_plan_path {
-            // The approved intent vanished before implementation started —
-            // say so visibly (the compaction-failure precedent).
-            tracing::warn!(target: "holt::agent", path, "the approved plan document is unreadable; injecting nothing");
-            crate::agent::push_system_part(
-                &chat,
-                &self.engine_info.device_id,
-                format!("plan-missing-{}", uuid::Uuid::new_v4()),
-                MessagePart::Notice {
-                    id: "n0".into(),
-                    message: format!(
-                        "The approved plan document could not be read ({path}); \
-                         the Turn continues without it."
-                    ),
-                },
-            );
         }
         persist_chats(
             &self.data_dir,
@@ -860,16 +807,6 @@ impl EngineService {
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();
-        // The planning Turn's document: the persisted revision's id and
-        // its path under the chat's working directory.
-        let plan = plan_revision.map(|plan_id| crate::plan_mode::TurnPlan {
-            plan_path: crate::plan_mode::plan_path(
-                &crate::local_fs::expand_tilde(&request.cwd),
-                &chat_id,
-                &plan_id,
-            ),
-            plan_id,
-        });
         Ok(AgentRun {
             runtime,
             chat_id,
@@ -884,7 +821,7 @@ impl EngineService {
             skills: self.skills.clone(),
             invocation,
             permission_mode: mode,
-            plan,
+            plan_mode: planning,
             // The admission-time backend snapshot (ADR-0023): resolved
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.
@@ -1041,7 +978,6 @@ impl EngineService {
                     .unwrap_or_else(|| self.mode_default.get());
                 chat.plan_mode = Some(holt_proto::ChatPlanState {
                     entry_permission_mode: entry_mode,
-                    active_plan: None,
                 });
                 persist_chats(&self.data_dir, &chats)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
@@ -1051,13 +987,13 @@ impl EngineService {
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
 
-    /// Leave Plan Mode (ADR-0025). Idempotent. The active plan reference is
-    /// retired but the plan documents stay on disk (ADR-0025: planning
-    /// history is auditable); the current permission mode stands — only
-    /// plan approval restores the entry mode.
+    /// Leave Plan Mode (ADR-0025). Idempotent. The current permission mode
+    /// stands — only plan approval restores the entry mode — and pending
+    /// approval cards settle as dismissed, never answerable for a chat
+    /// that stopped planning.
     fn exit_plan_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
-        let retired = {
+        let exited = {
             let mut chats = self
                 .runtime
                 .chats
@@ -1067,43 +1003,34 @@ impl EngineService {
                 .iter_mut()
                 .find(|chat| chat.id == chat_id)
                 .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
-            let retired = chat
-                .plan_mode
-                .take()
-                .and_then(|state| state.active_plan)
-                .map(|plan| plan.plan_id);
-            if retired.is_some() {
+            let exited = chat.plan_mode.take().is_some();
+            if exited {
                 persist_chats(&self.data_dir, &chats)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
             }
-            retired
+            exited
         };
         self.runtime.publish_chats();
-        // A pending approval card whose Plan Mode just ended never poses as
-        // answerable (ADR-0025): settled as dismissed, like a gate whose
-        // Turn ended.
-        if let Some(plan_id) = retired
-            && let Some(chat) = self.runtime.loaded_chat(chat_id)
-        {
+        if exited && let Some(chat) = self.runtime.loaded_chat(chat_id) {
             crate::plan_mode::settle_plan_cards(
                 &chat,
-                &plan_id,
                 holt_doc::parts::PlanApprovalVerdict::Dismissed,
             );
         }
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
 
-    /// Resolve a submitted plan (ADR-0025): the verdict applies to the
-    /// chat's active revision. Approve exits Plan Mode restoring the entry
-    /// permission mode and pins the document for injection into the next
-    /// implementation Turn; reject retires the revision (the document
-    /// stays) and a non-empty feedback is enqueued as the revision loop's
-    /// next planning input; remain returns the plan to drafting. Cards for
-    /// the plan settle in the Transcript in every path.
+    /// Resolve a proposed plan (ADR-0025): the verdict applies to the
+    /// chat's Plan Mode. Approve exits Plan Mode restoring the entry
+    /// permission mode — the plan is already in the conversation History,
+    /// so the implementation Turn carries it naturally; reject keeps the
+    /// chat planning and a non-empty feedback is enqueued as the revision
+    /// loop's next planning input; remain changes nothing but the cards.
+    /// Every verdict requires a planning chat with at least one pending
+    /// card, and settles ALL pending cards (they address the same
+    /// checkpoint).
     fn resolve_plan_approval(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
-        let plan_id = required_string(&params, "planId")?;
         let verdict = required_string(&params, "verdict")?;
         let feedback = optional_string(&params, "feedback");
         let decision = match verdict {
@@ -1116,8 +1043,6 @@ impl EngineService {
                 )));
             }
         };
-        // The lifecycle change, computed under the lock (the planId was
-        // verified against the active plan inside it).
         let lifecycle = {
             let mut chats = self
                 .runtime
@@ -1131,67 +1056,38 @@ impl EngineService {
             let Some(plan_state) = chat.plan_mode.as_mut() else {
                 return Err(RpcError::Failed("this chat is not in Plan Mode".into()));
             };
-            if plan_state
-                .active_plan
-                .as_ref()
-                .is_none_or(|active| active.plan_id != plan_id)
-            {
-                return Err(RpcError::Failed(
-                    "that plan is no longer the active one".into(),
-                ));
+            if !crate::plan_mode::has_pending_plan_cards(chat_id, &self.runtime) {
+                return Err(RpcError::Failed("no plan is awaiting approval".into()));
             }
-            let submitted = plan_state.active_plan.as_ref().map(|active| active.state)
-                == Some(holt_proto::PlanLifecycle::AwaitingApproval);
             match decision {
+                // Restore the entry permission mode (ADR-0025): the stored
+                // mode moves back, the sticky default is untouched — this
+                // is a restore, not a choice. The plan is already in the
+                // conversation History; there is nothing to inject.
                 Decision::Approve => {
-                    if !submitted {
-                        return Err(RpcError::Failed("the plan is not awaiting approval".into()));
-                    }
-                    // Restore the entry permission mode (ADR-0025): the
-                    // stored mode moves back, the sticky default is
-                    // untouched — this is a restore, not a choice.
                     if let Some(config) = chat.config.as_mut() {
                         config.permission_mode = plan_state.entry_permission_mode;
                     }
-                    chat.approved_plan_path = crate::plan_mode::active_plan_path(chat)
-                        .map(|path| path.to_string_lossy().into_owned());
                     chat.plan_mode = None;
                     persist_chats(&self.data_dir, &chats)
                         .map_err(|error| RpcError::Failed(error.to_string()))?;
                     Lifecycle::Approved
                 }
+                // The chat keeps planning; the next planning Turn (the
+                // feedback, enqueued below) proposes a replacement block.
+                // The stored mode stands — only approval restores.
                 Decision::Reject => {
-                    if !submitted {
-                        return Err(RpcError::Failed("the plan is not awaiting approval".into()));
-                    }
-                    // Retire the revision: the document stays on disk, the
-                    // next planning Turn mints a fresh one (the revision
-                    // loop). The stored mode stands — only approval
-                    // restores.
-                    plan_state.active_plan = None;
                     persist_chats(&self.data_dir, &chats)
                         .map_err(|error| RpcError::Failed(error.to_string()))?;
                     Lifecycle::Rejected
                 }
-                Decision::Remain => {
-                    // Back to drafting when the plan was submitted; a stale
-                    // card (the plan already moved on) settles without
-                    // touching the lifecycle.
-                    if submitted {
-                        plan_state.active_plan.as_mut().expect("checked").state =
-                            holt_proto::PlanLifecycle::Planning;
-                        persist_chats(&self.data_dir, &chats)
-                            .map_err(|error| RpcError::Failed(error.to_string()))?;
-                    }
-                    Lifecycle::Remained
-                }
+                Decision::Remain => Lifecycle::Remained,
             }
         };
         self.runtime.publish_chats();
         if let Some(chat) = self.runtime.loaded_chat(chat_id) {
             crate::plan_mode::settle_plan_cards(
                 &chat,
-                plan_id,
                 match lifecycle {
                     Lifecycle::Approved => holt_doc::parts::PlanApprovalVerdict::Approved,
                     Lifecycle::Rejected => holt_doc::parts::PlanApprovalVerdict::Rejected,
@@ -1261,8 +1157,8 @@ impl EngineService {
         }
     }
 
-    /// The `GetPlanMode` view: whether the chat is planning, its recorded
-    /// entry mode, and the active revision with its resolved document path.
+    /// The `GetPlanMode` view: whether the chat is planning and its
+    /// recorded entry mode.
     fn plan_mode_state(&self, chat_id: &str) -> Result<holt_proto::PlanModeState, RpcError> {
         let chats = self
             .runtime
@@ -1277,21 +1173,14 @@ impl EngineService {
             Some(state) => holt_proto::PlanModeState {
                 active: true,
                 entry_permission_mode: Some(state.entry_permission_mode),
-                active_plan: state.active_plan.clone(),
-                plan_path: crate::plan_mode::active_plan_path(chat)
-                    .map(|path| path.to_string_lossy().into_owned()),
             },
             None => holt_proto::PlanModeState {
                 active: false,
                 entry_permission_mode: None,
-                active_plan: None,
-                plan_path: None,
             },
         })
     }
 
-    /// The settings record plus its live validation view — the reply shape
-    /// of both title-settings RPCs.
     async fn title_settings_state(&self) -> TitleSettingsState {
         let settings = self.title_settings.get();
         let warning = self.title_settings_warning(&settings).await;

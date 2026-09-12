@@ -63,13 +63,14 @@ impl Transcript {
     pub(super) fn render_plan_approval_card(
         &mut self,
         row_id: &SharedString,
-        plan_id: &SharedString,
-        content: &Option<SharedString>,
+        content: &SharedString,
         state: &PlanApprovalState,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let editor_key = plan_id.to_string();
+        // The feedback editor keys off the card's row id — one editor per
+        // card, no shared-map prefixing.
+        let editor_key = row_id.to_string();
         let settled = |text: String, tint: VerdictTint| {
             div()
                 .py(px(4.0))
@@ -100,13 +101,13 @@ impl Transcript {
                     .plan_notes
                     .get(&editor_key)
                     .map(|note| note.input.clone());
-                let id_approve = plan_id.clone();
-                let id_reject = plan_id.clone();
-                let id_remain = plan_id.clone();
+                let id_approve = row_id.clone();
+                let id_reject = row_id.clone();
+                let id_remain = row_id.clone();
                 // Approve — the primary action (subtle-raised idiom).
                 let approve = div()
-                    .id(SharedString::from(format!("plan-approve-{plan_id}")))
-                    .debug_selector(move || format!("plan-approve-{plan_id}"))
+                    .id(SharedString::from(format!("plan-approve-{row_id}")))
+                    .debug_selector(move || format!("plan-approve-{row_id}"))
                     .flex_none()
                     .px(px(10.0))
                     .py(px(4.0))
@@ -125,8 +126,8 @@ impl Transcript {
                     .child("Approve");
                 // Reject — restrained danger; opens the feedback editor.
                 let reject = div()
-                    .id(SharedString::from(format!("plan-reject-{plan_id}")))
-                    .debug_selector(move || format!("plan-reject-{plan_id}"))
+                    .id(SharedString::from(format!("plan-reject-{row_id}")))
+                    .debug_selector(move || format!("plan-reject-{row_id}"))
                     .flex_none()
                     .px(px(10.0))
                     .py(px(4.0))
@@ -147,8 +148,8 @@ impl Transcript {
                     });
                 // Stay in planning — neutral ghost.
                 let remain = div()
-                    .id(SharedString::from(format!("plan-remain-{plan_id}")))
-                    .debug_selector(move || format!("plan-remain-{plan_id}"))
+                    .id(SharedString::from(format!("plan-remain-{row_id}")))
+                    .debug_selector(move || format!("plan-remain-{row_id}"))
                     .flex_none()
                     .px(px(10.0))
                     .py(px(4.0))
@@ -180,11 +181,9 @@ impl Transcript {
                                 div()
                                     .w_full()
                                     .text_color(theme.text)
-                                    .child("Plan submitted for approval"),
+                                    .child("Proposed plan"),
                             )
-                            .when_some(content.as_ref(), |card, text| {
-                                card.child(render_plan_content(text, row_id, theme))
-                            })
+                            .child(render_plan_content(content, row_id, theme))
                             .child(
                                 div()
                                     .mt(px(4.0))
@@ -212,7 +211,6 @@ impl Transcript {
                         card.child(self.render_plan_feedback_editor(
                             row_id,
                             &editor_key,
-                            plan_id,
                             input,
                             theme,
                             cx,
@@ -242,13 +240,12 @@ impl Transcript {
         &mut self,
         row_id: &SharedString,
         editor_key: &str,
-        plan_id: &SharedString,
         input: Entity<ComposerInput>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id_for_key = editor_key.to_string();
-        let id_for_submit = plan_id.to_string();
+        let id_for_submit = row_id.to_string();
         div()
             .id(SharedString::from(format!(
                 "plan-feedback-{editor_key}-{row_id}"
@@ -342,14 +339,13 @@ impl Transcript {
 
     /// Enter in the feedback editor = Reject with feedback; a blank note is
     /// a plain reject.
-    fn submit_plan_feedback(&mut self, plan_id: &str, cx: &mut Context<Self>) {
-        let editor_key = plan_id.to_string();
+    fn submit_plan_feedback(&mut self, editor_key: &str, cx: &mut Context<Self>) {
         let feedback = self
             .plan_notes
-            .get(&editor_key)
+            .get(editor_key)
             .map(|note| note.input.read(cx).text().trim().to_string())
             .filter(|note| !note.is_empty());
-        self.resolve_plan_verdict(plan_id, "reject", feedback, cx);
+        self.resolve_plan_verdict(editor_key, "reject", feedback, cx);
     }
 
     /// Send the plan verdict (fire-and-forget: failures warn; the doc's
@@ -357,17 +353,17 @@ impl Transcript {
     /// open, closes with the verdict. Approve and stay carry no feedback.
     fn resolve_plan_verdict(
         &mut self,
-        plan_id: &str,
+        editor_key: &str,
         verdict: &'static str,
         feedback: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.plan_notes.remove(&format!("plan-{plan_id}"));
+        self.plan_notes.remove(editor_key);
         cx.notify();
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        let mut params = serde_json::json!({ "planId": plan_id, "verdict": verdict });
+        let mut params = serde_json::json!({ "verdict": verdict });
         if let Some(feedback) = feedback {
             params["feedback"] = serde_json::Value::String(feedback);
         }
@@ -394,10 +390,9 @@ impl Transcript {
             .iter()
             .filter_map(|row| match &row.kind {
                 super::model::RowKind::PlanApproval {
-                    plan_id,
                     state: PlanApprovalState::Pending,
                     ..
-                } => Some(plan_id.to_string()),
+                } => Some(row.id.to_string()),
                 _ => None,
             })
             .collect();
@@ -424,19 +419,13 @@ mod tests {
     }
 
     fn plan_part(id: &str, state: PlanApprovalState) -> MessagePart {
-        plan_part_with_content(id, Some("# The plan\n- step one"), state)
+        plan_part_with_content(id, "# The plan\n- step one", state)
     }
 
-    fn plan_part_with_content(
-        id: &str,
-        content: Option<&str>,
-        state: PlanApprovalState,
-    ) -> MessagePart {
+    fn plan_part_with_content(id: &str, content: &str, state: PlanApprovalState) -> MessagePart {
         MessagePart::PlanApproval {
             id: id.into(),
-            plan_id: "plan-1".into(),
-            plan_path: "/repo/.holt/plans/chat-1-plan-1.md".into(),
-            content: content.map(str::to_string),
+            content: content.to_string(),
             state,
         }
     }
@@ -463,17 +452,10 @@ mod tests {
             &mut parse,
         );
         assert_eq!(rows.len(), 1);
-        let RowKind::PlanApproval {
-            plan_id,
-            content,
-            state,
-            ..
-        } = &rows[0].kind
-        else {
+        let RowKind::PlanApproval { content, state, .. } = &rows[0].kind else {
             panic!("expected the plan approval row");
         };
-        assert_eq!(plan_id.as_ref(), "plan-1");
-        assert_eq!(content.as_deref(), Some("# The plan\n- step one"));
+        assert_eq!(content.as_ref(), "# The plan\n- step one");
         assert!(matches!(state, PlanApprovalState::Pending));
 
         let rows = crate::transcript::rows_for_entry(
@@ -540,9 +522,9 @@ mod tests {
         });
         // The pending strip draws all three affordances.
         for (selector, label) in [
-            ("plan-approve-plan-1", "Approve"),
-            ("plan-reject-plan-1", "Reject"),
-            ("plan-remain-plan-1", "Stay in planning"),
+            ("plan-approve-s1#p1", "Approve"),
+            ("plan-reject-s1#p1", "Reject"),
+            ("plan-remain-s1#p1", "Stay in planning"),
         ] {
             assert!(
                 cx.debug_bounds(selector).is_some(),
@@ -561,15 +543,15 @@ mod tests {
         // closes it.
         cx.update(|window, cx| {
             transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("plan-1".into(), window, cx);
+                this.toggle_plan_feedback("s1#p1".into(), window, cx);
             });
         });
         transcript.update(cx, |this, _| {
-            assert!(this.plan_notes.contains_key("plan-1"));
+            assert!(this.plan_notes.contains_key("s1#p1"));
         });
         cx.update(|window, cx| {
             transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("plan-1".into(), window, cx);
+                this.toggle_plan_feedback("s1#p1".into(), window, cx);
             });
         });
         transcript.update(cx, |this, _| assert!(this.approval_notes.is_empty()));
@@ -577,7 +559,7 @@ mod tests {
         // The settle prunes a stale editor and the settled card draws.
         cx.update(|window, cx| {
             transcript.update(cx, |this, cx| {
-                this.toggle_plan_feedback("plan-1".into(), window, cx);
+                this.toggle_plan_feedback("s1#p1".into(), window, cx);
             });
         });
         state.update(cx, |s, cx| {
@@ -616,6 +598,6 @@ mod tests {
         });
         cx.run_until_parked();
         // The settled card draws its verdict marker.
-        assert!(cx.debug_bounds("plan-approve-plan-1").is_none());
+        assert!(cx.debug_bounds("plan-approve-s1#p1").is_none());
     }
 }

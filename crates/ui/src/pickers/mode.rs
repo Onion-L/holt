@@ -119,16 +119,10 @@ pub(crate) async fn set_chat_permission_mode(
 }
 
 /// The Plan Mode footer label (ADR-0025): `None` when the chat is not
-/// planning; otherwise the mode plus the active revision's lifecycle.
+/// planning, else the plain marker — the proposed plan's own card carries
+/// the per-proposal state.
 pub(crate) fn plan_label(chat: Option<&Chat>) -> Option<String> {
-    let state = chat?.plan_mode.as_ref()?;
-    Some(match state.active_plan.as_ref() {
-        Some(plan) => match plan.state {
-            holt_proto::PlanLifecycle::Planning => "Plan · drafting".to_string(),
-            holt_proto::PlanLifecycle::AwaitingApproval => "Plan · awaiting approval".to_string(),
-        },
-        None => "Plan".to_string(),
-    })
+    chat?.plan_mode.as_ref().map(|_| "Plan".to_string())
 }
 
 impl Pickers {
@@ -284,7 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_label_reflects_the_lifecycle() {
+    fn plan_label_marks_only_planning_chats() {
         let none = chat("chat-1", PermissionMode::ConfirmChanges);
         assert_eq!(plan_label(Some(&none)), None);
         assert_eq!(plan_label(None), None);
@@ -292,27 +286,8 @@ mod tests {
         let mut planning = chat("chat-1", PermissionMode::ConfirmChanges);
         planning.plan_mode = Some(holt_proto::ChatPlanState {
             entry_permission_mode: PermissionMode::ConfirmChanges,
-            active_plan: None,
         });
         assert_eq!(plan_label(Some(&planning)).as_deref(), Some("Plan"));
-
-        planning.plan_mode.as_mut().unwrap().active_plan = Some(holt_proto::ActivePlan {
-            plan_id: "p1".into(),
-            state: holt_proto::PlanLifecycle::Planning,
-        });
-        assert_eq!(
-            plan_label(Some(&planning)).as_deref(),
-            Some("Plan · drafting")
-        );
-
-        planning.plan_mode.as_mut().unwrap().active_plan = Some(holt_proto::ActivePlan {
-            plan_id: "p1".into(),
-            state: holt_proto::PlanLifecycle::AwaitingApproval,
-        });
-        assert_eq!(
-            plan_label(Some(&planning)).as_deref(),
-            Some("Plan · awaiting approval")
-        );
     }
 
     fn chat(id: &str, mode: PermissionMode) -> holt_proto::Chat {
@@ -342,7 +317,6 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
-            approved_plan_path: None,
         }
     }
 

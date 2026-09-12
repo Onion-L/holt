@@ -1026,10 +1026,20 @@ fn assistant_parts(
     let mut parts = Vec::new();
     for content in &message.content {
         match content {
-            AssistantContent::Text(text) => parts.push(MessagePart::Text {
-                id: format!("t{}", id_base + parts.len()),
-                text: text.text.clone(),
-            }),
+            AssistantContent::Text(text) => {
+                // `<proposed_plan>` blocks fold into approval cards; the
+                // surrounding text stays prose. Ids keep the running
+                // offset so entry keys stay unique across messages.
+                let base = id_base + parts.len();
+                let mut n = 0usize;
+                parts.extend(crate::plan_mode::plan_aware_text_parts(
+                    &text.text,
+                    &mut || {
+                        n += 1;
+                        format!("t{}", base + n - 1)
+                    },
+                ));
+            }
             AssistantContent::Thinking(thinking) if !thinking.thinking.is_empty() => {
                 parts.push(MessagePart::Reasoning {
                     id: format!("r{}", id_base + parts.len()),
@@ -1151,11 +1161,11 @@ pub(crate) struct AgentRun {
     /// The Turn's permission-mode snapshot (ADR-0014), taken at acceptance:
     /// switches mid-Turn leave the running Turn under its original mode.
     pub(crate) permission_mode: PermissionMode,
-    /// The Turn's Plan Mode snapshot (ADR-0025): `Some` when the chat was
+    /// The Turn's Plan Mode snapshot (ADR-0025): true when the chat was
     /// planning at admission, making this a planning Turn. Entering or
     /// leaving Plan Mode mid-Turn cannot move it; it lands from the next
     /// Turn like the permission snapshot beside it.
-    pub(crate) plan: Option<crate::plan_mode::TurnPlan>,
+    pub(crate) plan_mode: bool,
     /// The Turn's web-search backend snapshot (ADR-0023), resolved once at
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
@@ -1201,7 +1211,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         skills,
         invocation,
         permission_mode,
-        plan,
+        plan_mode,
         search_backend,
         stream_fn,
     } = run;
@@ -1619,7 +1629,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
-    } else if plan.is_none() {
+    } else if !plan_mode {
         // A planning Turn delegates nothing (ADR-0025): the whitelist below
         // would drop the tool anyway, so it is simply never mounted.
         tools.push(crate::subagents::tool(crate::subagents::Delegation {
@@ -1638,34 +1648,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             cancel: cancel.clone(),
         }));
     }
-    // The planning-turn shaping (ADR-0025): the strong submit requirement
-    // appended to the system prompt, the toolset cut down to the read-only
-    // exploration surface, and the two plan tools. `submitted` is what the
-    // loop's stop hook watches — the planning Turn ends at the close of the
-    // tool round that called `submit_plan`.
-    let submitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    if let Some(plan) = &plan {
+    // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit
+    // convention appended to the system prompt and the toolset cut down to
+    // the read-only exploration surface. The plan itself is ordinary
+    // assistant text; assistant_parts folds complete blocks into cards.
+    if plan_mode {
         system_prompt.push('\n');
-        system_prompt.push_str(&crate::plan_mode::planning_system_block(&plan.plan_path));
+        system_prompt.push_str(&crate::plan_mode::planning_system_block());
         tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
-        tools.extend(crate::plan_mode::plan_tools(
-            plan,
-            Arc::clone(&runtime),
-            &chat_id,
-            Arc::clone(&submitted),
-        ));
     }
-    let stop_after_submit: Option<pi_core::agent::types::ShouldStopAfterTurnFn> =
-        plan.is_some().then(|| {
-            let submitted = Arc::clone(&submitted);
-            let hook: pi_core::agent::types::ShouldStopAfterTurnFn = Arc::new(
-                move |_context: pi_core::agent::types::ShouldStopAfterTurnContext| {
-                    let stop = submitted.load(std::sync::atomic::Ordering::Acquire);
-                    Box::pin(async move { stop }) as futures::future::BoxFuture<'static, bool>
-                },
-            );
-            hook
-        });
     let config = AgentLoopConfig {
         stream_options,
         model,
@@ -1678,7 +1669,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         }),
         transform_context: None,
         get_api_key: None,
-        should_stop_after_turn: stop_after_submit,
+        should_stop_after_turn: None,
         prepare_next_turn: Some(prepare_next_turn),
         get_steering_messages: None,
         get_follow_up_messages: None,
@@ -1686,7 +1677,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         before_tool_call: Some(gate),
         after_tool_call: Some(crate::subagents::after_tool_call()),
     };
-    let mut result = run_agent_loop(
+    let result = run_agent_loop(
         vec![prompt_message.clone()],
         AgentContext {
             system_prompt: system_prompt.clone(),
@@ -1699,55 +1690,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         Some(stream_fn.clone()),
     )
     .await;
-    // The corrective continuation (ADR-0025): a planning Turn that ended
-    // without a submission — ordinary text is not a submission — gets ONE
-    // model-only retry. The nudge rides the History as a user message but
-    // adds no transcript entry; its reply folds into the same run entry.
-    // If the retry also ends without a submission, Plan Mode simply stays
-    // put and waits for user input.
-    // A planning Turn that already failed (an errored assistant message,
-    // a context overflow) gets no continuation: the nudge would only pile
-    // one more doomed request onto a failed Turn.
-    let turn_healthy = |messages: &[AgentMessage]| {
-        !messages.iter().any(|message| match message {
-            AgentMessage::Assistant(assistant) => {
-                assistant.error_message.is_some()
-                    || pi_core::ai::utils::overflow::is_context_overflow(
-                        assistant,
-                        Some(overflow_model.context_window),
-                    )
-            }
-            _ => false,
-        })
-    };
-    if plan.is_some()
-        && !submitted.load(std::sync::atomic::Ordering::Acquire)
-        && !cancel.is_cancelled()
-        && let Ok(messages) = &result
-        && turn_healthy(messages)
-    {
-        let nudge = user_agent_message(
-            crate::plan_mode::CORRECTIVE_NUDGE.to_string(),
-            // One past the prompt's stamp: a restart mid-continuation must
-            // never mistake the nudge for the queued prompt during recovery.
-            timestamp.saturating_add(1),
-        );
-        chat.append_history(nudge.clone());
-        result = run_agent_loop(
-            vec![nudge],
-            AgentContext {
-                system_prompt: system_prompt.clone(),
-                messages: messages.clone(),
-                tools: Some(tools.clone()),
-            },
-            config.clone(),
-            emit.clone(),
-            Some(cancel.clone()),
-            Some(stream_fn.clone()),
-        )
-        .await;
-    }
-
     let failure_reason = match result {
         Ok(messages) => {
             let errored = messages
@@ -1940,7 +1882,6 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
-            approved_plan_path: None,
         }
     }
 

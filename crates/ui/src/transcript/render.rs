@@ -1239,11 +1239,9 @@ impl Transcript {
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, cx)
             }
-            RowKind::PlanApproval {
-                plan_id,
-                content,
-                state,
-            } => self.render_plan_approval_card(&row.id, plan_id, content, state, &theme, cx),
+            RowKind::PlanApproval { content, state } => {
+                self.render_plan_approval_card(&row.id, content, state, &theme, cx)
+            }
             RowKind::TurnChangeCard { change_set } => {
                 self.render_turn_change_card(change_set, &theme, cx)
             }

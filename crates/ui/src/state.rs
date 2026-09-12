@@ -1835,7 +1835,6 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
-            approved_plan_path: None,
         }
     }
 
@@ -1877,7 +1876,6 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
-            approved_plan_path: None,
         }
     }
 

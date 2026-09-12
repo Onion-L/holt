@@ -14,28 +14,15 @@ use crate::attachments;
 use crate::state::Indicator;
 use crate::theme::Theme;
 
-/// The `/plan status` notice line from a `PlanModeState` reply — humanized
-/// the way the footer chip words it, never raw serde tokens.
+/// The `/plan status` notice line from a `PlanModeState` reply. The
+/// proposed plan's own card carries the per-proposal state in the
+/// transcript; the notice is just the chat-level mode.
 fn plan_status_notice(state: &serde_json::Value) -> String {
-    if state["active"] != serde_json::json!(true) {
-        return "Plan Mode: off".into();
+    if state["active"] == serde_json::json!(true) {
+        "Plan Mode: on — propose a plan with a <proposed_plan> block".into()
+    } else {
+        "Plan Mode: off".into()
     }
-    let plan = match &state["activePlan"] {
-        serde_json::Value::Null => None,
-        plan => Some(plan),
-    };
-    let plan_line = match plan.map(|plan| (&plan["planId"], &plan["state"])) {
-        Some((serde_json::Value::String(id), serde_json::Value::String(st))) => {
-            let lifecycle = match st.as_str() {
-                "planning" => "drafting",
-                "awaitingApproval" => "awaiting approval",
-                other => other,
-            };
-            format!(" · plan {id} · {lifecycle}")
-        }
-        _ => " · no plan yet".to_string(),
-    };
-    format!("Plan Mode: on{plan_line}")
 }
 
 fn failure_restore_text(parsed: &super::slash::Parsed, typed: String) -> Option<String> {
@@ -877,28 +864,14 @@ mod tests {
     }
 
     #[test]
-    fn plan_status_notices_render_state_and_lifecycle() {
+    fn plan_status_notices_render_the_chat_level_mode() {
         assert_eq!(
             plan_status_notice(&serde_json::json!({ "active": false })),
             "Plan Mode: off"
         );
         assert_eq!(
             plan_status_notice(&serde_json::json!({ "active": true })),
-            "Plan Mode: on · no plan yet"
-        );
-        assert_eq!(
-            plan_status_notice(&serde_json::json!({
-                "active": true,
-                "activePlan": { "planId": "p1", "state": "awaitingApproval" },
-            })),
-            "Plan Mode: on · plan p1 · awaiting approval"
-        );
-        assert_eq!(
-            plan_status_notice(&serde_json::json!({
-                "active": true,
-                "activePlan": { "planId": "p2", "state": "planning" },
-            })),
-            "Plan Mode: on · plan p2 · drafting"
+            "Plan Mode: on — propose a plan with a <proposed_plan> block"
         );
     }
 }
