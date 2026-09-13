@@ -419,6 +419,10 @@ impl Render for FileImageSurface {
                     )
                     .child(
                         div()
+                            // See viewer.rs `unsupported_state`: without an
+                            // explicit width the unwrapped-text min-content
+                            // keeps this at 360px and overflows narrow panes.
+                            .w_full()
                             .max_w(px(360.0))
                             .text_size(px(12.5))
                             .text_color(theme.text_muted)

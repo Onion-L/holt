@@ -1649,6 +1649,10 @@ fn unsupported_state(
                 .flex_col()
                 .items_center()
                 .gap(px(10.0))
+                // gpui measures text min-content as the UNWRAPPED line, so a
+                // bare `max_w` never shrinks the column below it — the card
+                // must take the pane's width explicitly to wrap inside it.
+                .w_full()
                 .max_w(px(360.0))
                 .child(
                     icon(icons::DOCUMENT)
@@ -1657,6 +1661,7 @@ fn unsupported_state(
                 )
                 .child(
                     div()
+                        .debug_selector(|| "file-unsupported-reason".into())
                         .text_center()
                         .text_size(crate::typography::ui_rems(12.5))
                         .text_color(theme.text_muted)
@@ -2008,5 +2013,69 @@ mod image_tab_tests {
                 Some("/tmp/space-1/real/shot.png")
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    fn scope() -> FileScope {
+        FileScope {
+            chat_id: None,
+            space_id: Some("space-1".into()),
+        }
+    }
+
+    /// The right pane's narrow contents column, reduced to a fixed width.
+    const HOST_W: f32 = 200.0;
+
+    struct NarrowHost(Entity<FileViewer>);
+
+    impl gpui::Render for NarrowHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().flex_row().child(
+                div()
+                    .debug_selector(|| "narrow-host".into())
+                    .w(px(HOST_W))
+                    .h_full()
+                    .child(self.0.clone()),
+            )
+        }
+    }
+
+    /// A long unbroken path reason (the engine's "… does not exist") must
+    /// wrap inside the pane it renders in — never paint past the column
+    /// under the neighboring file tree.
+    #[gpui::test]
+    fn unsupported_reason_stays_inside_a_narrow_pane(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let viewer = cx.new(|cx| FileViewer::restored(state, "/tmp/notes.md".into(), scope(), cx));
+        viewer.update(cx, |viewer, _| {
+            viewer.view = ViewerState::Unsupported {
+                reason: "/Users/onion/workbench/ai-recruit/frontend/frontend/.holt/plans/82be-b94c-ddf71a5fdf328732798312c6.md does not exist".into(),
+            };
+        });
+        let (host, visual) = cx.add_window_view(|_window, _cx| NarrowHost(viewer.clone()));
+        // Force the first frame: a window only paints after a notify.
+        host.update(&mut *visual, |_host, cx| cx.notify());
+        visual.run_until_parked();
+
+        let host_bounds = visual.debug_bounds("narrow-host").expect("host renders");
+        let reason = visual
+            .debug_bounds("file-unsupported-reason")
+            .expect("the reason text renders");
+        assert!(
+            reason.left() >= host_bounds.left() - px(1.0)
+                && reason.right() <= host_bounds.right() + px(1.0),
+            "reason {reason:?} must stay inside the {HOST_W}px host {host_bounds:?}"
+        );
+        // And it must wrap onto several lines, not clip to one.
+        assert!(
+            reason.size.height > px(24.0),
+            "the long reason wraps: {reason:?}"
+        );
     }
 }
