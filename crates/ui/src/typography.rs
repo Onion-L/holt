@@ -105,6 +105,16 @@ impl UiFontSize {
             .min_by_key(|candidate| candidate.0.abs_diff(self.0))
             .unwrap_or_default()
     }
+
+    /// The next larger catalog entry, or `None` at the top of the range.
+    pub fn larger(self) -> Option<Self> {
+        Self::ALL.iter().find(|size| size.0 > self.0).copied()
+    }
+
+    /// The next smaller catalog entry, or `None` at the bottom of the range.
+    pub fn smaller(self) -> Option<Self> {
+        Self::ALL.iter().rev().find(|size| size.0 < self.0).copied()
+    }
 }
 
 impl Default for UiFontSize {
@@ -417,6 +427,24 @@ pub fn set_font_size(size: UiFontSize, window: &mut Window, cx: &mut App) -> boo
     true
 }
 
+/// Zoom the interface one catalog step larger (⌘+). A no-op at the top of the
+/// range; see [`set_font_size`] for the repaint/persistence semantics.
+pub fn zoom_in(window: &mut Window, cx: &mut App) -> bool {
+    let Some(size) = font_size(cx).larger() else {
+        return false;
+    };
+    set_font_size(size, window, cx)
+}
+
+/// Zoom the interface one catalog step smaller (⌘-). A no-op at the bottom of
+/// the range.
+pub fn zoom_out(window: &mut Window, cx: &mut App) -> bool {
+    let Some(size) = font_size(cx).smaller() else {
+        return false;
+    };
+    set_font_size(size, window, cx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +514,16 @@ mod tests {
         assert_eq!(UiFontSize(19).normalized(), UiFontSize(18));
         assert_eq!(UiFontSize(250).normalized(), UiFontSize(20));
         assert_eq!(ui_rems(14.0).0, 0.875);
+    }
+
+    #[test]
+    fn size_steps_walk_the_catalog_and_stop_at_the_ends() {
+        assert_eq!(UiFontSize(12).smaller(), None);
+        assert_eq!(UiFontSize(12).larger(), Some(UiFontSize(13)));
+        assert_eq!(UiFontSize(16).larger(), Some(UiFontSize(18)));
+        assert_eq!(UiFontSize(16).smaller(), Some(UiFontSize(15)));
+        assert_eq!(UiFontSize(20).larger(), None);
+        assert_eq!(UiFontSize(20).smaller(), Some(UiFontSize(18)));
     }
 
     #[test]
