@@ -56,6 +56,9 @@ pub(crate) fn subscribe(
     let (mut out_tx, out_rx) = mpsc::channel::<serde_json::Value>(16);
     let mut events = turn_events.subscribe();
     tokio::spawn(async move {
+        // While this task lives the queue driver may arm its final-frame
+        // signal on the chat; the claim drops on every exit below.
+        let _claim = changes.watcher_claim(&chat_id);
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
         let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, _>| {
             if let Ok(event) = result {
@@ -95,6 +98,19 @@ pub(crate) fn subscribe(
                         // The settled Turn's final change set is already
                         // stored before the event is published; reading it
                         // by message id survives the next Turn's admission.
+                        // Emit NOW, not on the ticker: the queue driver
+                        // holds the next queued Turn on this emission, so
+                        // the UI's card lands before the queued message's
+                        // doc frames (user-visible order). The ticker's
+                        // pending_finals pass stays as the backstop; its
+                        // re-read dedups on the frame key.
+                        if let Ok(Some(change_set)) = changes
+                            .read_message(&git, &device_id, &chat_id, &event.message_id)
+                            .await
+                        {
+                            let _ = emit(&mut out_tx, &mut last, change_set);
+                        }
+                        changes.fire_final_signal(&chat_id, &event.message_id);
                         pending_finals.push(event.message_id);
                         debounce.event(Instant::now());
                     }

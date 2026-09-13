@@ -16,6 +16,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+/// How long the queue driver holds the next queued Turn while waiting for
+/// a change-set watcher to emit the settled Turn's final frame. The UI's
+/// card must land before the queued message's doc frames (user-visible
+/// order); with no watcher attached the wait expires and the next Turn
+/// starts anyway.
+const FINAL_FRAME_WATCH_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 use crate::{
     EngineService,
     agent::{ChatRuntime, TurnEnd, run_agent_command},
@@ -866,10 +873,22 @@ impl EngineService {
                 // leave the durable prerequisite false. Publishing is
                 // fire-and-forget — a closed or lagging consumer changes
                 // nothing about the settled Turn or the next queued item.
+                // When a change-set watcher holds the chat, the settled
+                // Turn's card must land before the queued message that
+                // follows: arm the signal the watcher fires once the final
+                // frame is out, and hold the next Turn on it after the
+                // terminal event publishes. With no watcher attached there
+                // is nobody to order against — nothing arms, and the queue
+                // drains without the grace.
+                let mut final_signal = None;
                 if let Some(end) = turn_end
                     && matches!(settled, Some(Ok(())))
                     && persistence_error.is_none()
                 {
+                    final_signal = service
+                        .turn_changes
+                        .arm_final_signal(&worker_chat.chat_id, &picked_id)
+                        .map(|signal| (signal, picked_id.clone()));
                     let (outcome, reason) = match end {
                         TurnEnd::Succeeded => (holt_rpc::turns::TurnOutcome::Succeeded, None),
                         TurnEnd::Failed { reason } => {
@@ -886,6 +905,16 @@ impl EngineService {
                         internal_reason: reason,
                         change_set: final_change_set,
                     });
+                }
+                // Hold the next queued Turn until the settled card is on its
+                // way to the UI. The signal fires once a watcher emitted the
+                // final frame; the bounded grace only ever covers a watcher
+                // that lagged or died mid-emit.
+                if let Some((signal, message_id)) = final_signal {
+                    let _ = tokio::time::timeout(FINAL_FRAME_WATCH_GRACE, signal.notified()).await;
+                    service
+                        .turn_changes
+                        .clear_final_signal(&worker_chat.chat_id, &message_id);
                 }
             }
         });
