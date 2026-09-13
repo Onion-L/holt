@@ -3,9 +3,10 @@
 //! a prompt that makes a complete `<proposed_plan>` Markdown block the
 //! only submission channel. Blocks fold into pending approval cards the
 //! user resolves with approve / reject-with-feedback / remain — approve
-//! exits Plan Mode restoring the entry mode (the plan is already in the
-//! conversation History), reject keeps planning with the feedback as the
-//! revision loop's next input.
+//! exits Plan Mode restoring the entry mode and enqueues an approval
+//! follow-up prompt that opens the implementation Turn (the plan is
+//! already in the conversation History), reject keeps planning with the
+//! feedback as the revision loop's next input.
 
 mod common;
 
@@ -253,15 +254,35 @@ async fn approve_exits_plan_mode_restores_the_entry_mode_and_history_carries_the
         "approval restores the ENTRY mode, not the tier set during planning"
     );
 
-    // The implementation Turn carries the plan naturally — it is already
-    // in the conversation History; there is no injection machinery.
-    run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
+    // The approval enqueues its own follow-up prompt: the implementation
+    // Turn starts on its own and carries the plan naturally — it is
+    // already in the conversation History; there is no injection machinery.
+    wait_for_requests(&provider, 3).await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
+    let implementation = &requests[2];
     assert!(
-        format!("{:?}", requests.last().unwrap().messages).contains("step one"),
+        format!("{:?}", implementation.messages.last().unwrap())
+            .contains("The plan is approved. Start implementing it."),
+        "the approval follow-up prompt opens the implementation turn"
+    );
+    assert!(
+        format!("{:?}", implementation.messages).contains("step one"),
         "the implementation turn reads the approved plan from History"
     );
+    assert!(
+        !implementation
+            .system_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Plan Mode (active)"),
+        "the follow-up runs as an ordinary turn, not a planning one"
+    );
+    // The follow-up echoes as an ordinary user message in the transcript.
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(transcript.contains("The plan is approved. Start implementing it."));
 }
 
 #[tokio::test]
@@ -349,6 +370,7 @@ async fn resolution_refuses_without_plan_mode_or_a_pending_card() {
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::text("I have questions before proposing."),
         propose("step one"),
+        ScriptedReply::text("implementing"),
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
@@ -383,8 +405,11 @@ async fn resolution_refuses_without_plan_mode_or_a_pending_card() {
     };
     assert!(matches!(error, RpcError::BadParams(_)));
 
-    // Approve works exactly once: Plan Mode is over afterwards.
+    // Approve works exactly once: Plan Mode is over afterwards. The
+    // approval's follow-up run starts the implementation Turn on its own.
     resolve(&engine, "chat-1", "approve", None).await.unwrap();
+    wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let error = match resolve(&engine, "chat-1", "reject", None).await {
         Ok(_) => panic!("a resolved checkpoint must not resolve again"),
         Err(error) => error,
@@ -424,8 +449,8 @@ async fn exiting_settles_pending_cards_as_dismissed() {
 #[tokio::test]
 async fn the_full_planning_cycle_end_to_end() {
     // The whole ADR-0025 loop in one flow: enter → propose → reject with
-    // feedback → revise → approve → the implementation turn reads the
-    // revised plan from History.
+    // feedback → revise → approve → the approval's follow-up prompt starts
+    // the implementation turn, which reads the revised plan from History.
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         propose("step one"),
@@ -461,7 +486,9 @@ async fn the_full_planning_cycle_end_to_end() {
         serde_json::json!(false)
     );
 
-    run_prompt(&engine, "chat-1", &fixture.cwd(), "go").await;
+    // The approval's follow-up run starts the implementation Turn on its
+    // own, reading the revised plan from History.
+    wait_for_requests(&provider, 3).await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     let implementation = format!("{:?}", requests.last().unwrap().messages);

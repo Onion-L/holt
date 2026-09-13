@@ -1022,13 +1022,14 @@ impl EngineService {
 
     /// Resolve a proposed plan (ADR-0025): the verdict applies to the
     /// chat's Plan Mode. Approve exits Plan Mode restoring the entry
-    /// permission mode — the plan is already in the conversation History,
-    /// so the implementation Turn carries it naturally; reject keeps the
-    /// chat planning and a non-empty feedback is enqueued as the revision
-    /// loop's next planning input; remain changes nothing but the cards.
-    /// Every verdict requires a planning chat with at least one pending
-    /// card, and settles ALL pending cards (they address the same
-    /// checkpoint).
+    /// permission mode and enqueues the approval follow-up prompt as an
+    /// ordinary run — the plan is already in the conversation History, so
+    /// the implementation Turn carries it naturally and starts on its own;
+    /// reject keeps the chat planning and a non-empty feedback is enqueued
+    /// as the revision loop's next planning input; remain changes nothing
+    /// but the cards. Every verdict requires a planning chat with at least
+    /// one pending card, and settles ALL pending cards (they address the
+    /// same checkpoint).
     fn resolve_plan_approval(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
         let verdict = required_string(&params, "verdict")?;
@@ -1094,35 +1095,46 @@ impl EngineService {
                     Lifecycle::Remained => holt_doc::parts::PlanApprovalVerdict::Remained,
                 },
             );
-            if lifecycle == Lifecycle::Rejected
-                && let Some(feedback) = feedback
-            {
-                self.enqueue_revision_feedback(&chat, &feedback);
+            match lifecycle {
+                // The approval speaks as an ordinary user message: the
+                // follow-up run opens the implementation Turn, which reads
+                // the plan from History. The config was just restored to
+                // the entry mode, so the run carries it.
+                Lifecycle::Approved => {
+                    self.enqueue_plan_follow_up(&chat, crate::plan_mode::APPROVAL_FOLLOW_UP_PROMPT)
+                }
+                Lifecycle::Rejected => {
+                    if let Some(feedback) = feedback {
+                        self.enqueue_plan_follow_up(&chat, &feedback);
+                    }
+                }
+                Lifecycle::Remained => {}
             }
         }
         RpcReply::value(&self.plan_mode_state(chat_id)?)
     }
 
-    /// The rejection feedback becomes the revision loop's next planning
-    /// input: an ordinary queued run using the chat's captured model
-    /// settings. Best-effort — a chat without a captured config or working
-    /// directory (nothing was ever planned) records a warning instead.
-    fn enqueue_revision_feedback(&self, chat: &Arc<crate::agent::ChatRuntime>, feedback: &str) {
+    /// A plan verdict's follow-up run: the approval's consent prompt or
+    /// the rejection feedback as the revision loop's next planning input —
+    /// an ordinary queued run using the chat's captured model settings.
+    /// Best-effort — a chat without a captured config or working directory
+    /// (nothing was ever planned) records a warning instead.
+    fn enqueue_plan_follow_up(&self, chat: &Arc<crate::agent::ChatRuntime>, prompt: &str) {
         let request = {
             let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
             let Some(row) = chats.iter().find(|row| row.id == chat.chat_id) else {
                 return;
             };
             let Some(config) = row.config.as_ref() else {
-                tracing::warn!(target: "holt::agent", "plan rejection feedback dropped: the chat has no captured model settings");
+                tracing::warn!(target: "holt::agent", "plan follow-up dropped: the chat has no captured model settings");
                 return;
             };
             let Some(cwd) = row.cwd.clone() else {
-                tracing::warn!(target: "holt::agent", "plan rejection feedback dropped: the chat has no working directory");
+                tracing::warn!(target: "holt::agent", "plan follow-up dropped: the chat has no working directory");
                 return;
             };
             holt_proto::RunRequest {
-                prompt: feedback.to_string(),
+                prompt: prompt.to_string(),
                 provider: config.provider.clone(),
                 model: config.model.clone(),
                 reasoning: config.reasoning,
@@ -1152,7 +1164,7 @@ impl EngineService {
         match result {
             Ok(()) => self.kick_queue(chat.clone()),
             Err(error) => {
-                tracing::warn!(target: "holt::agent", %error, "could not enqueue the plan rejection feedback")
+                tracing::warn!(target: "holt::agent", %error, "could not enqueue the plan follow-up")
             }
         }
     }

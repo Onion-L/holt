@@ -94,10 +94,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   approval card. `ResolvePlanApproval` (`{chatId, verdict, feedback?}`,
   verdict `approve | reject | remain`, requires a planning chat with a
   pending card) applies the verdict: approve exits Plan Mode restoring
-  the entry mode — the plan is already in the conversation History, so
-  the implementation Turn carries it naturally; reject keeps planning
-  and a non-empty feedback is enqueued as the revision loop's next
-  planning input; remain changes nothing but the cards. Exiting settles
+  the entry mode and enqueues an approval follow-up prompt as an
+  ordinary run — the plan is already in the conversation History, so
+  the implementation Turn carries it naturally and starts on its own;
+  reject keeps planning and a non-empty feedback is enqueued as the
+  revision loop's next planning input; remain changes nothing but the
+  cards. Exiting settles
   pending cards as dismissed; switches during a running Turn take effect
   from the next Turn; restart restores the state without auto-starting a
   Turn. (2026-09-12: simplified from plan documents on disk +

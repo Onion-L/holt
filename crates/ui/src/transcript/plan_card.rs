@@ -40,9 +40,10 @@ pub fn pending_plan_approval(transcript: &[SessionMessageEntry]) -> Option<Strin
 
 /// Send the plan verdict (fire-and-forget: failures warn; the doc's
 /// settled card is what settles the UI). Params `{chatId, verdict,
-/// feedback?}` per the engine contract: approve exits Plan Mode and
-/// restores the entry permission mode, reject keeps planning with a
-/// non-empty feedback enqueued as the revision's next planning input,
+/// feedback?}` per the engine contract: approve exits Plan Mode, restores
+/// the entry permission mode, and enqueues an approval follow-up prompt
+/// that starts the implementation Turn; reject keeps planning with a
+/// non-empty feedback enqueued as the revision's next planning input;
 /// remain returns to drafting.
 pub fn resolve_plan_approval(
     state: &Entity<AppState>,

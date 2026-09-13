@@ -18,6 +18,11 @@ use crate::agent::ChatRuntime;
 pub(crate) const PROPOSED_PLAN_OPEN: &str = "<proposed_plan>";
 pub(crate) const PROPOSED_PLAN_CLOSE: &str = "</proposed_plan>";
 
+/// The prompt an approval enqueues (ADR-0025): an ordinary run carrying
+/// the user's consent, so the implementation Turn starts on its own and
+/// reads the approved plan from the conversation History.
+pub(crate) const APPROVAL_FOLLOW_UP_PROMPT: &str = "The plan is approved. Start implementing it.";
+
 /// The shared read-only tool predicate (ADR-0025): the exploration surface
 /// an Explorer subagent gets (ADR-0023) and a planning Turn keeps — nothing
 /// that can change files or execute commands.

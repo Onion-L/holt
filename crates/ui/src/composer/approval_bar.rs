@@ -7,11 +7,12 @@
 //!   lead line, then Allow once / Always allow · this session / Deny, the
 //!   note row carrying the denial note. Escape interrupts the Turn (it
 //!   bubbles to the composer root's handler).
-//! - **Plan** — a submitted plan awaiting its verdict: Approve, the
-//!   note row carrying the revision feedback (its Enter sends the
-//!   `reject` verdict with the note, which keeps planning). No target
-//!   line (the plan document is the transcript card above); Escape is
-//!   inert (no Turn is blocked on a plan).
+//! - **Plan** — a submitted plan awaiting its verdict: Approve (exits
+//!   Plan Mode; the engine enqueues an approval follow-up prompt that
+//!   starts the implementation Turn), the note row carrying the revision
+//!   feedback (its Enter sends the `reject` verdict with the note, which
+//!   keeps planning). No target line (the plan document is the transcript
+//!   card above); Escape is inert (no Turn is blocked on a plan).
 //!
 //! The transcript builds no interactive counterpart for either (user
 //! call: a duplicated strip reads as noise); verdicts ride the shared
