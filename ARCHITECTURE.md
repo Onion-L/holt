@@ -343,7 +343,7 @@ Parent runs also mount the foreground `Agent` delegation tool (ADR-0016).
 `engine::subagents` owns foreground delegation through the existing pi-core-rs
 loop, without upstream changes. The fixed Explorer and Worker roles inherit
 the parent Turn's model, reasoning, working directory, and Permission mode.
-Explorers keep only the read-only set — `read`, `grep`, `read_chat`,
+Explorers keep only the read-only set — `ls`, `read`, `grep`, `read_chat`,
 `web_fetch`, and the configured `web_search`; Workers mount the full toolset,
 write/edit/bash included. Neither can delegate. Each child starts with
 independent History, a Task brief, applicable ancestor AGENTS.md instructions,

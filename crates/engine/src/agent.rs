@@ -763,6 +763,7 @@ fn decode_tool_call(
             pattern: arg("pattern").unwrap_or_default(),
             path: arg("path"),
         },
+        "ls" => TranscriptToolCall::ListDir { path: arg("path") },
         // ADR-0023: the web tools decode onto the sync-era chips. `prompt`
         // is never populated — full-text fetch has no summarizer — and the
         // search chip carries only its query.
@@ -1185,9 +1186,9 @@ pub(crate) enum TurnEnd {
 }
 
 /// The Explorer tool whitelist (ADR-0023): the shared read-only surface —
-/// reading, content search, chat reads, and the ungated web reads. The
-/// Plan Mode planning whitelist (ADR-0025) is the same predicate; workers
-/// keep the full toolset.
+/// directory listing, reading, content search, chat reads, and the ungated
+/// web reads. The Plan Mode planning whitelist (ADR-0025) is the same
+/// predicate; workers keep the full toolset.
 fn explorer_tool_allowed(name: &str) -> bool {
     crate::plan_mode::read_only_tool_allowed(name)
 }

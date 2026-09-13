@@ -2496,7 +2496,7 @@ fn tool_icon_path(call: &ToolCall) -> &'static str {
         ToolCall::WriteFile { .. } => crate::icons::DOCUMENT_ADD,
         ToolCall::EditFile { .. } => crate::icons::PEN,
         ToolCall::Search { .. } => crate::icons::MAGNIFER,
-        ToolCall::Glob { .. } => crate::icons::FOLDER_WITH_FILES,
+        ToolCall::ListDir { .. } | ToolCall::Glob { .. } => crate::icons::FOLDER_WITH_FILES,
         ToolCall::WebFetch { .. } | ToolCall::WebSearch { .. } => crate::icons::GLOBAL,
         ToolCall::Todo { .. } => crate::icons::CHECKLIST,
         call if is_agent_call(call) => crate::icons::BOT,

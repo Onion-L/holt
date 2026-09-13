@@ -29,7 +29,7 @@ pub(crate) const APPROVAL_FOLLOW_UP_PROMPT: &str = "The plan is approved. Start 
 pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
     matches!(
         name,
-        "read" | "grep" | "read_chat" | "web_fetch" | "web_search"
+        "ls" | "read" | "grep" | "read_chat" | "web_fetch" | "web_search"
     )
 }
 
@@ -42,10 +42,10 @@ pub(crate) fn planning_system_block() -> String {
 This turn is a PLANNING turn. Explore the workspace and produce an \
 implementation plan for the user to review and approve. You must not \
 change the workspace.\n\n\
-- Your tools are read-only exploration (`read`, `grep`, `read_chat`, \
-`web_fetch`, and `web_search` when available). `bash`, `write`, \
-`edit`, and subagent delegation are unavailable; do not attempt \
-workarounds.\n\
+- Your tools are read-only exploration (`ls`, `read`, `grep`, \
+`read_chat`, `web_fetch`, and `web_search` when available). `bash`, \
+`write`, `edit`, and subagent delegation are unavailable; do not \
+attempt workarounds.\n\
 - Settle intent and tradeoffs with the user in ordinary text before \
 finalizing; ask rather than guess when an ambiguity is high-impact.\n\
 - When the plan is decision complete, present it as ONE complete \
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn the_planning_whitelist_keeps_reads_and_drops_everything_mutating() {
-        for name in ["read", "grep", "read_chat", "web_fetch", "web_search"] {
+        for name in ["ls", "read", "grep", "read_chat", "web_fetch", "web_search"] {
             assert!(read_only_tool_allowed(name), "{name} should survive");
         }
         for name in ["write", "edit", "bash", "Agent", "read_chat_x", "Bash"] {

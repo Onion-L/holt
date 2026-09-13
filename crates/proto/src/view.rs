@@ -362,6 +362,7 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
                 None => pattern.clone(),
             },
         ),
+        ToolCall::ListDir { path } => ("List", path.clone().unwrap_or_else(|| ".".to_string())),
         ToolCall::Glob { pattern } => ("Glob", pattern.clone()),
         ToolCall::WebFetch { url, .. } => ("Fetch", url.clone()),
         ToolCall::WebSearch { query } => ("Web", query.clone()),
@@ -416,6 +417,7 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
             }
             ToolCall::ReadFile { .. } => reads += 1,
             ToolCall::ReadChat { .. } => chats += 1,
+            ToolCall::ListDir { .. } => other += 1,
             ToolCall::Search { .. } | ToolCall::Glob { .. } | ToolCall::WebSearch { .. } => {
                 searches += 1
             }

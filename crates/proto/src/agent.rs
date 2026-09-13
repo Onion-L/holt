@@ -353,6 +353,11 @@ pub enum ToolCall {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// One directory's entries — the `ls` chip.
+    ListDir {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     Glob {
         pattern: String,
     },

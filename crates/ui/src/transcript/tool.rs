@@ -157,6 +157,7 @@ pub fn call_block(call: &ToolCall) -> Option<ToolDetail> {
             Some(path) => format!("{pattern} in {path}"),
             None => pattern.clone(),
         },
+        ToolCall::ListDir { path } => path.clone().unwrap_or_else(|| ".".to_string()),
         ToolCall::Glob { pattern } => pattern.clone(),
         ToolCall::WebFetch { url, prompt } => match prompt {
             Some(prompt) => format!("{url}\n{prompt}"),

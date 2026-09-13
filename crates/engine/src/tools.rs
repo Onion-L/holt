@@ -2,11 +2,13 @@
 //! bash) mounted onto the local machine — a [`LocalExecutionEnv`] satisfying
 //! pi-core's `FileSystem + Shell` contract, and the assembly that hands each
 //! harness tool the shared [`ExecutionToolContext`] its `execute` downcasts
-//! for — plus holt's own content search (ADR-0004) in [`grep`], web fetch
-//! (ADR-0023) in [`web_fetch`], and web search behind the user-configured
-//! [`SearchBackend`] (ADR-0023) in [`web_search`].
+//! for — plus holt's own content search (ADR-0004) in [`grep`], directory
+//! listing (ADR-0025's read-only surface) in [`ls`], web fetch (ADR-0023) in
+//! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
+//! (ADR-0023) in [`web_search`].
 
 mod grep;
+mod ls;
 mod read_chat;
 #[cfg(test)]
 pub(crate) mod test_http;
@@ -658,6 +660,7 @@ pub(crate) fn execution_tools_for_model(
         with_execution_context(create_edit_tool(), &context),
         bash_tool(&context),
         grep::create_grep_tool(cwd),
+        ls::create_ls_tool(cwd),
         web_fetch::create_web_fetch_tool(),
     ];
     if let Some(backend) = search_backend {
@@ -689,7 +692,7 @@ fn bash_tool(context: &AgentToolContext) -> AgentTool {
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;
     let mut tool = with_execution_context(create_read_tool(ReadToolOptions::default()), context);
-    tool.description = "Read text files or images at a local path. Text supports offset/limit. Images: static PNG/JPEG and first-frame GIF/WebP, up to 25 MiB and 32 megapixels. Model input is proportionally resized to at most 2048 pixels per edge and 5 MiB PNG; source files are unchanged. Image input requires a visual model.".into();
+    tool.description = "Read text files or images at a local path. Text supports offset/limit. Images: static PNG/JPEG and first-frame GIF/WebP, up to 25 MiB and 32 megapixels. Model input is proportionally resized to at most 2048 pixels per edge and 5 MiB PNG; source files are unchanged. Image input requires a visual model. Directories cannot be read — use `ls` to list a directory's entries.".into();
     let context = context.clone();
     tool.execute = Arc::new(move |id, params, signal, update| {
         let context = context.clone();

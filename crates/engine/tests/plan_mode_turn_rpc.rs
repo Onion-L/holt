@@ -125,7 +125,7 @@ async fn a_planning_turn_mounts_only_read_only_tools() {
             planned.tool_names
         );
     }
-    for name in ["read", "grep", "read_chat", "web_fetch"] {
+    for name in ["ls", "read", "grep", "read_chat", "web_fetch"] {
         assert!(planned.tool_names.iter().any(|candidate| candidate == name));
     }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;

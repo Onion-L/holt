@@ -349,11 +349,11 @@ async fn an_explorer_child_mounts_the_configured_backend() {
             requests[index].tool_names
         );
     }
-    // The Explorer's whole toolset: read, grep, web_fetch, web_search,
+    // The Explorer's whole toolset: read, grep, ls, web_fetch, web_search,
     // read_chat — and nothing else.
     assert_eq!(
         requests[1].tool_names,
-        ["read", "grep", "web_fetch", "web_search", "read_chat"]
+        ["read", "grep", "ls", "web_fetch", "web_search", "read_chat"]
     );
 }
 
