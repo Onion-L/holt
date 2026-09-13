@@ -104,7 +104,7 @@ pub use model::{
 mod render;
 
 pub use render::{ATT_STRIP_H, ATT_THUMB_H, ATT_THUMB_W, MAX_CONTENT_WIDTH};
-use render::{CHANGE_CARD_COLLAPSED_H, HighlightStore};
+use render::{CHANGE_CARD_CLOSED_H, HighlightStore};
 
 // ---------------------------------------------------------------------------
 // Constants (mugen ports)
@@ -141,6 +141,17 @@ struct FoldState {
     /// is always the *current* target height, so content growth after a toggle
     /// snaps instead of replaying a stale tween.
     from: f32,
+    /// The Turn change card's last painted OPEN height, captured at its
+    /// collapse click — the expand tween's target (render subtracts
+    /// `closed_h`). The group/skill folds derive their targets analytically;
+    /// only the card's intrinsic body needs this stored.
+    open_h: f32,
+    /// The Turn change card's painted CLOSED height (card chrome + the row's
+    /// outer pads): what `from`/`open_h` subtract to get wrapper-space
+    /// heights. Re-derived from the current row geometry at every toggle —
+    /// the last row's bottom pad (clearance + fade band + runway) dwarfs the
+    /// non-last 0 and moves with the row's position.
+    closed_h: f32,
     /// When the toggle happened. The tween is armed only for a short window
     /// after the click: gpui replays an element's animation on REMOUNT, and a
     /// virtualized row scrolling back into view is a remount — an armed-forever
@@ -1541,6 +1552,11 @@ impl Transcript {
             if turn_ends
                 && let Some(id) = turn_id
                 && let Some(change_set) = turn_change_sets.get(id)
+                // Only the SETTLE surfaces a card: live frames keep the
+                // store warm (and are replaced by the final), but
+                // edits-in-progress never draw — the card is a Turn result,
+                // not progress (user request).
+                && change_set.phase == holt_proto::TurnChangeSetPhase::Final
             {
                 new_rows.push(turn_change_row(id, entry.id.clone().into(), change_set));
             }
@@ -1896,22 +1912,48 @@ impl Transcript {
     }
 
     /// Toggle the Turn change card's file list (user request). Unlike the
-    /// skill chip the card defaults EXPANDED; the same painted-height
-    /// capture drives the collapse tween, so the stick spring never steps.
+    /// skill chip the card defaults EXPANDED, and BOTH directions tween.
+    /// Each click captures two things: the painted height RIGHT NOW as the
+    /// tween's start — so a click into a running tween reverses from where
+    /// it visibly is — and the structural bases for its direction (open at
+    /// collapse, closed at expand), which a mid-flight paint must NOT
+    /// poison (a frozen frame would store a partial height as a endpoint).
     fn toggle_change_card_fold(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
-        let painted = self
-            .rows
-            .iter()
-            .position(|row| row.id == row_id)
+        let ix = self.rows.iter().position(|row| row.id == row_id);
+        let painted = ix
             .and_then(|ix| self.list.bounds_for_item(ix))
             .map(|bounds| f32::from(bounds.size.height));
+        // Structural closed base from the CURRENT row geometry — never a
+        // cached render value, which can predate a row splice.
+        let closed_base = ix.and_then(|ix| {
+            let row = self.rows.get(ix)?;
+            let (top_gap, bottom_pad) = self.row_outer_pads(ix, row);
+            Some(CHANGE_CARD_CLOSED_H + top_gap + bottom_pad)
+        });
+        let previous = self.folds.get(&row_id).copied();
+        let collapsing = previous.and_then(|fold| fold.open).unwrap_or(true);
+        let tweening = previous.is_some_and(|fold| {
+            fold.epoch > 0
+                && fold
+                    .toggled_at
+                    .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW)
+        });
         let entry = self.folds.entry(row_id).or_default();
-        let collapsing = entry.open.unwrap_or(true);
-        entry.from = if collapsing {
-            painted.unwrap_or(CHANGE_CARD_COLLAPSED_H)
+        if let Some(base) = closed_base {
+            entry.closed_h = base;
+        }
+        if collapsing {
+            if !tweening && let Some(height) = painted {
+                entry.open_h = height;
+            }
+        } else if !tweening && let Some(height) = painted {
+            entry.closed_h = height;
+        }
+        entry.from = painted.unwrap_or(if collapsing {
+            entry.open_h
         } else {
-            CHANGE_CARD_COLLAPSED_H
-        };
+            entry.closed_h
+        });
         entry.open = Some(!collapsing);
         entry.epoch += 1;
         entry.toggled_at = Some(Instant::now());
@@ -2066,7 +2108,8 @@ mod tests {
             |_, _| transcript.clone().into_any_element(),
         );
 
-        // A live frame for a new Turn inserts exactly its own card row.
+        // A live frame for a running Turn never draws its card (user
+        // request: the card is a settle result, not progress).
         state.update(cx, |s, cx| {
             s.apply_turn_change_set(holt_proto::TurnChangeSet {
                 chat_id: "chat-1".into(),
@@ -2090,8 +2133,37 @@ mod tests {
         cx.run_until_parked();
         transcript.update(cx, |this, _| {
             assert!(
+                !this.rows.iter().any(|row| row.id.as_ref() == "m-2#tcs"),
+                "a live frame draws no card"
+            );
+        });
+
+        // The settle's final frame is what surfaces it.
+        state.update(cx, |s, cx| {
+            s.apply_turn_change_set(holt_proto::TurnChangeSet {
+                chat_id: "chat-1".into(),
+                message_id: "m-2".into(),
+                phase: holt_proto::TurnChangeSetPhase::Final,
+                files: vec![holt_proto::TurnFileChange {
+                    path: "notes.md".into(),
+                    old_path: None,
+                    status: holt_proto::TurnFileChangeStatus::Added,
+                    additions: 5,
+                    deletions: 0,
+                    binary: false,
+                }],
+                additions: 5,
+                deletions: 0,
+                truncated: false,
+                updated_at: chrono::Utc::now(),
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        transcript.update(cx, |this, _| {
+            assert!(
                 this.rows.iter().any(|row| row.id.as_ref() == "m-2#tcs"),
-                "the live Turn's card now shows"
+                "the settled Turn's card now shows"
             );
         });
     }
@@ -2231,8 +2303,9 @@ mod tests {
     /// The header toggles the card's file list (user request): default
     /// expanded, a click pins the fold closed, a second click re-expands —
     /// and a Review click inside the header does NOT toggle the fold
-    /// (stop-propagation). The closed state's DOM unmount lags the click by
-    /// the collapse tween window, so the assertions read the fold state.
+    /// (stop-propagation). Both directions tween now: the body's DOM
+    /// stays mounted through the tween window either way, so the
+    /// assertions read the fold state and the captured painted heights.
     #[gpui::test]
     fn change_card_header_toggles_the_file_list(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
@@ -2293,6 +2366,17 @@ mod tests {
                 Some(false),
                 "a header click pins the fold closed"
             );
+            // The collapse captured this row's painted OPEN height as the
+            // tween's start and the next expand's target, over the
+            // render-captured closed base (card chrome + outer pads).
+            let fold = this.folds.get("m-1#tcs").copied().unwrap();
+            assert!(
+                fold.open_h > fold.closed_h && fold.closed_h >= CHANGE_CARD_CLOSED_H,
+                "open {} closed {}",
+                fold.open_h,
+                fold.closed_h
+            );
+            assert_eq!(fold.from, fold.open_h, "settled paint starts the tween");
         });
 
         // Review lives INSIDE the toggle: its click must not re-open the
@@ -2312,6 +2396,19 @@ mod tests {
             assert_eq!(
                 this.folds.get("m-1#tcs").and_then(|fold| fold.open),
                 Some(true)
+            );
+            // The re-expand click lands INSIDE the collapse tween window
+            // (test time never advances), so its painted capture is a
+            // mid-flight height: the tween start takes it, the structural
+            // bases keep the values the collapse captured.
+            let fold = this.folds.get("m-1#tcs").copied().unwrap();
+            assert_eq!(fold.closed_h, 92.0, "closed base re-derived, not painted");
+            assert_eq!(fold.open_h, 118.0, "open target survives");
+            assert!(
+                fold.from >= fold.closed_h,
+                "from {} vs closed {}",
+                fold.from,
+                fold.closed_h
             );
         });
     }

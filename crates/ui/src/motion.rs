@@ -313,6 +313,11 @@ pub const TOGGLE: MotionSpec = MotionSpec::new(180, EASE_OUT_EXPO);
 /// Provider settings disclosure: calm reveal, quicker dismissal.
 pub const PROVIDER_EXPAND: MotionSpec = MotionSpec::new(220, EASE_OUT_EXPO);
 pub const PROVIDER_COLLAPSE: MotionSpec = MotionSpec::new(160, EASE);
+/// Turn change-card fold reveal: 200ms expo-out (entrances may linger).
+pub const CHANGE_CARD_REVEAL: MotionSpec = MotionSpec::new(200, EASE_OUT_EXPO);
+/// Turn change-card fold dismiss: 150ms ease-out — exits quicker than
+/// entrances (the MENU_OUT / PROVIDER_COLLAPSE convention).
+pub const CHANGE_CARD_FOLD: MotionSpec = MotionSpec::new(150, EASE_OUT);
 /// Holt loader pulse period: 2.4s.
 pub const HOLT_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
@@ -755,6 +760,8 @@ mod tests {
         assert_eq!(TAB_SLIDE.duration_ms, 150);
         assert_eq!(COLLAPSE.duration_ms, 180);
         assert_eq!(CHEVRON.duration_ms, 200);
+        assert_eq!(CHANGE_CARD_REVEAL.duration_ms, 200);
+        assert_eq!(CHANGE_CARD_FOLD.duration_ms, 150);
         assert_eq!(HOLT_PULSE.duration_ms, 2400);
         assert_eq!(GRADIENT_SPIN.duration_ms, 750);
         assert_eq!(DOT_PULSE.duration_ms, 1200);

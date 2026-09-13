@@ -18,13 +18,12 @@ use gpui::{
 use holt_doc::{MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
 use holt_proto::TurnChangeSet;
-use holt_proto::TurnChangeSetPhase;
 use holt_proto::TurnFileChange;
 use holt_proto::TurnFileChangeStatus;
 use holt_proto::view::tool_chip_content;
 
 use super::model::{
-    RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
+    Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
     is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
 };
 use super::tool::{
@@ -53,10 +52,13 @@ pub const ATT_THUMB_W: f32 = 112.0;
 pub const ATT_THUMB_H: f32 = 80.0;
 pub const ATT_STRIP_H: f32 = ATT_THUMB_H + 10.0;
 
-/// The change card's collapsed height (outer pad + border + card padding +
-/// one header line): the fold tween's base — the file list shrinks to zero,
-/// the header stays mounted.
-pub const CHANGE_CARD_COLLAPSED_H: f32 = 48.0;
+/// The change card's closed height: its chrome (border + padding + one
+/// header line = 40) plus the `py(4)` wrap its renderer adds around the
+/// card. The row's OUTER pads (turn gap, last-row bottom clearance) are
+/// NOT included — they vary per row position and move frame to frame, so
+/// the fold re-derives them via `row_outer_pads` at click time instead of
+/// baking a number in here.
+pub const CHANGE_CARD_CLOSED_H: f32 = 48.0;
 
 /// `HOLT_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
 /// over rolling windows of [`FRAME_STATS_WINDOW`] samples) at `warn` level —
@@ -496,9 +498,11 @@ impl Transcript {
 
     /// The Turn file-change card (ADR-0024 tickets 03+04): what one Turn
     /// changed, at the end of the Turn's reply — per file its status, path,
-    /// and line counts, with the totals in the header. Live while the Turn
-    /// runs (the engine's debounced frames), frozen at settle; failed and
-    /// interrupted Turns keep their cards. Binary files show status only —
+    /// and line counts, with the totals in the header. The card is a Turn
+    /// RESULT: it only exists once the engine's Final frame settles the
+    /// Turn — live frames never draw (user request), and a failed or
+    /// interrupted settle is also a Final, so those Turns keep their cards.
+    /// Binary files show status only —
     /// no invented line counts — and files render in the engine's
     /// path-sorted order. The header toggles the file list's fold (default
     /// expanded, the skill-invocation fold pattern). Clicking a row (or the
@@ -512,16 +516,17 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let live = change_set.phase == TurnChangeSetPhase::Live;
         let chat_id = self.chat_id.clone().unwrap_or_default();
         let message_id = change_set.message_id.clone();
         let fold = self.folds.get(row_id).copied().unwrap_or_default();
         let open = fold.open.unwrap_or(true);
-        // A fresh COLLAPSE keeps the list mounted for one tween: the wrapper
-        // shrinks the measured height to zero over RESIZE, then the settled
-        // closed state unmounts it (the skill-invocation fold pattern).
-        let closing = !open
-            && fold.epoch > 0
+        // A toggle keeps the body mounted for one tween in EITHER direction:
+        // the wrapper animates between the painted height at the click and
+        // the direction's end (zero on collapse, the captured open height on
+        // expand), then the settled state renders statically (the
+        // skill-invocation fold pattern). Reduced motion snaps to the end
+        // state automatically.
+        let animating = fold.epoch > 0
             && fold
                 .toggled_at
                 .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
@@ -538,21 +543,34 @@ impl Transcript {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_change_card_fold(toggle_row_id.clone(), cx)
             }));
-        header = if live {
-            header.child(crate::loaders::mini_mono_spinner(
-                "turn-change-live",
-                2.0,
-                theme.text_muted,
-                cx.entity_id(),
-                cx,
-            ))
+        header = header.child(
+            crate::icons::icon(crate::icons::DOCUMENT)
+                .size(px(12.0))
+                .flex_none()
+                .text_color(theme.text_muted.opacity(0.75)),
+        );
+        // Chevron: the glyph swaps per direction; gpui divs have no rotate,
+        // so a toggle crossfades the swapped glyph in (the changes-pane
+        // CHEVRON pattern) instead of hard-cutting it.
+        let chevron = div()
+            .flex_none()
+            .text_size(px(10.0))
+            .text_color(theme.text_muted.opacity(0.8))
+            .child(SharedString::from(if open {
+                "\u{25be}"
+            } else {
+                "\u{25b8}"
+            }));
+        let chevron: AnyElement = if animating {
+            chevron
+                .with_animation(
+                    SharedString::from(format!("{row_id}-chev{}", fold.epoch)),
+                    motion::CHEVRON.animation(),
+                    |el, t| el.opacity(0.25 + 0.75 * t),
+                )
+                .into_any_element()
         } else {
-            header.child(
-                crate::icons::icon(crate::icons::DOCUMENT)
-                    .size(px(12.0))
-                    .flex_none()
-                    .text_color(theme.text_muted.opacity(0.75)),
-            )
+            chevron.into_any_element()
         };
         let review_chat = chat_id.clone();
         let review_message = message_id.clone();
@@ -571,17 +589,7 @@ impl Transcript {
                         if change_set.files.len() == 1 { "" } else { "s" }
                     ))),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(10.0))
-                    .text_color(theme.text_muted.opacity(0.8))
-                    .child(SharedString::from(if open {
-                        "\u{25be}"
-                    } else {
-                        "\u{25b8}"
-                    })),
-            )
+            .child(chevron)
             .when(change_set.truncated, |el| {
                 el.child(
                     div()
@@ -622,77 +630,80 @@ impl Transcript {
                     })),
             );
 
-        let files =
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(px(5.0))
-                .children(change_set.files.iter().map(|file| {
-                    let review_chat = chat_id.clone();
-                    let review_message = message_id.clone();
-                    let review_path = file.path.clone();
-                    let row_selector = review_path.clone();
-                    let row = div()
-                        .id(SharedString::from(format!(
-                            "turn-change-file-{}",
-                            file.path
-                        )))
-                        .debug_selector(move || format!("turn-card-file-{row_selector}"))
-                        .w_full()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .min_w_0()
-                        .rounded(px(5.0))
-                        .cursor_pointer()
-                        .hover(|el| el.bg(crate::theme::wash(0.04)))
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(super::TranscriptEvent::ReviewTurnChanges {
-                                chat_id: review_chat.clone(),
-                                message_id: review_message.clone(),
-                                path: Some(review_path.clone()),
-                            });
-                        }))
-                        .child(turn_change_file_row(file, theme));
-                    // Open: the post-Turn file in the workspace tab. A
-                    // deleted file has nothing on disk to open — Review
-                    // keeps its diff available instead.
-                    if file.status == TurnFileChangeStatus::Deleted {
-                        row
-                    } else {
-                        let open_path = file.path.clone();
-                        let open_selector = file.path.clone();
-                        row.child(
-                            div()
-                                .id(SharedString::from(format!(
-                                    "turn-change-open-{}",
-                                    file.path
-                                )))
-                                .debug_selector(move || format!("turn-card-open-{open_selector}"))
-                                .flex_none()
-                                .px(px(6.0))
-                                .rounded(px(4.0))
-                                .text_size(px(11.0))
-                                .text_color(theme.text_faint)
-                                .cursor_pointer()
-                                .hover(|el| el.bg(crate::theme::wash(0.08)))
-                                .child("Open")
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.emit(super::TranscriptEvent::OpenTurnFile {
-                                        path: open_path.clone(),
-                                    });
-                                })),
-                        )
-                    }
-                }));
+        // The header-to-body spacing rides INSIDE the fold-tweened wrapper
+        // (an `mt` here, not a flex gap on the card): a card-level gap would
+        // outlive the body's height tween and step when the settled closed
+        // state unmounts the wrapper.
+        let files = div()
+            .w_full()
+            .mt(px(5.0))
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .children(change_set.files.iter().map(|file| {
+                let review_chat = chat_id.clone();
+                let review_message = message_id.clone();
+                let review_path = file.path.clone();
+                let row_selector = review_path.clone();
+                let row = div()
+                    .id(SharedString::from(format!(
+                        "turn-change-file-{}",
+                        file.path
+                    )))
+                    .debug_selector(move || format!("turn-card-file-{row_selector}"))
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .min_w_0()
+                    .rounded(px(5.0))
+                    .cursor_pointer()
+                    .hover(|el| el.bg(crate::theme::wash(0.04)))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(super::TranscriptEvent::ReviewTurnChanges {
+                            chat_id: review_chat.clone(),
+                            message_id: review_message.clone(),
+                            path: Some(review_path.clone()),
+                        });
+                    }))
+                    .child(turn_change_file_row(file, theme));
+                // Open: the post-Turn file in the workspace tab. A
+                // deleted file has nothing on disk to open — Review
+                // keeps its diff available instead.
+                if file.status == TurnFileChangeStatus::Deleted {
+                    row
+                } else {
+                    let open_path = file.path.clone();
+                    let open_selector = file.path.clone();
+                    row.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "turn-change-open-{}",
+                                file.path
+                            )))
+                            .debug_selector(move || format!("turn-card-open-{open_selector}"))
+                            .flex_none()
+                            .px(px(6.0))
+                            .rounded(px(4.0))
+                            .text_size(px(11.0))
+                            .text_color(theme.text_faint)
+                            .cursor_pointer()
+                            .hover(|el| el.bg(crate::theme::wash(0.08)))
+                            .child("Open")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(super::TranscriptEvent::OpenTurnFile {
+                                    path: open_path.clone(),
+                                });
+                            })),
+                    )
+                }
+            }));
 
         let mut card = div()
             .w_full()
             .flex()
             .flex_col()
-            .gap(px(5.0))
             .overflow_hidden()
             .rounded(px(10.0))
             .border_1()
@@ -701,17 +712,43 @@ impl Transcript {
             .px(px(12.0))
             .py(px(9.0))
             .child(header);
-        if open {
+        if animating {
+            // The tween's wrapper-space start is the card's painted height
+            // at the CLICK: a settled state yields the full span, a click
+            // into a running tween reverses from where it visibly is.
+            let from = (fold.from - fold.closed_h).max(0.0);
+            if open {
+                // EXPAND: the wrapper — body and its header spacing — grows
+                // to the open height captured at the last collapse click;
+                // the body fades in and settles 2px (the menu_in recipe).
+                // A missing capture grows nowhere: snap static open.
+                let to = (fold.open_h - fold.closed_h).max(from);
+                if to > from + 0.5 {
+                    card = card.child(div().overflow_hidden().child(files).with_animation(
+                        SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
+                        motion::CHANGE_CARD_REVEAL.animation(),
+                        move |el, t| {
+                            el.h(px(motion::lerp(from, to, t)))
+                                .relative()
+                                .opacity(0.3 + 0.7 * t)
+                                .top(px(-2.0 * (1.0 - t)))
+                        },
+                    ));
+                } else {
+                    card = card.child(files);
+                }
+            } else {
+                // COLLAPSE: the wrapper — body and its spacing — shrinks to
+                // zero, so the tween's end painted height equals the settled
+                // closed height with no step at the unmount.
+                card = card.child(div().overflow_hidden().child(files).with_animation(
+                    SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
+                    motion::CHANGE_CARD_FOLD.animation(),
+                    move |el, t| el.h(px(motion::lerp(from, 0.0, t))).opacity(1.0 - t),
+                ));
+            }
+        } else if open {
             card = card.child(files);
-        } else if closing {
-            // The body's share of the painted card height starts the tween;
-            // the settled closed state measures the header alone.
-            let from = (fold.from - CHANGE_CARD_COLLAPSED_H).max(0.0);
-            card = card.child(div().overflow_hidden().child(files).with_animation(
-                SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
-                RESIZE.animation(),
-                move |el, t| el.h(px(motion::lerp(from, 0.0, t))),
-            ));
         }
         div().py(px(4.0)).w_full().child(card).into_any_element()
     }
@@ -1012,11 +1049,12 @@ impl Transcript {
         )
     }
 
-    fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(row) = self.rows.get(ix).cloned() else {
-            return gpui::Empty.into_any_element();
-        };
-        let theme = Theme::of(cx).clone();
+    /// The row-external vertical pads `render_row` applies at `ix`: the top
+    /// turn gap and the bottom clearance. Shared with the change card's
+    /// fold, whose closed painted base is card chrome + these pads —
+    /// computed from the SAME live state at click time rather than cached
+    /// from a render, so a click can never inherit a stale geometry.
+    pub(super) fn row_outer_pads(&self, ix: usize, row: &Row) -> (f32, f32) {
         // The viewport spans the full window (under the titlebar): the first
         // row's gap adds the titlebar's height so a top-scrolled transcript
         // rests below the chrome it fades under. The right pane already pads
@@ -1029,7 +1067,7 @@ impl Transcript {
                 Theme::TITLEBAR_HEIGHT + Theme::SPACE_LG + 10.0
             }
         } else {
-            top_gap_for(ix.checked_sub(1).and_then(|i| self.rows.get(i)), &row)
+            top_gap_for(ix.checked_sub(1).and_then(|i| self.rows.get(i)), row)
         };
         // The last row must clear the composer/status stack the transcript
         // scrolls under PLUS the fade band above it, or the timestamp strip
@@ -1049,6 +1087,15 @@ impl Transcript {
         } else {
             0.0
         };
+        (top_gap, bottom_pad)
+    }
+
+    fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.rows.get(ix).cloned() else {
+            return gpui::Empty.into_any_element();
+        };
+        let theme = Theme::of(cx).clone();
+        let (top_gap, bottom_pad) = self.row_outer_pads(ix, &row);
         // Live-run loader rides under the LAST row's content (above its
         // clearance pad), so it sits right beneath the working reply.
         let trailer = (ix + 1 == self.rows.len())
