@@ -299,7 +299,7 @@ async fn the_command_catalog_advertises_plan() {
         .expect("the catalog advertises /plan");
     assert_eq!(
         plan["inputHint"],
-        serde_json::json!("[task | off | status]"),
-        "the catalog advertises all four /plan forms"
+        serde_json::json!("[task]"),
+        "the catalog advertises the bare /plan and /plan <task> forms only"
     );
 }
