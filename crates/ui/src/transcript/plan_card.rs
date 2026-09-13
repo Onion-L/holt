@@ -103,11 +103,10 @@ fn render_plan_content(text: &str, row_id: &SharedString, theme: &Theme) -> gpui
 }
 
 impl Transcript {
-    /// The Plan Mode approval strip (ADR-0025): the same flat transcript
-    /// language as the permission gate — hairlines, a mono lead, and the
-    /// verdict affordances bottom-right. Three user actions: Approve,
-    /// Reject (with feedback), and Stay in planning. Settled cards render
-    /// their verdict marker only.
+    /// The Plan Mode approval card (ADR-0025): a pending card renders the
+    /// submitted plan's document flat in the transcript flow (no frame —
+    /// the verdict affordances live in the composer's approval bar);
+    /// settled cards render their verdict marker only.
     pub(super) fn render_plan_approval_card(
         &mut self,
         row_id: &SharedString,
@@ -124,9 +123,6 @@ impl Transcript {
                         .w_full()
                         .flex()
                         .flex_col()
-                        .border_t_1()
-                        .border_b_1()
-                        .border_color(theme.border)
                         .py(px(10.0))
                         .text_size(crate::typography::ui_rems(12.0))
                         .child(
@@ -151,9 +147,6 @@ impl Transcript {
                             .w_full()
                             .flex()
                             .flex_col()
-                            .border_t_1()
-                            .border_b_1()
-                            .border_color(theme.border)
                             .py(px(10.0))
                             .text_size(crate::typography::ui_rems(12.0))
                             .child(div().w_full().text_color(theme.text).child("Proposed plan"))

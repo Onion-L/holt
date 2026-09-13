@@ -7,10 +7,11 @@
 //!   lead line, then Allow once / Always allow · this session / Deny, the
 //!   note row carrying the denial note. Escape interrupts the Turn (it
 //!   bubbles to the composer root's handler).
-//! - **Plan** — a submitted plan awaiting its verdict: Approve / Reject /
-//!   Stay in planning, the note row carrying the rejection feedback. No
-//!   target line (the plan document is the transcript card above); Escape
-//!   is inert (no Turn is blocked on a plan).
+//! - **Plan** — a submitted plan awaiting its verdict: Approve, the
+//!   note row carrying the revision feedback (its Enter sends the
+//!   `reject` verdict with the note, which keeps planning). No target
+//!   line (the plan document is the transcript card above); Escape is
+//!   inert (no Turn is blocked on a plan).
 //!
 //! The transcript builds no interactive counterpart for either (user
 //! call: a duplicated strip reads as noise); verdicts ride the shared
@@ -117,31 +118,19 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
 }
 
 /// The plan's prompt (ADR-0025): no target line (the submitted plan is
-/// the transcript card above) — title, three verdict options, and the
-/// rejection-feedback note row.
+/// the transcript card above) — title, the Approve option, and the note
+/// row carrying the revision feedback.
 pub(crate) fn plan_prompt() -> ApprovalPrompt {
     ApprovalPrompt {
         kind: BarKind::Plan,
         title: "Approve this plan?",
         target: None,
-        options: vec![
-            ApprovalOption {
-                label: "Approve",
-                verdict: BarVerdict::Plan("approve"),
-                danger: false,
-            },
-            ApprovalOption {
-                label: "Reject",
-                verdict: BarVerdict::Plan("reject"),
-                danger: true,
-            },
-            ApprovalOption {
-                label: "Stay in planning",
-                verdict: BarVerdict::Plan("remain"),
-                danger: false,
-            },
-        ],
-        note_placeholder: "Reject with feedback…",
+        options: vec![ApprovalOption {
+            label: "Approve",
+            verdict: BarVerdict::Plan("approve"),
+            danger: false,
+        }],
+        note_placeholder: "Enter feedback…",
     }
 }
 
@@ -572,22 +561,15 @@ mod tests {
         assert_eq!(prompt.title, "Approve this plan?");
         // No target line: the plan document is the transcript card.
         assert_eq!(prompt.target, None);
-        assert_eq!(prompt.note_placeholder, "Reject with feedback…");
+        assert_eq!(prompt.note_placeholder, "Enter feedback…");
         let verdicts: Vec<BarVerdict> = prompt
             .options
             .iter()
             .map(|option| option.verdict.clone())
             .collect();
-        assert_eq!(
-            verdicts,
-            vec![
-                BarVerdict::Plan("approve"),
-                BarVerdict::Plan("reject"),
-                BarVerdict::Plan("remain"),
-            ]
-        );
-        assert!(prompt.options[1].danger, "reject is the danger option");
-        assert!(!prompt.options[0].danger && !prompt.options[2].danger);
+        assert_eq!(verdicts, vec![BarVerdict::Plan("approve")]);
+        assert_eq!(prompt.options[0].label, "Approve");
+        assert!(!prompt.options[0].danger);
     }
 
     #[test]
