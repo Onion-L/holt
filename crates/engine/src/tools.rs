@@ -239,6 +239,22 @@ impl FileSystem for LocalExecutionEnv {
     ) -> BoxFuture<'a, Result<Vec<u8>, FileError>> {
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
+            // Directories have no byte content: name the situation and point
+            // at `ls` instead of leaking the image codec's not-a-file error
+            // (the read tool reads everything through here).
+            if std::fs::metadata(&path)
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false)
+            {
+                return Err(FileError::with_path(
+                    FileErrorCode::IsDirectory,
+                    format!(
+                        "Is a directory: {path}. Directories cannot be read; \
+use the ls tool to list a directory's entries."
+                    ),
+                    &path,
+                ));
+            }
             let error_path = path.clone();
             let read = tokio::task::spawn_blocking(move || {
                 crate::images::codec::read_for_tool(Path::new(&path))
@@ -785,6 +801,20 @@ mod tests {
         let listing = env.list_dir("notes", None).await.unwrap();
         assert_eq!(listing.len(), 1);
         assert_eq!(listing[0].name, "a.txt");
+    }
+
+    #[tokio::test]
+    async fn reading_a_directory_names_it_and_points_at_ls() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        std::fs::create_dir(std::path::Path::new(&root).join("sub")).unwrap();
+        let error = env.read_binary_file("sub", None).await.unwrap_err();
+        assert_eq!(error.code, FileErrorCode::IsDirectory);
+        assert!(
+            error.message.contains("Is a directory") && error.message.contains("ls tool"),
+            "unexpected: {}",
+            error.message
+        );
     }
 
     #[tokio::test]

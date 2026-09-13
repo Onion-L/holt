@@ -29,7 +29,9 @@ fn read_file(path: &Path, image_only: bool) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("File could not be read: {e}"))?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if !metadata.is_file() {
-        return Err("Image target must be a regular file.".into());
+        // Not image-specific on purpose: every read lands here, so a FIFO
+        // or socket must not report in image terms.
+        return Err(format!("Not a regular file: {}", path.display()));
     }
     let mut prefix = [0u8; 32];
     let prefix_len = file.read(&mut prefix).map_err(|e| e.to_string())?;
