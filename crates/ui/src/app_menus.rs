@@ -52,8 +52,14 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
     cx.on_action(|_: &CloseWindow, cx| {
         if let Some(handle) = cx.active_window() {
-            let _ = handle.update(cx, |_, window, cx| {
-                crate::terminal::lifecycle::request_close(window, cx, false)
+            // Deferred: this handler runs inside the dispatching window's
+            // update (see `quit`), where updating that same window re-enters
+            // gpui's guard and fails with "window not found". The effect loop
+            // flushes after the dispatch, with the window slot restored.
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    crate::terminal::lifecycle::request_close(window, cx, false)
+                });
             });
         }
     });
@@ -64,9 +70,16 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &AppearanceDark, cx| appearance::set_mode(AppearanceMode::Dark, cx));
 }
 
-fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
+/// Run `f` on the active window's `&mut Window`, deferred to the end of the
+/// effect cycle. Global action handlers run inside the dispatching window's
+/// `update` (gpui re-entrancy guard: that window is taken out of `cx.windows`
+/// mid-dispatch), so an immediate `handle.update` on the same window fails
+/// with "window not found" — deferring waits until the slot is restored.
+fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window) + 'static) {
     if let Some(window) = cx.active_window() {
-        window.update(cx, |_, window, _| f(window)).ok();
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, _| f(window));
+        });
     }
 }
 
@@ -75,14 +88,17 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
 /// registered in `run_app` (embedded-engine drain: live runs + doc snapshot
 /// flush) with gpui's shutdown timeout before the process exits. Same graceful
 /// path as quitting from the Dock or closing the last window.
+///
+/// This handler runs mid action-dispatch, i.e. inside the dispatching window's
+/// `update` (gpui's re-entrancy guard has that window taken out of
+/// `cx.windows`), so it must NOT `active_window().update(...)` synchronously —
+/// that fails with "window not found" and silently swallowed the quit. Instead
+/// `cx.quit()` defers `[NSApp terminate:]` to the main queue; the resulting
+/// `applicationShouldTerminate` re-enters gpui from the run loop, where
+/// `terminal::lifecycle`'s `on_should_quit` gate runs the shared
+/// `request_close` confirmation and, once approved, re-calls `cx.quit()`.
 fn quit(_: &Quit, cx: &mut App) {
-    if let Some(handle) = cx.active_window() {
-        let _ = handle.update(cx, |_, window, cx| {
-            crate::terminal::lifecycle::request_close(window, cx, true)
-        });
-    } else {
-        cx.quit();
-    }
+    cx.quit();
 }
 
 /// Fixed app-level shortcuts backing the menu key equivalents. These live
