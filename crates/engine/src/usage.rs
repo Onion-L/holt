@@ -219,14 +219,19 @@ impl UsageTotals {
 }
 
 pub(crate) fn watch_snapshot(chat: &ChatRuntime, context_window: Option<u64>) -> serde_json::Value {
-    let totals = chat
+    let mut totals = chat
         .usage_totals
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    let pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
+    for record in pending.iter() {
+        totals.add_record(record);
+    }
     let records = load_records(&chat.data_dir, &chat.chat_id)
         .map(|r| r.len())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        + pending.len();
     let by_kind = totals.by_kind.iter().map(|(kind, sum)| { let key = serde_json::to_value(kind).unwrap().as_str().unwrap().to_string(); (key, serde_json::json!({"input":sum.input,"output":sum.output,"cacheRead":sum.cache_read,"cacheWrite":sum.cache_write})) }).collect::<serde_json::Map<_,_>>();
     let usage = chat.usage.lock().unwrap_or_else(|e| e.into_inner());
     let raw = usage.input + usage.cache_read + usage.cache_write;
@@ -409,10 +414,13 @@ fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
     if chat.child.is_some() {
         return;
     }
-    chat.usage_pending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(UsageRecord::from_message(kind, message));
+    {
+        chat.usage_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(UsageRecord::from_message(kind, message));
+    }
+    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
 }
 
 /// Buffer the Turn's own round-trip (the assistant response; a separately
@@ -435,14 +443,17 @@ pub(crate) fn merge_tool_result(chat: &ChatRuntime, result: &ToolResultMessage) 
     let Some(usage) = &result.usage else {
         return;
     };
-    let mut pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(turn) = pending
-        .iter_mut()
-        .rev()
-        .find(|record| record.kind == UsageKind::Turn)
     {
-        turn.add_usage(usage);
+        let mut pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(turn) = pending
+            .iter_mut()
+            .rev()
+            .find(|record| record.kind == UsageKind::Turn)
+        {
+            turn.add_usage(usage);
+        }
     }
+    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
 }
 
 /// Buffer one auto-review pass of the running Turn. A child run's reviews
