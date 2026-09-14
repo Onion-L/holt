@@ -1761,6 +1761,10 @@ impl RpcService for EngineService {
                         })
                 });
                 let initial = crate::usage::watch_snapshot(&chat, context_window);
+                *chat
+                    .usage_context_window
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = context_window;
                 chat.usage_tx.send_replace(initial);
                 let receiver = chat.usage_tx.subscribe();
                 Ok(Self::watch_value(receiver))

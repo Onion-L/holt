@@ -227,7 +227,7 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime, context_window: Option<u64>) ->
     let records = load_records(&chat.data_dir, &chat.chat_id)
         .map(|r| r.len())
         .unwrap_or(0);
-    let by_kind = totals.by_kind.iter().map(|(kind, sum)| (format!("{kind:?}"), serde_json::json!({"input":sum.input,"output":sum.output,"cacheRead":sum.cache_read,"cacheWrite":sum.cache_write}))).collect::<serde_json::Map<_,_>>();
+    let by_kind = totals.by_kind.iter().map(|(kind, sum)| { let key = serde_json::to_value(kind).unwrap().as_str().unwrap().to_string(); (key, serde_json::json!({"input":sum.input,"output":sum.output,"cacheRead":sum.cache_read,"cacheWrite":sum.cache_write})) }).collect::<serde_json::Map<_,_>>();
     let usage = chat.usage.lock().unwrap_or_else(|e| e.into_inner());
     let raw = usage.input + usage.cache_read + usage.cache_write;
     let estimated = raw == 0;
@@ -239,6 +239,10 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime, context_window: Option<u64>) ->
     } else {
         raw
     };
+    let context_window = context_window.or(*chat
+        .usage_context_window
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()));
     serde_json::json!({"gross":totals.gross,"byKind":by_kind,"recordCount":records,"occupancy":{"tokens":tokens,"contextWindow":context_window,"estimated":estimated}})
 }
 
@@ -415,6 +419,8 @@ fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
 /// billed tool result folds in via [`merge_tool_result`]).
 pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
     capture(chat, UsageKind::Turn, message);
+    *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = message.usage.clone();
+    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
 }
 
 /// Fold a tool result's usage into the round-trip it belongs to — the MOST

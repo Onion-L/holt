@@ -116,6 +116,7 @@ pub(crate) struct ChatRuntime {
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) usage_tx: watch::Sender<serde_json::Value>,
+    pub(crate) usage_context_window: Mutex<Option<u64>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// The one-shot Title task's token (ADR-0012): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
@@ -179,6 +180,7 @@ impl ChatRuntime {
             history: RwLock::new(Vec::new()),
             transcript_tx,
             usage_tx,
+            usage_context_window: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
@@ -368,6 +370,7 @@ impl ChatRuntime {
             history: RwLock::new(history),
             transcript_tx,
             usage_tx,
+            usage_context_window: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
