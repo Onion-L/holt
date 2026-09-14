@@ -1,11 +1,13 @@
 //! Live filesystem awareness for the File sidebar: the
 //! `WatchWorkspaceEntries` stream. One recursive notify watcher per
 //! subscription root (the macOS platform watcher carries recursion
-//! natively), events debounced with the same 200ms quiet window the git
-//! watch uses, and each frame carries the absolute paths that changed so
-//! the UI can re-list the affected directories and re-read clean open
-//! files. Dirty buffers are the UI's business — this stream only reports
-//! what moved on disk. Dropping the stream ends the watch.
+//! natively) — armed on the blocking pool, since the arming handshake
+//! blocks its caller for an unbounded while — events debounced with the
+//! same 200ms quiet window the git watch uses, and each frame carries the
+//! absolute paths that changed so the UI can re-list the affected
+//! directories and re-read clean open files. Dirty buffers are the UI's
+//! business — this stream only reports what moved on disk. Dropping the
+//! stream ends the watch.
 
 use std::{
     collections::HashMap,
@@ -45,19 +47,39 @@ pub(crate) fn subscribe(
             },
         );
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
-        let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, _>| {
-            if let Ok(event) = result {
-                let _ = event_tx.blocking_send(event);
+        // Arming the watcher blocks its caller — the macOS backend waits for
+        // the watcher's private runloop thread, which under load can take
+        // seconds — so it runs on the blocking pool and the runtime thread
+        // stays free; events simply begin once the watch is armed. A root
+        // that cannot be watched still streams — it simply stays quiet
+        // rather than failing the whole subscription.
+        let (watcher, watch_error) = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || {
+                let mut watcher =
+                    notify::recommended_watcher(move |result: Result<notify::Event, _>| {
+                        if let Ok(event) = result {
+                            let _ = event_tx.blocking_send(event);
+                        }
+                    })
+                    .ok();
+                let error = watcher.as_mut().and_then(|watcher| {
+                    watcher
+                        .watch(&root, notify::RecursiveMode::Recursive)
+                        .err()
+                        .map(|error| error.to_string())
+                });
+                (watcher, error)
             }
         })
-        .ok();
-        // A root that cannot be watched still streams — it simply stays
-        // quiet rather than failing the whole subscription.
-        if let Some(watcher) = watcher.as_mut()
-            && let Err(error) = watcher.watch(&root, notify::RecursiveMode::Recursive)
-        {
+        .await
+        .unwrap_or((None, None));
+        if let Some(error) = watch_error {
             tracing::warn!(%error, root = %root.display(), "workspace watch unavailable");
         }
+        // Held for the task's lifetime — dropping it ends the fs watch.
+        // (Underscore name: never read, only kept.)
+        let _armed_watcher = watcher;
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut pending_frame: Vec<String> = Vec::new();
@@ -130,7 +152,31 @@ mod tests {
         let root = raw.canonicalize().unwrap();
         std::fs::write(root.join("a.txt"), b"1").unwrap();
         let mut stream = subscribe(root.clone()).unwrap();
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // The platform watcher arms asynchronously and can take seconds (the
+        // macOS FSEvents handshake); writes before it arms are invisible.
+        // Probe: rewrite until the first frame proves the watch is live.
+        let warm_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(
+                tokio::time::Instant::now() < warm_deadline,
+                "watch never armed within 30s"
+            );
+            std::fs::write(root.join("warm.txt"), b"?").unwrap();
+            let step = std::cmp::min(
+                tokio::time::Instant::now() + Duration::from_secs(1),
+                warm_deadline,
+            );
+            match tokio::time::timeout_at(step, stream.next()).await {
+                // Rewrite: the last probe may have landed before the arm.
+                Err(_) => continue,
+                Ok(None) => panic!("stream ended before arming"),
+                Ok(Some(frame)) => {
+                    if frame.to_string().contains("warm.txt") {
+                        break;
+                    }
+                }
+            }
+        }
         // One burst; the frame(s) that follow must mention the written file.
         std::fs::write(root.join("a.txt"), b"2").unwrap();
         std::fs::write(root.join("b.txt"), b"new").unwrap();

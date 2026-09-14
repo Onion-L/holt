@@ -2,8 +2,12 @@
 //! stream (spec: git-capability issue 03).
 //!
 //! One shared watcher per watched checkout roots its `notify` watcher at the
-//! space root (which covers `.git/HEAD`) with debouncing; roots whose
-//! watcher cannot be established degrade to 2 s polling. Watching starts
+//! space root (which covers `.git/HEAD`) with debouncing. Arming — both
+//! creating the watcher and attaching a root — blocks its caller (the macOS
+//! backend waits for the watcher's private runloop thread, which under load
+//! can take seconds), so every notify call runs on the blocking pool and the
+//! watch loop keeps ticking meanwhile; roots poll at 2 s until their attach
+//! lands. Roots whose attach fails keep the polling fallback. Watching starts
 //! with the first subscriber and stops with the last. A subscribe first
 //! emits a full snapshot of every watched checkout, then one frame per
 //! checkout change — and only when that checkout's checksum changed, so the
@@ -100,10 +104,21 @@ impl Drop for SubscriberGuard {
 struct Watched {
     root: PathBuf,
     debounce: Debounce,
-    /// Poll deadline while no fs watcher covers this root.
+    /// Poll deadline while no fs watcher covers this root — from insert
+    /// until the root's attach lands (or forever, when it fails).
     poll_due: Option<Instant>,
+    /// The fs watcher covers this root; only a plan pass re-arms it.
+    watching: bool,
     /// Last emitted checksum — frames fire only when it changes.
     last_checksum: Option<String>,
+}
+
+/// The attach work one sync batch performs, planned on the loop and executed
+/// off-thread: drop these roots, attach those.
+#[derive(Clone)]
+struct SyncBatch {
+    removed: Vec<PathBuf>,
+    fresh: Vec<PathBuf>,
 }
 
 impl WatchHub {
@@ -199,17 +214,41 @@ impl WatchHub {
             .frames
             .clone();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
-        // A watcher that cannot be created at all leaves every root on the
-        // polling fallback.
-        let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, _>| {
-            if let Ok(event) = result {
-                // The callback runs on the watcher's own thread.
-                let _ = event_tx.blocking_send(event);
-            }
+        // Creating the watcher is cheap but still blocking-flavored; keep it
+        // off the runtime's thread like every other notify call.
+        let watcher = tokio::task::spawn_blocking(move || {
+            notify::recommended_watcher(move |result: Result<notify::Event, _>| {
+                if let Ok(event) = result {
+                    // The callback runs on the watcher's own thread.
+                    let _ = event_tx.blocking_send(event);
+                }
+            })
+            .ok()
         })
-        .ok();
-        let mut watched: HashMap<PathBuf, Watched> = HashMap::new();
-        self.sync_roots(&mut watched, &mut watcher);
+        .await
+        .ok()
+        .flatten();
+        let watcher = Arc::new(tokio::sync::Mutex::new(watcher));
+        // A watcher that cannot be created at all leaves every root on the
+        // polling fallback (attach batches return no outcomes then).
+        // Every git-detected space starts on the polling fallback: its
+        // attach runs in a background batch (the handshake can take
+        // seconds), and until the batch lands the polls must not miss.
+        let now = Instant::now();
+        let mut watched: HashMap<PathBuf, Watched> = git_spaces(&self.spaces)
+            .into_iter()
+            .map(|space| {
+                let root = PathBuf::from(&space.path);
+                let entry = Watched {
+                    root: root.clone(),
+                    debounce: Debounce::new(),
+                    poll_due: Some(now + POLL_INTERVAL),
+                    watching: false,
+                    last_checksum: None,
+                };
+                (root, entry)
+            })
+            .collect();
         // Seed each checkout's last-known checksum so the loop only emits
         // on real changes; the first subscriber's opening list carries the
         // same data, so nothing is lost by not emitting here.
@@ -225,7 +264,22 @@ impl WatchHub {
 
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // One attach batch at a time; `sync_needed` requests the next one.
+        let mut sync_needed = true;
+        let mut syncing: Option<(SyncBatch, tokio::task::JoinHandle<HashMap<PathBuf, bool>>)> =
+            None;
+        // Set when a sync batch lands: one recompute pass heals anything the
+        // pre-attach polls could not have seen.
+        let mut catch_up = false;
         loop {
+            // Harvest a finished attach batch without ever waiting on it in
+            // the select arms.
+            if syncing.as_ref().is_some_and(|(_, job)| job.is_finished()) {
+                let (batch, job) = syncing.take().unwrap();
+                let outcomes = job.await.unwrap_or_default();
+                apply_sync(&mut watched, &batch, &outcomes);
+                catch_up = true;
+            }
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 event = event_rx.recv() => {
@@ -239,8 +293,14 @@ impl WatchHub {
                 }
                 _ = ticker.tick() => {
                     let now = Instant::now();
+                    if syncing.is_none() && std::mem::take(&mut sync_needed) {
+                        let batch = plan_sync(&watched, &self.spaces);
+                        syncing = Some((batch.clone(), spawn_sync(watcher.clone(), batch)));
+                    }
+                    let recompute_all = std::mem::take(&mut catch_up);
                     for entry in watched.values_mut() {
-                        let due = entry.debounce.tick(now)
+                        let due = recompute_all
+                            || entry.debounce.tick(now)
                             || entry.poll_due.is_some_and(|due| now >= due);
                         if !due {
                             continue;
@@ -263,59 +323,111 @@ impl WatchHub {
                     }
                 }
                 _ = spaces_rx.changed() => {
-                    self.sync_roots(&mut watched, &mut watcher);
+                    sync_needed = true;
                 }
             }
         }
     }
+}
 
-    /// Align watched roots with the current git-detected spaces: new roots
-    /// gain watchers (or a poll fallback when watching fails), removed
-    /// roots drop theirs.
-    fn sync_roots(
-        &self,
-        watched: &mut HashMap<PathBuf, Watched>,
-        watcher: &mut Option<notify::RecommendedWatcher>,
-    ) {
-        let spaces = git_spaces(&self.spaces);
-        let roots: Vec<PathBuf> = spaces
-            .iter()
-            .map(|space| PathBuf::from(&space.path))
-            .collect();
-        let removed: Vec<PathBuf> = watched
-            .keys()
-            .filter(|root| !roots.contains(root))
-            .cloned()
-            .collect();
-        if let Some(watcher) = watcher.as_mut() {
-            for root in &removed {
-                let _ = watcher.unwatch(root);
+/// Plan one attach batch against the current git-detected spaces: roots the
+/// map lost, and map entries (existing or not yet present) the fs watcher
+/// does not cover yet. Pure map/spaces reading — safe on the loop.
+fn plan_sync(
+    watched: &HashMap<PathBuf, Watched>,
+    spaces: &Arc<std::sync::RwLock<Vec<Space>>>,
+) -> SyncBatch {
+    let roots: Vec<PathBuf> = git_spaces(spaces)
+        .iter()
+        .map(|space| PathBuf::from(&space.path))
+        .collect();
+    let removed: Vec<PathBuf> = watched
+        .keys()
+        .filter(|root| !roots.contains(root))
+        .cloned()
+        .collect();
+    let fresh: Vec<PathBuf> = roots
+        .into_iter()
+        .filter(|root| !watched.get(root).is_some_and(|entry| entry.watching))
+        .collect();
+    SyncBatch { removed, fresh }
+}
+
+/// Run one attach batch entirely off the runtime's thread: the shared
+/// watcher is taken out of the guard, its `unwatch`/`watch` calls (each a
+/// potential blocking handshake on macOS) run on the blocking pool, and the
+/// watcher is put back. Returns the attach outcome per fresh root — empty
+/// when the watcher is gone entirely, which leaves every root polling.
+fn spawn_sync(
+    watcher: Arc<tokio::sync::Mutex<Option<notify::RecommendedWatcher>>>,
+    batch: SyncBatch,
+) -> tokio::task::JoinHandle<HashMap<PathBuf, bool>> {
+    tokio::spawn(async move {
+        let mut guard = watcher.lock().await;
+        let Some(current) = guard.take() else {
+            return HashMap::new();
+        };
+        let job = tokio::task::spawn_blocking(move || {
+            let mut current = current;
+            for root in &batch.removed {
+                let _ = current.unwatch(root);
             }
-        }
-        for root in removed {
-            watched.remove(&root);
-        }
-        for root in roots {
-            if watched.contains_key(&root) {
-                continue;
+            let outcomes = batch
+                .fresh
+                .iter()
+                .map(|root| {
+                    (
+                        root.clone(),
+                        current
+                            .watch(root, notify::RecursiveMode::Recursive)
+                            .is_ok(),
+                    )
+                })
+                .collect::<HashMap<PathBuf, bool>>();
+            (current, outcomes)
+        });
+        match job.await {
+            Ok((current, outcomes)) => {
+                *guard = Some(current);
+                outcomes
             }
-            let poll_due = match watcher.as_mut() {
-                Some(watcher) => match watcher.watch(&root, notify::RecursiveMode::Recursive) {
-                    Ok(()) => None,
-                    // No fs watcher for this root: degrade to polling.
-                    Err(_) => Some(Instant::now() + POLL_INTERVAL),
-                },
-                None => Some(Instant::now() + POLL_INTERVAL),
-            };
-            watched.insert(
-                root.clone(),
-                Watched {
-                    root,
-                    debounce: Debounce::new(),
-                    poll_due,
-                    last_checksum: None,
-                },
-            );
+            // The batch panicked and took the watcher with it; the guard
+            // stays empty and every root keeps polling.
+            Err(_) => HashMap::new(),
+        }
+    })
+}
+
+/// Fold a finished batch's outcomes into the map: removed roots drop,
+/// fresh roots gain (or lose) fs coverage.
+fn apply_sync(
+    watched: &mut HashMap<PathBuf, Watched>,
+    batch: &SyncBatch,
+    outcomes: &HashMap<PathBuf, bool>,
+) {
+    for root in &batch.removed {
+        watched.remove(root);
+    }
+    for root in &batch.fresh {
+        let watching = outcomes.get(root).copied().unwrap_or(false);
+        let poll_due = (!watching).then(|| Instant::now() + POLL_INTERVAL);
+        match watched.get_mut(root) {
+            Some(entry) => {
+                entry.watching = watching;
+                entry.poll_due = poll_due;
+            }
+            None => {
+                watched.insert(
+                    root.clone(),
+                    Watched {
+                        root: root.clone(),
+                        debounce: Debounce::new(),
+                        poll_due,
+                        watching,
+                        last_checksum: None,
+                    },
+                );
+            }
         }
     }
 }

@@ -685,9 +685,33 @@ mod live_refresh_and_resolution {
             _ => panic!("WatchWorkspaceEntries must reply with a stream"),
         };
 
-        // Give the spawned watcher a moment to arm before writing — the
-        // subscription returns before the platform watcher registers.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // The platform watcher arms asynchronously and can take seconds (the
+        // macOS FSEvents handshake); writes before it arms are invisible.
+        // Probe: rewrite until the first frame proves the watch is live.
+        let warm_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            assert!(
+                tokio::time::Instant::now() < warm_deadline,
+                "watch never armed within 30s"
+            );
+            fs::write(Path::new(&root).join("warm.txt"), "warm\n").unwrap();
+            let step = std::cmp::min(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                warm_deadline,
+            );
+            let next = match tokio::time::timeout_at(step, stream.next()).await {
+                // Rewrite: the last probe may have landed before the arm.
+                Err(_) => continue,
+                Ok(item) => item,
+            };
+            let Some(item) = next else {
+                panic!("stream ended before arming");
+            };
+            let frame: WorkspaceWatchFrame = serde_json::from_value(item).unwrap();
+            if frame.paths.iter().any(|path| path.contains("warm.txt")) {
+                break;
+            }
+        }
         // A burst of writes coalesces into one debounced frame.
         fs::write(Path::new(&root).join("watched.txt"), "v2\n").unwrap();
         fs::write(Path::new(&root).join("created.txt"), "new\n").unwrap();
