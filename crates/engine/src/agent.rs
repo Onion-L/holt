@@ -1222,7 +1222,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = Default::default();
     let (mut system_prompt, catalog) = run_system_prompt(&skills, &cwd).await;
     if let Some(child) = &chat.child {
-        system_prompt = crate::subagents::system_prompt(&child.role, &cwd, &catalog).await;
+        system_prompt =
+            crate::subagents::system_prompt(&child.role, &cwd, &catalog, search_backend.is_some())
+                .await;
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -2042,6 +2044,27 @@ mod tests {
         assert!(prompt.contains("/tmp/holt"));
         assert!(!prompt.contains("{{cwd}}"));
         assert!(prompt.contains("call `read_chat` immediately"));
+    }
+
+    /// Drift tripwire: every tool a full turn mounts — the harness set, plus
+    /// `read_chat`, `web_search` behind a backend, and the `Agent`
+    /// delegation tool — must be named in the template's tool list, so a
+    /// tool added or renamed without updating the prompt fails here.
+    #[test]
+    fn system_prompt_names_every_mounted_tool() {
+        let tools = crate::tools::execution_tools("/tmp/holt");
+        let mounted: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .chain(["read_chat", "web_search", "Agent"])
+            .collect();
+        assert!(!mounted.is_empty());
+        for name in &mounted {
+            assert!(
+                SYSTEM_PROMPT_TEMPLATE.contains(&format!("`{name}`")),
+                "the system prompt's tool list does not name `{name}`"
+            );
+        }
     }
 
     #[test]

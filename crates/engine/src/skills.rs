@@ -33,6 +33,7 @@ struct RootScan {
 
 /// A full catalog scan: the precedence winners plus everything the Settings
 /// page explains — shadowed losers and load diagnostics.
+#[derive(Default)]
 pub(crate) struct Catalog {
     /// Valid, unshadowed skills in root-precedence order — the invocable
     /// set the system-prompt block, `/` menu, and invocations resolve

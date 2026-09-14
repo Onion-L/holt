@@ -31,11 +31,26 @@ pub(crate) async fn system_prompt(
     role: &str,
     cwd: &str,
     catalog: &crate::skills::Catalog,
+    web_search: bool,
 ) -> String {
+    // The surface `run_agent_command` actually mounts for a child: the
+    // read-only set both roles share — `web_search` only when the parent
+    // Turn resolved a backend — extended with the write set for workers.
+    let mut names = vec!["ls", "read", "grep", "read_chat", "web_fetch"];
+    if web_search {
+        names.push("web_search");
+    }
     let tools = if role == "explorer" {
-        "read, grep, read_chat, web_fetch, and web_search only; report findings without changing files or executing commands"
+        format!(
+            "{} only; report findings without changing files or executing commands",
+            join_tool_names(&names)
+        )
     } else {
-        "read, grep, read_chat, web_fetch, web_search, write, edit, and bash; implement and verify your assigned work"
+        names.extend(["write", "edit", "bash"]);
+        format!(
+            "{}; implement and verify your assigned work",
+            join_tool_names(&names)
+        )
     };
     let mut prompt = format!(
         "You are Holt's {role} subagent working in {cwd}. You have {tools}. \
@@ -632,4 +647,52 @@ fn add_usage(t: &mut Usage, u: &Usage) {
     t.cost.cache_read.0 += u.cost.cache_read.0;
     t.cost.cache_write.0 += u.cost.cache_write.0;
     t.cost.total.0 += u.cost.total.0;
+}
+
+/// "a", "a and b", "a, b, and c" — the enumeration grammar the subagent
+/// prompt's tool list reads naturally in.
+fn join_tool_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [a, b] => format!("{a} and {b}"),
+        [init @ .., last] => format!("{}, and {last}", init.join(", ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_catalog() -> crate::skills::Catalog {
+        crate::skills::Catalog::default()
+    }
+
+    #[tokio::test]
+    async fn the_child_prompt_names_the_surface_the_run_mounts() {
+        let catalog = empty_catalog();
+        let explorer = system_prompt("explorer", "/tmp/holt", &catalog, false).await;
+        assert!(
+            explorer.contains(
+                "ls, read, grep, read_chat, and web_fetch only; \
+                 report findings without changing files or executing commands"
+            ),
+            "explorer enumeration drifted: {explorer}"
+        );
+        assert!(!explorer.contains("web_search"));
+
+        let searching = system_prompt("explorer", "/tmp/holt", &catalog, true).await;
+        assert!(searching.contains("ls, read, grep, read_chat, web_fetch, and web_search only"));
+
+        let worker = system_prompt("worker", "/tmp/holt", &catalog, false).await;
+        assert!(worker.contains("ls, read, grep, read_chat, web_fetch, write, edit, and bash;"));
+    }
+
+    #[test]
+    fn joined_names_read_as_an_english_list() {
+        assert_eq!(join_tool_names(&[]), "");
+        assert_eq!(join_tool_names(&["a"]), "a");
+        assert_eq!(join_tool_names(&["a", "b"]), "a and b");
+        assert_eq!(join_tool_names(&["a", "b", "c"]), "a, b, and c");
+    }
 }
