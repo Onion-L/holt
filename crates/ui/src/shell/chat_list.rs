@@ -75,6 +75,16 @@ pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
 /// on the standard 8px rhythm.
 pub(super) const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
 pub(super) const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
+/// The archive pill's paint: 18px tall, centred on the 14px status line, and
+/// its own 4px of horizontal padding — the padding is what right-aligns the
+/// pill's label on the status word/time it replaces.
+pub(super) const SIDEBAR_ARCHIVE_PILL_HEIGHT: f32 = 18.0;
+pub(super) const SIDEBAR_ARCHIVE_PILL_PAD_X: f32 = 4.0;
+/// Slack the archive HIT box adds around that paint, above and below it (and
+/// out to the card's right edge — see the hit box in the row renderer). 18px
+/// of target beside a card that opens the chat on every other pixel was too
+/// easy to miss (user report).
+pub(super) const SIDEBAR_ARCHIVE_HIT_SLACK: f32 = 4.0;
 
 /// Ramp height of the sidebar's scroll-edge fade (the gpui
 /// [`gpui::EdgeFade`] scope — per-primitive, so text fades per glyph).
@@ -308,29 +318,29 @@ impl Shell {
             }
         } else if corner_hovered {
             let archive_id = id.clone();
+            // Two elements, two jobs: an invisible HIT box carries the click
+            // and the PILL inside it carries the paint. The pill's own rect
+            // was the whole target before, and 18px of target beside a card
+            // that opens the chat on every other pixel was too easy to miss
+            // (user report). The box is 4px taller than the paint at each
+            // end, and its 4px padding on an 8px negative margin puts its
+            // right edge on the card's — the pill keeps the 4px of air the
+            // status word/time has, and the box's layout footprint is the
+            // pill's, so the title truncates where it always did.
+            let hit_group: SharedString = format!("chat-archive-hit-{id}").into();
             div()
-                // The PILL carries the click, not the 14px corner wrapper:
-                // the wrapper pins the line height so the pill overflows it
-                // (18px tall, 4px right bleed), and a click target smaller
-                // than the painted pill let edge clicks fall through to the
-                // row and open the chat (user-reported).
                 .id(SharedString::from(format!("chat-archive-{id}")))
+                // The hit box is the group: the pointer anywhere inside the
+                // target — padding included — brightens the pill.
+                .group(hit_group.clone())
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
-                .h(px(18.0))
-                // The pill's padding bleeds right into the row's padding so
-                // its TEXT right-aligns exactly where the status word/time
-                // sits — the swap moves pixels around the label, not it.
-                // 4px: what's left of the row's 8px padding then equals the
-                // 4px of air above the pill (18px tall on the 14px line,
-                // 6px row padding minus the 2px overflow).
-                .px(px(4.0))
-                .mr(px(-4.0))
-                .rounded(px(5.0))
-                .bg(crate::theme::wash(0.10))
-                .hover(|s| s.bg(crate::theme::wash(0.18)))
+                .h(px(
+                    SIDEBAR_ARCHIVE_PILL_HEIGHT + 2.0 * SIDEBAR_ARCHIVE_HIT_SLACK
+                ))
+                .px(px(SIDEBAR_ARCHIVE_HIT_SLACK))
+                .mr(px(-(SIDEBAR_ARCHIVE_HIT_SLACK + SIDEBAR_ARCHIVE_PILL_PAD_X)))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
@@ -343,24 +353,36 @@ impl Shell {
                     }
                 }))
                 .child(
-                    icon(if archived {
-                        icons::ARCHIVE_UP_MINIMALISTIC
-                    } else {
-                        icons::ARCHIVE_MINIMALISTIC
-                    })
-                    .size(px(11.0))
-                    .flex_none()
-                    .text_color(theme.text_muted),
-                )
-                .child(
                     div()
-                        .text_size(crate::typography::ui_rems(10.0))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(if archived {
-                            "Unarchive"
-                        } else {
-                            "Archive"
-                        })),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .h(px(SIDEBAR_ARCHIVE_PILL_HEIGHT))
+                        .px(px(SIDEBAR_ARCHIVE_PILL_PAD_X))
+                        .rounded(px(5.0))
+                        .bg(crate::theme::wash(0.10))
+                        .group_hover(hit_group.clone(), |s| s.bg(crate::theme::wash(0.18)))
+                        .child(
+                            icon(if archived {
+                                icons::ARCHIVE_UP_MINIMALISTIC
+                            } else {
+                                icons::ARCHIVE_MINIMALISTIC
+                            })
+                            .size(px(11.0))
+                            .flex_none()
+                            .text_color(theme.text_muted),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(10.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(if archived {
+                                    "Unarchive"
+                                } else {
+                                    "Archive"
+                                })),
+                        ),
                 )
                 .into_any_element()
         } else {
@@ -428,7 +450,7 @@ impl Shell {
             // NO occlude: the ROW's hover drives the swap, and an
             // occluding corner un-hovered the row underneath it —
             // pill mounts, steals the pointer, row un-hovers, pill
-            // unmounts, repeat (user-reported flicker). The pill's
+            // unmounts, repeat (user-reported flicker). The hit box's
             // stop_propagation click is separation enough.
             .h(px(14.0))
             .flex()
@@ -853,6 +875,22 @@ mod tests {
         assert_eq!(chat_row_height(true, false), 61.0);
         assert_eq!(chat_row_height(false, true), 63.0);
         assert_eq!(chat_row_height(true, true), 63.0);
+    }
+
+    #[test]
+    fn the_archive_hit_box_pads_the_pill_to_the_card_edge() {
+        // 4px of slack above and below the 18px paint: the target is 26px
+        // tall while the paint stays on the status word/time's line.
+        assert_eq!(
+            SIDEBAR_ARCHIVE_PILL_HEIGHT + 2.0 * SIDEBAR_ARCHIVE_HIT_SLACK,
+            26.0
+        );
+        // The box's padding plus the row's: they cancel exactly, so its
+        // right edge lands on the card's and the pill keeps its 4px of air.
+        assert_eq!(
+            SIDEBAR_ARCHIVE_HIT_SLACK + SIDEBAR_ARCHIVE_PILL_PAD_X,
+            Theme::SPACE_SM
+        );
     }
 
     #[test]
