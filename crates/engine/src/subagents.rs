@@ -63,18 +63,7 @@ Use read_chat immediately when the Task brief asks about a complete Holt Chat li
 When finished, return a concise final summary of findings or changes, verification, unresolved issues, and useful file references. \
 Do not include raw logs or your entire investigation. Report blockers and partial work honestly."
     );
-    let mut ancestors: Vec<_> = Path::new(cwd).ancestors().collect();
-    ancestors.reverse();
-    for ancestor in ancestors {
-        let path = ancestor.join("AGENTS.md");
-        if let Ok(instructions) = tokio::fs::read_to_string(&path).await {
-            prompt.push_str(&format!(
-                "\n\nProject instructions from {}:\n{}",
-                path.display(),
-                instructions
-            ));
-        }
-    }
+    crate::agent::append_workspace_instructions(&mut prompt, cwd).await;
     prompt.push_str("\n\n");
     prompt.push_str(&crate::skills::skills_block(&catalog.winners));
     prompt

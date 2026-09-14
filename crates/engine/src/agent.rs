@@ -45,18 +45,58 @@ fn system_prompt(cwd: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{{cwd}}", cwd)
 }
 
+/// The total character budget for workspace instructions across every
+/// AGENTS.md on the walk below — a pathological file cannot crowd the task
+/// out of the window the way an unbounded skill catalog could.
+const AGENTS_INSTRUCTIONS_BUDGET: usize = 16 * 1024;
+
+/// Append every AGENTS.md found walking from the filesystem root down to
+/// `cwd`, outermost file first so the nearest one reads last — the same
+/// delivery the subagent prompts have always used, now shared with the main
+/// prompt. Workspace knowledge lives in AGENTS.md, never in the universal
+/// template. An empty `cwd` (ephemeral test runtimes) mounts nothing.
+pub(crate) async fn append_workspace_instructions(prompt: &mut String, cwd: &str) {
+    if cwd.trim().is_empty() {
+        return;
+    }
+    let mut ancestors: Vec<_> = Path::new(cwd).ancestors().collect();
+    ancestors.reverse();
+    let mut used = 0usize;
+    for ancestor in ancestors {
+        if used >= AGENTS_INSTRUCTIONS_BUDGET {
+            break;
+        }
+        let path = ancestor.join("AGENTS.md");
+        let Ok(instructions) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        let header = format!("\n\nProject instructions from {}:\n", path.display());
+        prompt.push_str(&header);
+        let remaining = AGENTS_INSTRUCTIONS_BUDGET.saturating_sub(used + header.chars().count());
+        let body: String = instructions.chars().take(remaining).collect();
+        let truncated = body.chars().count() < instructions.chars().count();
+        prompt.push_str(&body);
+        if truncated {
+            prompt.push_str("\n[instructions truncated]\n");
+        }
+        used += header.chars().count() + body.chars().count();
+    }
+}
+
 /// The run's system prompt plus the catalog it was built from: the
-/// coding-agent template with the metadata-only skill block appended
-/// (ADR-0006), from a fresh scan of the chat's three roots — so skills
-/// added, edited, or removed since the last turn are already reflected.
-/// The catalog rides along: it is also what collapses reads of a skill's
-/// `SKILL.md` into chips while decoding tool calls for the transcript.
+/// coding-agent template, the workspace's AGENTS.md files, and the
+/// metadata-only skill block (ADR-0006), from a fresh scan of the chat's
+/// three roots — so instructions and skills added, edited, or removed since
+/// the last turn are already reflected. The catalog rides along: it is also
+/// what collapses reads of a skill's `SKILL.md` into chips while decoding
+/// tool calls for the transcript.
 async fn run_system_prompt(
     skills: &crate::skills::Skills,
     cwd: &str,
 ) -> (String, crate::skills::Catalog) {
     let catalog = skills.catalog(Some(cwd)).await;
     let mut prompt = system_prompt(cwd);
+    append_workspace_instructions(&mut prompt, cwd).await;
     let block = crate::skills::skills_block(&catalog.winners);
     if !block.is_empty() {
         prompt.push_str("\n\n");
@@ -2065,6 +2105,49 @@ mod tests {
                 "the system prompt's tool list does not name `{name}`"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_instructions_ride_between_template_and_skills() {
+        let base = tempfile::tempdir().unwrap();
+        let personal = base.path().join("personal");
+        std::fs::create_dir_all(&personal).unwrap();
+        let cwd = base.path().join("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(base.path().join("AGENTS.md"), "Root rules.").unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "Leaf rules.").unwrap();
+        let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
+
+        let (prompt, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        let template = system_prompt(&cwd.to_string_lossy());
+        let root_at = prompt.find("Root rules.").expect("root instructions");
+        let leaf_at = prompt.find("Leaf rules.").expect("leaf instructions");
+        assert!(prompt.starts_with(&template));
+        assert!(
+            root_at > template.len(),
+            "instructions follow the template, not inside it"
+        );
+        assert!(root_at < leaf_at, "the outermost AGENTS.md reads first");
+
+        // A pathological AGENTS.md cannot crowd the task out of the window.
+        std::fs::write(
+            cwd.join("AGENTS.md"),
+            "x".repeat(AGENTS_INSTRUCTIONS_BUDGET * 2),
+        )
+        .unwrap();
+        let (capped, _) = run_system_prompt(&skills, &cwd.to_string_lossy()).await;
+        assert!(capped.contains("[instructions truncated]"));
+        assert!(
+            capped.chars().count() <= template.chars().count() + AGENTS_INSTRUCTIONS_BUDGET + 64
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_cwd_mounts_no_workspace_instructions() {
+        let mut prompt = String::from("base");
+        append_workspace_instructions(&mut prompt, "").await;
+        append_workspace_instructions(&mut prompt, "  ").await;
+        assert_eq!(prompt, "base");
     }
 
     #[test]

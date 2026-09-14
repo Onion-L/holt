@@ -28,6 +28,16 @@ path.
   different backend can slot in behind the same `RpcService` trait.
 - `crates/ui` is agent-agnostic: it renders `MessagePart`s from `holt-doc`,
   never raw agent events.
+- Git2 access lives in `crates/engine/src/git.rs` (ADR-0001).
+
+## Code style
+
+- Check `Cargo.toml` and existing imports before adding a dependency; prefer
+  existing helpers and types over parallel abstractions.
+- Keep async cancellation and lock boundaries consistent with neighboring
+  code.
+- Do not change public types, RPC methods, or serialized representations
+  without checking every consumer and `ARCHITECTURE.md`.
 
 ## Gotchas
 

@@ -68,10 +68,12 @@ an external service.
 
 Before editing, discover the repository context:
 
-- Locate and read applicable AGENTS.md files from the repository root toward
-  the target file.
+- Applicable AGENTS.md files along the path to the working directory are
+  already included in this prompt; read any deeper AGENTS.md files when
+  moving into subtrees that carry their own.
 - Read README or project documentation when it explains the affected area.
-- Read ARCHITECTURE.md before touching the engine, RPC contract, or boot path.
+- Read the project's architecture and design documents when the task touches
+  the areas they govern.
 - Inspect the target file together with its imports, callers, and nearby tests.
 - Search for related symbols, serialized names, configuration keys, and
   existing implementations before introducing a new one.
@@ -166,32 +168,8 @@ repository has a documented generation path.
 After editing, inspect the changed content and diff. Ensure that no unrelated
 user changes were removed, reformatted, or included accidentally.
 
-## Holt architecture
-
-Holt is a desktop UI shell with an in-process RPC boundary:
-
-- The UI talks to the typed RPC contract; it does not link backend logic
-  directly.
-- `crates/engine` adapts pi-core and owns the backend runtime.
-- `crates/ui` is agent-agnostic and renders `MessagePart` values from
-  `holt-doc`, not raw provider events.
-- `crates/rpc` defines the complete UI-to-backend method surface.
-- `crates/proto` contains shared protocol and domain types.
-- Git2 access belongs in the engine git module.
-- The vendored gpui snapshot under `vendor/gpui` is the API source for this
-  checkout. Do not replace it with an online dependency or guess its API from
-  current upstream documentation.
-
-The current engine slice intentionally serves provider configuration,
-provider/model discovery, chats, sessions, transcript streaming, commands,
-interrupts, and the documented git capability. Terminals, worktrees, change
-requests, and uploads may remain unsupported by design. Do not treat an
-`UnknownMethod` response as a regression without checking the architecture
-contract.
-
-Preserve the RPC boundary, serialized names, cancellation behavior,
-credential handling, transcript semantics, and filesystem boundaries unless
-the user explicitly asks to change the contract.
+Add comments only for a non-obvious invariant, safety requirement, or
+architectural decision — never commentary that restates the code.
 
 ## Tool-specific guidance
 
@@ -236,21 +214,6 @@ the user explicitly asks to change the contract.
   tool is appropriate.
 - Do not hide errors with broad redirection, `|| true`, or similar workarounds.
 
-## Rust and dependency changes
-
-- Follow the edition, formatting, naming, ownership, and error-handling
-  patterns already used in the workspace.
-- Check Cargo.toml and existing imports before adding a dependency.
-- Prefer existing helpers and types over parallel abstractions.
-- Keep async cancellation and lock boundaries consistent with neighboring
-  code.
-- Avoid changing public types, RPC methods, or serialized representations
-  without checking every consumer and the architecture documentation.
-- Add or update focused regression tests when behavior changes.
-- Do not weaken validation or error handling merely to make a test pass.
-- Do not add comments that restate the code. Add comments only for a
-  non-obvious invariant, safety requirement, or architectural decision.
-
 ## Testing and verification
 
 Verification must be proportional to the change:
@@ -263,17 +226,16 @@ Verification must be proportional to the change:
 - A UI change should be tested with the narrowest available build or app
   verification in addition to static checks when practical.
 
-For Rust changes, use the project's documented commands, normally selecting
-from:
+For Rust changes, use the project's documented commands for formatting,
+checking, linting, and testing — for this repository they are the commands
+AGENTS.md lists. Prefer focused package or test filters first when they
+provide useful signal. Run broader checks when the change crosses crate
+boundaries or when focused checks cannot cover the affected behavior.
 
-- `cargo fmt --all`
-- `cargo check --workspace`
-- `cargo clippy --workspace`
-- `cargo test --workspace`
+Also:
 
-Prefer focused package or test filters first when they provide useful signal.
-Run broader checks when the change crosses crate boundaries or when focused
-checks cannot cover the affected behavior.
+- Add or update focused regression tests when behavior changes.
+- Do not weaken validation or error handling merely to make a test pass.
 
 A command that was not run is not a passing check. A command that returned an
 error is not a passing check, even if another command passed afterward. If a
