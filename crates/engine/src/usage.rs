@@ -218,6 +218,30 @@ impl UsageTotals {
     }
 }
 
+pub(crate) fn watch_snapshot(chat: &ChatRuntime, context_window: Option<u64>) -> serde_json::Value {
+    let totals = chat
+        .usage_totals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let records = load_records(&chat.data_dir, &chat.chat_id)
+        .map(|r| r.len())
+        .unwrap_or(0);
+    let by_kind = totals.by_kind.iter().map(|(kind, sum)| (format!("{kind:?}"), serde_json::json!({"input":sum.input,"output":sum.output,"cacheRead":sum.cache_read,"cacheWrite":sum.cache_write}))).collect::<serde_json::Map<_,_>>();
+    let usage = chat.usage.lock().unwrap_or_else(|e| e.into_inner());
+    let raw = usage.input + usage.cache_read + usage.cache_write;
+    let estimated = raw == 0;
+    let tokens = if estimated {
+        pi_core::agent::harness::compaction::compaction::estimate_context_tokens(
+            &chat.history.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .tokens as u64
+    } else {
+        raw
+    };
+    serde_json::json!({"gross":totals.gross,"byKind":by_kind,"recordCount":records,"occupancy":{"tokens":tokens,"contextWindow":context_window,"estimated":estimated}})
+}
+
 /// Per-chat ledger file, guarded by the shared id path-safety rule. The id
 /// `archive` is reserved for the device-wide stream — a chat so named keeps
 /// no per-chat file rather than writing the archive as its own ledger.
@@ -494,6 +518,7 @@ pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOut
     if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &records) {
         tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
     }
+    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
 }
 
 /// Book one record from a call outside the Turn model (the Title task and
@@ -512,6 +537,7 @@ fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
     if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &[record]) {
         tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
     }
+    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
 }
 
 /// The completed round-trips observed through a metered transport — one

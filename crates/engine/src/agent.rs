@@ -115,6 +115,7 @@ pub(crate) struct ChatRuntime {
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
+    pub(crate) usage_tx: watch::Sender<serde_json::Value>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// The one-shot Title task's token (ADR-0012): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
@@ -166,6 +167,7 @@ impl ChatRuntime {
     #[cfg(test)]
     fn new() -> Self {
         let (transcript_tx, _) = watch::channel(Arc::new(Vec::new()));
+        let (usage_tx, _) = watch::channel(serde_json::Value::Null);
         Self {
             persistence: Arc::new(Mutex::new(())),
             queue: Mutex::new(crate::queue::Queue::load(Path::new(""), "")),
@@ -176,6 +178,7 @@ impl ChatRuntime {
             transcript: RwLock::new(Vec::new()),
             history: RwLock::new(Vec::new()),
             transcript_tx,
+            usage_tx,
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
@@ -353,6 +356,7 @@ impl ChatRuntime {
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
         let (transcript_tx, _) = watch::channel(Arc::new(transcript.clone()));
+        let (usage_tx, _) = watch::channel(serde_json::Value::Null);
         Self {
             persistence,
             queue: Mutex::new(queue),
@@ -363,6 +367,7 @@ impl ChatRuntime {
             transcript: RwLock::new(transcript),
             history: RwLock::new(history),
             transcript_tx,
+            usage_tx,
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),

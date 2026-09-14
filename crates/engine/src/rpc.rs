@@ -1740,6 +1740,31 @@ impl RpcService for EngineService {
                     .subscribe();
                 Ok(Self::watch_value(receiver))
             }
+            methods::WATCH_CHAT_USAGE => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let context_window = self.runtime.chats.read().ok().and_then(|rows| {
+                    rows.iter()
+                        .find(|r| r.id == chat_id)
+                        .and_then(|r| r.config.as_ref())
+                        .and_then(|c| {
+                            self.providers
+                                .models_for(c.provider.0.as_str())
+                                .into_iter()
+                                .find(|m| {
+                                    m.id == c.model.split('/').next_back().unwrap_or(&c.model)
+                                })
+                                .and_then(|m| m.context_window)
+                        })
+                });
+                let initial = crate::usage::watch_snapshot(&chat, context_window);
+                chat.usage_tx.send_replace(initial);
+                let receiver = chat.usage_tx.subscribe();
+                Ok(Self::watch_value(receiver))
+            }
             methods::WATCH_TURN_TERMINAL_EVENTS => {
                 let stream = futures::stream::unfold(
                     self.turn_events.subscribe(),

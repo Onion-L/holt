@@ -70,6 +70,7 @@ pub mod methods {
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     /// Per-chat `holt_proto::MessageQueue` snapshots. Params `{chatId}`.
     pub const WATCH_MESSAGE_QUEUE: &str = "WatchMessageQueue";
+    pub const WATCH_CHAT_USAGE: &str = "WatchChatUsage";
     /// Live Turn terminal events (ADR-0019): one typed
     /// `holt_rpc::turns::TurnTerminalEvent` per real main-chat Turn,
     /// published only after its Transcript, History, and queue completion
