@@ -370,6 +370,11 @@ mod tests {
         assert!(!models.is_empty());
         assert!(models.iter().all(|model| model.id.contains('/')));
         assert!(models.iter().any(|model| model.id == "openai/gpt-5.4"));
+        // Builtin rows carry the catalog's real window — the occupancy
+        // denominator the status line divides by.
+        let builtin = models.iter().find(|m| m.id == "openai/gpt-5.4").unwrap();
+        assert!(!builtin.custom);
+        assert!(builtin.context_window.is_some_and(|window| window > 0));
     }
 
     #[tokio::test]
@@ -407,6 +412,17 @@ mod tests {
         assert!(models.as_array().unwrap().iter().any(|model| {
             model["id"] == custom_id && model["label"] == "gpt-private-2026-09-01"
         }));
+        // The custom row inherits a builtin template whose window is a guess —
+        // it must reach the wire as null, never as a number.
+        let rows = models.as_array().unwrap();
+        let custom = rows.iter().find(|row| row["id"] == custom_id).unwrap();
+        assert_eq!(custom["custom"], true);
+        assert!(custom["contextWindow"].is_null(), "{custom}");
+        let builtin = rows
+            .iter()
+            .find(|row| row["id"] == "openai/gpt-5.4")
+            .unwrap();
+        assert!(builtin["contextWindow"].as_u64().is_some_and(|w| w > 0));
         assert_eq!(
             engine
                 .service

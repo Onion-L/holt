@@ -1376,6 +1376,7 @@ mod tests {
             default_reasoning: None,
             options: Vec::new(),
             custom: false,
+            context_window: None,
             image_capability: holt_proto::ImageCapability::Unknown,
         }
     }

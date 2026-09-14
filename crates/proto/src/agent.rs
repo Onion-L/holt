@@ -189,6 +189,14 @@ pub struct Model {
     /// deletable); builtin catalog rows are not.
     #[serde(default)]
     pub custom: bool,
+    /// Provider-declared context window in tokens — the denominator a client
+    /// divides the latest request's input by. `None` means "unknown window":
+    /// a custom row (the engine only knows a template guess, which must not be
+    /// presented as fact) or a host that predates the field. The key stays on
+    /// the wire so a custom row reads as an explicit null rather than an
+    /// ambiguous missing key.
+    #[serde(default)]
+    pub context_window: Option<u64>,
     #[serde(default)]
     pub image_capability: ImageCapability,
 }
@@ -547,12 +555,6 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
-    /// Kept as a provider passthrough (rate-limit probes); never persisted to docs.
-    #[serde(rename_all = "camelCase")]
-    Usage {
-        input_tokens: u64,
-        output_tokens: u64,
-    },
     /// The agent advertised (or changed) its slash-command set — ACP
     /// `available_commands_update`. The engine caches the latest list per
     /// provider for the composer's `/` popup; never persisted to docs.
@@ -623,6 +625,29 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    /// `Model.context_window` is the occupancy denominator: builtin rows carry
+    /// the catalog truth, custom rows say null, and a row from an older host
+    /// (no field at all) reads as unknown instead of failing the decode.
+    #[test]
+    fn model_context_window_survives_version_skew() {
+        let row = |extra: &str| {
+            format!(r#"{{"id":"openai/gpt-5.4","provider":"openai","label":"GPT-5.4"{extra}}}"#)
+        };
+        // Older engine: the key never existed.
+        let old: Model = serde_json::from_str(&row("")).unwrap();
+        assert_eq!(old.context_window, None);
+        // Builtin row: the catalog truth round-trips camelCased.
+        let builtin: Model = serde_json::from_str(&row(r#","contextWindow":400000"#)).unwrap();
+        assert_eq!(builtin.context_window, Some(400_000));
+        assert_eq!(
+            serde_json::to_value(&builtin).unwrap()["contextWindow"],
+            400_000
+        );
+        // Unknown window serializes as an explicit null, not a dropped key:
+        // absence is reserved for hosts that predate the field.
+        assert!(serde_json::to_value(&old).unwrap()["contextWindow"].is_null());
     }
 
     /// Drivers spell the key differently; the chip must not care which one

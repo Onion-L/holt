@@ -1,8 +1,10 @@
 //! holt-proto — wire types shared by engine, UI, and RPC.
 //!
 //! Ported from holt's `packages/control/src/wire.ts` + `packages/provider/src/types.ts`.
-//! Token-usage *display* types are excluded by design; the `Usage` agent event is kept as a
-//! provider-level passthrough (rate-limit meters), never persisted into docs.
+//! Token-usage types are part of the contract by design: `Model::context_window`
+//! carries the context-window denominator and the usage ledger's records and
+//! totals are served over the same RPC surface. Nothing usage-shaped is
+//! persisted into docs.
 
 pub mod agent;
 pub mod entities;

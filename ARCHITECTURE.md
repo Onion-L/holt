@@ -111,6 +111,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   skill roots — project `.agents/skills` at the cwd, personal
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root, shadowed entries, and load diagnostics).
+  `ListModels` rows carry `contextWindow`: builtin rows report the provider
+  catalog's real window, custom rows null (the only window the engine holds
+  for them is the cloned template's guess), and clients degrade to absolute
+  token counts when it is missing.
 - Path search: `SearchFiles` (`{query, chatId|spaceId}`) fuzzy-matches files
   and folders under the chat's cwd (or the space's path before a chat
   exists) for the composer's `@` popup — hidden and ignored entries are

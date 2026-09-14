@@ -222,6 +222,7 @@ fn project_models(mut models: Vec<CoreModel>, custom_ids: &HashSet<String>) -> V
         } else {
             Vec::new()
         };
+        let custom = custom_ids.contains(&model.id);
         projected.push(HoltModel {
             id: format!("{}/{}", model.provider, model.id),
             provider: ProviderId(model.provider.clone()),
@@ -230,8 +231,16 @@ fn project_models(mut models: Vec<CoreModel>, custom_ids: &HashSet<String>) -> V
             default_reasoning: model.reasoning.then_some(ReasoningLevel::High),
             reasoning_levels,
             options: Vec::new(),
-            custom: custom_ids.contains(&model.id),
-            image_capability: if custom_ids.contains(&model.id) {
+            custom,
+            // A custom row's window came along with the cloned builtin
+            // template — a guess, so it is withheld (unknown beats a
+            // fabricated percentage).
+            context_window: if custom {
+                None
+            } else {
+                Some(model.context_window)
+            },
+            image_capability: if custom {
                 holt_proto::ImageCapability::Unknown
             } else if model.input.contains(&ModelInput::Image) {
                 holt_proto::ImageCapability::Supported
