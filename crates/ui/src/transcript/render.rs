@@ -2874,6 +2874,28 @@ fn chip_header_row(
                     .child(SharedString::from(model.to_owned())),
             )
         })
+        .when(
+            tool.subagent_usage.is_some()
+                && matches!(
+                    tool.subagent_status,
+                    Some(SubagentStatus::Done) | Some(SubagentStatus::Failed)
+                ),
+            |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .h(px(18.0))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(format!(
+                            "{} tokens",
+                            compact_tokens(tool.subagent_usage.unwrap_or_default())
+                        ))),
+                )
+            },
+        )
         .when_some(
             // The settled verdict (ADR-0014): a small tinted marker after the
             // detail — "✓ Approved", "⊘ Denied · "note"", "⚡ Prefix exempt", …
@@ -2936,6 +2958,16 @@ fn chip_header_row(
                 ),
             })
         })
+}
+
+fn compact_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// The header row of an expandable chip card.

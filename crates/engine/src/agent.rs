@@ -873,6 +873,23 @@ fn tool_output_full(result: &AgentToolResult) -> Option<String> {
     Some(out)
 }
 
+fn tool_usage_total(result: &AgentToolResult) -> Option<u64> {
+    if let Some(usage) = result.usage.as_ref() {
+        return Some(usage.input + usage.output + usage.cache_read + usage.cache_write);
+    }
+    // Older history records may only retain the serialized details payload.
+    // Accept both the typed result and that wire-shaped fallback.
+    let usage = result.details.get("usage")?.as_object()?;
+    let token = |name: &str| {
+        usage
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    let total = token("input") + token("output") + token("cacheRead") + token("cacheWrite");
+    Some(total)
+}
+
 /// Stamp a tool result onto the matching Tool part, wherever its entry sits.
 fn resolve_tool_part(
     chat: &ChatRuntime,
@@ -880,6 +897,7 @@ fn resolve_tool_part(
     is_error: bool,
     output: Option<String>,
     read_chat_title: Option<&str>,
+    subagent_usage: Option<u64>,
 ) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
     let mut changed = false;
@@ -893,12 +911,16 @@ fn resolve_tool_part(
             resolved,
             is_error: part_error,
             output: part_output,
+            subagent_usage: usage_slot,
             ..
         }) = hit
         {
             *resolved = true;
             *part_error = is_error;
             *part_output = output.clone();
+            if call.is_subagent_spawn() {
+                *usage_slot = subagent_usage;
+            }
             if let TranscriptToolCall::ReadChat { title, .. } = call {
                 *title = read_chat_title.map(str::to_owned);
             }
@@ -1130,6 +1152,7 @@ fn assistant_parts(
                         subagent_ref: None,
                         subagent_status: None,
                         subagent_tail: None,
+                        subagent_usage: None,
                         gate: None,
                     });
                 }
@@ -1478,6 +1501,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             resolved,
                             is_error: failed,
                             output: slot,
+                            subagent_usage: usage_slot,
                             ..
                         } = part
                             && id == &tool_call_id
@@ -1485,6 +1509,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             *resolved = true;
                             *failed = is_error;
                             *slot = output.clone();
+                            *usage_slot = tool_usage_total(&result);
                             if let TranscriptToolCall::ReadChat { title, .. } = call {
                                 *title = read_chat_title.clone();
                             }
@@ -1496,6 +1521,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         is_error,
                         output,
                         read_chat_title.as_deref(),
+                        tool_usage_total(&result),
                     );
                 }
                 _ => {}
@@ -2315,6 +2341,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                subagent_usage: None,
                 gate: None,
             }]
         );
@@ -2451,6 +2478,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                subagent_usage: None,
                 gate: None,
             }]
         );
@@ -2597,6 +2625,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                subagent_usage: None,
                 gate: None,
             }],
             created_at: 0,
@@ -2604,7 +2633,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
         });
-        resolve_tool_part(&chat, "call-9", true, Some("boom".into()), None);
+        resolve_tool_part(&chat, "call-9", true, Some("boom".into()), None, None);
         let transcript = chat.transcript.read().unwrap();
         let Some(MessagePart::Tool {
             resolved,

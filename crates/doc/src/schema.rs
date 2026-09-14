@@ -107,6 +107,8 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagent_usage: Option<u64>,
     /// The permission gate's record on a tool chip (ADR-0014, additive):
     /// pending → settled verdicts. Absent on ungated chips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +178,7 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             subagent_ref,
             subagent_status,
             subagent_tail,
+            subagent_usage,
             gate,
         } => DocPartJson {
             id: id.clone(),
@@ -201,6 +204,7 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
                 .to_owned()
             }),
             subagent_tail: subagent_tail.clone(),
+            subagent_usage: *subagent_usage,
             ..Default::default()
         },
         MessagePart::Input {
@@ -308,6 +312,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     _ => None,
                 }),
                 subagent_tail: p.subagent_tail,
+                subagent_usage: p.subagent_usage,
                 gate: p.gate.and_then(|g| serde_json::from_value(g).ok()),
             },
             None => MessagePart::Text {
@@ -844,6 +849,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(subagent_usage) = doc_part.subagent_usage {
+        map.insert("subagentUsage", subagent_usage as i64)?;
+    }
     if let Some(plan_state) = &doc_part.plan_state {
         map.insert("planState", plan_state.as_str())?;
     }
@@ -993,6 +1001,7 @@ fn salvage_part(part: &serde_json::Value, entry_id: &str, ix: usize) -> Option<M
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            subagent_usage: None,
             gate: None,
         });
     }
@@ -1247,6 +1256,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(subagent_usage) = doc_part.subagent_usage {
+        map.insert("subagentUsage", subagent_usage as i64)?;
+    }
     if let Some(plan_state) = &doc_part.plan_state {
         map.insert("planState", plan_state.as_str())?;
     }
@@ -1413,6 +1425,7 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            subagent_usage: None,
             gate: None,
         };
         w.sync(std::slice::from_ref(&part)).unwrap();
@@ -1466,6 +1479,7 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            subagent_usage: None,
             gate: None,
         };
         let parts = vec![
@@ -1797,6 +1811,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                subagent_usage: None,
                 gate: None,
             }],
             created_at: 1,

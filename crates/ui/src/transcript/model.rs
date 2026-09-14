@@ -58,6 +58,7 @@ pub struct ToolItem {
     /// per-delta header rewrites read as noise). Never rendered; still
     /// fingerprinted so an old doc's chips re-splice correctly.
     pub subagent_tail: Option<SharedString>,
+    pub subagent_usage: Option<u64>,
     /// A REASONING part riding the tool group as a chip (user request: the
     /// thought process belongs inside the combined "Ran N commands"
     /// accordion, opening/closing with the same tween). Synthesized in
@@ -144,6 +145,7 @@ fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
         subagent_ref: None,
         subagent_status: None,
         subagent_tail: None,
+        subagent_usage: None,
         is_thought: true,
         gate: None,
     }
@@ -660,6 +662,7 @@ pub fn rows_for_entry(
                     subagent_ref: None,
                     subagent_status: None,
                     subagent_tail: None,
+                    subagent_usage: None,
                     is_thought: false,
                     gate: None,
                 });
@@ -679,6 +682,7 @@ pub fn rows_for_entry(
                 subagent_ref,
                 subagent_status,
                 subagent_tail,
+                subagent_usage,
                 gate,
             } => {
                 let item = ToolItem {
@@ -694,6 +698,7 @@ pub fn rows_for_entry(
                     subagent_ref: subagent_ref.clone().map(SharedString::from),
                     subagent_status: *subagent_status,
                     subagent_tail: subagent_tail.clone().map(SharedString::from),
+                    subagent_usage: *subagent_usage,
                     is_thought: false,
                     gate: gate.clone(),
                 };
@@ -1094,6 +1099,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             subagent_ref,
             subagent_status,
             subagent_tail,
+            subagent_usage,
             gate,
             ..
         } = part
@@ -1115,6 +1121,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             if let Some(tail) = subagent_tail {
                 acc.extend_from_slice(tail.as_bytes());
             }
+            acc.extend_from_slice(&subagent_usage.unwrap_or_default().to_le_bytes());
             // The gate settles in place without touching resolved/is_error —
             // hashed via the shared helper (see `hash_gate`).
             hash_gate(&mut acc, gate.as_ref());
@@ -1267,6 +1274,7 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            subagent_usage: None,
             gate: None,
         }
     }
@@ -1390,6 +1398,7 @@ mod tests {
             subagent_ref: Some(format!("chat--sub--{id}")),
             subagent_status: Some(SubagentStatus::Running),
             subagent_tail: None,
+            subagent_usage: None,
             gate: None,
         }
     }
@@ -1506,6 +1515,29 @@ mod tests {
             !*auto_open,
             "auto_open is a streaming flag; agent rows ignore it at paint"
         );
+    }
+
+    #[test]
+    fn completed_spawn_keeps_its_usage_summary_for_rendering() {
+        let mut entry = assistant(
+            "m-usage",
+            MessageStatus::Complete,
+            vec![agent_part("s1", "scan repo")],
+        );
+        if let MessagePart::Tool {
+            subagent_usage,
+            subagent_status,
+            ..
+        } = &mut entry.parts[0]
+        {
+            *subagent_usage = Some(12_300);
+            *subagent_status = Some(SubagentStatus::Done);
+        }
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::ToolGroup { tools, .. } = &rows[0].kind else {
+            panic!("agent group expected")
+        };
+        assert_eq!(tools[0].subagent_usage, Some(12_300));
     }
 
     #[test]

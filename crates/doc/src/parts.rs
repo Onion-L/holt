@@ -290,6 +290,8 @@ pub enum MessagePart {
         /// its tagged text deltas (capped; display-only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_tail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_usage: Option<u64>,
         /// The permission gate's record (ADR-0014): absent unless this call
         /// was gated. Additive — old docs and ungated chips decode bare.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,6 +487,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     subagent_ref: None,
                     subagent_status: None,
                     subagent_tail: None,
+                    subagent_usage: None,
                     gate: None,
                 });
             }
@@ -1082,6 +1085,7 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                subagent_usage: None,
                 gate: None,
             },
         ];
