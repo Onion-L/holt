@@ -864,13 +864,14 @@ impl CodeEditor {
         let delta = event.delta.pixel_delta(px(EDITOR_LINE_HEIGHT));
         let dy = f32::from(delta.y);
         let dx = f32::from(delta.x);
-        // GPUI reports a positive wheel delta for motion toward the top
-        // (the same convention used by the terminal surface). Our offset is
-        // measured from the document top, so invert the vertical delta.
-        let next_top =
-            (self.scroll_top - dy).clamp(0.0, self.max_scroll_top(f32::from(bounds.size.height)));
-        let next_left =
-            (self.scroll_left + dx).clamp(0.0, self.max_scroll_left(f32::from(bounds.size.width)));
+        let (next_top, next_left) = wheel_scroll_offsets(
+            self.scroll_top,
+            self.scroll_left,
+            dx,
+            dy,
+            self.max_scroll_top(f32::from(bounds.size.height)),
+            self.max_scroll_left(f32::from(bounds.size.width)),
+        );
         if next_top == self.scroll_top && next_left == self.scroll_left {
             return;
         }
@@ -1754,6 +1755,25 @@ fn text_surface_bounds(bounds: Bounds<Pixels>, gutter: f32) -> Bounds<Pixels> {
     )
 }
 
+/// Apply GPUI's wheel delta to the editor's top-left-origin scroll offsets.
+/// GPUI reports a positive delta for motion toward the top or the left edge
+/// (matching gpui's built-in div behavior and the terminal surface), while
+/// the offsets are measured from the document top-left — so both deltas are
+/// subtracted.
+fn wheel_scroll_offsets(
+    scroll_top: f32,
+    scroll_left: f32,
+    dx: f32,
+    dy: f32,
+    max_top: f32,
+    max_left: f32,
+) -> (f32, f32) {
+    (
+        (scroll_top - dy).clamp(0.0, max_top),
+        (scroll_left - dx).clamp(0.0, max_left),
+    )
+}
+
 /// Split prepared (syntax-colored) runs at the marked boundaries and
 /// underline the composition slice — the IME preview keeps token colors.
 fn overlay_underline(runs: Vec<TextRun>, marked: Range<usize>) -> Vec<TextRun> {
@@ -1911,6 +1931,20 @@ mod tests {
         let code = text_surface_bounds(narrow, 36.0);
         assert_eq!(code.size.width, px(0.0));
         assert_eq!(code.left(), px(40.0));
+    }
+
+    #[test]
+    fn wheel_scroll_subtracts_both_deltas() {
+        // Positive deltas mean motion toward the top/left edge — both axes
+        // move the top-left-origin offsets toward zero.
+        let (top, left) = wheel_scroll_offsets(100.0, 100.0, 30.0, 40.0, 500.0, 500.0);
+        assert_eq!((top, left), (60.0, 70.0));
+        // Negative deltas move deeper into the document, clamped at max.
+        let (top, left) = wheel_scroll_offsets(100.0, 100.0, -1000.0, -1000.0, 500.0, 500.0);
+        assert_eq!((top, left), (500.0, 500.0));
+        // And never below the top-left origin.
+        let (top, left) = wheel_scroll_offsets(10.0, 10.0, 30.0, 30.0, 500.0, 500.0);
+        assert_eq!((top, left), (0.0, 0.0));
     }
 
     #[test]
