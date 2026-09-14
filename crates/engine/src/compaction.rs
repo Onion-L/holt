@@ -26,6 +26,11 @@ use pi_core::ai::types::{
 
 use crate::history::CompactionRecord;
 
+/// The metering bypass (usage-ledger ticket 02): one call per summary
+/// response — aborted and failed ones included, so a compaction's model
+/// work is billed even when it produces no summary.
+pub(crate) type CompactionMeter<'a> = &'a (dyn Fn(&pi_core::ai::types::AssistantMessage) + Sync);
+
 // The summarization BODY templates are private upstream (only the system
 // prompt is exported); these mirror them verbatim — pinned by the
 // scripted-provider tests' shape assertions. If upstream's change, these
@@ -75,11 +80,12 @@ pub(crate) async fn compact(
     api_key: &str,
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
+    meter: CompactionMeter<'_>,
 ) -> Result<Option<CompactionOutcome>, String> {
     if !needed(history, model) {
         return Ok(None);
     }
-    compact_now(history, model, stream_fn, api_key, trigger, signal).await
+    compact_now(history, model, stream_fn, api_key, trigger, signal, meter).await
 }
 
 /// Compact `history` unconditionally (the manual `/compact` path — the
@@ -98,6 +104,7 @@ pub(crate) async fn compact_now(
     api_key: &str,
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
+    meter: CompactionMeter<'_>,
 ) -> Result<Option<CompactionOutcome>, String> {
     let Some(preparation) =
         compaction::prepare_compaction(&flat_entries(history), DEFAULT_COMPACTION_SETTINGS)
@@ -130,11 +137,19 @@ pub(crate) async fn compact_now(
                 stream_fn,
                 api_key,
                 signal,
+                meter,
             )
             .await?
         };
-        let prefix =
-            summarize_turn_prefix(&turn_prefix_messages, model, stream_fn, api_key, signal).await?;
+        let prefix = summarize_turn_prefix(
+            &turn_prefix_messages,
+            model,
+            stream_fn,
+            api_key,
+            signal,
+            meter,
+        )
+        .await?;
         format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
     } else {
         summarize(
@@ -144,6 +159,7 @@ pub(crate) async fn compact_now(
             stream_fn,
             api_key,
             signal,
+            meter,
         )
         .await?
     };
@@ -178,6 +194,7 @@ async fn summarize(
     stream_fn: &StreamFn,
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
+    meter: CompactionMeter<'_>,
 ) -> Result<String, String> {
     let base_prompt = if previous_summary.is_some() {
         UPDATE_SUMMARIZATION_PROMPT
@@ -192,7 +209,7 @@ async fn summarize(
         ));
     }
     prompt.push_str(base_prompt);
-    complete_summary(&prompt, model, stream_fn, api_key, signal, 0.8).await
+    complete_summary(&prompt, model, stream_fn, api_key, signal, meter, 0.8).await
 }
 
 /// The split-turn prefix request — upstream `generate_turn_prefix_summary`
@@ -203,13 +220,14 @@ async fn summarize_turn_prefix(
     stream_fn: &StreamFn,
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
+    meter: CompactionMeter<'_>,
 ) -> Result<String, String> {
     let conversation = serialize_conversation(&convert_to_llm(messages.to_vec()));
     let prompt = format!(
         "<conversation>\n{conversation}\n</conversation>\n\n{}",
         TURN_PREFIX_SUMMARIZATION_PROMPT
     );
-    complete_summary(&prompt, model, stream_fn, api_key, signal, 0.5).await
+    complete_summary(&prompt, model, stream_fn, api_key, signal, meter, 0.5).await
 }
 
 /// Run one summary completion and return its text. `max_tokens_factor`
@@ -220,6 +238,7 @@ async fn complete_summary(
     stream_fn: &StreamFn,
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
+    meter: CompactionMeter<'_>,
     max_tokens_factor: f64,
 ) -> Result<String, String> {
     let max_tokens =
@@ -282,6 +301,9 @@ async fn complete_summary(
         }
     }
     let response = stream.result().await;
+    // Book before the verdict: every completed summary response — aborted
+    // and failed ones included — is a metered round-trip the chat caused.
+    meter(&response);
     match response.stop_reason {
         StopReason::Aborted => Err(response
             .error_message

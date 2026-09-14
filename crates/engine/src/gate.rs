@@ -212,9 +212,12 @@ pub(crate) fn parse_review_reply(reply: &str) -> ReviewOutcome {
 
 /// One review pass: a single completion through the run's own model and
 /// transport, no tools, cancellation-aware (the same race the compaction
-/// requests use). Provider failures reject — fail closed, visibly.
+/// requests use). Provider failures reject — fail closed, visibly. Every
+/// response is billed to the chat's usage ledger (kind `auto-review`),
+/// whatever its verdict.
 async fn run_review_pass(
     review: &ReviewTransport,
+    chat: &ChatRuntime,
     tool_name: &str,
     arguments: &serde_json::Value,
     cwd: &str,
@@ -261,6 +264,11 @@ async fn run_review_pass(
         _ = cancel.cancelled() => return ReviewOutcome::Cancelled,
     }
     let response = stream.result().await;
+    // Book before the verdict: approved, rejected, garbled, and failed
+    // reviews are all metered round-trips the chat caused (a child run's
+    // reviews ride its delegation's billing vector instead — the capture is
+    // a no-op there).
+    crate::usage::capture_review(chat, &response);
     match response.stop_reason {
         // Aborted with the token live is the cancellation path (no verdict,
         // no stamp). An abort the gate did not ask for is a garbled
@@ -346,6 +354,7 @@ pub(crate) fn before_tool_call_hook(
                     // and the chip settles straight to its verdict.
                     return match run_review_pass(
                         &review,
+                        &chat,
                         &ctx.tool_call.name,
                         &arguments,
                         &cwd,

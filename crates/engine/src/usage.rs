@@ -1,21 +1,36 @@
-//! The per-chat usage ledger (usage-ledger spec, ticket 01): one append-only
-//! JSONL file per chat under `usage/<chatId>.jsonl`, one record per metered
-//! provider round-trip — all token fields, the attribution source (`kind`),
-//! provider, model, the Turn's message id and outcome, and the upstream cost
-//! stored verbatim (Holt computes no prices). The file follows the History
-//! record's durability shapes: a version header line, the append atomicity
-//! pattern (header on an empty file, a repaired missing final newline), and a
-//! tolerant reader that skips a crash-truncated trailing line. A damaged file
-//! is quarantined `.corrupt` (kept, never overwritten) and totals restart
-//! from zero — bookkeeping never blocks the chat.
+//! The per-chat usage ledger (usage-ledger spec, tickets 01–02): one
+//! append-only JSONL file per chat under `usage/<chatId>.jsonl`, one record
+//! per metered provider round-trip — all token fields, the attribution
+//! source (`kind`: Turn work, Subagent, Compaction, Auto-review, or Title
+//! task), provider, model, the Turn's message id and outcome on Turn
+//! records, and the upstream cost stored verbatim (Holt computes no
+//! prices). The file follows the History record's durability shapes: a
+//! version header line, the append atomicity pattern (header on an empty
+//! file, a repaired missing final newline), and a tolerant reader that
+//! skips a crash-truncated trailing line. A damaged file is quarantined
+//! `.corrupt` (kept, never overwritten) and totals restart from zero —
+//! bookkeeping never blocks the chat.
 //!
-//! Write choreography: records captured inside a Turn accumulate on the
-//! chat's runtime and land as ONE batch append at settlement, after queue
-//! completion; calls outside the Turn model (title task, manual Compaction)
-//! append immediately at completion (ticket 02 wires those meters). Every
-//! write is fire-and-forget — a failed append is logged and costs only the
-//! record, never the Turn, the queue, or the terminal event. A crash before
+//! Write choreography: records captured inside a Turn — the loop's own
+//! round-trips (assistant message plus its tool results' usage as one
+//! record), its automatic Compactions, and its auto-review passes —
+//! accumulate on the chat's runtime and land as ONE batch append at
+//! settlement, after queue completion. Calls outside the Turn model — the
+//! Title task and manual Compaction — append immediately at completion.
+//! Subagent round-trips (their internal Compaction and auto-review calls
+//! included, all one `subagent` kind) are booked from the delegation's
+//! billing vector into the PARENT chat's batch, stamped with the child
+//! doc id; no child ledger file ever exists. Every write is
+//! fire-and-forget — a failed append is logged and costs only the record,
+//! never the Turn, the queue, or the terminal event. A crash before
 //! settlement loses the running Turn's batch, unrepaired, by design.
+//!
+//! A round-trip is booked when the provider REPORTED: an aborted or errored
+//! response carries its usage and books like a clean one, so an interrupted
+//! call keeps whatever arrived. A request nobody ever answered (cancelled
+//! mid-flight, a transport that died silently) has no report and books
+//! nothing — waiting for one is exactly what the cancellation race exists
+//! to avoid.
 //!
 //! Deleting a chat archives before it deletes: the chat's whole ledger
 //! segment is appended — chat-attributed — to the device-level
@@ -27,8 +42,10 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use pi_core::ai::types::{AssistantMessage, UsageCost};
+use pi_core::agent::types::StreamFn;
+use pi_core::ai::types::{AssistantMessage, ToolResultMessage, Usage, UsageCost};
 
 use crate::agent::ChatRuntime;
 use crate::store::id_is_path_safe;
@@ -105,18 +122,19 @@ pub(crate) struct UsageRecord {
 }
 
 impl UsageRecord {
-    /// A main-chat Turn round-trip from one completed assistant message —
-    /// the raw report, read before the History repair decides what persists,
-    /// so failed and aborted answers stay billed. The Turn's message id and
-    /// outcome arrive at settlement.
-    fn from_assistant(message: &AssistantMessage) -> Self {
+    /// One round-trip from a completed assistant message — the raw report,
+    /// read before any caller decides what persists, so failed and aborted
+    /// answers stay billed. Turn records get their message id and outcome
+    /// at settlement; subagent records carry the child doc id from their
+    /// caller.
+    pub(crate) fn from_message(kind: UsageKind, message: &AssistantMessage) -> Self {
         let timestamp = if message.timestamp > 0 {
             message.timestamp
         } else {
             chrono::Utc::now().timestamp_millis()
         };
         Self {
-            kind: UsageKind::Turn,
+            kind,
             provider: message.provider.clone(),
             model: message.model.clone(),
             message_id: None,
@@ -132,6 +150,27 @@ impl UsageRecord {
             subagent_doc_id: None,
             chat_id: None,
         }
+    }
+
+    /// Fold a second usage report into this record — the round-trip's tool
+    /// results, when a provider bills them separately from the assistant
+    /// message.
+    fn add_usage(&mut self, usage: &Usage) {
+        self.input += usage.input;
+        self.output += usage.output;
+        self.cache_read += usage.cache_read;
+        self.cache_write += usage.cache_write;
+        if let Some(n) = usage.cache_write_1h {
+            *self.cache_write_1h.get_or_insert(0) += n;
+        }
+        if let Some(n) = usage.reasoning {
+            *self.reasoning.get_or_insert(0) += n;
+        }
+        self.cost.input.0 += usage.cost.input.0;
+        self.cost.output.0 += usage.cost.output.0;
+        self.cost.cache_read.0 += usage.cost.cache_read.0;
+        self.cost.cache_write.0 += usage.cost.cache_write.0;
+        self.cost.total.0 += usage.cost.total.0;
     }
 }
 
@@ -334,26 +373,103 @@ pub(crate) fn quarantine(data_dir: &Path, chat_id: &str) {
     }
 }
 
-/// Buffer one completed round-trip of the running main-chat Turn. Subagent
-/// round-trips are not booked here: the delegation's billing vector owns
-/// them (ticket 02 writes them to the parent ledger), so the child's buffer
-/// never becomes a phantom child ledger.
-pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
+/// Buffer one round-trip of the running main-chat Turn, attributed to
+/// `kind`. Subagent round-trips are not booked here: the delegation's
+/// billing vector owns them ([`capture_subagent_round_trip`]), so the
+/// child's buffer never becomes a phantom child ledger.
+fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
     if chat.child.is_some() {
         return;
     }
     chat.usage_pending
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(UsageRecord::from_assistant(message));
+        .push(UsageRecord::from_message(kind, message));
 }
 
-/// Settle the finished Turn's usage: stamp the batch with the Turn's message
-/// id and outcome, warm the totals, and land the whole batch as ONE append —
-/// after queue completion, fire-and-forget. A chat deleted mid-run drops its
-/// batch instead of resurrecting a file (the removed check sits inside the
-/// persistence lock, so a settle that waited out a concurrent delete still
-/// writes nothing); a crash before this point loses it unrepaired.
+/// Buffer the Turn's own round-trip (the assistant response; a separately
+/// billed tool result folds in via [`merge_tool_result`]).
+pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
+    capture(chat, UsageKind::Turn, message);
+}
+
+/// Fold a tool result's usage into the round-trip it belongs to — the MOST
+/// RECENT buffered Turn record, not simply the last one: an auto-review pass
+/// of the same round buffers its own record between the assistant message
+/// and the tool result. The `Agent` delegation result is skipped: it carries
+/// the child's TOTAL, already booked per-round-trip as `subagent` records.
+pub(crate) fn merge_tool_result(chat: &ChatRuntime, result: &ToolResultMessage) {
+    if chat.child.is_some() || result.tool_name == "Agent" {
+        return;
+    }
+    let Some(usage) = &result.usage else {
+        return;
+    };
+    let mut pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(turn) = pending
+        .iter_mut()
+        .rev()
+        .find(|record| record.kind == UsageKind::Turn)
+    {
+        turn.add_usage(usage);
+    }
+}
+
+/// Buffer one auto-review pass of the running Turn. A child run's reviews
+/// ride its delegation's billing vector instead (all `subagent` kind).
+pub(crate) fn capture_review(chat: &ChatRuntime, response: &AssistantMessage) {
+    capture(chat, UsageKind::AutoReview, response);
+}
+
+/// Buffer one automatic (in-Turn) Compaction summary response — it settles
+/// with the Turn's batch. Child runs compact on the delegation's metered
+/// transport and never book here.
+pub(crate) fn capture_compaction(chat: &ChatRuntime, response: &AssistantMessage) {
+    capture(chat, UsageKind::Compaction, response);
+}
+
+/// Buffer one subagent round-trip into the PARENT chat's batch — the
+/// delegation's billing vector sees every request the child caused (its own
+/// Compaction and auto-review calls included, one `subagent` kind), and the
+/// child doc id is the only sub-task attribution.
+pub(crate) fn capture_subagent_round_trip(
+    parent: &ChatRuntime,
+    child_doc_id: &str,
+    message: &AssistantMessage,
+) {
+    let mut record = UsageRecord::from_message(UsageKind::Subagent, message);
+    record.subagent_doc_id = Some(child_doc_id.to_string());
+    parent
+        .usage_pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(record);
+}
+
+/// Book a manual Compaction's summary response immediately — the queued
+/// `/compact` runs outside the Turn model, so it never waits for a batch.
+pub(crate) fn record_compaction(chat: &ChatRuntime, response: &AssistantMessage) {
+    record_immediate(
+        chat,
+        UsageRecord::from_message(UsageKind::Compaction, response),
+    );
+}
+
+/// Book the Title task's response immediately at completion — the task is
+/// outside the Turn lifecycle (ADR-0012), and its chat attribution stands
+/// even when the reply normalizes to no title at all.
+pub(crate) fn record_title(chat: &ChatRuntime, response: &AssistantMessage) {
+    record_immediate(chat, UsageRecord::from_message(UsageKind::Title, response));
+}
+
+/// Settle the finished Turn's usage: stamp the Turn's own records with its
+/// message id and outcome (the Compaction and auto-review records in the
+/// same batch keep their kind-only attribution), warm the totals, and land
+/// the whole batch as ONE append — after queue completion,
+/// fire-and-forget. A chat deleted mid-run drops its batch instead of
+/// resurrecting a file (the removed check sits inside the persistence
+/// lock, so a settle that waited out a concurrent delete still writes
+/// nothing); a crash before this point loses it unrepaired.
 pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOutcome) {
     let mut records =
         std::mem::take(&mut *chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner()));
@@ -361,8 +477,10 @@ pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOut
         return;
     }
     for record in &mut records {
-        record.message_id = Some(message_id.to_string());
-        record.turn_outcome = Some(outcome);
+        if record.kind == UsageKind::Turn {
+            record.message_id = Some(message_id.to_string());
+            record.turn_outcome = Some(outcome);
+        }
     }
     let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
     if chat.chat_id.is_empty() || chat.is_removed() {
@@ -378,13 +496,11 @@ pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOut
     }
 }
 
-/// Book one record from a call outside the Turn model (title task, manual
-/// Compaction — ticket 02 wires those meters): appended immediately at
-/// completion, never batched, still fire-and-forget. The removed check sits
-/// inside the persistence lock for the same delete-race reason as
-/// [`settle_turn`].
-#[allow(dead_code)] // the meters arrive with ticket 02
-pub(crate) fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
+/// Book one record from a call outside the Turn model (the Title task and
+/// manual Compaction paths above): appended immediately at completion,
+/// never batched, still fire-and-forget. The removed check sits inside the
+/// persistence lock for the same delete-race reason as [`settle_turn`].
+fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
     let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
     if chat.chat_id.is_empty() || chat.is_removed() {
         return;
@@ -396,6 +512,31 @@ pub(crate) fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
     if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &[record]) {
         tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
     }
+}
+
+/// The completed round-trips observed through a metered transport — one
+/// event stream per request, its result read (without consuming) once the
+/// round-trip finished. Streams that never finished (a cancelled or hung
+/// request the provider never reported on) stay pending and book nothing.
+pub(crate) type Billing =
+    Arc<Mutex<Vec<pi_core::ai::utils::event_stream::AssistantMessageEventStream>>>;
+
+/// Wrap a transport so every request it serves is observed: the stream is
+/// cloned into the billing vector before it flows back, results included —
+/// the metering bypass subagent delegations (and, through them, the
+/// children's own Compaction and auto-review calls) ride.
+pub(crate) fn metered_stream(source: StreamFn) -> (StreamFn, Billing) {
+    let billing = Billing::default();
+    let tasks = billing.clone();
+    let stream: StreamFn = Arc::new(move |model, context, options| {
+        let stream = source(model, context, options)?;
+        tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(stream.clone());
+        Ok(stream)
+    });
+    (stream, billing)
 }
 
 /// Delete-time choreography: archive first, then remove. The chat's whole
@@ -441,7 +582,7 @@ pub(crate) fn archive_and_delete(data_dir: &Path, chat_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_core::ai::types::{JsF64, Usage};
+    use pi_core::ai::types::{JsF64, ToolResultMessage, Usage};
 
     fn record(kind: UsageKind, input: u64, output: u64) -> UsageRecord {
         UsageRecord {
@@ -729,6 +870,130 @@ mod tests {
     }
 
     #[test]
+    fn settling_stamps_only_the_turns_own_records() {
+        let dir = temp_dir();
+        let chat = ChatRuntime::load(
+            &dir,
+            "chat-1",
+            "device",
+            std::sync::Arc::new(std::sync::Mutex::new(())),
+        );
+        let mut compaction = record(UsageKind::Compaction, 40, 4);
+        compaction.message_id = None;
+        compaction.turn_outcome = None;
+        chat.usage_pending
+            .lock()
+            .unwrap()
+            .extend([record(UsageKind::Turn, 10, 1), compaction]);
+
+        settle_turn(&chat, "m-1", TurnOutcome::Interrupted);
+
+        let settled = load_records(&dir, "chat-1").unwrap();
+        assert_eq!(settled.len(), 2);
+        assert_eq!(
+            (settled[0].message_id.as_deref(), settled[0].turn_outcome),
+            (Some("m-1"), Some(TurnOutcome::Interrupted)),
+            "the Turn's own record carries the stamp"
+        );
+        assert_eq!(
+            (settled[1].message_id.as_deref(), settled[1].turn_outcome),
+            (None, None),
+            "a batched Compaction record keeps its kind-only attribution"
+        );
+        // Totals span both kinds.
+        assert_eq!(chat.usage_totals.lock().unwrap().gross, 55);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tool_results_usage_merges_into_its_round_trip() {
+        let dir = temp_dir();
+        let chat = ChatRuntime::load(
+            &dir,
+            "chat-1",
+            "device",
+            std::sync::Arc::new(std::sync::Mutex::new(())),
+        );
+        chat.usage_pending
+            .lock()
+            .unwrap()
+            .push(record(UsageKind::Turn, 10, 1));
+        let billed = ToolResultMessage {
+            tool_call_id: "c-1".into(),
+            tool_name: "bash".into(),
+            usage: Some(Usage {
+                input: 5,
+                output: 2,
+                cache_read: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        merge_tool_result(&chat, &billed);
+        let merged = chat.usage_pending.lock().unwrap();
+        assert_eq!(merged.len(), 1, "same round-trip, one record");
+        assert_eq!(
+            (merged[0].input, merged[0].output, merged[0].cache_read),
+            (15, 3, 1)
+        );
+
+        // The delegation result carries the child's total — booked per
+        // round-trip as subagent records, never merged into the parent's.
+        let spawn = ToolResultMessage {
+            tool_name: "Agent".into(),
+            usage: Some(Usage {
+                input: 100,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        merge_tool_result(&chat, &spawn);
+        assert_eq!(merged[0].input, 15);
+    }
+
+    /// An auto-review pass of the same round buffers its record between the
+    /// assistant message and the tool result. The merge must reach past it
+    /// to the round's Turn record — merging into the last record would land
+    /// a tool result's usage on the reviewer's.
+    #[test]
+    fn a_tool_result_merges_past_an_interleaved_review_record() {
+        let dir = temp_dir();
+        let chat = ChatRuntime::load(
+            &dir,
+            "chat-1",
+            "device",
+            std::sync::Arc::new(std::sync::Mutex::new(())),
+        );
+        chat.usage_pending.lock().unwrap().extend([
+            record(UsageKind::Turn, 10, 1),
+            record(UsageKind::AutoReview, 90, 9),
+        ]);
+        let billed = ToolResultMessage {
+            tool_call_id: "c-1".into(),
+            tool_name: "bash".into(),
+            usage: Some(Usage {
+                input: 5,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        merge_tool_result(&chat, &billed);
+
+        let pending = chat.usage_pending.lock().unwrap();
+        assert_eq!(pending.len(), 2);
+        let by_kind = |kind| pending.iter().find(|record| record.kind == kind).unwrap();
+        assert_eq!(by_kind(UsageKind::Turn).input, 15, "the round-trip took it");
+        assert_eq!(
+            by_kind(UsageKind::AutoReview).input,
+            90,
+            "the reviewer's record is untouched"
+        );
+        drop(pending);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn capture_builds_a_turn_record_from_the_assistant_report() {
         let message = AssistantMessage {
             provider: "openai".into(),
@@ -749,7 +1014,7 @@ mod tests {
             timestamp: 1_700_000_000_123,
             ..Default::default()
         };
-        let built = UsageRecord::from_assistant(&message);
+        let built = UsageRecord::from_message(UsageKind::Turn, &message);
         assert_eq!(built.kind, UsageKind::Turn);
         assert_eq!(built.provider, "openai");
         assert_eq!(built.model, "openai/gpt-5.4");

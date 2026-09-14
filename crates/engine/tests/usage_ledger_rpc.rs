@@ -249,7 +249,7 @@ async fn an_interrupted_turn_keeps_the_provider_reported_part() {
 }
 
 #[tokio::test]
-async fn a_subagent_round_trip_writes_no_child_ledger() {
+async fn a_subagent_books_into_the_parent_ledger_and_writes_no_child_file() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::tool_call(
@@ -269,19 +269,53 @@ async fn a_subagent_round_trip_writes_no_child_ledger() {
     assert_eq!(event["outcome"], "succeeded");
     common::wait_for_requests(&provider, 3).await;
 
-    // The child's own round-trip is not booked from the child buffer —
-    // ticket 02 books subagents from the delegation's billing vector into
-    // the parent ledger. Today: only the parent's two rounds, and no child
-    // usage file anywhere.
-    let records = read_ledger(fixture.data_dir.path(), "chat-1");
-    assert_eq!(records.len(), 2, "{records:?}");
-    assert!(records.iter().all(|record| record["kind"] == "turn"));
+    // The parent's own rounds are `turn` records; the child's round-trip is
+    // booked from the delegation's billing vector as ONE `subagent` record
+    // in the parent ledger, stamped with the child doc id. No child ledger
+    // file exists anywhere — the parent's file is the only one.
+    let ledger_path = fixture.data_dir.path().join("usage/chat-1.jsonl");
+    let records: Vec<Value> = {
+        let text = std::fs::read_to_string(&ledger_path).unwrap();
+        text.lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    assert_eq!(records.len(), 3, "{records:?}");
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|record| record["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds.iter().filter(|kind| **kind == "turn").count(), 2);
+    assert_eq!(kinds.iter().filter(|kind| **kind == "subagent").count(), 1);
+    let subagent = records
+        .iter()
+        .find(|record| record["kind"] == "subagent")
+        .unwrap();
+    let doc_id = subagent["subagentDocId"].as_str().unwrap();
+    assert!(doc_id.starts_with("chat-1--sub--"), "{doc_id}");
+    // The spawn chip's aggregate is unchanged: fixed usage per round-trip.
+    assert_eq!(subagent["input"], 111);
+    // Subagent records carry no Turn stamp — the child doc id is their
+    // attribution.
+    assert!(subagent.get("messageId").is_none());
+    assert!(subagent.get("turnOutcome").is_none());
+    // No child usage file, and the spawn tool result did not double-book the
+    // child's total into a parent turn record.
     assert!(
         !fixture
             .data_dir
             .path()
             .join("subagents/chat-1/usage")
             .exists()
+    );
+    let turns: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["kind"] == "turn")
+        .collect();
+    assert!(
+        turns.iter().all(|record| record["input"] == 111),
+        "the delegation result's aggregate must not double-book: {turns:?}"
     );
 }
 

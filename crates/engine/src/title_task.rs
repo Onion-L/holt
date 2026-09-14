@@ -2,8 +2,10 @@
 //! accepted, one independent background request asks the configured title
 //! model for a better name. The task is deliberately outside the Turn
 //! lifecycle — its own cancellation token (only chat deletion cancels it),
-//! no Session status, no History/Transcript/preview/usage footprint, no
-//! retries. Every failure is silent and preserves the first-line fallback.
+//! no Session status, no History/Transcript/preview footprint, no
+//! retries. Its one model round-trip IS billed to the chat's usage ledger
+//! (kind `title`, appended immediately at completion). Every failure is
+//! silent and preserves the first-line fallback.
 //!
 //! The 2026-09-11 title-quality fix shaped the request around one rule:
 //! the first prompt is **material to name, never a message to answer**.
@@ -22,7 +24,7 @@ use pi_core::ai::types::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::AgentRuntime;
+use crate::agent::{AgentRuntime, ChatRuntime};
 use crate::store::persist_chats;
 
 /// A hung title request becomes a silent failure after this long — the task
@@ -47,6 +49,9 @@ const REFS_HEADER: &str = "Referenced paths:";
 pub(crate) struct TitleTaskSpec {
     pub(crate) chat_id: String,
     pub(crate) data_dir: PathBuf,
+    /// The chat whose ledger bills the round-trip (also the write-back
+    /// guard's subject).
+    pub(crate) chat: std::sync::Arc<ChatRuntime>,
     /// The first user prompt — the only content the title model ever sees.
     pub(crate) prompt: String,
     pub(crate) instruction: String,
@@ -155,6 +160,9 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
         _ = tokio::time::sleep(TITLE_REQUEST_TIMEOUT) => return None,
     }
     let response = stream.result().await;
+    // Bill before judging the reply: a title attempt is a metered round-trip
+    // even when it normalizes to no title at all (kind `title`, immediate).
+    crate::usage::record_title(&spec.chat, &response);
     match response.stop_reason {
         StopReason::Aborted | StopReason::Error => None,
         _ => normalize_title(&pi_core::ai::utils::text::content_text(

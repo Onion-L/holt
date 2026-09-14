@@ -372,7 +372,7 @@ async fn execute(
         child
     };
     child.publish();
-    let (stream_fn, billing) = metered_stream(d.stream_fn.clone());
+    let (stream_fn, billing) = crate::usage::metered_stream(d.stream_fn.clone());
     let ok = if child
         .persistence_error
         .lock()
@@ -404,11 +404,17 @@ async fn execute(
             crate::agent::TurnEnd::Succeeded
         )
     };
+    // The child's model work — every round-trip its own Compaction and
+    // auto-review passes included, one `subagent` kind — books into the
+    // PARENT chat's ledger, stamped with the child doc id. The billing
+    // vector drains once the run returned: every request has resolved by
+    // then (the spawn chip's aggregate below rides the same vector).
     let bills = std::mem::take(&mut *billing.lock().unwrap_or_else(|e| e.into_inner()));
     let mut usage = Usage::default();
     for bill in bills {
         if let Some(message) = bill.result().now_or_never() {
             add_usage(&mut usage, &message.usage);
+            crate::usage::capture_subagent_round_trip(&d.parent, &id, &message);
         }
     }
     *child.usage.lock().unwrap_or_else(|e| e.into_inner()) = usage.clone();
@@ -517,24 +523,6 @@ async fn execute(
         usage: Some(usage),
         ..Default::default()
     })
-}
-
-type Billing = Arc<Mutex<Vec<pi_core::ai::utils::event_stream::AssistantMessageEventStream>>>;
-
-// Observe the result future without consuming stream events. This includes
-// Compaction and auto-review calls, which do not produce agent-loop events.
-fn metered_stream(source: StreamFn) -> (StreamFn, Billing) {
-    let billing = Billing::default();
-    let tasks = billing.clone();
-    let stream: StreamFn = Arc::new(move |model, context, options| {
-        let stream = source(model, context, options)?;
-        tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(stream.clone());
-        Ok(stream)
-    });
-    (stream, billing)
 }
 
 pub(crate) fn after_tool_call() -> AfterToolCallFn {

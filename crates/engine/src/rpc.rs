@@ -693,7 +693,7 @@ impl EngineService {
         // must never fail the Turn.
         let mut title_spec = if title_prompt.is_some() && self.title_may_be_eligible(chat_id, &chat)
         {
-            self.prepare_title_task(chat_id, title_prompt.as_deref().unwrap_or_default())
+            self.prepare_title_task(chat_id, &chat, title_prompt.as_deref().unwrap_or_default())
                 .await
         } else {
             None
@@ -1314,6 +1314,7 @@ impl EngineService {
     async fn prepare_title_task(
         &self,
         chat_id: &str,
+        chat: &Arc<crate::agent::ChatRuntime>,
         prompt: &str,
     ) -> Option<crate::title_task::TitleTaskSpec> {
         let settings = self.title_settings.get();
@@ -1327,6 +1328,9 @@ impl EngineService {
         Some(crate::title_task::TitleTaskSpec {
             chat_id: chat_id.to_string(),
             data_dir: self.data_dir.clone(),
+            // The chat whose ledger bills the round-trip; the run's own
+            // runtime handle, so the title record lands on the live totals.
+            chat: chat.clone(),
             prompt: prompt.to_string(),
             instruction: settings.instruction,
             model,

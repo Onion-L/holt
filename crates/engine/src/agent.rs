@@ -1442,6 +1442,14 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     // after the tool finishes, so a crash mid-Turn keeps
                     // every completed call.
                     chat.append_history((*message).clone());
+                    // A result the provider billed separately folds into
+                    // its round-trip's usage record (the usage ledger); the
+                    // Agent delegation result is skipped inside — the
+                    // child's total is booked per round-trip as subagent
+                    // records.
+                    if let AgentMessage::ToolResult(result) = &*message {
+                        crate::usage::merge_tool_result(&chat, result);
+                    }
                 }
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
@@ -1510,6 +1518,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // source-context stamping, no turn-diff baseline reset, no status
     // change.
     let overflow_recovery = chat.child.is_none() && runtime.take_compact_before_next_turn(&chat_id);
+    // The summary responses bill into the Turn's usage batch (a child run's
+    // compaction books nothing here — its delegation's metered transport
+    // sees the request).
+    let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+        crate::usage::capture_compaction(&chat, response)
+    };
     let turn_start_compaction = if overflow_recovery {
         crate::compaction::compact_now(
             &history,
@@ -1518,6 +1532,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             &api_key,
             holt_doc::parts::CompactionTrigger::AfterOverflow,
             Some(&cancel),
+            &compaction_meter,
         )
         .await
     } else {
@@ -1528,6 +1543,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             &api_key,
             holt_doc::parts::CompactionTrigger::Automatic,
             Some(&cancel),
+            &compaction_meter,
         )
         .await
     };
@@ -1614,6 +1630,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 if !crate::compaction::needed(&last_turn.context.messages, &model) {
                     return None;
                 }
+                // Mid-Turn summaries bill into the batch like the Turn-start
+                // ones (a child run books nothing — see there).
+                let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+                    crate::usage::capture_compaction(&chat, response)
+                };
                 let outcome = match crate::compaction::compact(
                     &last_turn.context.messages,
                     &model,
@@ -1621,6 +1642,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     &api_key,
                     holt_doc::parts::CompactionTrigger::Automatic,
                     Some(&cancel),
+                    &compaction_meter,
                 )
                 .await
                 {

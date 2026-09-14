@@ -373,7 +373,9 @@ status. Child Approvals also appear in the parent Transcript with a typed
 `ToolGate.origin` that opens the child tab; these are display-only projections,
 not parent History messages. Always-allow grants are shared with the parent
 chat. Child results carry usage, including child Compaction and auto-review
-requests, in the parent's tool-result History record.
+requests, in the parent's tool-result History record, and the same
+round-trips book into the parent chat's usage ledger as `subagent` records
+stamped with the child doc id.
 
 Only the final summary enters parent History, bounded to 12,000 tokens measured
 with the shared o200k tokenizer (a stable output budget, not a claim about a
@@ -470,21 +472,29 @@ its own append-only JSONL record — `usage/<chatId>.jsonl`, the History
 record's durability shapes (version header, repaired-append atomicity,
 tolerant replay) — one line per metered provider round-trip: all token
 fields (input, output, both cache fields, plus `cacheWrite1h`/`reasoning`
-when reported), the attribution `kind` (`turn` today; `subagent`,
-`compaction`, `auto-review`, and `title` records arrive with the metering
-tickets), provider, model, the Turn's `messageId` and `turnOutcome`
-(`succeeded`/`failed`/`interrupted` — interrupted Turns keep whatever the
-provider reported), and the upstream cost stored verbatim (Holt computes no
-prices). A Turn's round-trips accumulate in memory and land as one batch
-append at settlement, after queue completion; writes are fire-and-forget —
-a failed append costs only the record, never the Turn, queue, or terminal
-event, and a crash before settlement loses the batch unrepaired. A damaged
-file is quarantined `.corrupt` and totals continue from zero; replay on
-open warms per-kind sums plus the gross token count. Deleting a chat
-archives first: its whole ledger segment, chat-attributed, appends to the
-device-level `usage/archive.jsonl` (grow-only, the future usage
-dashboard's feed; best-effort — a failed archive never blocks the delete),
-then the per-chat file and its quarantined copies are removed.
+when reported), the attribution `kind`, provider, model, the upstream cost
+stored verbatim (Holt computes no prices), and — on Turn records — the
+Turn's `messageId` and `turnOutcome` (`succeeded`/`failed`/`interrupted`;
+interrupted Turns keep whatever the provider reported). Every metered call
+a chat causes is attributed: the loop's own rounds are `turn` records (an
+assistant response and its tool results' usage fold into one), and each
+auto-review pass (`auto-review`), Compaction summary (`compaction`), and
+Title task (`title`) round-trip carries its own kind. A Subagent's whole
+run — its own rounds, Compaction, and auto-review passes alike, one
+`subagent` kind stamped with the child doc id — books into the PARENT
+chat's ledger; no child ledger file exists, and the delegation tool
+result's own aggregate is not double-booked. A Turn's records accumulate
+in memory and land as one batch append at settlement, after queue
+completion; the Title task and manual Compaction write immediately at
+completion. Writes are fire-and-forget — a failed append costs only the
+record, never the Turn, queue, or terminal event, and a crash before
+settlement loses the batch unrepaired. A damaged file is quarantined
+`.corrupt` and totals continue from zero; replay on open warms per-kind
+sums plus the gross token count. Deleting a chat archives first: its whole
+ledger segment, chat-attributed, appends to the device-level
+`usage/archive.jsonl` (grow-only, the future usage dashboard's feed;
+best-effort — a failed archive never blocks the delete), then the per-chat
+file and its quarantined copies are removed.
 
 The pending-to-started checkpoint is atomically replaced and synced before
 any model or tool work. Restart repairs a started Turn as interrupted,
