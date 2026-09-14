@@ -41,3 +41,5 @@ objc = "0.2"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+pi-core-rs.workspace = true
+tokio-util.workspace = true

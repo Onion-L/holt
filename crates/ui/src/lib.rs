@@ -19,6 +19,7 @@ pub mod attachments;
 pub mod badges;
 pub mod change_requests;
 pub mod changes;
+mod chat_usage;
 pub mod comments;
 pub mod composer;
 pub mod edge_fade;

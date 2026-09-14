@@ -243,6 +243,8 @@ pub struct AppState {
     pub transcript_replayed: bool,
     pub message_queue: Option<holt_proto::MessageQueue>,
     message_queue_task: Option<Task<()>>,
+    pub(crate) chat_usage: Option<crate::chat_usage::ChatUsage>,
+    chat_usage_task: Option<Task<()>>,
     /// The selected chat's Turn change sets (ADR-0024), keyed by each Turn's
     /// user-message id: the live current Turn's moving set from
     /// `WatchTurnChangeSet`, its frozen final at settle, and history restored
@@ -306,6 +308,8 @@ impl AppState {
             transcript_replayed: false,
             message_queue: None,
             message_queue_task: None,
+            chat_usage: None,
+            chat_usage_task: None,
             turn_change_sets: HashMap::new(),
             turn_change_set_task: None,
             echoes: HashMap::new(),
@@ -388,6 +392,8 @@ impl AppState {
             self.transcript.clear();
             self.transcript_replayed = false;
             self.transcript_task = None;
+            self.chat_usage = None;
+            self.chat_usage_task = None;
             self.message_queue = None;
             self.message_queue_task = None;
             self.turn_change_sets.clear();
@@ -967,6 +973,8 @@ impl AppState {
         self.engine = None;
         self.watch_tasks.clear();
         self.transcript_task = None;
+        self.chat_usage = None;
+        self.chat_usage_task = None;
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();
@@ -1073,6 +1081,8 @@ impl AppState {
         self.connection = ConnectionStatus::Ready;
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
         if let Some(chat_id) = self.selected_chat.clone() {
+            self.chat_usage = None;
+            self.chat_usage_task = None;
             self.message_queue = None;
             self.message_queue_task = Some(spawn_message_queue_watch(
                 cx,
@@ -1080,6 +1090,11 @@ impl AppState {
                 chat_id.clone(),
             ));
             self.turn_change_set_task = Some(spawn_turn_change_set_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
+            self.chat_usage_task = Some(crate::chat_usage::spawn_watch(
                 cx,
                 handle.clone(),
                 chat_id.clone(),
@@ -1207,6 +1222,8 @@ impl AppState {
         self.transcript.clear();
         self.transcript_replayed = false;
         self.transcript_task = None;
+        self.chat_usage = None;
+        self.chat_usage_task = None;
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();
@@ -1234,6 +1251,11 @@ impl AppState {
                 chat_id.clone(),
             ));
             self.turn_change_set_task = Some(spawn_turn_change_set_watch(
+                cx,
+                handle.clone(),
+                chat_id.clone(),
+            ));
+            self.chat_usage_task = Some(crate::chat_usage::spawn_watch(
                 cx,
                 handle.clone(),
                 chat_id.clone(),
