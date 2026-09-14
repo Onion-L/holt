@@ -56,6 +56,7 @@ mod turn_change_store;
 mod turn_change_watch;
 mod turn_changes;
 mod turn_events;
+mod usage;
 mod web_search_settings;
 mod workspace_watch;
 

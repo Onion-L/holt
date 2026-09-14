@@ -865,6 +865,18 @@ impl EngineService {
                 } else {
                     None
                 };
+                // The usage ledger settles with the Turn: the round-trips
+                // buffered while it ran land as ONE batch append, stamped
+                // with the Turn's message id and outcome — after queue
+                // completion, fire-and-forget like the change set, never
+                // Turn correctness.
+                if let Some(end) = &turn_end {
+                    crate::usage::settle_turn(
+                        &worker_chat,
+                        &picked_id,
+                        crate::usage::TurnOutcome::of(end),
+                    );
+                }
                 // The Turn terminal event (ADR-0019): exactly one per real
                 // main-chat Turn, only AFTER Transcript and History settled
                 // and queue completion was durably recorded. A completion

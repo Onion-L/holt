@@ -133,6 +133,13 @@ pub(crate) struct ChatRuntime {
     pub(crate) grants: Arc<Mutex<crate::gate::GateGrants>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
     pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
+    /// The running Turn's captured usage records (the usage ledger): they
+    /// accumulate here and land as ONE settlement append after queue
+    /// completion — a crash before settlement loses the batch, by design.
+    pub(crate) usage_pending: Mutex<Vec<crate::usage::UsageRecord>>,
+    /// The chat's running usage totals over its ledger, replayed warm on
+    /// load and kept current as records settle.
+    pub(crate) usage_totals: Mutex<crate::usage::UsageTotals>,
 }
 
 /// Streaming publishes sample to this cadence (the doc-watch commit tick the
@@ -177,6 +184,8 @@ impl ChatRuntime {
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             child: None,
             usage: Mutex::new(Default::default()),
+            usage_pending: Mutex::new(Vec::new()),
+            usage_totals: Mutex::new(Default::default()),
         }
     }
 
@@ -362,6 +371,10 @@ impl ChatRuntime {
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             child: None,
             usage: Mutex::new(Default::default()),
+            usage_pending: Mutex::new(Vec::new()),
+            // Replay warms the running totals from the ledger; a damaged
+            // file is set aside inside and the count continues from zero.
+            usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
         }
     }
 
@@ -584,6 +597,10 @@ impl AgentRuntime {
         crate::history::delete_history(&self.data_dir, chat_id);
         crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
+        // The usage ledger archives before it dies: the chat's records move
+        // into the device-level stream, then the per-chat file and its
+        // quarantined copies go. Best-effort — never blocks the delete.
+        crate::usage::archive_and_delete(&self.data_dir, chat_id);
         if crate::store::id_is_path_safe(chat_id) {
             let _ =
                 std::fs::remove_file(self.data_dir.join("queues").join(format!("{chat_id}.json")));
@@ -1398,6 +1415,14 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         &device_id,
                         true,
                     );
+                    // The completed round-trip's usage joins the running
+                    // Turn's pending batch (the usage ledger): captured on
+                    // the raw message, before the History repair below
+                    // decides what persists, so failed and aborted answers
+                    // stay billed. The batch lands at settlement.
+                    if let AgentMessage::Assistant(assistant) = &*message {
+                        crate::usage::capture_round_trip(&chat, assistant);
+                    }
                     // The completed assistant message joins the persisted
                     // History as it ends (ADR-0010), in its History version:
                     // a message the run ends on is rewritten to a normal

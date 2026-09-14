@@ -21,7 +21,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
@@ -464,6 +464,27 @@ the queue and lifts the single-run scope of an outstanding grant. Deleting
 the last pending item also clears pause when no item is executing and there is no
 queue-level error, and a queue that settles empty with no queue-level error
 comes back clean on reload as well, so the next submission runs normally.
+
+The **usage ledger** (`engine::usage`) keeps a chat's token accounting as
+its own append-only JSONL record — `usage/<chatId>.jsonl`, the History
+record's durability shapes (version header, repaired-append atomicity,
+tolerant replay) — one line per metered provider round-trip: all token
+fields (input, output, both cache fields, plus `cacheWrite1h`/`reasoning`
+when reported), the attribution `kind` (`turn` today; `subagent`,
+`compaction`, `auto-review`, and `title` records arrive with the metering
+tickets), provider, model, the Turn's `messageId` and `turnOutcome`
+(`succeeded`/`failed`/`interrupted` — interrupted Turns keep whatever the
+provider reported), and the upstream cost stored verbatim (Holt computes no
+prices). A Turn's round-trips accumulate in memory and land as one batch
+append at settlement, after queue completion; writes are fire-and-forget —
+a failed append costs only the record, never the Turn, queue, or terminal
+event, and a crash before settlement loses the batch unrepaired. A damaged
+file is quarantined `.corrupt` and totals continue from zero; replay on
+open warms per-kind sums plus the gross token count. Deleting a chat
+archives first: its whole ledger segment, chat-attributed, appends to the
+device-level `usage/archive.jsonl` (grow-only, the future usage
+dashboard's feed; best-effort — a failed archive never blocks the delete),
+then the per-chat file and its quarantined copies are removed.
 
 The pending-to-started checkpoint is atomically replaced and synced before
 any model or tool work. Restart repairs a started Turn as interrupted,
