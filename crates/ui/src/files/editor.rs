@@ -1513,6 +1513,18 @@ impl Element for CodeEditorElement {
         let line_height = px(EDITOR_LINE_HEIGHT);
         let gutter = self.editor.read(cx).gutter_width();
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            // The gutter plate: the numbers read against a tone of their own
+            // instead of whatever scrolls by underneath them (user report).
+            // A translucent wash — not the pane's fill — because an opaque
+            // plate would band over the frosted pane a glassy appearance
+            // paints under the editor.
+            window.paint_quad(gpui::fill(
+                Bounds::new(
+                    point(bounds.left(), bounds.top()),
+                    size(px(gutter), bounds.size.height),
+                ),
+                theme.ink(0.03),
+            ));
             // The gutter: stable line numbers, vertically scrolled with the
             // text, horizontally pinned (long lines never slide under it).
             // The caret's line reads a step brighter.
@@ -1554,151 +1566,192 @@ impl Element for CodeEditorElement {
                     cx,
                 );
             }
-            // Search matches paint under everything else: the active hit in
-            // the accent, the rest in the selection wash (ticket 03).
-            let search = {
-                let editor = self.editor.read(cx);
-                (editor.search_matches.clone(), editor.search_active)
-            };
-            for (ix, range) in search.0.iter().enumerate() {
-                let (Some(start), Some(end)) = (
-                    self.editor.read(cx).x_for_offset(range.start),
-                    self.editor.read(cx).x_for_offset(range.end),
-                ) else {
-                    continue;
-                };
-                if end <= start {
-                    continue;
-                }
-                let line_ix = self.editor.read(cx).line_index_for_offset(range.start);
-                let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
-                window.paint_quad(gpui::fill(
-                    Bounds::new(
-                        point(
-                            bounds.left() + start - px(scroll_left),
-                            bounds.top() + px(y),
-                        ),
-                        size(end - start, line_height),
-                    ),
-                    if Some(ix) == search.1 {
-                        theme.accent.opacity(0.45)
-                    } else {
-                        theme.selection.opacity(0.55)
-                    },
-                ));
-            }
-            // Selection quads per affected line.
-            let selected = self.editor.read(cx).selected_range();
-            if !selected.is_empty() {
-                let first_line = self.editor.read(cx).line_index_for_offset(selected.start);
-                let last_line = self.editor.read(cx).line_index_for_offset(selected.end);
-                for line_ix in first_line..=last_line {
-                    let Some(line_start) = self.editor.read(cx).line_starts_for(line_ix) else {
-                        continue;
+            // Everything below is the code surface: search wash, selection,
+            // glyphs, caret. It is clipped at the gutter's right edge so a
+            // horizontally scrolled line can never paint over the pinned
+            // numbers.
+            let code_bounds = text_surface_bounds(bounds, gutter);
+            window.with_content_mask(
+                Some(gpui::ContentMask {
+                    bounds: code_bounds,
+                }),
+                |window| {
+                    // Search matches paint under everything else: the active hit in
+                    // the accent, the rest in the selection wash (ticket 03).
+                    let search = {
+                        let editor = self.editor.read(cx);
+                        (editor.search_matches.clone(), editor.search_active)
                     };
-                    let local_start = selected.start.saturating_sub(line_start);
-                    let local_end = selected
-                        .end
-                        .saturating_sub(line_start)
-                        .min(self.editor.read(cx).line_len(line_ix));
-                    if local_start >= local_end {
-                        continue;
-                    }
-                    let start_x = self
-                        .editor
-                        .read(cx)
-                        .x_for_local(line_ix, local_start)
-                        .unwrap_or(px(PAD_X));
-                    let end_x = self
-                        .editor
-                        .read(cx)
-                        .x_for_local(line_ix, local_end)
-                        .unwrap_or(px(PAD_X + 40.0));
-                    if end_x <= start_x {
-                        continue;
-                    }
-                    let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(
-                            point(
-                                bounds.left() + start_x - px(scroll_left),
-                                bounds.top() + px(y),
+                    for (ix, range) in search.0.iter().enumerate() {
+                        let (Some(start), Some(end)) = (
+                            self.editor.read(cx).x_for_offset(range.start),
+                            self.editor.read(cx).x_for_offset(range.end),
+                        ) else {
+                            continue;
+                        };
+                        if end <= start {
+                            continue;
+                        }
+                        let line_ix = self.editor.read(cx).line_index_for_offset(range.start);
+                        let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                point(
+                                    bounds.left() + start - px(scroll_left),
+                                    bounds.top() + px(y),
+                                ),
+                                size(end - start, line_height),
                             ),
-                            size(end_x - start_x, line_height),
-                        ),
-                        theme.selection,
-                    ));
-                }
-            }
-            // Visible lines. A line intersecting the IME marked range is
-            // shaped fresh with an underline run; everything else paints its
-            // cached plain shape. Lines are read one at a time — no
-            // whole-buffer clones per frame.
-            let text_origin_x = self.editor.read(cx).text_x();
-            for line_ix in visible.clone() {
-                let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
-                let origin = point(
-                    bounds.left() + px(text_origin_x) - px(scroll_left),
-                    bounds.top() + px(y),
-                );
-                let marked = self.editor.read(cx).marked_range_local(line_ix);
-                let underlined = marked.and_then(|marked| {
-                    let editor = self.editor.read(cx);
-                    let text = editor.line_text(line_ix)?;
-                    let spans = editor
-                        .highlight
-                        .as_ref()
-                        .and_then(|document| document.lines.get(line_ix))
-                        .map(|spans| spans.as_slice())
-                        .unwrap_or(&[]);
-                    let mono = gpui::font(theme.font_mono.clone());
-                    let base =
-                        crate::markdown::render::runs_for_syntax_line(&text, spans, &mono, &theme);
-                    let runs = overlay_underline(base, marked);
-                    Some(window.text_system().shape_line(
-                        gpui::SharedString::from(text),
-                        px(EDITOR_TEXT_SIZE),
-                        &runs,
-                        None,
-                    ))
-                });
-                if let Some(line) = underlined {
-                    let _ =
-                        line.paint(origin, line_height, gpui::TextAlign::Left, None, window, cx);
-                    continue;
-                }
-                // WrappedLine isn't Clone; ShapedLine is — take a cheap
-                // clone so the entity borrow ends before painting.
-                if let Some(line) = self.editor.read(cx).shaped_line(line_ix).cloned() {
-                    let _ =
-                        line.paint(origin, line_height, gpui::TextAlign::Left, None, window, cx);
-                }
-            }
-            // Caret.
-            let caret = self.editor.update(cx, |editor, cx| {
-                editor
-                    .caret_shown(window, cx)
-                    .then(|| {
+                            if Some(ix) == search.1 {
+                                theme.accent.opacity(0.45)
+                            } else {
+                                theme.selection.opacity(0.55)
+                            },
+                        ));
+                    }
+                    // Selection quads per affected line.
+                    let selected = self.editor.read(cx).selected_range();
+                    if !selected.is_empty() {
+                        let first_line = self.editor.read(cx).line_index_for_offset(selected.start);
+                        let last_line = self.editor.read(cx).line_index_for_offset(selected.end);
+                        for line_ix in first_line..=last_line {
+                            let Some(line_start) = self.editor.read(cx).line_starts_for(line_ix)
+                            else {
+                                continue;
+                            };
+                            let local_start = selected.start.saturating_sub(line_start);
+                            let local_end = selected
+                                .end
+                                .saturating_sub(line_start)
+                                .min(self.editor.read(cx).line_len(line_ix));
+                            if local_start >= local_end {
+                                continue;
+                            }
+                            let start_x = self
+                                .editor
+                                .read(cx)
+                                .x_for_local(line_ix, local_start)
+                                .unwrap_or(px(PAD_X));
+                            let end_x = self
+                                .editor
+                                .read(cx)
+                                .x_for_local(line_ix, local_end)
+                                .unwrap_or(px(PAD_X + 40.0));
+                            if end_x <= start_x {
+                                continue;
+                            }
+                            let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
+                            window.paint_quad(gpui::fill(
+                                Bounds::new(
+                                    point(
+                                        bounds.left() + start_x - px(scroll_left),
+                                        bounds.top() + px(y),
+                                    ),
+                                    size(end_x - start_x, line_height),
+                                ),
+                                theme.selection,
+                            ));
+                        }
+                    }
+                    // Visible lines. A line intersecting the IME marked range is
+                    // shaped fresh with an underline run; everything else paints its
+                    // cached plain shape. Lines are read one at a time — no
+                    // whole-buffer clones per frame.
+                    let text_origin_x = self.editor.read(cx).text_x();
+                    for line_ix in visible.clone() {
+                        let y = PAD_Y + line_ix as f32 * EDITOR_LINE_HEIGHT - scroll_top;
+                        let origin = point(
+                            bounds.left() + px(text_origin_x) - px(scroll_left),
+                            bounds.top() + px(y),
+                        );
+                        let marked = self.editor.read(cx).marked_range_local(line_ix);
+                        let underlined = marked.and_then(|marked| {
+                            let editor = self.editor.read(cx);
+                            let text = editor.line_text(line_ix)?;
+                            let spans = editor
+                                .highlight
+                                .as_ref()
+                                .and_then(|document| document.lines.get(line_ix))
+                                .map(|spans| spans.as_slice())
+                                .unwrap_or(&[]);
+                            let mono = gpui::font(theme.font_mono.clone());
+                            let base = crate::markdown::render::runs_for_syntax_line(
+                                &text, spans, &mono, &theme,
+                            );
+                            let runs = overlay_underline(base, marked);
+                            Some(window.text_system().shape_line(
+                                gpui::SharedString::from(text),
+                                px(EDITOR_TEXT_SIZE),
+                                &runs,
+                                None,
+                            ))
+                        });
+                        if let Some(line) = underlined {
+                            let _ = line.paint(
+                                origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                            continue;
+                        }
+                        // WrappedLine isn't Clone; ShapedLine is — take a cheap
+                        // clone so the entity borrow ends before painting.
+                        if let Some(line) = self.editor.read(cx).shaped_line(line_ix).cloned() {
+                            let _ = line.paint(
+                                origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                    // Caret.
+                    let caret = self.editor.update(cx, |editor, cx| {
                         editor
-                            .point_for_index(editor.cursor_offset())
-                            .map(|at| (at, editor.line_height))
-                    })
-                    .flatten()
-            });
-            if let Some((at, height)) = caret {
-                window.paint_quad(gpui::fill(
-                    Bounds::new(
-                        point(
-                            bounds.left() + at.x - px(scroll_left),
-                            bounds.top() + at.y - px(scroll_top),
-                        ),
-                        size(px(2.0), height),
-                    ),
-                    theme.caret,
-                ));
-            }
+                            .caret_shown(window, cx)
+                            .then(|| {
+                                editor
+                                    .point_for_index(editor.cursor_offset())
+                                    .map(|at| (at, editor.line_height))
+                            })
+                            .flatten()
+                    });
+                    if let Some((at, height)) = caret {
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                point(
+                                    bounds.left() + at.x - px(scroll_left),
+                                    bounds.top() + at.y - px(scroll_top),
+                                ),
+                                size(px(2.0), height),
+                            ),
+                            theme.caret,
+                        ));
+                    }
+                },
+            );
         });
     }
+}
+
+/// The code surface inside the editor: everything right of the pinned
+/// line-number gutter. Glyphs, selection, search washes and the caret are all
+/// clipped to it, so a horizontally scrolled line cannot paint over the
+/// numbers. Zero-width rather than inverted when the pane is narrower than the
+/// gutter.
+fn text_surface_bounds(bounds: Bounds<Pixels>, gutter: f32) -> Bounds<Pixels> {
+    Bounds::new(
+        point(bounds.left() + px(gutter), bounds.top()),
+        size(
+            (bounds.size.width - px(gutter)).max(px(0.0)),
+            bounds.size.height,
+        ),
+    )
 }
 
 /// Split prepared (syntax-colored) runs at the marked boundaries and
@@ -1843,6 +1896,21 @@ mod tests {
             });
             assert!(big.read(cx).gutter_width() > narrow);
         })
+    }
+
+    #[test]
+    fn the_code_surface_clips_right_of_the_gutter() {
+        let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(200.0), px(80.0)));
+        let code = text_surface_bounds(bounds, 36.0);
+        assert_eq!(code.left(), px(46.0));
+        assert_eq!(code.top(), px(20.0));
+        assert_eq!(code.right(), px(210.0));
+        assert_eq!(code.size.height, px(80.0));
+        // A pane narrower than the gutter clips to nothing, never inverts.
+        let narrow = Bounds::new(point(px(4.0), px(0.0)), size(px(20.0), px(10.0)));
+        let code = text_surface_bounds(narrow, 36.0);
+        assert_eq!(code.size.width, px(0.0));
+        assert_eq!(code.left(), px(40.0));
     }
 
     #[test]
