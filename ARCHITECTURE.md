@@ -1,8 +1,8 @@
 # Holt — Architecture
 
 A desktop-only UI shell. The frontend talks to a small in-process engine; its
-first real capability is the `pi-core-rs` agent loop. See README.md for what
-was removed.
+first real capability is the `pi-core-rs` agent loop. README.md covers the
+project overview and quick start.
 
 ## Topology
 
@@ -10,7 +10,9 @@ was removed.
 gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + pi-core agent loop
 ```
 
-One binary, headed only. The UI never links backend logic directly: it talks
+One binary, headed only. The UI links `crates/engine` for exactly one thing —
+assembling the local backend at bootstrap (`EngineHandle::bootstrap` in
+`ui/state.rs`); no feature code in `crates/ui` calls backend logic — it talks
 the typed RPC contract in `crates/rpc` over an in-process duplex
 (`holt_rpc::memory_client`). The local backend implements the `RpcService`
 contract; another backend can slot in behind the same trait.
@@ -20,11 +22,11 @@ contract; another backend can slot in behind the same trait.
 | Crate | Role |
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
-| `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
+| `crates/ui` | The whole gpui viewport (~97k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, and the usage frame (`ChatUsage`: ledger totals plus occupancy). |
-| `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
+| `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
 
 ## The RPC contract (what a real backend must serve)
@@ -32,11 +34,18 @@ contract; another backend can slot in behind the same trait.
 Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 `crates/ui/src/state.rs` (`attach_engine` starts the standing watches):
 
-- Identity/barrier: `EngineInfo`, `EngineReady`.
+- Identity/barrier: `EngineInfo`, `EngineReady`, `LocalDevice` (the local
+  device id).
+- Static stubs the UI polls defensively: `AuthStatus` (always signed-out) and
+  `ProbeSync` (a no-op reply).
 - Entity watches: `WatchChats`, `WatchSpaces`, `WatchSessions`
-  (each emits `Vec<T>` snapshots), `WatchConnectivity`.
+  (each emits `Vec<T>` snapshots), `WatchDevices` (the local machine's device
+  row only), `WatchConnectivity` (one static Disabled snapshot — no edge
+  transports).
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
-  `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`.
+  `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`,
+  `RemoveProviderModel` (drops a user-added model; built-in catalog ids
+  no-op).
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
@@ -128,7 +137,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - File sidebar (ADR-0020): `ListWorkspaceEntries`
   (`{chatId|spaceId, path?}`, one directory level — dirs first, hidden
   entries in, `.git` out, symlink kinds resolved against the root,
-  `truncated` at the per-directory cap) and `ReadWorkspaceFile`
+  `truncated` at the per-directory cap), `WatchWorkspaceGitStatus` (the Git
+  panel's live status stream for the same root) and `ReadWorkspaceFile`
   (`{chatId|spaceId, path}` — editable UTF-8 up to 2 MiB plus BOM /
   line-ending facts and an opaque disk `version` token, or a typed
   `unsupportedReason` for oversized, non-UTF-8, and binary files) and
@@ -160,10 +170,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `TrashWorkspaceEntry` (`{chatId|spaceId, path}` — the OS trash via
   `NSFileManager trashItemAtURL` on macOS, entry-level like rename; a
   trash that is unavailable or refuses fails and nothing is ever
-  permanently deleted as a fallback). These serve the far-right file tree
-  and its contents tabs. Root containment, `.git`
-  exclusion, and symlink fences are enforced engine-side in
-  `engine::files` on every request; the UI never touches the workspace
+  permanently deleted as a fallback). The add-space palette browses the
+  local machine through `ListFolders` (one directory level) and `ListDrives`.
+  These methods serve the far-right file tree and its contents tabs. Root
+  containment, `.git` exclusion, and symlink fences are enforced engine-side
+  in `engine::files` on every request; the UI never touches the workspace
   filesystem itself.
 - Local images: `StageImage` (`{data}` base64) validates and durably saves
   pasted pixels under `<data_dir>/images/<uuid>.<ext>`, returning a stable
@@ -239,7 +250,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   tagged by Chat id; a click retracts the banner, activates Holt (reopening
   the main window when none is open), and selects the Chat when it still
   exists, and marking a Chat seen retracts its banner — all best-effort.
-- Mutations: `Mutate` (createChat/createSpace/…), `QueueCommand`.
+- Mutations: `Mutate` — the served ops are `createSpace`, `createChat`,
+  `renameChat`, `setChatConfig`, `setChatPermissionMode`, `setChatArchived`,
+  `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
+  `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
+  the UI surfaces as an error notice — and `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
   branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout
@@ -302,7 +317,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Open, and nothing in the surface writes: no accept, undo, discard, stage,
   or commit.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
-  worktrees, change requests, and uploads.
+  worktrees (`CreateWorktree` / `DeleteWorktree`), change requests
+  (`WatchCheckoutChangeRequest` — a stream that never emits), uploads
+  (`UploadChunk` / `UploadCommit` / `ReadAttachmentChunk`), and the
+  sync/account surface (`SignIn`, `SignInHeadless`, `SignOut`, `ListOrgs`,
+  `CreateOrg`, `SelectOrg`, `ListRepos`, `AddRepo`, `CloneRepo`,
+  `CreateRepo`, `ImportLocalWorkspace`, `ApplyUpdate`, `RetryDelivery`,
+  `StopEngine`, `UpdateStatus`) — all `UnknownMethod`.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips
 methods that error with `UnknownMethod`.
@@ -325,8 +346,12 @@ provider trait exposes, and each provider's models verbatim. It is a derived,
 write-only artifact — no read path consults it, it holds no credentials, and a
 failed write is logged rather than failing the boot.
 
-Provider availability is derived from credentials alone: a provider is
-offered once its key is configured; there is no separate enable toggle.
+There is no separate enable toggle: `ListProviders` returns every eligible
+built-in row, each carrying `configured` derived from its credential record,
+and the UI filters the unconfigured rows out of its pickers. Eligibility is
+`api_key` auth shaped — complex-auth providers (`amazon-bedrock`,
+`azure-openai`, `cloudflare-*`, `google-vertex`, `radius`) are never offered,
+and `SaveProviderKey` rejects them.
 
 `ListProviders` groups sibling built-ins that share a `pi-core-rs`
 `organization_id` (e.g. `minimax` + `minimax-cn`) into one row per
@@ -335,22 +360,26 @@ key, model-list, and run RPCs address. Provider-scoped custom model IDs added
 from Settings live in `provider-settings.json`; they are merged into
 `ListModels` and resolved through the provider's existing API transport.
 
-Skills (ADR-0005/0006) ride the catalog above: every run appends a
-metadata-only `<available_skills>` block to the system prompt from a
-fresh three-root scan (the upstream loader and formatters; budget-capped),
-the model self-serves `SKILL.md` through the mounted read tool, and the
-composer's `/skill` slash command queues a typed `InvokeSkill` item whose
+Skills (ADR-0005/0006) ride the catalog above: every run whose catalog is
+non-empty appends a metadata-only `<available_skills>` block to the system
+prompt from a fresh three-root scan (the upstream loader and formatters;
+budget-capped; an empty or fully `disable-model-invocation` catalog adds
+nothing), the model self-serves `SKILL.md` through the mounted read tool, and
+the composer's `/skill` slash command queues a typed `InvokeSkill` item whose
 prompt the engine formats from the skill's content — resolved against a
 fresh catalog when the queue admits the item, never frozen at submission —
 the raw directive never reaches the model, and both invocations and
 `SKILL.md` reads render as compact chips in the transcript.
 
-The implemented agent slice is intentionally narrow: provider configuration,
-provider/model discovery, `createChat`/`renameChat`, chat/session watches, `QueueCommand`
-run/interrupt/`invokeSkill`/`compact`, and streamed transcript frames. The run loop mounts pi-core's
-built-in read/write/edit/bash tools (via `engine::tools`, a local
-`ExecutionEnv` rooted at the chat's cwd) plus holt's own content-search tool,
-named `grep` (ripgrep's crates in process, ADR-0004), the Workspace-aware
+The served surface is the contract above: provider configuration and
+discovery, chats/spaces/sessions, the message queue, streamed transcript
+frames, the git capability, the file sidebar, terminals, the usage ledger,
+Turn change sets, plan mode, and the run loop itself. What stays deliberately
+unserved is the collaboration and account surface listed above. The run loop
+mounts pi-core's built-in read/write/edit/bash tools (via `engine::tools`, a
+local `ExecutionEnv` rooted at the chat's cwd) plus holt's own `ls` tool and
+content-search tool, the latter named `grep` (ripgrep's crates in process,
+ADR-0004), the Workspace-aware
 `read_chat` tool for another Chat's user-visible Transcript (ADR-0018), and the
 two web tools (ADR-0023): `web_fetch` retrieves one http(s) URL and returns its
 full converted text, bounded but never summarized, while `web_search` queries
@@ -358,7 +387,46 @@ the user-configured backend — resolved once per Turn admission, absent from
 the toolset (not erroring) when none is configured. Neither enters the
 ADR-0014 gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
-Parent runs also mount the foreground `Agent` delegation tool (ADR-0016).
+Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
+planning Turns excepted, since they run the read-only toolset.
+
+## Data on disk
+
+Records are plain JSON or JSONL under the data directory — there is no CRDT,
+operation log, or replication format anywhere in the store. Each record is
+written by `crates/engine` — atomically (tmp + rename) where a whole file is
+replaced — and every read path is tolerant rather than fatal: a damaged
+History or usage ledger is set aside as `.corrupt`, a damaged queue is kept
+and blocked instead of overwritten, and a damaged transcript opens empty
+(`load_transcript` falls back to an empty Vec; the next publish replaces the
+file).
+
+- `chats.json`, `spaces.json` — the chat and space lists, whole-file atomic
+  replace.
+- `transcripts/<chatId>.json` — one chat document's rendered transcript
+  (`Vec<SessionMessageEntry>`), rewritten whole and atomically on every
+  publish, streaming frames included, under the chat's persistence lock.
+  Subagent documents live under `subagents/<parentChatId>/` with the same
+  layout; finished child summaries go to `subagents/<parentChatId>/results/`.
+- `history/<chatId>.jsonl` — the model-facing History, append-only, one record
+  per line (ADR-0010).
+- `queues/<chatId>.json` — accepted queue items, rewritten whole (with an
+  fsync) on every mutation, including the admission checkpoint that precedes
+  any model or tool work.
+- `usage/<chatId>.jsonl` — the per-chat usage ledger; `usage/archive.jsonl`
+  holds the grow-only device-level archive of deleted chats.
+- `turn-changes/<chatId>/<messageId>.json` — one settled Turn's frozen change
+  set (ADR-0024).
+- `images/` — Holt-managed pasted pixels.
+- Per-feature settings records: `provider-credentials.json`,
+  `provider-store.json`, `provider-settings.json`, `title-settings.json`,
+  `web-search.json`, `permission-mode-default.json` — each with its own
+  atomic-write and failure policy as described above.
+- `device-id` (plain text), `engine.lock` (the single-instance lock), `logs/`,
+  and the child `results/*.txt` summaries — the only non-JSON artifacts.
+
+The transcript types themselves live in `crates/doc`; the engine owns every
+read and write.
 
 ## Subagents
 
@@ -558,8 +626,8 @@ submission order, and Run now on a paused queue authorizes only the
 selected item. Skill invocations support the same Run now/Steer promotion;
 a pending Compaction executes strictly in order. `/skill` and `/compact`
 join the same queue as ordinary messages (ticket 04); `/compact` remains
-outside the Turn model. Worktrees, change requests, and uploads
-remain unserved.
+outside the Turn model. Worktrees, change requests, uploads, and the
+sync/account surface remain unserved.
 
 The engine's integration tests drive whole Turns through `RpcService::handle`
 against a scripted provider injected via `EngineConfig::stream_fn` (set only
@@ -576,6 +644,8 @@ compaction, and overflow behavior are asserted without a real provider
   scap sources gpui's platform backends need) — a snapshot of a zed fork
   carrying the glass/edge-fade patches the UI depends on. It is a frozen
   asset: edit it in place when needed; no dependency resolves from git.
-- `THIRD_PARTY_NOTICES.md` carries upstream attribution obligations.
+- `LICENSE` is GPL-3.0; upstream attribution for the vendored sources rides
+  that license and the README credits.
 - Historical design docs for removed subsystems (sync, agent drivers, edge)
-  were deleted with them; `docs/` keeps UI/theme/gpui/memory references.
+  were deleted with them; `docs/adr` keeps the decision records and
+  `docs/research` keeps the UI/gpui and domain research notes.

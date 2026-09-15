@@ -48,10 +48,11 @@ Data lives under `~/.holt`; override with `HOLT_DATA_DIR`.
 gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + core agent loop
 ```
 
-The UI never links backend logic. It talks the typed contract in `crates/rpc`;
-`crates/engine` adapts [pi-core-rs](https://github.com/Onion-L/pi-core-rs)
-behind the `RpcService` trait, so another backend can slot in without touching
-the UI.
+The UI links `crates/engine` only to assemble the local backend at bootstrap;
+no feature code calls backend logic. Everything else goes through the typed
+contract in `crates/rpc`; `crates/engine` adapts
+[pi-core-rs](https://github.com/Onion-L/pi-core-rs) behind the `RpcService`
+trait, so another backend can slot in without touching the UI.
 
 | Crate | Role |
 | --- | --- |
@@ -60,7 +61,7 @@ the UI.
 | `crates/engine` | The backend adapter: agent loop, providers, credentials, git, skills, terminals. |
 | `crates/rpc` | The typed control plane: framing, dispatch, memory transport. |
 | `crates/proto` | Shared protocol and domain types. |
-| `crates/doc` | Loro-CRDT session docs and transcript types. |
+| `crates/doc` | Transcript and History wire types (`MessagePart`, `TranscriptFrame`). Data on disk is plain JSON/JSONL, owned by `crates/engine`. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full RPC contract and the design
