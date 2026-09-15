@@ -1025,6 +1025,11 @@ impl Pickers {
                         &theme,
                     ))
                 });
+            // The context ring sits immediately left of the branch chip,
+            // and on its own when the space has no git (no branch chip to
+            // lead). A frame the engine has not published yet renders
+            // nothing rather than an empty ring.
+            let usage = self.state.read(cx).chat_usage.clone();
             if let Some(space) = space.as_ref().filter(|s| s.git_detected) {
                 // One rule for the kind icon and its label (ADR-0007).
                 let is_worktree = logic::session_runs_in_worktree(&space.path, chat.cwd.as_deref());
@@ -1054,13 +1059,17 @@ impl Pickers {
                     SharedString::from(kind_label),
                     &theme,
                 ));
-                right = right.child(attach_overlay_end(
-                    ref_chip,
-                    &mut overlay,
-                    PickerKind::Branch,
-                    "branch-popover-session",
-                    closing,
-                ));
+                right = right
+                    .children(crate::chat_usage::ring(usage.as_ref(), &theme))
+                    .child(attach_overlay_end(
+                        ref_chip,
+                        &mut overlay,
+                        PickerKind::Branch,
+                        "branch-popover-session",
+                        closing,
+                    ));
+            } else {
+                right = right.children(crate::chat_usage::ring(usage.as_ref(), &theme));
             }
             return Some(row().child(left).child(right).into_any_element());
         }

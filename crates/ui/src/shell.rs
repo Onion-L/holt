@@ -2930,12 +2930,6 @@ impl Shell {
         let Some(chat_id) = state.selected_chat.clone() else {
             return strip.into_any_element();
         };
-        let strip = strip.children(
-            state
-                .chat_usage
-                .as_ref()
-                .map(|usage| crate::chat_usage::render(usage, &theme)),
-        );
         let indicator = state.indicator_for(&chat_id, now);
         // Timer base: the freshest of the session row's turn start and the
         // in-flight send. During the send→ack window the row (if any) still
