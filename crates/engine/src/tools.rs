@@ -694,12 +694,17 @@ pub use web_search::{SearchBackend, SearchHit};
 /// may be zsh or anything else, so the model must not assume bash syntax.
 fn bash_tool(context: &AgentToolContext) -> AgentTool {
     let mut tool = with_execution_context(create_bash_tool(BashToolOptions::default()), context);
+    let shell = login_shell();
     tool.description = format!(
-        "Execute a command in the user's login shell ({}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
-        login_shell(),
+        "Execute a command in the user's login shell ({shell}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. A non-zero exit code is reported as a failed call, including a plain `grep` that matches nothing (exit 1) — the `grep` tool returns 'No matches found.' as an ordinary result instead. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
         DEFAULT_MAX_LINES,
         DEFAULT_MAX_BYTES / 1024,
     );
+    if shell.ends_with("zsh") {
+        tool.description.push_str(
+            " This shell is zsh, not bash: quote glob patterns (`--include=\"*.rs\"`) — an unquoted pattern that matches nothing aborts the command — and never pass a bare `=word` argument, which zsh expands as a command path.",
+        );
+    }
     tool.parameters["properties"]["command"]["description"] =
         "Command to execute in the user's login shell".into();
     tool
@@ -1089,6 +1094,21 @@ mod tests {
             description.contains("login shell"),
             "description must name the login shell: {description}"
         );
+        assert!(
+            description.contains(login_shell().as_str()),
+            "description must name the resolved shell ({}): {description}",
+            login_shell()
+        );
+        assert!(
+            description.contains("failed call"),
+            "description must state that a non-zero exit is a failed call: {description}"
+        );
+        if login_shell().ends_with("zsh") {
+            assert!(
+                description.contains("quote glob patterns"),
+                "zsh description must warn about unquoted globs: {description}"
+            );
+        }
         assert!(
             !description.contains("Execute a bash command"),
             "description still claims fixed bash execution: {description}"
