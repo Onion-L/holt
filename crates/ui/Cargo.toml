@@ -41,5 +41,9 @@ objc = "0.2"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+# The usage status-line test drives a REAL engine end to end (scripted
+# provider → RPC → decoded frame), so it rides the engine's own fixture by
+# path (`chat_usage::tests::engine_fixture`). These two are what that fixture
+# module needs to compile inside this crate's test build.
 pi-core-rs.workspace = true
 tokio-util.workspace = true

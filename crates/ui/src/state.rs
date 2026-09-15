@@ -243,7 +243,7 @@ pub struct AppState {
     pub transcript_replayed: bool,
     pub message_queue: Option<holt_proto::MessageQueue>,
     message_queue_task: Option<Task<()>>,
-    pub(crate) chat_usage: Option<crate::chat_usage::ChatUsage>,
+    pub(crate) chat_usage: Option<holt_proto::ChatUsage>,
     chat_usage_task: Option<Task<()>>,
     /// The selected chat's Turn change sets (ADR-0024), keyed by each Turn's
     /// user-message id: the live current Turn's moving set from

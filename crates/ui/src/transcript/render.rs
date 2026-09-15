@@ -2891,7 +2891,9 @@ fn chip_header_row(
                         .text_color(theme.text_faint)
                         .child(SharedString::from(format!(
                             "{} tokens",
-                            compact_tokens(tool.subagent_usage.unwrap_or_default())
+                            crate::token_display::compact_tokens(
+                                tool.subagent_usage.unwrap_or_default()
+                            )
                         ))),
                 )
             },
@@ -2958,16 +2960,6 @@ fn chip_header_row(
                 ),
             })
         })
-}
-
-fn compact_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
 }
 
 /// The header row of an expandable chip card.

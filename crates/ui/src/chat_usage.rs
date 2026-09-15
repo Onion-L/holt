@@ -1,104 +1,77 @@
-//! Selected-chat usage, decoded at the RPC boundary and rendered in the status strip.
-
-use std::collections::BTreeMap;
+//! Selected-chat usage, decoded at the RPC boundary and rendered in the
+//! status strip: the typed `holt_proto::ChatUsage` frame the engine serves,
+//! with no local re-derivation — the totals, the per-source breakdown, and
+//! the occupancy all arrive decided.
 
 use gpui::{AnyElement, Context, Render, SharedString, Task, Window, div, prelude::*, px};
-use serde::Deserialize;
 
 use crate::{
     state::{AppState, EngineHandle},
     theme::Theme,
+    token_display::compact_tokens,
     watch_coordinator::WatchCoordinator,
 };
+use holt_proto::ChatUsage;
 use holt_rpc::{RpcError, methods};
 
 #[cfg(test)]
 #[path = "../../engine/tests/common/mod.rs"]
 mod engine_fixture;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChatUsage {
-    gross: u64,
-    by_kind: BTreeMap<String, TokenSum>,
-    record_count: u64,
-    occupancy: Occupancy,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TokenSum {
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Occupancy {
-    tokens: u64,
-    context_window: Option<u64>,
-    estimated: bool,
-}
-
-fn compact(n: u64) -> String {
-    let (scale, suffix) = if n >= 999_950 {
-        (1_000_000.0, "M")
-    } else if n >= 1_000 {
-        (1_000.0, "k")
-    } else {
-        return n.to_string();
-    };
-    let value = format!("{:.1}", n as f64 / scale);
-    format!("{}{suffix}", value.trim_end_matches(".0"))
-}
-
-impl ChatUsage {
-    fn label(&self) -> String {
-        let o = &self.occupancy;
-        let approx = if o.estimated { "≈" } else { "" };
-        let mut label = format!(
-            "Total {} · Window {approx}{}",
-            compact(self.gross),
-            compact(o.tokens)
-        );
-        if let Some(window) = o.context_window.filter(|n| *n > 0) {
-            label.push_str(&format!(
-                " / {} · {approx}{:.0}%",
-                compact(window),
-                o.tokens as f64 / window as f64 * 100.0
-            ));
-        }
-        label
+/// The strip's one-line summary: the ledger's gross total and the occupancy
+/// of the request the chat runs next, `≈` where the engine says the number
+/// is an estimate rather than a provider's report.
+pub(crate) fn label(usage: &ChatUsage) -> String {
+    let o = &usage.occupancy;
+    let approx = if o.estimated { "≈" } else { "" };
+    let mut label = format!(
+        "Total {} · Window {approx}{}",
+        compact_tokens(usage.gross),
+        compact_tokens(o.tokens)
+    );
+    if let Some(window) = o.context_window.filter(|n| *n > 0) {
+        label.push_str(&format!(
+            " / {} · {approx}{:.0}%",
+            compact_tokens(window),
+            o.tokens as f64 / window as f64 * 100.0
+        ));
     }
+    label
+}
 
-    fn details(&self) -> Vec<String> {
-        let mut lines = vec![format!(
-            "{} tokens · {} records",
-            self.gross, self.record_count
-        )];
-        for (kind, sum) in &self.by_kind {
-            let name = match kind.as_str() {
-                "turn" => "Turns",
-                "subagent" => "Subagents",
-                "compaction" => "Compaction",
-                "auto-review" => "Auto-review",
-                "title" => "Titles",
-                other => other,
-            };
-            lines.push(format!(
-                "{name}: input {} · output {} · cache read {} · cache write {}",
-                sum.input, sum.output, sum.cache_read, sum.cache_write
-            ));
-        }
-        lines.push(if self.occupancy.estimated { "Window occupancy is estimated from conversation history." }
-            else { "Window occupancy uses the latest main request's reported input, including cache tokens." }.into());
-        if self.occupancy.context_window.is_none_or(|n| n == 0) {
-            lines.push("Context window size is unknown.".into());
-        }
-        lines
+/// The hover breakdown: the exact totals, the per-source split with cache
+/// tokens listed apart, and what the occupancy number actually is.
+fn details(usage: &ChatUsage) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} tokens · {} records",
+        usage.gross, usage.record_count
+    )];
+    for (kind, sum) in &usage.by_kind {
+        let name = match kind.as_str() {
+            "turn" => "Turns",
+            "subagent" => "Subagents",
+            "compaction" => "Compaction",
+            "auto-review" => "Auto-review",
+            "title" => "Titles",
+            other => other,
+        };
+        lines.push(format!(
+            "{name}: input {} · output {} · cache read {} · cache write {}",
+            sum.input, sum.output, sum.cache_read, sum.cache_write
+        ));
     }
+    lines.push(
+        if usage.occupancy.estimated {
+            "Window occupancy is estimated from conversation history."
+        } else {
+            "Window occupancy uses the latest main request's reported input, including cache tokens."
+        }
+        .into(),
+    );
+    if usage.occupancy.context_window.is_none_or(|n| n == 0) {
+        lines.push("Context window size is unknown.".into());
+    }
+    lines
 }
 
 struct UsageTooltip(Vec<String>);
@@ -134,14 +107,14 @@ impl Render for UsageTooltip {
 }
 
 pub(crate) fn render(usage: &ChatUsage, theme: &Theme) -> AnyElement {
-    let details = usage.details();
+    let details = details(usage);
     div()
         .id("chat-usage")
         .debug_selector(|| "chat-usage".into())
         .min_w_0()
         .truncate()
         .text_color(theme.text_muted)
-        .child(SharedString::from(usage.label()))
+        .child(SharedString::from(label(usage)))
         .tooltip(move |_, cx| cx.new(|_| UsageTooltip(details.clone())).into())
         .tooltip_show_delay(std::time::Duration::from_millis(350))
         .into_any_element()
@@ -217,26 +190,22 @@ mod tests {
     fn usage_labels_and_details_follow_the_wire_values() {
         let usage: ChatUsage =
             WatchCoordinator::decode(frame(412000, Some(1000000), false)).unwrap();
-        assert_eq!(usage.label(), "Total 412k · Window 40k / 1M · 4%");
-        assert_eq!(usage.details()[0], "412000 tokens · 3 records");
+        assert_eq!(label(&usage), "Total 412k · Window 40k / 1M · 4%");
+        assert_eq!(details(&usage)[0], "412000 tokens · 3 records");
         assert_eq!(
-            usage.details()[1],
+            details(&usage)[1],
             "Turns: input 40000 · output 2000 · cache read 3000 · cache write 500"
         );
         let unknown: ChatUsage = WatchCoordinator::decode(frame(412000, None, true)).unwrap();
-        assert_eq!(unknown.label(), "Total 412k · Window ≈40k");
+        assert_eq!(label(&unknown), "Total 412k · Window ≈40k");
         assert!(
-            unknown
-                .details()
+            details(&unknown)
                 .iter()
                 .any(|line| line.contains("estimated"))
         );
         let zero_window: ChatUsage =
             WatchCoordinator::decode(frame(412000, Some(0), false)).unwrap();
-        assert_eq!(zero_window.label(), "Total 412k · Window 40k");
-        assert_eq!(compact(999), "999");
-        assert_eq!(compact(1500), "1.5k");
-        assert_eq!(compact(999_999), "1M");
+        assert_eq!(label(&zero_window), "Total 412k · Window 40k");
     }
 
     #[derive(Default)]
@@ -269,8 +238,8 @@ mod tests {
         }
     }
 
-    fn label(state: &Entity<AppState>, cx: &TestAppContext) -> Option<String> {
-        cx.read(|cx| state.read(cx).chat_usage.as_ref().map(ChatUsage::label))
+    fn displayed_label(state: &Entity<AppState>, cx: &TestAppContext) -> Option<String> {
+        cx.read(|cx| state.read(cx).chat_usage.as_ref().map(super::label))
     }
 
     #[gpui::test]
@@ -291,7 +260,7 @@ mod tests {
         });
         pump(&runtime, cx);
         assert_eq!(
-            label(&state, cx).as_deref(),
+            displayed_label(&state, cx).as_deref(),
             Some("Total 412k · Window ≈40k / 1M · ≈4%")
         );
         engine.watches.lock().unwrap()[0]
@@ -300,17 +269,17 @@ mod tests {
             .unwrap();
         pump(&runtime, cx);
         assert_eq!(
-            label(&state, cx).as_deref(),
+            displayed_label(&state, cx).as_deref(),
             Some("Total 824k · Window 40k")
         );
 
         state.update(cx, |state, cx| state.select_chat(Some("b".into()), cx));
-        assert!(label(&state, cx).is_none());
+        assert!(displayed_label(&state, cx).is_none());
         pump(&runtime, cx);
         assert!(engine.watches.lock().unwrap()[0].1.is_closed());
         assert_eq!(engine.watches.lock().unwrap()[1].0, "b");
         assert_eq!(
-            label(&state, cx).as_deref(),
+            displayed_label(&state, cx).as_deref(),
             Some("Total 412k · Window ≈40k / 1M · ≈4%")
         );
 
@@ -318,10 +287,10 @@ mod tests {
             state.select_chat(Some("old-engine".into()), cx)
         });
         pump(&runtime, cx);
-        assert!(label(&state, cx).is_none());
+        assert!(displayed_label(&state, cx).is_none());
         state.update(cx, |state, cx| state.select_chat(None, cx));
         pump(&runtime, cx);
-        assert!(label(&state, cx).is_none());
+        assert!(displayed_label(&state, cx).is_none());
     }
 
     #[gpui::test]
@@ -378,38 +347,30 @@ mod tests {
         pump(&runtime, cx);
         cx.read(|cx| {
             let usage = state.read(cx).chat_usage.as_ref().unwrap();
-            // Compare to the engine contract separately: this UI must not
-            // recalculate occupancy from totals or the model picker.
-            let occupancy = &snapshot["occupancy"];
-            assert_eq!(
-                usage.occupancy.tokens,
-                occupancy["tokens"].as_u64().unwrap()
+            // The UI holds exactly the engine's frame — it must not
+            // recalculate occupancy from totals or the model picker — and
+            // prints it with no re-derivation of its own.
+            let engine_frame: ChatUsage = serde_json::from_value(snapshot.clone()).unwrap();
+            assert_eq!(usage, &engine_frame);
+            // Pinned end to end: gross 700 + 70 + 7 + 3, occupancy the main
+            // run's own request input with both cache fields (700 + 7 + 3),
+            // measured — and a chat with no stored model has no window to
+            // divide by, so no percentage.
+            assert_eq!(usage.gross, 780);
+            assert_eq!(usage.occupancy.tokens, 710);
+            // Run acceptance stores the request's model on the chat, so a
+            // settled queue divides by that model's catalog window — 272k for
+            // this one. The UI's job is to print what the frame carries; the
+            // catalog number itself is the engine's to know.
+            assert!(usage.occupancy.context_window.is_some_and(|n| n > 0));
+            let shown = label(usage);
+            assert!(
+                shown.starts_with("Total 780 · Window 710 / ") && shown.ends_with('%'),
+                "{shown}"
             );
+            assert_eq!(details(usage)[0], "780 tokens · 1 records");
             assert_eq!(
-                usage.occupancy.context_window,
-                occupancy["contextWindow"].as_u64()
-            );
-            assert_eq!(
-                usage.occupancy.estimated,
-                occupancy["estimated"].as_bool().unwrap()
-            );
-            let mut expected = format!(
-                "Total 780 · Window {}{}",
-                if usage.occupancy.estimated { "≈" } else { "" },
-                compact(occupancy["tokens"].as_u64().unwrap())
-            );
-            if let Some(window) = occupancy["contextWindow"].as_u64().filter(|n| *n > 0) {
-                expected.push_str(&format!(
-                    " / {} · {}{:.0}%",
-                    compact(window),
-                    if usage.occupancy.estimated { "≈" } else { "" },
-                    occupancy["tokens"].as_u64().unwrap() as f64 / window as f64 * 100.0
-                ));
-            }
-            assert_eq!(usage.label(), expected);
-            assert_eq!(usage.details()[0], "780 tokens · 1 records");
-            assert_eq!(
-                usage.details()[1],
+                details(usage)[1],
                 "Turns: input 700 · output 70 · cache read 7 · cache write 3"
             );
         });
