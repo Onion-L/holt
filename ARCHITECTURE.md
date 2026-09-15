@@ -319,6 +319,12 @@ directory. Writes are atomic, Unix permissions are `0600`, malformed files fail
 startup, and credentials enter the agent loop as per-request snapshots. The UI
 only sees secrets through the dedicated reveal RPC.
 
+The built-in provider catalog is also snapshotted on every boot to
+`provider-store.json`: every `builtin_providers()` entry with the fields the
+provider trait exposes, and each provider's models verbatim. It is a derived,
+write-only artifact — no read path consults it, it holds no credentials, and a
+failed write is logged rather than failing the boot.
+
 Provider availability is derived from credentials alone: a provider is
 offered once its key is configured; there is no separate enable toggle.
 

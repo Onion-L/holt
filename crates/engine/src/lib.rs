@@ -40,6 +40,7 @@ mod mode_default;
 mod path_search;
 mod plan_mode;
 pub mod provider_settings;
+mod provider_store;
 pub mod providers;
 mod queue;
 mod rpc;
@@ -208,6 +209,16 @@ impl LocalEngine {
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
+        // The built-in catalog snapshot is a derived artifact: it is rewritten
+        // on every boot, and a failed write is logged rather than failing
+        // assembly.
+        if let Err(error) = provider_store::write(&config.data_dir) {
+            tracing::warn!(
+                target: "holt::engine",
+                %error,
+                "could not write the provider catalog snapshot"
+            );
+        }
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -304,6 +315,84 @@ mod tests {
         };
         let _first = LocalEngine::assemble(&config).unwrap();
         assert!(LocalEngine::assemble(&config).is_err());
+    }
+
+    #[test]
+    fn provider_store_snapshot_appears_on_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let store: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("provider-store.json")).unwrap())
+                .unwrap();
+        assert_eq!(store["version"], 1);
+        assert!(store["writtenAt"].as_i64().unwrap() > 1_000_000_000_000);
+        assert_eq!(
+            store["sourceGeneratedAt"],
+            serde_json::json!(
+                pi_core::ai::providers::builtin::get_builtin_model_data_generated_at()
+            )
+        );
+        assert!(
+            store["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|provider| provider["id"] == "openai")
+        );
+        drop(engine);
+    }
+
+    #[test]
+    fn provider_store_snapshot_is_rewritten_on_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        drop(engine);
+
+        // Hand-edited and malformed content alike are overwritten: the
+        // compiled catalog is the source of truth, never the file.
+        let path = dir.path().join("provider-store.json");
+        for hand_edited in [br#"{"version":1,"providers":[]}"#.as_slice(), b"{broken"] {
+            std::fs::write(&path, hand_edited).unwrap();
+            let engine = LocalEngine::assemble(&config).unwrap();
+            let store: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(store["version"], 1);
+            assert!(!store["providers"].as_array().unwrap().is_empty());
+            drop(engine);
+        }
+    }
+
+    #[test]
+    fn provider_store_write_failure_does_not_fail_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        // A non-empty directory at the destination fails the rename while the
+        // rest of the data dir stays writable.
+        let path = dir.path().join("provider-store.json");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("occupied"), b"x").unwrap();
+
+        let engine = LocalEngine::assemble(&config).unwrap();
+        assert!(path.is_dir());
+        assert!(dir.path().join("device-id").is_file());
+        drop(engine);
     }
 
     #[tokio::test]
