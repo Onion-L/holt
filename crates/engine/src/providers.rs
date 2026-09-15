@@ -3,33 +3,34 @@ use std::{collections::HashMap, collections::HashSet, sync::Arc};
 use holt_proto::{
     Model as HoltModel, Provider as HoltProvider, ProviderId, ProviderVariant, ReasoningLevel,
 };
-use pi_core::ai::{
-    models::{CreateModelsOptions, Models, Provider as CoreProvider},
-    providers::builtin::{builtin_models, builtin_providers},
-    types::{Model as CoreModel, ModelInput},
+use pi_core::ai::types::{Model as CoreModel, ModelInput};
+
+use crate::{
+    credentials::HoltCredentialStore,
+    provider_settings::ProviderSettingsStore,
+    provider_store::{Catalog, CatalogProvider},
 };
 
-use crate::{credentials::HoltCredentialStore, provider_settings::ProviderSettingsStore};
-
 pub struct ProviderAdapter {
-    pub models: Arc<Models>,
     pub credentials: Arc<HoltCredentialStore>,
     pub settings: Arc<ProviderSettingsStore>,
+    /// The boot-time merge of the compiled catalog and
+    /// `provider-store.json`: every provider/model answer below reads it,
+    /// never `builtin_providers()` ad hoc. Built in
+    /// `LocalEngine::assemble`; a file edit needs a restart.
+    catalog: Catalog,
 }
 
 impl ProviderAdapter {
-    pub fn new(
+    pub(crate) fn new(
         credentials: Arc<HoltCredentialStore>,
         settings: Arc<ProviderSettingsStore>,
+        catalog: Catalog,
     ) -> Self {
-        let models = builtin_models(CreateModelsOptions {
-            credentials: Some(credentials.clone()),
-            ..Default::default()
-        });
         Self {
-            models,
             credentials,
             settings,
+            catalog,
         }
     }
 
@@ -46,16 +47,16 @@ impl ProviderAdapter {
             .collect();
         let mut rows: Vec<HoltProvider> = Vec::new();
         let mut row_index: HashMap<String, usize> = HashMap::new();
-        for provider in eligible_providers() {
+        for provider in eligible_providers(&self.catalog) {
             let variant = ProviderVariant {
-                id: ProviderId(provider.id().to_string()),
-                name: provider.name().to_string(),
-                configured: configured.contains(provider.id()),
+                id: ProviderId(provider.id.clone()),
+                name: provider.name.clone(),
+                configured: configured.contains(&provider.id),
             };
             let org_key = provider
-                .organization_id()
-                .unwrap_or_else(|| provider.id())
-                .to_string();
+                .organization_id
+                .clone()
+                .unwrap_or_else(|| provider.id.clone());
             match row_index.get(&org_key) {
                 Some(&index) => {
                     if variant.configured {
@@ -67,8 +68,8 @@ impl ProviderAdapter {
                     row_index.insert(org_key.clone(), rows.len());
                     rows.push(HoltProvider {
                         id: ProviderId(org_key),
-                        name: provider.name().to_string(),
-                        abbreviation: abbreviation(provider.name(), provider.id()),
+                        name: provider.name.clone(),
+                        abbreviation: abbreviation(&provider.name, &provider.id),
                         configured: variant.configured,
                         variants: vec![variant],
                     });
@@ -84,20 +85,20 @@ impl ProviderAdapter {
     /// looked up here, so nothing is cached per chat: a builtin window never
     /// moves within a process.
     pub fn context_windows(&self) -> Vec<(String, Option<u64>)> {
-        eligible_providers()
+        eligible_providers(&self.catalog)
             .iter()
-            .flat_map(|provider| self.models_for(provider.id()))
+            .flat_map(|provider| self.models_for(&provider.id))
             .map(|model| (model.id, model.context_window))
             .collect()
     }
 
     pub fn models_for(&self, provider_id: &str) -> Vec<HoltModel> {
-        // Custom ids that shadow a builtin catalog id are ignored everywhere:
-        // the list is rejected at add time, and legacy file entries must not
-        // mark builtin rows deletable.
-        let builtin: HashSet<String> = self
-            .models
-            .get_models(Some(provider_id))
+        // Custom ids that shadow a catalog id (builtin or file-provided) are
+        // ignored everywhere: the list is rejected at add time, and legacy
+        // file entries must not mark catalog rows deletable.
+        let catalog: HashSet<String> = self
+            .catalog
+            .models(provider_id)
             .iter()
             .map(|model| model.id.clone())
             .collect();
@@ -105,7 +106,7 @@ impl ProviderAdapter {
             .settings
             .custom_models_for(provider_id)
             .into_iter()
-            .filter(|id| !builtin.contains(id))
+            .filter(|id| !catalog.contains(id))
             .collect();
         project_models(self.core_models_for(provider_id), &custom_ids)
     }
@@ -128,10 +129,10 @@ impl ProviderAdapter {
     }
 
     pub fn can_add_custom_model(&self, provider_id: &str) -> bool {
-        !self.models.get_models(Some(provider_id)).is_empty()
+        !self.catalog.models(provider_id).is_empty()
     }
 
-    /// Is `model_id` already in the provider's model list — the builtin
+    /// Is `model_id` already in the provider's model list — the merged
     /// catalog or a user-added custom id? Additions must be new ids.
     pub fn has_model(&self, provider_id: &str, model_id: &str) -> bool {
         self.core_models_for(provider_id)
@@ -139,14 +140,14 @@ impl ProviderAdapter {
             .any(|model| model.id == model_id)
     }
 
-    pub fn is_eligible(provider_id: &str) -> bool {
-        eligible_providers()
+    pub fn is_eligible(&self, provider_id: &str) -> bool {
+        eligible_providers(&self.catalog)
             .iter()
-            .any(|provider| provider.id() == provider_id)
+            .any(|provider| provider.id == provider_id)
     }
 
     fn core_models_for(&self, provider_id: &str) -> Vec<CoreModel> {
-        let mut models = self.models.get_models(Some(provider_id));
+        let mut models = self.catalog.models(provider_id).to_vec();
         let Some(template) = models.first().cloned() else {
             return models;
         };
@@ -171,11 +172,14 @@ impl ProviderAdapter {
     }
 }
 
-fn eligible_providers() -> Vec<Arc<dyn CoreProvider>> {
-    builtin_providers()
-        .into_iter()
-        .filter(|provider| provider.auth().api_key.is_some())
-        .filter(|provider| !complex_auth_provider(provider.id()))
+/// Holt's availability policy, as a filter over the boot-time catalog rather
+/// than a rebuilt list: `api_key` auth shaped, complex-auth providers
+/// excluded.
+fn eligible_providers(catalog: &Catalog) -> Vec<&CatalogProvider> {
+    catalog
+        .iter()
+        .filter(|provider| provider.auth.api_key)
+        .filter(|provider| !complex_auth_provider(&provider.id))
         .collect()
 }
 
@@ -284,9 +288,11 @@ mod tests {
 
     #[test]
     fn excludes_complex_and_oauth_only_providers() {
-        let ids: HashSet<String> = eligible_providers()
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = crate::provider_store::load(dir.path());
+        let ids: HashSet<String> = eligible_providers(&catalog)
             .into_iter()
-            .map(|p| p.id().to_string())
+            .map(|p| p.id.clone())
             .collect();
         assert!(ids.contains("openai"));
         assert!(ids.contains("anthropic"));

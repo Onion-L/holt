@@ -23,7 +23,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~97k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, and the usage frame (`ChatUsage`: ledger totals plus occupancy). |
 | `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
@@ -340,11 +340,21 @@ directory. Writes are atomic, Unix permissions are `0600`, malformed files fail
 startup, and credentials enter the agent loop as per-request snapshots. The UI
 only sees secrets through the dedicated reveal RPC.
 
-The built-in provider catalog is also snapshotted on every boot to
-`provider-store.json`: every `builtin_providers()` entry with the fields the
-provider trait exposes, and each provider's models verbatim. It is a derived,
-write-only artifact — no read path consults it, it holds no credentials, and a
-failed write is logged rather than failing the boot.
+The provider catalog is also persisted to `provider-store.json` under the
+data directory: boot writes the compiled `pi-core-rs` catalog there only when
+the file is missing, and otherwise reads it. The file is the user's overlay
+on the compiled catalog — providers match by id (an id that is not built-in
+is dropped), models match by id within a provider (a file entry replaces the
+compiled record outright, and file-only ids are appended in file order), and
+a provider entry may override only `baseUrl` and `headers` (`name`,
+`organizationId`, and `auth` always come from the crate). One merged catalog
+is built at boot and everything answers from it — provider listing, model
+listing, model resolution, context windows, eligibility, and the request
+path — so a file edit needs a restart. Per-entry validation failures drop
+that entry with a log line; an unparsable file, an unsupported `version`, or
+an unreadable path falls back to the compiled catalog. The file is never
+rewritten once it exists, and carries mode `0600` on Unix (it steers which
+host the API key is sent to).
 
 There is no separate enable toggle: `ListProviders` returns every eligible
 built-in row, each carrying `configured` derived from its credential record,

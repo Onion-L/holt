@@ -203,22 +203,21 @@ impl LocalEngine {
         ));
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
-        let providers = Arc::new(ProviderAdapter::new(credentials, provider_settings));
+        // The provider store is read once per boot: the file is written only
+        // when missing, then overlaid on the compiled catalog. Provider
+        // listing, model listing, resolution, and the request path all answer
+        // from the merge, so a file edit needs a restart.
+        let catalog = provider_store::load(&config.data_dir);
+        let providers = Arc::new(ProviderAdapter::new(
+            credentials,
+            provider_settings,
+            catalog,
+        ));
         let git = git::Git::new();
         let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
-        // The built-in catalog snapshot is a derived artifact: it is rewritten
-        // on every boot, and a failed write is logged rather than failing
-        // assembly.
-        if let Err(error) = provider_store::write(&config.data_dir) {
-            tracing::warn!(
-                target: "holt::engine",
-                %error,
-                "could not write the provider catalog snapshot"
-            );
-        }
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -349,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_store_snapshot_is_rewritten_on_boot() {
+    fn provider_store_existing_file_survives_restarts_byte_identical() {
         let dir = tempfile::tempdir().unwrap();
         let config = EngineConfig {
             data_dir: dir.path().to_path_buf(),
@@ -360,18 +359,63 @@ mod tests {
         let engine = LocalEngine::assemble(&config).unwrap();
         drop(engine);
 
-        // Hand-edited and malformed content alike are overwritten: the
-        // compiled catalog is the source of truth, never the file.
+        // A user edit is the file's content now: assembly reads it and never
+        // rewrites it, across any number of restarts.
         let path = dir.path().join("provider-store.json");
-        for hand_edited in [br#"{"version":1,"providers":[]}"#.as_slice(), b"{broken"] {
-            std::fs::write(&path, hand_edited).unwrap();
+        let mut store: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let openai = store["providers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|provider| provider["id"] == "openai")
+            .unwrap();
+        openai["baseUrl"] = "https://user-edited.example/v1".into();
+        let gpt = openai["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|model| model["id"] == "gpt-5.4")
+            .unwrap();
+        gpt["contextWindow"] = 123_456.into();
+        std::fs::write(&path, serde_json::to_vec_pretty(&store).unwrap()).unwrap();
+        let edited = std::fs::read(&path).unwrap();
+
+        for _ in 0..2 {
             let engine = LocalEngine::assemble(&config).unwrap();
-            let store: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(store["version"], 1);
-            assert!(!store["providers"].as_array().unwrap().is_empty());
+            assert_eq!(std::fs::read(&path).unwrap(), edited);
+            // The edit is live in the merged catalog the engine answers from.
+            assert_eq!(
+                engine
+                    .service
+                    .providers
+                    .resolve_model("openai", "openai/gpt-5.4")
+                    .unwrap()
+                    .context_window,
+                123_456
+            );
             drop(engine);
         }
+    }
+
+    #[test]
+    fn provider_store_unparsable_file_is_ignored_but_boots() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let path = dir.path().join("provider-store.json");
+        std::fs::write(&path, b"{broken").unwrap();
+
+        // The unparsable file is the user's: ignored for the catalog, never
+        // rewritten, and no boot gate.
+        let engine = LocalEngine::assemble(&config).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
+        assert!(!engine.service.providers.context_windows().is_empty());
+        drop(engine);
     }
 
     #[test]
@@ -383,8 +427,9 @@ mod tests {
             stream_fn: None,
             search_backend_resolver: None,
         };
-        // A non-empty directory at the destination fails the rename while the
-        // rest of the data dir stays writable.
+        // A directory at the destination is unreadable as a store: the load
+        // falls back to the compiled catalog while the rest of the data dir
+        // stays writable.
         let path = dir.path().join("provider-store.json");
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("occupied"), b"x").unwrap();
@@ -392,6 +437,7 @@ mod tests {
         let engine = LocalEngine::assemble(&config).unwrap();
         assert!(path.is_dir());
         assert!(dir.path().join("device-id").is_file());
+        assert!(!engine.service.providers.context_windows().is_empty());
         drop(engine);
     }
 
@@ -455,7 +501,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(HoltCredentialStore::load(dir.path()).unwrap());
         let settings = Arc::new(ProviderSettingsStore::load(dir.path()).unwrap());
-        let models = ProviderAdapter::new(store, settings).models_for("openai");
+        let adapter = ProviderAdapter::new(store, settings, provider_store::load(dir.path()));
+        let models = adapter.models_for("openai");
         assert!(!models.is_empty());
         assert!(models.iter().all(|model| model.id.contains('/')));
         assert!(models.iter().any(|model| model.id == "openai/gpt-5.4"));

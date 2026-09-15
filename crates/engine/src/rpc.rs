@@ -22,7 +22,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentRun, ChatRuntime};
 use crate::local_fs::{list_drives, list_folders, local_device};
-use crate::providers::ProviderAdapter;
 use crate::store::{persist_chats, persist_spaces};
 use crate::title_settings::MAX_TITLE_INSTRUCTION_CHARS;
 use crate::{EngineService, LocalEngine};
@@ -1353,7 +1352,7 @@ impl EngineService {
         let settings = self.title_settings.get();
         let model_id = settings.model_id?;
         let (provider, _) = model_id.split_once('/')?;
-        if !ProviderAdapter::is_eligible(provider) {
+        if !self.providers.is_eligible(provider) {
             return None;
         }
         let model = self.providers.resolve_model(provider, &model_id).ok()?;
@@ -1386,7 +1385,7 @@ impl EngineService {
                     "model must use provider/model syntax: {model_id}"
                 )));
             };
-            if !ProviderAdapter::is_eligible(provider) {
+            if !self.providers.is_eligible(provider) {
                 return Err(RpcError::BadParams(format!(
                     "unknown or unsupported provider: {provider}"
                 )));
@@ -1885,7 +1884,7 @@ impl RpcService for EngineService {
             methods::SAVE_PROVIDER_KEY => {
                 let provider = required_string(&params, "providerId")?;
                 let key = required_string(&params, "key")?;
-                if !ProviderAdapter::is_eligible(provider) {
+                if !self.providers.is_eligible(provider) {
                     return Err(RpcError::BadParams(
                         "unknown or unsupported provider".into(),
                     ));
@@ -1919,7 +1918,7 @@ impl RpcService for EngineService {
                 let model = submitted
                     .strip_prefix(&qualified_prefix)
                     .unwrap_or(submitted);
-                if !ProviderAdapter::is_eligible(provider) {
+                if !self.providers.is_eligible(provider) {
                     return Err(RpcError::BadParams(
                         "unknown or unsupported provider".into(),
                     ));
@@ -1947,7 +1946,7 @@ impl RpcService for EngineService {
                 let model = submitted
                     .strip_prefix(&qualified_prefix)
                     .unwrap_or(submitted);
-                if !ProviderAdapter::is_eligible(provider) {
+                if !self.providers.is_eligible(provider) {
                     return Err(RpcError::BadParams(
                         "unknown or unsupported provider".into(),
                     ));
