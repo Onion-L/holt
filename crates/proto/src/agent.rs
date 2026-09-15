@@ -1,5 +1,7 @@
 //! Agent-side wire types: provider/model run configuration and streaming events.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -299,6 +301,68 @@ pub struct MessageQueue {
     pub paused: bool,
     pub active_message_id: Option<String>,
     pub error: Option<String>,
+}
+
+/// One `WatchChatUsage` frame: the chat's whole-ledger token totals plus the
+/// occupancy of the request it would run next. Every field defaults, so a
+/// frame from a peer that predates one of them still decodes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatUsage {
+    /// The gross token count over every record: input, output, and both cache
+    /// fields of every model call the chat caused.
+    #[serde(default)]
+    pub gross: u64,
+    /// The same records, keyed by their source — the `kind` a usage record
+    /// carries (`turn`, `subagent`, `compaction`, `auto-review`, `title`).
+    /// Cache tokens are listed apart from the request and reply counts, and
+    /// an unknown key is data rather than a decode failure: a newer engine's
+    /// new source still reaches a client that has never heard of it.
+    #[serde(default)]
+    pub by_kind: BTreeMap<String, ChatUsageTokens>,
+    /// How many records the totals were summed from.
+    #[serde(default)]
+    pub record_count: u64,
+    #[serde(default)]
+    pub occupancy: ChatOccupancy,
+}
+
+/// One source's summed token fields, as the frame's `byKind` breakdown
+/// reports them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatUsageTokens {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+
+/// How full the next request can be expected to leave the window the chat
+/// runs against — derived at read time, never persisted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatOccupancy {
+    /// The latest main-run provider report's request input, both cache fields
+    /// included — or, until this process has seen a report, the History-based
+    /// estimate the `estimated` flag declares as such.
+    #[serde(default)]
+    pub tokens: u64,
+    /// The context window of the model the chat runs next (its queue head
+    /// while one waits, else its selection). `None` means the window is
+    /// unknown — a custom model, whose window the engine deliberately
+    /// withholds — and the client shows absolute tokens instead of a
+    /// percentage.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// Whether `tokens` is the estimator's number rather than a provider's
+    /// report.
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
@@ -648,6 +712,58 @@ mod tests {
         // Unknown window serializes as an explicit null, not a dropped key:
         // absence is reserved for hosts that predate the field.
         assert!(serde_json::to_value(&old).unwrap()["contextWindow"].is_null());
+    }
+
+    /// A usage frame is a typed contract, not an ad-hoc blob: its keys are
+    /// camelCase on the wire, and a frame from a host that predates a field
+    /// (or a future one's unknown source kind) still decodes.
+    #[test]
+    fn chat_usage_frames_round_trip_and_tolerate_a_narrower_peer() {
+        let frame = ChatUsage {
+            gross: 780,
+            by_kind: BTreeMap::from([(
+                "auto-review".to_string(),
+                ChatUsageTokens {
+                    input: 700,
+                    output: 70,
+                    cache_read: 7,
+                    cache_write: 3,
+                },
+            )]),
+            record_count: 2,
+            occupancy: ChatOccupancy {
+                tokens: 710,
+                context_window: Some(272_000),
+                estimated: false,
+            },
+        };
+        let value = serde_json::to_value(&frame).unwrap();
+        assert_eq!(value["gross"], 780);
+        assert_eq!(value["recordCount"], 2);
+        assert_eq!(value["byKind"]["auto-review"]["cacheRead"], 7);
+        assert_eq!(value["occupancy"]["contextWindow"], 272_000);
+        assert_eq!(value["occupancy"]["estimated"], false);
+        assert_eq!(serde_json::from_value::<ChatUsage>(value).unwrap(), frame);
+
+        // An older engine's frame (nothing but the total) reads as zeros
+        // rather than failing the client's decode.
+        let older: ChatUsage = serde_json::from_str(r#"{"gross":42}"#).unwrap();
+        assert_eq!(older.gross, 42);
+        assert!(older.by_kind.is_empty());
+        assert_eq!(older.record_count, 0);
+        assert_eq!(older.occupancy, ChatOccupancy::default());
+
+        // A source kind this host has never heard of is data, not an error.
+        let newer = serde_json::json!({
+            "gross": 1,
+            "byKind": { "goal-verifier": { "input": 5 } },
+            "recordCount": 1,
+            "occupancy": { "tokens": 5, "contextWindow": null, "estimated": true },
+        });
+        let decoded: ChatUsage = serde_json::from_value(newer).unwrap();
+        assert_eq!(decoded.by_kind["goal-verifier"].input, 5);
+        assert!(decoded.occupancy.context_window.is_none());
+        assert!(decoded.occupancy.estimated);
     }
 
     /// Drivers spell the key differently; the chip must not care which one
