@@ -3,8 +3,9 @@
 //! Ported from holt's `packages/control/src/wire.ts` + `packages/provider/src/types.ts`.
 //! Token-usage types are part of the contract by design: `Model::context_window`
 //! carries the context-window denominator and the usage ledger's records and
-//! totals are served over the same RPC surface. Nothing usage-shaped is
-//! persisted into docs.
+//! totals are served over the same RPC surface. The ledger itself never enters
+//! a doc: the only usage-shaped values a doc part carries are display summaries
+//! (a spawn chip's token total, a Compaction divider's estimate).
 
 pub mod agent;
 pub mod entities;

@@ -70,6 +70,9 @@ pub mod methods {
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     /// Per-chat `holt_proto::MessageQueue` snapshots. Params `{chatId}`.
     pub const WATCH_MESSAGE_QUEUE: &str = "WatchMessageQueue";
+    /// The chat's usage-ledger view: `holt_proto::ChatUsage` frames (params
+    /// `{chatId}`) — the whole-ledger gross token total, the per-kind sums,
+    /// and the context occupancy of the request the chat would run next.
     pub const WATCH_CHAT_USAGE: &str = "WatchChatUsage";
     /// Live Turn terminal events (ADR-0019): one typed
     /// `holt_rpc::turns::TurnTerminalEvent` per real main-chat Turn,

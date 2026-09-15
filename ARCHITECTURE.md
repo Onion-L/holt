@@ -23,7 +23,7 @@ contract; another backend can slot in behind the same trait.
 | `crates/ui` | The whole gpui viewport (~69k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
 | `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers built-in providers and models through `pi-core-rs`, owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads) still return empty watches or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
-| `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, and view derivations. |
+| `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, and the usage frame (`ChatUsage`: ledger totals plus occupancy). |
 | `crates/doc` | Loro-CRDT session docs and the `MessagePart`/`TranscriptFrame` types the transcript renders. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
 
@@ -207,6 +207,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   replaced and reply with the accepted snapshot; a started item refuses both
   instead of touching the active Turn. Admission errors arrive through the
   Watch.
+- Token usage: `WatchChatUsage` (`ChatUsage` snapshots per chat, params
+  `{chatId}`) reports the chat's whole-ledger gross token total, its
+  per-kind breakdown (Turn work, Subagent, Compaction, Auto-review, Title
+  task), the record count, and the context occupancy of the request the
+  chat would run next. The occupancy numerator is the latest main-run
+  provider report — its request input plus both cache fields — and its
+  denominator is the context window of the model the queue runs next (the
+  executing item, else its pending head), the chat's current selection when
+  the queue is empty, and absent for a custom model whose window the engine
+  does not know. Occupancy is derived at read time and never persisted: the
+  first report flips it from a History-based estimate (`estimated: true`)
+  to measured (`estimated: false`).
 - Turn terminal events (ADR-0019): `WatchTurnTerminalEvents` emits one typed
   `TurnTerminalEvent` (`holt_rpc::turns` — `eventId`, `chatId`, `messageId`,
   `outcome` of `succeeded` / `failed` / `interrupted`, `finishedAt`, plus an

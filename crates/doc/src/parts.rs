@@ -290,6 +290,9 @@ pub enum MessagePart {
         /// its tagged text deltas (capped; display-only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_tail: Option<String>,
+        /// The subagent's gross token total for its finished chip, riding
+        /// `details.usage` folded from the delegation's own meter. Additive —
+        /// an older doc carries no key and its chip renders bare.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_usage: Option<u64>,
         /// The permission gate's record (ADR-0014): absent unless this call
