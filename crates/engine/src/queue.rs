@@ -157,6 +157,18 @@ impl Queue {
         self.record.paused
     }
 
+    /// The request the queue runs NEXT: the item currently executing, else
+    /// the head of the pending list — the occupancy denominator's first
+    /// choice for as long as the queue holds work. `None` means the queue is
+    /// empty, so the chat's own selection answers instead.
+    pub(crate) fn next_request(&self) -> Option<&RunRequest> {
+        self.record
+            .started
+            .as_ref()
+            .map(|started| &started.message.request)
+            .or_else(|| self.record.pending.first().map(|item| &item.request))
+    }
+
     /// Whether no admitted work is executing. Preparation that has not yet
     /// reached the admission checkpoint still occupies the channel through
     /// the driver, so a caller granting attended admission must also check

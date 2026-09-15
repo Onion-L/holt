@@ -78,6 +78,19 @@ impl ProviderAdapter {
         rows
     }
 
+    /// Every window the engine can divide by, keyed by wire id
+    /// (`provider/model`) — the whole eligible-provider catalog, with custom
+    /// rows `None` by contract. The usage frame's occupancy denominator is
+    /// looked up here, so nothing is cached per chat: a builtin window never
+    /// moves within a process.
+    pub fn context_windows(&self) -> Vec<(String, Option<u64>)> {
+        eligible_providers()
+            .iter()
+            .flat_map(|provider| self.models_for(provider.id()))
+            .map(|model| (model.id, model.context_window))
+            .collect()
+    }
+
     pub fn models_for(&self, provider_id: &str) -> Vec<HoltModel> {
         // Custom ids that shadow a builtin catalog id are ignored everywhere:
         // the list is rejected at add time, and legacy file entries must not

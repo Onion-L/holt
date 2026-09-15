@@ -67,6 +67,22 @@ pub(crate) enum UsageKind {
     Title,
 }
 
+impl UsageKind {
+    /// The wire key this kind rides in the frame's `byKind` breakdown.
+    /// Pinned by test against the serde form a record's `kind` writes, so
+    /// the ledger line and the frame never disagree about a source's
+    /// spelling.
+    pub(crate) fn kind_key(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Subagent => "subagent",
+            Self::Compaction => "compaction",
+            Self::AutoReview => "auto-review",
+            Self::Title => "title",
+        }
+    }
+}
+
 /// The terminal outcome a Turn stamps onto its records; `None` on records
 /// from calls outside the Turn model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,6 +168,12 @@ impl UsageRecord {
         }
     }
 
+    /// The record's gross token count — the four headline fields, the number
+    /// a chat's total and a spawn chip's summary both show.
+    pub(crate) fn gross(&self) -> u64 {
+        self.input + self.output + self.cache_read + self.cache_write
+    }
+
     /// Fold a second usage report into this record — the round-trip's tool
     /// results, when a provider bills them separately from the assistant
     /// message.
@@ -192,6 +214,9 @@ pub(crate) struct TokenSum {
 pub(crate) struct UsageTotals {
     pub by_kind: BTreeMap<UsageKind, TokenSum>,
     pub gross: u64,
+    /// How many records these totals were summed from — the frame's record
+    /// count, so building a frame never has to re-read the ledger file.
+    pub records: u64,
 }
 
 impl UsageTotals {
@@ -207,48 +232,191 @@ impl UsageTotals {
         if let Some(n) = record.reasoning {
             *sum.reasoning.get_or_insert(0) += n;
         }
-        self.gross += record.input + record.output + record.cache_read + record.cache_write;
-    }
-
-    /// The per-kind view consumers filter by (the WatchChatUsage surface,
-    /// ticket 04); the module's own tests ride it until then.
-    #[allow(dead_code)]
-    pub(crate) fn sum_for(&self, kind: UsageKind) -> TokenSum {
-        self.by_kind.get(&kind).copied().unwrap_or_default()
+        self.records += 1;
+        self.gross += record.gross();
     }
 }
 
-pub(crate) fn watch_snapshot(chat: &ChatRuntime, context_window: Option<u64>) -> serde_json::Value {
+/// The gross token count of an upstream report — input, output, and both
+/// cache fields. Holt's one definition of "total tokens": the ledger, the
+/// usage frame, and a spawn chip's summary all read it.
+pub(crate) fn gross_tokens(usage: &Usage) -> u64 {
+    usage.input + usage.output + usage.cache_read + usage.cache_write
+}
+
+/// The latest main-run provider report: the number the occupancy numerator
+/// divides. Its request input plus both cache fields — what the provider had
+/// to read and write to answer — and nothing else: a subagent's round-trips
+/// never move it, because a child does not fill its parent's History.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LastReport {
+    input: u64,
+    cache_read: u64,
+    cache_write: u64,
+}
+
+impl LastReport {
+    fn of(usage: &Usage) -> Self {
+        Self {
+            input: usage.input,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
+        }
+    }
+
+    fn tokens(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+}
+
+/// The occupancy denominator's inputs. `by_model` is the engine's catalog —
+/// every model it can run, keyed by wire id — where a custom row maps to
+/// `None` by contract: its window is a cloned template's guess, and an
+/// unknown window must read as unknown rather than as a number. `selected`
+/// is the chat's own selection, which answers while its queue holds nothing
+/// next.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OccupancyWindows {
+    by_model: BTreeMap<String, Option<u64>>,
+    selected: Option<String>,
+}
+
+impl OccupancyWindows {
+    /// The window of the model the chat runs NEXT: the queue's item when it
+    /// has one, else the chat's selection. `None` is "unknown window" — a
+    /// custom row, or a model no catalog row covers — and the UI shows
+    /// absolute tokens instead of a percentage.
+    fn window_for(&self, queue_model: Option<&str>) -> Option<u64> {
+        let wire = queue_model.or(self.selected.as_deref())?;
+        self.by_model.get(wire).copied().flatten()
+    }
+}
+
+/// The wire id the occupancy windows are keyed by. Both a provider-qualified
+/// `provider/model` (what the composer sends) and a bare `model` (what a
+/// stored chat config may hold) arrive here, so the provider half is
+/// normalized in.
+pub(crate) fn wire_model_id(provider: &str, model: &str) -> String {
+    format!("{provider}/{}", model.rsplit('/').next().unwrap_or(model))
+}
+
+/// Seed the chat's occupancy tables: the engine's whole catalog plus the
+/// chat's current selection. Called where a usage watch opens — the one
+/// moment the engine holds both the catalog and the chat.
+pub(crate) fn seed_occupancy(
+    chat: &ChatRuntime,
+    windows: BTreeMap<String, Option<u64>>,
+    selected: Option<String>,
+) {
+    *chat.usage_windows.lock().unwrap_or_else(|e| e.into_inner()) = OccupancyWindows {
+        by_model: windows,
+        selected,
+    };
+}
+
+/// Move the chat's selection — the denominator's answer while the queue
+/// holds nothing next. The catalog half needs no refresh: a builtin window
+/// never moves within a process, and a custom row is unknown by contract
+/// whether or not its settings entry is still there.
+pub(crate) fn set_selected_model(chat: &ChatRuntime, selected: Option<String>) {
+    let changed = {
+        let mut windows = chat.usage_windows.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = windows.selected != selected;
+        windows.selected = selected;
+        changed
+    };
+    if changed {
+        // The denominator moved, so the frame moves with it: with nothing in
+        // the queue next, the selection's window IS the occupancy divisor.
+        publish(chat);
+    }
+}
+
+/// The chat's usage frame: the ledger's running totals over settled batches
+/// AND the running Turn's buffered records (so the number is live before it
+/// settles), plus the occupancy of the request the chat would run next —
+/// derived for display only, never persisted.
+///
+/// The occupancy numerator is the latest main-run report
+/// ([`LastReport`]); until this process has seen one the frame falls back to
+/// the History-based estimate and says so (`estimated`), which is also what
+/// a restart resumes from. The denominator is the window of the model the
+/// chat's queue runs next, the chat's own selection while the queue holds
+/// nothing, and absent when that window is unknown (a custom model) — the
+/// UI then shows absolute tokens instead of a percentage.
+pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
     let mut totals = chat
         .usage_totals
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
-    for record in pending.iter() {
-        totals.add_record(record);
+    {
+        let pending = chat.usage_pending.lock().unwrap_or_else(|e| e.into_inner());
+        for record in pending.iter() {
+            totals.add_record(record);
+        }
     }
-    let records = load_records(&chat.data_dir, &chat.chat_id)
-        .map(|r| r.len())
-        .unwrap_or(0)
-        + pending.len();
-    let by_kind = totals.by_kind.iter().map(|(kind, sum)| { let key = serde_json::to_value(kind).unwrap().as_str().unwrap().to_string(); (key, serde_json::json!({"input":sum.input,"output":sum.output,"cacheRead":sum.cache_read,"cacheWrite":sum.cache_write})) }).collect::<serde_json::Map<_,_>>();
-    let usage = chat.usage.lock().unwrap_or_else(|e| e.into_inner());
-    let raw = usage.input + usage.cache_read + usage.cache_write;
-    let estimated = raw == 0;
-    let tokens = if estimated {
-        pi_core::agent::harness::compaction::compaction::estimate_context_tokens(
-            &chat.history.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .tokens as u64
-    } else {
-        raw
+    let context_window = {
+        // The queue's own answer, so the denominator follows the item that
+        // will actually run — the executing one first, then the head.
+        let next_model = {
+            let queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue
+                .next_request()
+                .map(|request| wire_model_id(&request.provider.0, &request.model))
+        };
+        chat.usage_windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .window_for(next_model.as_deref())
     };
-    let context_window = context_window.or(*chat
-        .usage_context_window
+    let report = *chat
+        .usage_last_report
         .lock()
-        .unwrap_or_else(|e| e.into_inner()));
-    serde_json::json!({"gross":totals.gross,"byKind":by_kind,"recordCount":records,"occupancy":{"tokens":tokens,"contextWindow":context_window,"estimated":estimated}})
+        .unwrap_or_else(|e| e.into_inner());
+    let estimated = report.is_none();
+    let tokens = report.map_or_else(
+        || {
+            pi_core::agent::harness::compaction::compaction::estimate_context_tokens(
+                &chat.history.read().unwrap_or_else(|e| e.into_inner()),
+            )
+            .tokens as u64
+        },
+        |report| report.tokens(),
+    );
+    let by_kind = totals
+        .by_kind
+        .iter()
+        .map(|(kind, sum)| {
+            (
+                kind.kind_key().to_string(),
+                holt_proto::ChatUsageTokens {
+                    input: sum.input,
+                    output: sum.output,
+                    cache_read: sum.cache_read,
+                    cache_write: sum.cache_write,
+                },
+            )
+        })
+        .collect();
+    holt_proto::ChatUsage {
+        gross: totals.gross,
+        by_kind,
+        record_count: totals.records,
+        occupancy: holt_proto::ChatOccupancy {
+            tokens,
+            context_window,
+            estimated,
+        },
+    }
+}
+
+/// Publish the chat's frame. Every booking publishes once, and the watch
+/// keeps only the latest value for a lagging subscriber, so publishing from
+/// several places is cheap and lossy by design.
+pub(crate) fn publish(chat: &ChatRuntime) {
+    let frame = serde_json::to_value(watch_snapshot(chat)).expect("usage frame serializes");
+    let _ = chat.usage_tx.send(frame);
 }
 
 /// Per-chat ledger file, guarded by the shared id path-safety rule. The id
@@ -407,28 +575,40 @@ pub(crate) fn quarantine(data_dir: &Path, chat_id: &str) {
 }
 
 /// Buffer one round-trip of the running main-chat Turn, attributed to
-/// `kind`. Subagent round-trips are not booked here: the delegation's
-/// billing vector owns them ([`capture_subagent_round_trip`]), so the
-/// child's buffer never becomes a phantom child ledger.
+/// `kind`, and publish the frame it moved. A child run's round-trips are not
+/// booked here: the delegation's billing vector owns them
+/// ([`capture_subagent_round_trip`]), so the child's buffer never becomes a
+/// phantom child ledger.
+fn book(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
+    chat.usage_pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(UsageRecord::from_message(kind, message));
+    publish(chat);
+}
+
+/// Book one main-chat round-trip — the child-run guard the callers share.
 fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
     if chat.child.is_some() {
         return;
     }
-    {
-        chat.usage_pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(UsageRecord::from_message(kind, message));
-    }
-    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
+    book(chat, kind, message);
 }
 
 /// Buffer the Turn's own round-trip (the assistant response; a separately
-/// billed tool result folds in via [`merge_tool_result`]).
+/// billed tool result folds in via [`merge_tool_result`]) and take its
+/// report as the occupancy numerator. The numerator is set before the frame
+/// goes out, so the chat's first report flips the status line from the
+/// History estimate to the measured number in the same frame.
 pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
-    capture(chat, UsageKind::Turn, message);
-    *chat.usage.lock().unwrap_or_else(|e| e.into_inner()) = message.usage.clone();
-    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
+    if chat.child.is_some() {
+        return;
+    }
+    *chat
+        .usage_last_report
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(LastReport::of(&message.usage));
+    book(chat, UsageKind::Turn, message);
 }
 
 /// Fold a tool result's usage into the round-trip it belongs to — the MOST
@@ -453,7 +633,7 @@ pub(crate) fn merge_tool_result(chat: &ChatRuntime, result: &ToolResultMessage) 
             turn.add_usage(usage);
         }
     }
-    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
+    publish(chat);
 }
 
 /// Buffer one auto-review pass of the running Turn. A child run's reviews
@@ -485,6 +665,9 @@ pub(crate) fn capture_subagent_round_trip(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(record);
+    // The parent's frame moves with its ledger: a child's round-trip is the
+    // parent chat's spend even while the child owns the run.
+    publish(parent);
 }
 
 /// Book a manual Compaction's summary response immediately — the queued
@@ -523,19 +706,27 @@ pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOut
             record.turn_outcome = Some(outcome);
         }
     }
-    let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
-    if chat.chat_id.is_empty() || chat.is_removed() {
-        return;
+    {
+        // The removed check and the append stay inside the persistence lock,
+        // so a settle that waited out a concurrent delete still writes
+        // nothing.
+        let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if chat.chat_id.is_empty() || chat.is_removed() {
+            return;
+        }
+        let mut totals = chat.usage_totals.lock().unwrap_or_else(|e| e.into_inner());
+        for record in &records {
+            totals.add_record(record);
+        }
+        drop(totals);
+        if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &records) {
+            tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
+        }
     }
-    let mut totals = chat.usage_totals.lock().unwrap_or_else(|e| e.into_inner());
-    for record in &records {
-        totals.add_record(record);
-    }
-    drop(totals);
-    if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &records) {
-        tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
-    }
-    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
+    // The frame is built outside the lock: it reads the ledger totals, the
+    // queue, and (before the first report) the History, and no other
+    // persistence user should wait behind that.
+    publish(chat);
 }
 
 /// Book one record from a call outside the Turn model (the Title task and
@@ -543,18 +734,20 @@ pub(crate) fn settle_turn(chat: &ChatRuntime, message_id: &str, outcome: TurnOut
 /// never batched, still fire-and-forget. The removed check sits inside the
 /// persistence lock for the same delete-race reason as [`settle_turn`].
 fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
-    let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
-    if chat.chat_id.is_empty() || chat.is_removed() {
-        return;
+    {
+        let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if chat.chat_id.is_empty() || chat.is_removed() {
+            return;
+        }
+        chat.usage_totals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_record(&record);
+        if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &[record]) {
+            tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
+        }
     }
-    chat.usage_totals
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .add_record(&record);
-    if let Err(error) = append_records(&chat.data_dir, &chat.chat_id, &[record]) {
-        tracing::warn!(target: "holt::usage", %error, "usage ledger append failed");
-    }
-    let _ = chat.usage_tx.send(watch_snapshot(chat, None));
+    publish(chat);
 }
 
 /// The completed round-trips observed through a metered transport — one
@@ -655,6 +848,31 @@ mod tests {
         std::env::temp_dir().join(format!("holt-usage-{}", uuid::Uuid::new_v4()))
     }
 
+    /// One kind's replayed sums — what a consumer (the frame) filters the
+    /// totals by.
+    fn sum(totals: &UsageTotals, kind: UsageKind) -> TokenSum {
+        totals.by_kind.get(&kind).copied().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_frames_kind_keys_match_the_serialized_record_kinds() {
+        // The frame's `byKind` map is keyed by hand while a record's `kind`
+        // rides serde: the two must never drift apart.
+        for kind in [
+            UsageKind::Turn,
+            UsageKind::Subagent,
+            UsageKind::Compaction,
+            UsageKind::AutoReview,
+            UsageKind::Title,
+        ] {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::json!(kind.kind_key()),
+                "a frame key must match the record's own kind spelling"
+            );
+        }
+    }
+
     #[test]
     fn records_serialize_camel_case_with_kebab_kinds() {
         let turn = serde_json::to_value(record(UsageKind::Turn, 1, 2)).unwrap();
@@ -712,15 +930,15 @@ mod tests {
         )
         .unwrap();
         let totals = warm_totals(&dir, "chat-1");
-        let turns = totals.sum_for(UsageKind::Turn);
+        let turns = sum(&totals, UsageKind::Turn);
         assert_eq!((turns.input, turns.output), (101, 11));
         assert_eq!(turns.cache_read, 7);
         assert_eq!(turns.cache_write, 5);
         assert_eq!(turns.cache_write_1h, Some(3));
         assert_eq!(turns.reasoning, Some(2));
-        assert_eq!(totals.sum_for(UsageKind::Compaction).input, 50);
-        assert_eq!(totals.sum_for(UsageKind::Title).input, 20);
-        assert_eq!(totals.sum_for(UsageKind::Subagent), TokenSum::default());
+        assert_eq!(sum(&totals, UsageKind::Compaction).input, 50);
+        assert_eq!(sum(&totals, UsageKind::Title).input, 20);
+        assert_eq!(sum(&totals, UsageKind::Subagent), TokenSum::default());
         // Gross: every field of every kind's four headline tokens.
         assert_eq!(totals.gross, 101 + 11 + 7 + 5 + 50 + 5 + 20 + 2);
         std::fs::remove_dir_all(&dir).ok();
@@ -737,10 +955,7 @@ mod tests {
         // The crash-mid-append shape: the complete record replays, the
         // partial line is treated as absent, and nothing is quarantined.
         assert_eq!(load_records(&dir, "chat-1").unwrap().len(), 1);
-        assert_eq!(
-            warm_totals(&dir, "chat-1").sum_for(UsageKind::Turn).input,
-            1
-        );
+        assert_eq!(sum(&warm_totals(&dir, "chat-1"), UsageKind::Turn).input, 1);
 
         // A garbage header is the damaged shape: the file is set aside with
         // a timestamped, never-overwritten name, and the totals restart
@@ -902,11 +1117,7 @@ mod tests {
         assert_eq!(booked[0].kind, UsageKind::Title);
         assert!(booked[0].turn_outcome.is_none());
         assert_eq!(
-            chat.usage_totals
-                .lock()
-                .unwrap()
-                .sum_for(UsageKind::Title)
-                .input,
+            sum(&chat.usage_totals.lock().unwrap(), UsageKind::Title).input,
             30
         );
         std::fs::remove_dir_all(&dir).ok();

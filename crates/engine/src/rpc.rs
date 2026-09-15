@@ -789,6 +789,10 @@ impl EngineService {
             });
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
+        // Run acceptance rewrites the chat's config from the request, so the
+        // chat's selection (the occupancy denominator's fallback) moves with
+        // it.
+        self.refresh_selected_model(chat_id);
 
         // The Title task runs in parallel with the Turn on its own token —
         // a Turn interrupt must not cancel it (only chat deletion does).
@@ -862,7 +866,36 @@ impl EngineService {
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         drop(chats);
         self.runtime.publish_chats();
+        // The picker moves the occupancy denominator: with an empty queue the
+        // selection's window is what the next request is measured against.
+        self.refresh_selected_model(chat_id);
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// The chat's selected model as the occupancy windows are keyed — the
+    /// denominator `WatchChatUsage` falls back to when the queue holds
+    /// nothing next. `None` for a row without a config yet (a chat that has
+    /// never run has no selection to divide by).
+    fn selected_wire_model(&self, chat_id: &str) -> Option<String> {
+        let chats = self.runtime.chats.read().ok()?;
+        let config = chats
+            .iter()
+            .find(|row| row.id == chat_id)?
+            .config
+            .as_ref()?;
+        Some(crate::usage::wire_model_id(
+            &config.provider.0,
+            &config.model,
+        ))
+    }
+
+    /// Point an OPEN chat runtime's denominator at its current selection.
+    /// Cheap and idempotent: an unopened chat has no watch to correct yet —
+    /// the subscription seeds it from the same source.
+    fn refresh_selected_model(&self, chat_id: &str) {
+        if let Some(chat) = self.runtime.loaded_chat(chat_id) {
+            crate::usage::set_selected_model(&chat, self.selected_wire_model(chat_id));
+        }
     }
 
     /// Switch a chat's permission mode (ADR-0014): the stored mode is the
@@ -1746,27 +1779,21 @@ impl RpcService for EngineService {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let chat = self.runtime.chat(chat_id);
-                let context_window = self.runtime.chats.read().ok().and_then(|rows| {
-                    rows.iter()
-                        .find(|r| r.id == chat_id)
-                        .and_then(|r| r.config.as_ref())
-                        .and_then(|c| {
-                            self.providers
-                                .models_for(c.provider.0.as_str())
-                                .into_iter()
-                                .find(|m| {
-                                    m.id == c.model.split('/').next_back().unwrap_or(&c.model)
-                                })
-                                .and_then(|m| m.context_window)
-                        })
-                });
-                let initial = crate::usage::watch_snapshot(&chat, context_window);
-                *chat
-                    .usage_context_window
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = context_window;
-                chat.usage_tx.send_replace(initial);
+                // The denominator's inputs are seeded here: opening the watch
+                // is the one moment the engine holds both the model catalog
+                // and the chat. From then on the frame reads the live queue
+                // itself, so a queued run on another model moves the window
+                // without any further bookkeeping.
+                crate::usage::seed_occupancy(
+                    &chat,
+                    self.providers.context_windows().into_iter().collect(),
+                    self.selected_wire_model(chat_id),
+                );
+                // Subscribe first, then publish: the new receiver's opening
+                // value is the frame seeded just above, and any other
+                // subscriber on this chat simply gets the refresh too.
                 let receiver = chat.usage_tx.subscribe();
+                crate::usage::publish(&chat);
                 Ok(Self::watch_value(receiver))
             }
             methods::WATCH_TURN_TERMINAL_EVENTS => {

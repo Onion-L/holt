@@ -116,7 +116,15 @@ pub(crate) struct ChatRuntime {
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
     pub(crate) usage_tx: watch::Sender<serde_json::Value>,
-    pub(crate) usage_context_window: Mutex<Option<u64>>,
+    /// The occupancy denominator's inputs: the catalog window of every model
+    /// the engine can run (wire id → window) plus this chat's own selection.
+    /// The engine seeds them; the frame picks the window of the model the
+    /// queue runs next.
+    pub(crate) usage_windows: Mutex<crate::usage::OccupancyWindows>,
+    /// The latest main-run provider report — the occupancy numerator. Absent
+    /// until this process has seen a report for the chat, which is exactly
+    /// what makes the frame's number an estimate in the meantime.
+    pub(crate) usage_last_report: Mutex<Option<crate::usage::LastReport>>,
     pub(crate) cancel: Mutex<Option<CancellationToken>>,
     /// The one-shot Title task's token (ADR-0012): independent of `cancel`
     /// — a Turn interrupt must not stop title generation; only chat
@@ -180,7 +188,8 @@ impl ChatRuntime {
             history: RwLock::new(Vec::new()),
             transcript_tx,
             usage_tx,
-            usage_context_window: Mutex::new(None),
+            usage_windows: Mutex::new(Default::default()),
+            usage_last_report: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
@@ -370,7 +379,8 @@ impl ChatRuntime {
             history: RwLock::new(history),
             transcript_tx,
             usage_tx,
-            usage_context_window: Mutex::new(None),
+            usage_windows: Mutex::new(Default::default()),
+            usage_last_report: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
@@ -875,7 +885,7 @@ fn tool_output_full(result: &AgentToolResult) -> Option<String> {
 
 fn tool_usage_total(result: &AgentToolResult) -> Option<u64> {
     if let Some(usage) = result.usage.as_ref() {
-        return Some(usage.input + usage.output + usage.cache_read + usage.cache_write);
+        return Some(crate::usage::gross_tokens(usage));
     }
     // Older history records may only retain the serialized details payload.
     // Accept both the typed result and that wire-shaped fallback.
