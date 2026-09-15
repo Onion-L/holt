@@ -1943,7 +1943,7 @@ mod tests {
             cx.set_global(Theme::default());
         });
         let state = cx.new(|_| AppState::new());
-        let (panel, mut visual) = cx.add_window_view(|_window, cx| GitPanel::new(state, cx));
+        let (panel, visual) = cx.add_window_view(|_window, cx| GitPanel::new(state, cx));
         panel.update(&mut *visual, |panel, cx| {
             assert_eq!(panel.tab, GitPanelTab::Status);
             assert!(

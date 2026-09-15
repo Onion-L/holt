@@ -398,7 +398,7 @@ mod tests {
             );
             init(cx);
         });
-        let (_view, mut cx) = cx.add_window_view(|_, _| gpui::Empty);
+        let (_view, cx) = cx.add_window_view(|_, _| gpui::Empty);
         // `with_active_window` routes through `App::active_window`, which the
         // test platform only tracks after an explicit activation.
         cx.update(|window, _| window.activate_window());
@@ -408,19 +408,19 @@ mod tests {
 
         // 16 → 18: the deferred active-window update flushes with dispatch.
         cx.dispatch_action(ZoomIn);
-        assert_eq!(shown_size(&cx), 18.0);
+        assert_eq!(shown_size(cx), 18.0);
         cx.dispatch_action(ZoomOut);
-        assert_eq!(shown_size(&cx), 16.0);
+        assert_eq!(shown_size(cx), 16.0);
 
         // Repeated zoom-in parks at the top of the catalog (20), repeated
         // zoom-out at the bottom (12).
         for _ in 0..8 {
             cx.dispatch_action(ZoomIn);
         }
-        assert_eq!(shown_size(&cx), 20.0);
+        assert_eq!(shown_size(cx), 20.0);
         for _ in 0..8 {
             cx.dispatch_action(ZoomOut);
         }
-        assert_eq!(shown_size(&cx), 12.0);
+        assert_eq!(shown_size(cx), 12.0);
     }
 }
