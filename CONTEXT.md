@@ -76,6 +76,11 @@ _Avoid_: todo list, task list
 _Avoid_: plan text, plan output
 - **Active plan**: the one plan document currently associated with a chat's Plan Mode state; a chat may retain older plans for audit.
 _Avoid_: current todo
+- **Usage record**: the token measurements of one provider round-trip — input, output, and cache tokens — attributed to the Chat that caused it and stamped with its source (Turn work, Subagent, Compaction, Auto-review, Title task), provider, and model. Every model call a chat causes produces one; an interrupted Turn keeps whatever the provider reported.
+_Avoid_: cost, spend (token counts only — no prices)
+- **Usage total**: a chat's running gross sum over its Usage records, all token fields included; the number the chat's status line shows. Consumers filter by source kind themselves.
+- **Context occupancy**: how full the next model request would make the next model's context window — a live fraction from the latest provider report, shown against the model the chat would run next. Never persisted, and never a name for the History itself.
+_Avoid_: context usage, token usage (those are Usage records)
 _Avoid_: permission prompt, confirm dialog (for Approval)
 _Avoid_: auto-approve (Auto-review can reject)
 _Avoid_: grep tool, agent search
