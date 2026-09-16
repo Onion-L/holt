@@ -341,6 +341,10 @@ impl Transcript {
                         .id(SharedString::from(format!("{row_id}#skill-body")))
                         .max_h(px(320.0))
                         .overflow_y_scroll()
+                        // Nested reading viewport inside the transcript list:
+                        // occlude so one wheel gesture cannot scroll both this
+                        // body and the outer list (ADR-0013).
+                        .occlude()
                         .font_family(theme.font_mono.clone())
                         .text_size(crate::typography::ui_rems(11.0))
                         .line_height(crate::typography::ui_rems(16.0))
