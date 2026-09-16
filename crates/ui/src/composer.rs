@@ -119,10 +119,11 @@ pub struct Composer {
     /// visible trace of a failed send (2026-08-19).
     failure_key: Option<String>,
     /// Armed Interrupt confirmation (CONTEXT.md): `Some(deadline)` between
-    /// the first Esc press and its lapse. View-layer transient — cleared by
-    /// the confirming press, the reset timer, a chat switch, or the next
-    /// Esc on a dead run.
-    esc_arm: Option<Instant>,
+    /// the first press — Esc, or Enter on an empty composer — and its
+    /// lapse. View-layer transient — cleared by the confirming press, the
+    /// reset timer, the Turn's end (a state frame reading not-live), or a
+    /// chat switch.
+    interrupt_arm: Option<Instant>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
     /// The confirm-changes approval bar that replaces the pill while a
@@ -311,7 +312,7 @@ impl Composer {
             queue_motion: None,
             answered_requests: HashSet::new(),
             failure_key: None,
-            esc_arm: None,
+            interrupt_arm: None,
             action_task: None,
             advance_task: None,
             send_task: None,
@@ -429,7 +430,7 @@ impl Composer {
             // trace of a failed send.
             self.wizard = None;
             self.queue_edit = None;
-            self.esc_arm = None;
+            self.interrupt_arm = None;
             // Attachments stay stashed under their chat key (the map swap IS
             // the navigation); only the transient chrome resets.
             self.preview = None;
@@ -444,6 +445,14 @@ impl Composer {
             self.last_rendered_height = 0.0;
             self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
+        }
+
+        // The arm clears when the Turn ends (CONTEXT.md), not merely when
+        // the pill stops rendering: a queued Turn starting inside the
+        // confirm window must need two fresh presses, never inherit the
+        // previous run's armed confirmation.
+        if self.interrupt_arm.is_some() && !self.run_live(cx) {
+            self.interrupt_arm = None;
         }
 
         // Question panel lifecycle (wizard state cached per request id).

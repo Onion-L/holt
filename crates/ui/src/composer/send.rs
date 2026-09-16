@@ -20,8 +20,8 @@ use crate::state::Indicator;
 use crate::theme::Theme;
 
 /// How long an armed Interrupt confirmation (CONTEXT.md) waits for the
-/// second Esc before it lapses back to the normal button.
-const ESC_ARM_RESET_MS: u64 = 1500;
+/// confirming press before it lapses back to the normal button.
+const INTERRUPT_ARM_RESET_MS: u64 = 1500;
 
 /// The `/plan status` notice line from a `PlanModeState` reply. The
 /// proposed plan's own card carries the per-proposal state in the
@@ -116,21 +116,21 @@ impl Composer {
         if !gate_pends
             && let Some(outcome) = enter_interrupt_outcome(
                 self.run_live(cx),
-                self.esc_arm.is_some(),
+                self.interrupt_arm.is_some(),
                 self.has_content(cx),
             )
         {
             match outcome {
                 // Not live: nothing to send from an empty composer anyway;
                 // a stale arm dies on the press, mirroring Esc.
-                EscInterruptOutcome::NotLive => self.esc_arm = None,
+                EscInterruptOutcome::NotLive => self.interrupt_arm = None,
                 EscInterruptOutcome::Arm => {
-                    self.arm_esc_interrupt(cx);
+                    self.arm_interrupt(cx);
                     cx.notify();
                     return;
                 }
                 EscInterruptOutcome::Interrupt => {
-                    self.esc_arm = None;
+                    self.interrupt_arm = None;
                     self.interrupt(cx);
                     return;
                 }
@@ -760,37 +760,37 @@ impl Composer {
         if self.approval_bar.is_some() {
             return;
         }
-        match esc_interrupt_outcome(self.run_live(cx), self.esc_arm.is_some()) {
-            EscInterruptOutcome::NotLive => self.esc_arm = None,
+        match esc_interrupt_outcome(self.run_live(cx), self.interrupt_arm.is_some()) {
+            EscInterruptOutcome::NotLive => self.interrupt_arm = None,
             EscInterruptOutcome::Arm => {
                 cx.stop_propagation();
-                self.arm_esc_interrupt(cx);
+                self.arm_interrupt(cx);
                 cx.notify();
             }
             EscInterruptOutcome::Interrupt => {
                 cx.stop_propagation();
-                self.esc_arm = None;
+                self.interrupt_arm = None;
                 self.interrupt(cx);
             }
         }
     }
 
-    /// Arm the Interrupt confirmation: the first Esc press while a Turn
-    /// runs. The ESC pill renders (and the second press interrupts) until
-    /// the confirming press, this timer's lapse, the Turn's end, or a chat
-    /// switch clears the arm.
-    fn arm_esc_interrupt(&mut self, cx: &mut Context<Self>) {
-        let deadline = Instant::now() + Duration::from_millis(ESC_ARM_RESET_MS);
-        self.esc_arm = Some(deadline);
+    /// Arm the Interrupt confirmation: the first stop-key press (Esc, or
+    /// Enter on an empty composer) while a Turn runs. The ESC pill renders
+    /// (and the confirming press interrupts) until the press arrives, this
+    /// timer's lapse, the Turn's end, or a chat switch clears the arm.
+    fn arm_interrupt(&mut self, cx: &mut Context<Self>) {
+        let deadline = Instant::now() + Duration::from_millis(INTERRUPT_ARM_RESET_MS);
+        self.interrupt_arm = Some(deadline);
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(Duration::from_millis(ESC_ARM_RESET_MS))
+                .timer(Duration::from_millis(INTERRUPT_ARM_RESET_MS))
                 .await;
             this.update(cx, |this, cx| {
                 // Generation guard: a timer only retires its own arm — a
                 // re-arm after a clear carries a later deadline.
-                if this.esc_arm == Some(deadline) {
-                    this.esc_arm = None;
+                if this.interrupt_arm == Some(deadline) {
+                    this.interrupt_arm = None;
                     cx.notify();
                 }
             })
@@ -898,7 +898,7 @@ impl Composer {
         // Armed Interrupt confirmation (CONTEXT.md): the ESC pill replaces
         // whatever mode the button is in — Stop square or Queue arrow —
         // until the arm is confirmed or lapses.
-        if self.esc_arm.is_some() && self.run_live(cx) {
+        if self.interrupt_arm.is_some() && self.run_live(cx) {
             return div()
                 .id("composer-esc-confirm")
                 .role(gpui::Role::Button)
@@ -923,13 +923,13 @@ impl Composer {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.bg)
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.esc_arm = None;
+                    this.interrupt_arm = None;
                     this.interrupt(cx);
                 }))
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        this.esc_arm = None;
+                        this.interrupt_arm = None;
                         this.interrupt(cx);
                     }
                 }))
@@ -1056,12 +1056,15 @@ mod tests {
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
-            assert!(this.esc_arm.is_some(), "the first empty Enter arms");
+            assert!(this.interrupt_arm.is_some(), "the first empty Enter arms");
             assert!(!this.is_sending(), "arming sends nothing");
         });
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
-            assert!(this.esc_arm.is_none(), "the second empty Enter confirms");
+            assert!(
+                this.interrupt_arm.is_none(),
+                "the second empty Enter confirms"
+            );
         });
     }
 
@@ -1078,7 +1081,7 @@ mod tests {
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
-            assert!(this.esc_arm.is_some());
+            assert!(this.interrupt_arm.is_some());
         });
         // Typing while armed must not disarm: with content the press leaves
         // the protocol alone and takes the ordinary submit path (which in
@@ -1088,9 +1091,36 @@ mod tests {
                 .update(cx, |input, cx| input.set_text("hello", cx));
             this.on_submit(cx);
             assert!(
-                this.esc_arm.is_some(),
+                this.interrupt_arm.is_some(),
                 "content Enter never touches the arm"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn the_arm_clears_when_the_turn_ends(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| crate::state::AppState::new());
+        state.update(cx, |s, _| {
+            s.selected_chat = Some("c".into());
+            s.begin_pending_send("c", "m1", chrono::Utc::now());
+        });
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+
+        composer.update(cx, |this, cx| {
+            this.on_submit(cx);
+            assert!(this.interrupt_arm.is_some());
+        });
+        // The run ends; a queued Turn starting inside the window must need
+        // two fresh presses again, never inherit the old confirmation.
+        state.update(cx, |s, cx| {
+            s.end_pending_send("c", "m1");
+            // Run-end frames reach the composer through the state observer.
+            cx.notify();
+        });
+        composer.update(cx, |this, _| {
+            assert!(this.interrupt_arm.is_none(), "the arm dies with the Turn");
         });
     }
 
@@ -1105,7 +1135,7 @@ mod tests {
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
             assert!(
-                this.esc_arm.is_none(),
+                this.interrupt_arm.is_none(),
                 "an idle run gives Enter nothing to arm"
             );
         });
@@ -1113,7 +1143,7 @@ mod tests {
             this.input
                 .update(cx, |input, cx| input.set_text("hello", cx));
             this.on_submit(cx);
-            assert!(this.esc_arm.is_none());
+            assert!(this.interrupt_arm.is_none());
         });
     }
 }
