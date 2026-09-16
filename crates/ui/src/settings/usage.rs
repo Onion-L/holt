@@ -1,23 +1,26 @@
 //! The Usage settings page (usage-overview spec, tickets 02+): the
 //! device-level usage aggregate from one unary `UsageStats` call, read
 //! fresh on every entry. Ticket 02 built the page shell — the four
-//! Loadable states plus the header bar; ticket 03 adds the summary area:
+//! Loadable states plus the header bar; ticket 03 added the summary area:
 //! the Total and per-model legend, the stacked daily area chart, and the
-//! six metric tiles. Everything on the page is read-only: the only
-//! controls reload the same aggregate, and the legend's curve visibility
-//! is ephemeral page state — a reload resets it.
+//! six metric tiles; ticket 04 adds the year-long Activity heatmap.
+//! Everything on the page is read-only: the only controls reload the same
+//! aggregate, and the legend's curve visibility is ephemeral page state —
+//! a reload resets it.
 //!
 //! The chart is gpui self-drawn: one canvas painting each visible model's
 //! stacked area as a filled polygon over the shared day axis (the git
 //! graph's palette, so legend dots and layers share one color per rank),
 //! with the day readout riding the existing tooltip infra — one hover
 //! column per day, each opening the same card the usage ring's hover
-//! opens.
+//! opens. The heatmap is the same tooltip infra over a DOM grid of cells:
+//! every day is its own hover target.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Datelike;
 use gpui::{
     AnyElement, Context, Entity, Hsla, IntoElement, PathBuilder, Render, SharedString, Task,
     Window, canvas, div, point, prelude::*, px,
@@ -261,6 +264,123 @@ fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
         ),
     });
     tiles
+}
+
+// ---------------------------------------------------------------------------
+// The Activity heatmap (ticket 04)
+// ---------------------------------------------------------------------------
+
+/// The heatmap cell geometry: 11px squares on a 3px gap — the GitHub
+/// grid's density at desktop size.
+const HEAT_CELL: f32 = 11.0;
+const HEAT_GAP: f32 = 3.0;
+/// The weekday-label gutter left of the grid; the month-label row indents
+/// by the same amount so labels sit over their columns.
+const HEAT_GUTTER: f32 = 30.0;
+
+/// One placed heatmap cell: a day's tokens plus where it sits in the
+/// 7-row grid — columns are weeks, rows are weekdays, Sunday first.
+struct HeatCell {
+    date: chrono::NaiveDate,
+    tokens: u64,
+    col: usize,
+    row: usize,
+}
+
+/// The placed grid: the engine's fixed 365 local-day buckets ending
+/// today, wrapped onto whole weeks. `cols` is 53 for every weekday the
+/// year can start on.
+struct HeatmapGrid {
+    cells: Vec<HeatCell>,
+    cols: usize,
+}
+
+/// Wrap the reply's buckets onto the Sunday-first grid. The buckets
+/// arrive oldest-first ending today, so the first day's weekday sets the
+/// leading offset; an unparsable date (never the engine's shape) drops
+/// its cell rather than failing the whole grid.
+fn fold_heatmap(reply: &UsageStatsReply) -> HeatmapGrid {
+    // One unparsable date would shift every later cell onto the wrong
+    // weekday row, so a single bad bucket empties the grid instead of
+    // quietly corrupting it (never the engine's shape).
+    let Some(mut days): Option<Vec<(chrono::NaiveDate, u64)>> = reply
+        .heatmap
+        .iter()
+        .map(|day| {
+            Some((
+                chrono::NaiveDate::parse_from_str(&day.date, "%Y-%m-%d").ok()?,
+                day.tokens,
+            ))
+        })
+        .collect()
+    else {
+        return HeatmapGrid {
+            cells: Vec::new(),
+            cols: 0,
+        };
+    };
+    let offset = days
+        .first()
+        .map(|(date, _)| date.weekday().num_days_from_sunday() as usize)
+        .unwrap_or(0);
+    let cells: Vec<HeatCell> = days
+        .drain(..)
+        .enumerate()
+        .map(|(index, (date, tokens))| {
+            let spot = offset + index;
+            HeatCell {
+                date,
+                tokens,
+                col: spot / 7,
+                row: spot % 7,
+            }
+        })
+        .collect();
+    let cols = cells.last().map_or(0, |last| last.col + 1);
+    HeatmapGrid { cells, cols }
+}
+
+/// The color level 0..=4: the empty shade until a day has tokens, then
+/// quarters of the year's peak (ceiling, so any token beats the empty
+/// shade and the peak itself reaches the top).
+fn heatmap_level(tokens: u64, peak: u64) -> usize {
+    if tokens == 0 || peak == 0 {
+        0
+    } else {
+        ((4.0 * tokens as f64 / peak as f64).ceil() as usize).clamp(1, 4)
+    }
+}
+
+/// The five shades of the scale, empty → peak — and of the Less→More
+/// legend, which shows them in the same order.
+fn heatmap_cell_color(level: usize, theme: &Theme) -> Hsla {
+    match level {
+        0 => theme.ink(0.06),
+        _ => theme.accent.opacity([0.28, 0.55, 0.8, 1.0][level - 1]),
+    }
+}
+
+/// A cell's hover copy, spec shape: "X tokens on <full date>".
+fn heatmap_tooltip(cell: &HeatCell) -> String {
+    format!(
+        "{} tokens on {}",
+        cell.tokens,
+        cell.date.format("%B %-d, %Y")
+    )
+}
+
+/// Month labels over the grid, GitHub's rule: the column containing a
+/// month's 1st carries that month's abbreviation. A day-of-month 1 appears
+/// exactly once per month, so the labels are naturally unique; the
+/// leading partial column gets one only when it truly contains a 1st.
+fn heatmap_month_labels(grid: &HeatmapGrid) -> Vec<(usize, String)> {
+    let mut labels = Vec::new();
+    for cell in &grid.cells {
+        if cell.date.day() == 1 {
+            labels.push((cell.col, cell.date.format("%b").to_string()));
+        }
+    }
+    labels
 }
 
 pub struct UsagePage {
@@ -795,6 +915,162 @@ impl UsagePage {
                     )
             }))
     }
+
+    /// The Activity block: the year-long token heatmap. Fixed 365-day
+    /// window — the range switcher above never touches it, because the
+    /// fold reads only the reply's heatmap buckets.
+    fn render_heatmap(
+        &self,
+        reply: &UsageStatsReply,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::of(cx).clone();
+        let grid = fold_heatmap(reply);
+        let peak = grid.cells.iter().map(|cell| cell.tokens).max().unwrap_or(0);
+        let month_labels = heatmap_month_labels(&grid);
+        let mut columns: Vec<Vec<Option<&HeatCell>>> =
+            (0..grid.cols).map(|_| vec![None; 7]).collect();
+        for cell in &grid.cells {
+            columns[cell.col][cell.row] = Some(cell);
+        }
+        div()
+            .id("usage-heatmap")
+            .debug_selector(|| "usage-heatmap".into())
+            .mt(px(28.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(widgets::section_label(&theme, "Activity"))
+            // Month labels, indented past the weekday gutter so each one
+            // sits over its week column (the label may overflow the slot).
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    // Same gap as the grid row below, or every label lands
+                    // 6px left of its column.
+                    .gap(px(6.0))
+                    .child(div().flex_none().w(px(HEAT_GUTTER)))
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-heatmap-months".into())
+                            .flex()
+                            .flex_row()
+                            .gap(px(HEAT_GAP))
+                            .children((0..grid.cols).map(|col| {
+                                let label = month_labels
+                                    .iter()
+                                    .find(|(label_col, _)| *label_col == col)
+                                    .map(|(_, label)| label.clone());
+                                div()
+                                    .flex_none()
+                                    .w(px(HEAT_CELL))
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.text_faint)
+                                    .children(label.map(SharedString::from))
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(6.0))
+                    .child(
+                        // Weekday gutter: Mon/Wed/Fri at their rows.
+                        div()
+                            .flex_none()
+                            .w(px(HEAT_GUTTER))
+                            .flex()
+                            .flex_col()
+                            .gap(px(HEAT_GAP))
+                            .children(
+                                ["", "Mon", "", "Wed", "", "Fri", ""]
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(row, label)| {
+                                        div()
+                                            .flex_none()
+                                            .h(px(HEAT_CELL))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(crate::typography::ui_rems(10.0))
+                                            .text_color(theme.text_faint)
+                                            .when(!label.is_empty(), |slot| {
+                                                slot.debug_selector(move || {
+                                                    format!("usage-heat-wd-{row}")
+                                                })
+                                                .child(label)
+                                            })
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("usage-heatmap-grid")
+                            .debug_selector(|| "usage-heatmap-grid".into())
+                            .flex()
+                            .flex_row()
+                            .gap(px(HEAT_GAP))
+                            .children(columns.into_iter().map(|rows| {
+                                div().flex().flex_col().gap(px(HEAT_GAP)).children(
+                                    rows.into_iter().map(|cell| match cell {
+                                        Some(cell) => {
+                                            self.heat_cell(cell, peak, &theme).into_any_element()
+                                        }
+                                        None => {
+                                            div().flex_none().size(px(HEAT_CELL)).into_any_element()
+                                        }
+                                    }),
+                                )
+                            })),
+                    ),
+            )
+            .child(
+                // Less→More legend: the five shades in scale order.
+                div()
+                    .id("usage-heatmap-legend")
+                    .debug_selector(|| "usage-heatmap-legend".into())
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .items_center()
+                    .gap(px(4.0))
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.text_faint)
+                    .child("Less")
+                    .children((0..=4).map(|level| {
+                        div()
+                            .flex_none()
+                            .size(px(HEAT_CELL))
+                            .rounded(px(2.0))
+                            .bg(heatmap_cell_color(level, &theme))
+                    }))
+                    .child("More"),
+            )
+    }
+
+    /// One day cell: the 11px hover target carrying the day readout.
+    fn heat_cell(&self, cell: &HeatCell, peak: u64, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+        let level = heatmap_level(cell.tokens, peak);
+        let tooltip = SharedString::from(heatmap_tooltip(cell));
+        div()
+            .id(SharedString::from(format!(
+                "usage-heat-{}-{}",
+                cell.col, cell.row
+            )))
+            .debug_selector(move || format!("usage-heat-{}-{}", cell.col, cell.row))
+            .flex_none()
+            .size(px(HEAT_CELL))
+            .rounded(px(2.0))
+            .bg(heatmap_cell_color(level, theme))
+            .cursor_default()
+            .tooltip(move |_, cx| {
+                cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
+                    .into()
+            })
+            .tooltip_show_delay(DAY_TOOLTIP_DELAY)
+    }
 }
 
 /// The chart's paint pass: three faint gridlines, then each visible
@@ -961,6 +1237,7 @@ impl Render for UsagePage {
                         .child(self.render_header(reply, cx))
                         .child(self.render_summary(reply, cx))
                         .child(self.render_metrics(reply, cx))
+                        .child(self.render_heatmap(reply, cx))
                         .into_any_element()
                 }
             }
@@ -1516,5 +1793,203 @@ mod tests {
             "a reload restores every curve"
         );
         assert!(harness.present("usage-day-0"), "back on the ready state");
+    }
+
+    // -------------------------------------------------------------------
+    // Ticket 04 — the Activity heatmap
+    // -------------------------------------------------------------------
+
+    fn day_json(date: &str, tokens: u64) -> serde_json::Value {
+        serde_json::json!({ "date": date, "tokens": tokens })
+    }
+
+    /// A real 365-day heatmap ending `today` — the engine's fixed
+    /// window — with three peaks (500, 1000, 200) so the scale has shape.
+    fn heatmap_reply_ending(today: chrono::NaiveDate) -> Scripted {
+        let tokens = |i: usize| match i {
+            100 => 500,
+            200 => 1000,
+            364 => 200,
+            _ => 0,
+        };
+        let heatmap: Vec<serde_json::Value> = (0..365)
+            .map(|i| {
+                day_json(
+                    &(today - chrono::Duration::days(364 - i as i64))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    tokens(i),
+                )
+            })
+            .collect();
+        Scripted::Ok(serde_json::json!({
+            "chatCount": 1,
+            "days": 30,
+            "totals": {
+                "input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0,
+                "cacheHit": null, "activeDays": 3,
+            },
+            "models": [], "byModel": [], "byProject": [],
+            "heatmap": heatmap,
+        }))
+    }
+
+    /// A two-week window ending Wednesday 2026-09-16: it starts Thursday
+    /// 2026-09-03, so the Sunday-first grid needs a 4-cell leading offset.
+    fn two_week_reply() -> serde_json::Value {
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+        let heatmap: Vec<serde_json::Value> = (0..14)
+            .map(|i| {
+                day_json(
+                    &(end - chrono::Duration::days(13 - i as i64))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    (i * 10) as u64,
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "chatCount": 1, "days": 30,
+            "totals": { "input": 0, "output": 0, "cacheRead": 0,
+                        "cacheWrite": 0, "cacheHit": null, "activeDays": 14 },
+            "models": [], "byModel": [], "byProject": [],
+            "heatmap": heatmap,
+        })
+    }
+
+    fn cell(grid: &HeatmapGrid, col: usize, row: usize) -> &HeatCell {
+        grid.cells
+            .iter()
+            .find(|cell| cell.col == col && cell.row == row)
+            .unwrap_or_else(|| panic!("no cell at {col},{row}"))
+    }
+
+    #[test]
+    fn the_heatmap_wraps_onto_sunday_first_weeks() {
+        let grid = fold_heatmap(&decode_reply(two_week_reply()));
+
+        // Thursday start: 4 leading offsets, 14 days, three week columns.
+        assert_eq!(grid.cols, 3);
+        let first = cell(&grid, 0, 4);
+        assert_eq!(first.date.to_string(), "2026-09-03");
+        // The days flow down each column: Friday 09-04 lands under it.
+        assert_eq!(cell(&grid, 0, 5).date.to_string(), "2026-09-04");
+        // The last day (Wednesday) sits at column 2, row 3 — aligned to
+        // its own weekday, not packed to the top.
+        let last = cell(&grid, 2, 3);
+        assert_eq!(last.date.to_string(), "2026-09-16");
+    }
+
+    #[test]
+    fn heatmap_levels_quarter_the_peak_and_empty_days_stay_lowest() {
+        let peak = 100;
+        assert_eq!(heatmap_level(0, peak), 0);
+        assert_eq!(heatmap_level(1, peak), 1, "any token beats the empty shade");
+        assert_eq!(heatmap_level(25, peak), 1);
+        assert_eq!(heatmap_level(26, peak), 2);
+        assert_eq!(heatmap_level(75, peak), 3);
+        assert_eq!(
+            heatmap_level(100, peak),
+            4,
+            "the peak reaches the top level"
+        );
+        // A year with no usage at all has no scale to climb.
+        assert_eq!(heatmap_level(10, 0), 0);
+    }
+
+    #[test]
+    fn the_heatmap_hover_names_the_full_date() {
+        let grid = fold_heatmap(&decode_reply(two_week_reply()));
+        let wednesday = cell(&grid, 2, 3);
+        assert_eq!(
+            heatmap_tooltip(wednesday),
+            "130 tokens on September 16, 2026"
+        );
+    }
+
+    #[test]
+    fn month_labels_mark_where_a_month_first_appears() {
+        // A 33-day window spanning one month boundary: Aug 15 (Sat) 2026
+        // to Sep 16. GitHub's rule labels the column containing the 1st:
+        // Sep 1 lands in column 3 (6 leading offsets + 17 days), August
+        // itself never gets one (its 1st is before the window starts).
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+        let heatmap: Vec<serde_json::Value> = (0..33)
+            .map(|i| {
+                day_json(
+                    &(end - chrono::Duration::days(32 - i as i64))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    0,
+                )
+            })
+            .collect();
+        let reply = serde_json::json!({
+            "chatCount": 1, "days": 30,
+            "totals": { "input": 0, "output": 0, "cacheRead": 0,
+                        "cacheWrite": 0, "cacheHit": null, "activeDays": 0 },
+            "models": [], "byModel": [], "byProject": [],
+            "heatmap": heatmap,
+        });
+        let grid = fold_heatmap(&decode_reply(reply));
+        let labels = heatmap_month_labels(&grid);
+        assert_eq!(labels, vec![(3, "Sep".to_string())], "{labels:?}");
+    }
+
+    #[gpui::test]
+    fn the_heatmap_grid_aligns_to_today_and_stays_hittable(cx: &mut gpui::TestAppContext) {
+        // The clock is read once: fixture and assertions share one today,
+        // so a midnight rollover mid-test cannot desync them.
+        let today = chrono::Local::now().date_naive();
+        let mut harness = harness(cx, vec![], heatmap_reply_ending(today));
+
+        assert!(harness.present("usage-heatmap"));
+        assert!(harness.present("usage-heatmap-grid"));
+        assert!(harness.present("usage-heatmap-legend"));
+
+        // Today is the last bucket: its column is the 53rd (index 52) and
+        // its row is today's own weekday, Sunday-first.
+        let today = chrono::Local::now().date_naive();
+        let offset = today.weekday().num_days_from_sunday() as usize;
+        let spot = offset + 364;
+        let (col, row) = (spot / 7, spot % 7);
+        let today_cell = harness.bounds(Box::leak(
+            format!("usage-heat-{col}-{row}").into_boxed_str(),
+        ));
+        assert_eq!(
+            (today_cell.size.width, today_cell.size.height),
+            (px(HEAT_CELL), px(HEAT_CELL)),
+            "the small hover target is laid out at cell size"
+        );
+
+        // The grid hugs today: the cell after today in its own column
+        // does not exist, and the leading column starts at today's
+        // weekday offset.
+        if row < 6 {
+            let next = Box::leak(format!("usage-heat-{col}-{}", row + 1).into_boxed_str());
+            assert!(!harness.present(next), "no cell exists past today");
+        }
+        assert_eq!(
+            harness.present("usage-heat-0-0"),
+            offset == 0,
+            "the leading column starts at today's weekday offset"
+        );
+
+        // Weekday gutter: exactly Mon/Wed/Fri carry labels.
+        assert!(harness.present("usage-heat-wd-1"));
+        assert!(harness.present("usage-heat-wd-3"));
+        assert!(harness.present("usage-heat-wd-5"));
+        assert!(!harness.present("usage-heat-wd-0"));
+
+        // The heatmap is range-independent: the reply's buckets are the
+        // same fixed year whatever the switcher does.
+        harness.click("usage-range-7");
+        harness.pump();
+        assert!(
+            harness.present(Box::leak(
+                format!("usage-heat-{col}-{row}").into_boxed_str()
+            )),
+            "the heatmap survives a range switch unchanged"
+        );
     }
 }
