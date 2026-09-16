@@ -1,22 +1,25 @@
 //! The Usage settings page (usage-overview spec, tickets 02+): the
 //! device-level usage aggregate from one unary `UsageStats` call, read
-//! fresh on every entry. Ticket 02 built the page shell — the four
-//! Loadable states plus the header bar; ticket 03 added the summary area:
-//! the Total and per-model legend, the stacked daily area chart, and the
-//! six metric tiles; ticket 04 adds the year-long Activity heatmap.
-//! Everything on the page is read-only: the only controls reload the same
-//! aggregate, and the legend's curve visibility is ephemeral page state —
-//! a reload resets it.
+//! fresh on every entry. The page follows the reference usage-overview
+//! design: an iconed title row over the count line and the segmented
+//! range switcher, a summary line (Total plus a per-model checkbox
+//! legend) over the daily stacked bar chart, a six-cell metrics card
+//! with hairline dividers, the year-long Activity heatmap, and the By
+//! model / By project Breakdown card. Everything on the page is
+//! read-only: the only controls reload the same aggregate, and the
+//! legend's visibility toggles are ephemeral page state — a reload
+//! resets it. Reloads never blank the page: a range switch or refresh
+//! dims the stale view under a header spinner until the fresh reply
+//! lands; only a first load drops to skeletons.
 //!
-//! The chart is gpui self-drawn over the shared day axis: each visible
-//! model draws as one smooth curve (Catmull-Rom through the day points)
-//! with a soft fill beneath, curves overlapping rather than stacking, so
-//! a day's height is that model's own total (the git graph's palette, so
-//! legend dots and curves share one color per rank). The fills are thin
-//! quads sampled along the same spline the stroke draws — strokes and
-//! quads are the two primitives this renderer proves everywhere else.
-//! The day readout rides the existing tooltip infra — one hover column
-//! per day — and the heatmap is the same tooltip infra over a DOM grid
+//! The chart is gpui self-drawn over the shared day axis: one bar per
+//! day, the visible models stacked bottom-to-top in rank order with a
+//! rounded cap on the stack's topmost segment, over one hairline
+//! gridline per Y rung (the git graph's palette, so legend checkboxes
+//! and bar segments share one color per rank). Hovering a day washes
+//! its column and pins the day readout inside the plot over that day's
+//! own slot — instant, and it never escapes over the gutter or the
+//! content below. The heatmap is the same readout idea over a DOM grid
 //! of cells: every day is its own hover target.
 
 use std::collections::BTreeSet;
@@ -33,7 +36,7 @@ use holt_rpc::methods;
 
 use crate::{
     chat_usage::percent,
-    icons,
+    icons, loaders,
     popover::{self, Loadable},
     state::AppState,
     theme::Theme,
@@ -62,12 +65,15 @@ pub(crate) const VERSION_SKEW: &str =
     "Usage stats aren't available — the engine doesn't support them yet";
 
 /// The chart block's fixed height; the day columns and the canvas share it.
-const CHART_HEIGHT: f32 = 220.0;
-/// The summary's left column: legend rows with air for a model id.
-const LEGEND_WIDTH: f32 = 260.0;
+/// Tall enough that a stacked day reads as a column, not a splinter — the
+/// reference chart's proportions.
+const CHART_HEIGHT: f32 = 260.0;
 /// Day tooltips appear faster than the 350ms hover cards: scanning across
 /// thirty columns should read each day without slowing to a crawl.
 const DAY_TOOLTIP_DELAY: Duration = Duration::from_millis(150);
+/// The pinned day readout's width: air for a model id without reading as
+/// a panel pasted over the chart.
+const READOUT_WIDTH: f32 = 210.0;
 
 /// A `YYYY-MM-DD` bucket key as the axis prints it: "Sep 16". An
 /// unparsable date (never the engine's shape) prints as-is.
@@ -80,6 +86,124 @@ fn short_date(date: &str) -> String {
 /// The header's count line, verbatim spec shape: "N chats · last N days".
 fn header_count_text(chat_count: u64, days: u32) -> String {
     format!("{chat_count} chats · last {days} days")
+}
+
+/// The Y scale's rung step: the smallest of 1/2/2.5/5 × 10^k that clears
+/// a quarter of the peak — the reference chart's clean round rung values
+/// (0 · 50M · 100M · 150M · 200M), never a raw "136.1M" mid-rung.
+fn nice_step(peak: u64) -> f64 {
+    let target = peak as f64 / 4.0;
+    let magnitude = 10f64.powf(target.max(1.0).log10().floor());
+    for mantissa in [1.0, 2.0, 2.5, 5.0, 10.0] {
+        let step = mantissa * magnitude;
+        // 2.5 only while it stays a whole token count — a sub-token rung
+        // would print a fraction.
+        if step >= target && (mantissa != 2.5 || magnitude >= 10.0) {
+            return step;
+        }
+    }
+    magnitude * 10.0
+}
+
+/// The Y rungs bottom-up: zero, the step, … a top rung at or above the
+/// peak. The last value is the chart's ceiling — bars and gridlines both
+/// divide by it, so the top rung is always the highest gridline.
+fn scale_rungs(peak: u64) -> Vec<u64> {
+    let step = nice_step(peak);
+    let count = ((peak as f64 / step).ceil() as u64).max(1);
+    (0..=count)
+        .map(|rung| (rung as f64 * step).round() as u64)
+        .collect()
+}
+
+/// X labels print under their own bar slot; a label needs a few character
+/// widths of slot, so dense ranges label every Nth day — anchored to the
+/// range's last day, so today never goes unlabeled.
+fn label_stride(days: usize) -> usize {
+    if days <= 14 {
+        1
+    } else {
+        (days as f32 / 12.0).ceil() as usize
+    }
+}
+
+/// The title row: the chart icon, the page name at headline size, and the
+/// description riding the same line — the reference design's masthead.
+fn title_row(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            icons::icon(icons::CHART_COLUMN)
+                .size(px(17.0))
+                .text_color(theme.text_muted),
+        )
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(20.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(PAGE_TITLE),
+        )
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(13.0))
+                .text_color(theme.text_muted)
+                .child(PAGE_DESCRIPTION),
+        )
+}
+
+/// A bordered pill holding switch segments — the range switcher and the
+/// Breakdown tabs share this one shape.
+fn segmented_control(children: Vec<AnyElement>, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(26.0))
+        .px(px(3.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(2.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.ink(0.03))
+        .children(children)
+}
+
+/// One segment inside a [`segmented_control`]: the active option carries
+/// a wash fill and full-weight text, the rest are quiet switches. The
+/// caller attaches `.on_click` to the inactive ones.
+fn segment(
+    id: SharedString,
+    selector: String,
+    label: SharedString,
+    active: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let hover_text = theme.text;
+    let mut chip = div()
+        .id(id)
+        .debug_selector(move || selector)
+        .flex_none()
+        .h(px(20.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .rounded(px(5.0))
+        .text_size(crate::typography::ui_rems(11.5))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(if active { theme.text } else { theme.text_muted });
+    if active {
+        chip = chip.bg(theme.ink(0.12));
+    } else {
+        chip = chip
+            .cursor_pointer()
+            .hover(move |state| state.text_color(hover_text));
+    }
+    chip.child(label)
 }
 
 // ---------------------------------------------------------------------------
@@ -128,14 +252,21 @@ impl Summary {
             .sum()
     }
 
-    /// The Y scale for the curve chart: the tallest SINGLE-model day total
-    /// across visible models — the curves overlap rather than stack, so one
-    /// model's day is the unit of the axis. Floored at 1 so an all-zero
-    /// window still divides.
-    fn peak_model_day(&self, hidden: &BTreeSet<String>) -> u64 {
+    /// The visible models' range total — what the summary line prints, so
+    /// "Total" always matches the bars on screen: hiding a model retires
+    /// its tokens from the headline too.
+    fn visible_total(&self, hidden: &BTreeSet<String>) -> u64 {
         self.visible(hidden)
             .iter()
-            .map(|(_, series)| series.per_day.iter().max().copied().unwrap_or(0))
+            .map(|(_, series)| series.tokens)
+            .sum()
+    }
+
+    /// The Y scale's input: the tallest visible stacked day total.
+    /// Floored at 1 so an all-zero window still divides.
+    fn peak_day(&self, hidden: &BTreeSet<String>) -> u64 {
+        (0..self.dates.len())
+            .map(|day| self.day_total(hidden, day))
             .max()
             .unwrap_or(0)
             .max(1)
@@ -200,12 +331,12 @@ fn fold_summary(reply: &UsageStatsReply) -> Summary {
 }
 
 /// A series color: the git graph's hue set (accent, success, warning,
-/// danger, muted), at full saturation — area fills read at a different
+/// danger, muted), at full saturation — bar fills read at a different
 /// weight than that chart's thin lanes, so history's desaturation stays
 /// there. `busy` is left out: it is accent-derived and collapses into the
-/// first slot in accent-themed builds. The legend dot and the area layer
-/// take the same color, which is what ties them together; past the
-/// palette the hues cycle.
+/// first slot in accent-themed builds. The legend checkbox and the bar
+/// segments take the same color, which is what ties them together; past
+/// the palette the hues cycle.
 fn series_color(rank: usize, theme: &Theme) -> Hsla {
     const PALETTE: [fn(&Theme) -> Hsla; 5] = [
         |theme| theme.accent,
@@ -217,7 +348,7 @@ fn series_color(rank: usize, theme: &Theme) -> Hsla {
     PALETTE[rank % PALETTE.len()](theme)
 }
 
-/// Hide or restore one model's curve. The last visible model refuses to
+/// Hide or restore one model's bars. The last visible model refuses to
 /// hide: a chart of nothing is not a view of the data.
 fn toggle_hidden(hidden: &mut BTreeSet<String>, summary: &Summary, id: &str) {
     if !hidden.contains(id) {
@@ -284,17 +415,14 @@ fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
 // The Activity heatmap (ticket 04)
 // ---------------------------------------------------------------------------
 
-/// The heatmap cell geometry: 11px squares on a 3px gap — the GitHub
-/// grid's density at desktop size.
-const HEAT_CELL: f32 = 11.0;
+/// The heatmap cell geometry: 13px squares, the columns spreading to
+/// fill the content width (justify-between absorbs the slack into the
+/// gaps, so the grid hugs both page edges like the reference).
+const HEAT_CELL: f32 = 13.0;
 const HEAT_GAP: f32 = 3.0;
 /// The weekday-label gutter left of the grid; the month-label row indents
 /// by the same amount so labels sit over their columns.
 const HEAT_GUTTER: f32 = 30.0;
-/// A Breakdown table's numeric column: wide enough for exact counts into
-/// the hundreds of millions without reflowing the identity column.
-const BREAKDOWN_COL: f32 = 76.0;
-
 /// One placed heatmap cell: a day's tokens plus where it sits in the
 /// 7-row grid — columns are weeks, rows are weekdays, Sunday first.
 struct HeatCell {
@@ -377,24 +505,32 @@ fn heatmap_cell_color(level: usize, theme: &Theme) -> Hsla {
     }
 }
 
-/// A cell's hover copy, spec shape: "X tokens on <full date>".
+/// A cell's hover copy: compact count + short date, the chart readout's
+/// voice — a raw digit soup ("114891") is exactly what hover should
+/// spare the reader.
 fn heatmap_tooltip(cell: &HeatCell) -> String {
     format!(
         "{} tokens on {}",
-        cell.tokens,
-        cell.date.format("%B %-d, %Y")
+        compact_tokens(cell.tokens),
+        cell.date.format("%b %-d, %Y")
     )
 }
 
-/// Month labels over the grid, GitHub's rule: the column containing a
-/// month's 1st carries that month's abbreviation. A day-of-month 1 appears
-/// exactly once per month, so the labels are naturally unique; the
-/// leading partial column gets one only when it truly contains a 1st.
+/// Month labels over the grid, GitHub's rule: a column is labeled when
+/// the month of its days changes, reading each column top-down — so the
+/// leading partial month labels column 0, and a month starting mid-week
+/// labels the column containing its 1st.
 fn heatmap_month_labels(grid: &HeatmapGrid) -> Vec<(usize, String)> {
     let mut labels = Vec::new();
-    for cell in &grid.cells {
-        if cell.date.day() == 1 {
-            labels.push((cell.col, cell.date.format("%b").to_string()));
+    let mut current: Option<(i32, u32)> = None;
+    for col in 0..grid.cols {
+        for cell in grid.cells.iter().filter(|cell| cell.col == col) {
+            let month = (cell.date.year(), cell.date.month());
+            if Some(month) != current {
+                labels.push((col, cell.date.format("%b").to_string()));
+                current = Some(month);
+                break;
+            }
         }
     }
     labels
@@ -408,6 +544,92 @@ enum BreakdownTab {
     Projects,
 }
 
+/// The Breakdown donut's geometry: a 224px ring drawn thick like the
+/// reference (thickness ≈ 0.22 of the size), with a 2px margin between
+/// the ring's outer edge and the canvas bounds so anti-aliasing never
+/// clips. Segments run clockwise from 12 o'clock in engine order,
+/// separated by a constant-width gap (in px, so each seam's edges stay
+/// parallel instead of converging on the hole); a hairline minimum
+/// keeps tiny shares visible, like the reference chart's slivers.
+const DONUT_SIZE: f32 = 224.0;
+const DONUT_THICKNESS: f32 = 50.0;
+const DONUT_MARGIN: f32 = 2.0;
+const DONUT_GAP: f32 = 4.0;
+const DONUT_MIN_SLIVER: f32 = 0.02;
+
+/// One legend/donut entry of the Breakdown card: the engine's
+/// total-descending order, colors from the chart's rank palette.
+struct BreakdownEntry {
+    color: Hsla,
+    name: String,
+    tokens: u64,
+}
+
+/// Fold the active tab's rows once per render. Zero-total rows drop out —
+/// a slice and a legend row for nothing would both read as a glitch.
+/// Model entries reuse the chart's per-rank colors (looked up through the
+/// summary's series ranks) so a model reads as the same hue in both
+/// charts; projects have no chart counterpart and take the palette in
+/// order.
+fn fold_breakdown(
+    reply: &UsageStatsReply,
+    summary: &Summary,
+    tab: BreakdownTab,
+    theme: &Theme,
+) -> Vec<BreakdownEntry> {
+    match tab {
+        BreakdownTab::Models => reply
+            .by_model
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                if row.total == 0 {
+                    return None;
+                }
+                let name = format!("{}/{}", row.provider, row.model);
+                let rank = summary
+                    .series
+                    .iter()
+                    .position(|series| series.id == name)
+                    .unwrap_or(index);
+                Some(BreakdownEntry {
+                    color: series_color(rank, theme),
+                    name,
+                    tokens: row.total,
+                })
+            })
+            .collect(),
+        BreakdownTab::Projects => reply
+            .by_project
+            .iter()
+            .enumerate()
+            .filter_map(|(index, group)| {
+                if group.total == 0 {
+                    return None;
+                }
+                Some(BreakdownEntry {
+                    color: series_color(index, theme),
+                    name: group
+                        .path
+                        .clone()
+                        .unwrap_or_else(|| "Deleted chats".to_string()),
+                    tokens: group.total,
+                })
+            })
+            .collect(),
+    }
+}
+
+/// The legend's integer share, rounded like the reference chart — tiny
+/// shares read as "0%", never a decimal.
+fn breakdown_percent(tokens: u64, grand: u64) -> u64 {
+    if grand == 0 {
+        0
+    } else {
+        ((tokens as f64 / grand as f64) * 100.0).round() as u64
+    }
+}
+
 pub struct UsagePage {
     state: Entity<AppState>,
     days: u32,
@@ -416,12 +638,26 @@ pub struct UsagePage {
     /// Hidden models' series ids — the legend's click-to-hide state. Page
     /// -local and ephemeral: every reload clears it.
     hidden: BTreeSet<String>,
-    /// The Breakdown block's table and its expanded group. Unlike the
-    /// legend's visibility these survive a reload: the tab is a view
-    /// preference, and flipping back to By model on every refresh would
-    /// fight the reader.
+    /// The Breakdown block's tab. Unlike the legend's visibility this
+    /// survives a reload: the tab is a view preference, and flipping back
+    /// to By model on every refresh would fight the reader.
     breakdown_tab: BreakdownTab,
-    deleted_expanded: bool,
+    /// The hovered Breakdown legend row — dims the donut's other slices
+    /// and swaps the center readout to that entry. Cleared on tab switch
+    /// (the index means a different entry there).
+    hover_slice: Option<usize>,
+    /// The hovered day column — pins the readout card over its slot and
+    /// washes the column. Ephemeral; a reload can leave it past the axis,
+    /// so render filters it against the day count.
+    hover_day: Option<usize>,
+    /// True while a reload is in flight over existing data: the stale
+    /// reply stays on screen dimmed with a spinner in the header, instead
+    /// of the page blanking to skeletons.
+    reloading: bool,
+    /// The range the on-screen reply actually answers — the count line
+    /// names this, not the pending selection, so the text never claims a
+    /// window the numbers don't cover.
+    loaded_days: u32,
 }
 
 impl UsagePage {
@@ -433,24 +669,32 @@ impl UsagePage {
             task: None,
             hidden: BTreeSet::new(),
             breakdown_tab: BreakdownTab::default(),
-            deleted_expanded: false,
+            hover_slice: None,
+            hover_day: None,
+            reloading: false,
+            loaded_days: DEFAULT_RANGE,
         };
         page.load(cx);
         page
     }
 
     /// One fresh `UsageStats` call for the current range. Every reload —
-    /// entry, range switch, refresh — runs through here, drops the
-    /// previous call, and lands the page back on skeletons until the reply
-    /// arrives. Curve visibility resets with it: the new reply is a new
-    /// view, not a filter over the old one.
+    /// entry, range switch, refresh — runs through here and drops the
+    /// previous call. A reload over existing data keeps that data on
+    /// screen dimmed until the fresh reply lands — only a first load (or
+    /// a retry off an error) drops to skeletons. Series visibility resets
+    /// when the reply lands: the new reply is a new view, not a filter
+    /// over the old one.
     fn load(&mut self, cx: &mut Context<Self>) {
-        self.hidden.clear();
+        if !matches!(self.stats, Loadable::Ready(_)) {
+            self.stats = Loadable::Loading;
+        }
+        self.reloading = true;
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.stats = Loadable::Error("Engine not connected".into());
+            self.reloading = false;
             return;
         };
-        self.stats = Loadable::Loading;
         let days = self.days;
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
@@ -458,6 +702,9 @@ impl UsagePage {
                 .call(methods::USAGE_STATS, serde_json::json!({ "days": days }))
                 .await;
             this.update(cx, |page, cx| {
+                page.reloading = false;
+                page.loaded_days = days;
+                page.hidden.clear();
                 page.stats = match result {
                     Ok(value) => serde_json::from_value(value)
                         .map(Loadable::Ready)
@@ -473,8 +720,8 @@ impl UsagePage {
         }));
     }
 
-    /// Switch the range: a full Loadable reload, not a re-filter of the old
-    /// reply. Selecting the range already shown is a no-op.
+    /// Switch the range: a fresh RPC for the new window, never a re-filter
+    /// of the old reply. Selecting the range already shown is a no-op.
     fn set_days(&mut self, days: u32, cx: &mut Context<Self>) {
         if days == self.days {
             return;
@@ -483,12 +730,12 @@ impl UsagePage {
         self.load(cx);
     }
 
-    /// The refresh button: re-run the same range through a full reload.
+    /// The refresh button: re-run the same range through a fresh reload.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.load(cx);
     }
 
-    /// Hide or restore one legend row's curve. The last visible model
+    /// Hide or restore one legend row's bars. The last visible model
     /// refuses: [`toggle_hidden`] is the policy, the page just redraws.
     fn toggle_model(&mut self, id: String, cx: &mut Context<Self>) {
         let summary = self.stats.ready().map(fold_summary).unwrap_or_default();
@@ -496,29 +743,24 @@ impl UsagePage {
         cx.notify();
     }
 
-    /// Switch the Breakdown table.
+    /// Switch the Breakdown card.
     fn set_breakdown_tab(&mut self, tab: BreakdownTab, cx: &mut Context<Self>) {
         if self.breakdown_tab != tab {
             self.breakdown_tab = tab;
+            self.hover_slice = None;
             cx.notify();
         }
     }
 
-    /// Expand or collapse the Deleted chats group.
-    fn toggle_deleted(&mut self, cx: &mut Context<Self>) {
-        self.deleted_expanded = !self.deleted_expanded;
-        cx.notify();
-    }
-
     /// The normal state's top bar: the count line on the left, the range
-    /// switcher and refresh on the right. The count line spells the page's
-    /// selected range: the reply it renders is always an answer to
-    /// `self.days`, because every switch and refresh drops the in-flight
-    /// task and re-enters the loading state before anything renders.
+    /// switcher and refresh on the right. The count line names the range
+    /// the on-screen reply answers — while a reload is in flight it keeps
+    /// naming the stale window, never the pending one. A reload swaps the
+    /// refresh icon for the working spinner; the button stays clickable.
     fn render_header(
         &self,
         reply: &UsageStatsReply,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::of(cx).clone();
         let tooltip = SharedString::from(REFRESH_TOOLTIP);
@@ -532,16 +774,24 @@ impl UsagePage {
             .gap(px(8.0))
             .child(
                 div()
+                    .id("usage-count-line")
+                    .debug_selector(|| "usage-count-line".into())
                     .flex_1()
                     .min_w_0()
                     .text_size(crate::typography::ui_rems(13.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(header_count_text(
                         reply.chat_count,
-                        self.days,
+                        self.loaded_days,
                     ))),
             )
-            .children(RANGES.map(|days| self.range_chip(&theme, days, cx)))
+            .child(segmented_control(
+                RANGES
+                    .map(|days| self.range_chip(&theme, days, cx))
+                    .into_iter()
+                    .collect(),
+                &theme,
+            ))
             .child(
                 div()
                     .id("usage-refresh")
@@ -560,40 +810,40 @@ impl UsagePage {
                         cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
                             .into()
                     })
-                    .child(icons::icon(icons::REFRESH).size(px(14.0))),
+                    .child(if self.reloading {
+                        div()
+                            .debug_selector(|| "usage-refresh-spinner".into())
+                            .child(loaders::gradient_spinner(
+                                "usage-refresh-spinner",
+                                &theme,
+                                3.0,
+                                cx.entity_id(),
+                                cx,
+                            ))
+                            .into_any_element()
+                    } else {
+                        icons::icon(icons::REFRESH)
+                            .size(px(14.0))
+                            .into_any_element()
+                    }),
             )
     }
 
-    /// One range-switch chip — the git panel's tab chip: the active range
-    /// carries a wash and full weight, the others are quiet switches.
+    /// One range segment inside the header's switcher. The active range
+    /// carries the fill; the others are quiet switches.
     fn range_chip(&self, theme: &Theme, days: u32, cx: &Context<Self>) -> gpui::AnyElement {
         let active = self.days == days;
-        let mut chip = div()
-            .id(SharedString::from(format!("usage-range-{days}")))
-            .debug_selector(move || format!("usage-range-{days}"))
-            .flex_none()
-            .h(px(24.0))
-            .px(px(10.0))
-            .flex()
-            .items_center()
-            .rounded(px(6.0))
-            .text_size(crate::typography::ui_rems(11.5))
-            .font_weight(if active {
-                gpui::FontWeight::SEMIBOLD
-            } else {
-                gpui::FontWeight::MEDIUM
-            })
-            .text_color(if active { theme.text } else { theme.text_muted });
-        if active {
-            chip = chip.bg(crate::theme::wash(0.06));
-        } else {
-            chip = chip
-                .cursor_pointer()
-                .hover(|state| state.bg(crate::theme::wash(0.05)).text_color(theme.text))
-                .on_click(cx.listener(move |page, _, _, cx| page.set_days(days, cx)));
+        let mut chip = segment(
+            SharedString::from(format!("usage-range-{days}")),
+            format!("usage-range-{days}"),
+            SharedString::from(format!("{days}d")),
+            active,
+            theme,
+        );
+        if !active {
+            chip = chip.on_click(cx.listener(move |page, _, _, cx| page.set_days(days, cx)));
         }
-        chip.child(SharedString::from(format!("{days}d")))
-            .into_any_element()
+        chip.into_any_element()
     }
 
     /// The error state: the headline strip, the specific reason, and Retry —
@@ -652,8 +902,8 @@ impl UsagePage {
             )
     }
 
-    /// The summary area: Total and legend on the left, the stacked daily
-    /// area chart on the right.
+    /// The summary area: the Total + checkbox legend line over the stacked
+    /// daily bar chart.
     fn render_summary(
         &self,
         reply: &UsageStatsReply,
@@ -662,53 +912,59 @@ impl UsagePage {
         let theme = Theme::of(cx).clone();
         let summary = Arc::new(fold_summary(reply));
         let hidden = Arc::new(self.hidden.clone());
+        let rungs = Arc::new(scale_rungs(summary.peak_day(&hidden)));
         div()
             .id("usage-summary")
             .debug_selector(|| "usage-summary".into())
             .mt(px(16.0))
             .flex()
-            .flex_row()
-            .items_start()
-            .gap(px(24.0))
+            .flex_col()
+            .gap(px(10.0))
             .child(self.render_legend(&summary, &theme, cx))
-            .child(self.render_chart(&summary, &hidden, &theme))
+            .child(self.render_chart(&summary, &hidden, rungs, &theme, cx))
     }
 
-    /// The legend: the "Total tokens" headline over one row per model —
-    /// dot, id, compact count, and a share bar. Clicking a row toggles its
-    /// curve; a hidden row reads dimmed with a hollow dot.
+    /// The summary line, the reference chart's shape: "Total N" followed
+    /// by one checkbox item per model — filled with its series color while
+    /// its bars show, hollow when hidden. The total is the visible models'
+    /// sum, matching the bars; clicking an item toggles its bars; a hidden
+    /// row reads dimmed.
     fn render_legend(
         &self,
         summary: &Arc<Summary>,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let total = summary.grand_total.max(1);
         div()
             .id("usage-legend")
             .debug_selector(|| "usage-legend".into())
-            .flex_none()
-            .w(px(LEGEND_WIDTH))
             .flex()
-            .flex_col()
-            .gap(px(10.0))
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(32.0))
+            .gap_y(px(6.0))
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_baseline()
+                    .gap(px(6.0))
                     .child(
                         div()
-                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text_muted)
-                            .child("Total tokens"),
+                            .child("Total"),
                     )
                     .child(
                         div()
                             .debug_selector(|| "usage-total".into())
-                            .text_size(crate::typography::ui_rems(22.0))
+                            .text_size(crate::typography::ui_rems(13.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.text)
-                            .child(SharedString::from(compact_tokens(summary.grand_total))),
+                            .child(SharedString::from(compact_tokens(
+                                summary.visible_total(&self.hidden),
+                            ))),
                     ),
             )
             .children(
@@ -716,15 +972,14 @@ impl UsagePage {
                     .series
                     .iter()
                     .enumerate()
-                    .map(|(rank, series)| self.legend_row(series, rank, total, theme, cx)),
+                    .map(|(rank, series)| self.legend_item(series, rank, theme, cx)),
             )
     }
 
-    fn legend_row(
+    fn legend_item(
         &self,
         series: &ChartSeries,
         rank: usize,
-        total: u64,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -735,82 +990,97 @@ impl UsagePage {
             .id(SharedString::from(format!("usage-legend-{rank}")))
             .debug_selector(move || format!("usage-legend-{rank}"))
             .flex()
-            .flex_col()
-            .gap(px(3.0))
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            // A real hover target: the wash rides a slightly padded pill
+            // whose negative margins cancel the padding, so the item's text
+            // stays on the line's grid while the hover has breathing room.
+            .rounded(px(6.0))
+            .px(px(6.0))
+            .py(px(2.0))
+            .mx(px(-6.0))
+            .my(px(-2.0))
             .cursor_pointer()
+            .hover(|item| item.bg(theme.ink(0.05)))
+            .when(is_hidden, |item| item.opacity(0.55))
             .on_click(cx.listener(move |page, _, _, cx| page.toggle_model(id.clone(), cx)))
-            .child(
+            .child(if is_hidden {
                 div()
+                    .flex_none()
+                    .size(px(14.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme.border_strong)
+                    .bg(theme.ink(0.02))
+            } else {
+                div()
+                    .flex_none()
+                    .size(px(14.0))
+                    .rounded(px(4.0))
+                    .bg(color)
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .gap(px(6.0))
-                    .child(if is_hidden {
-                        div()
-                            .flex_none()
-                            .size(px(6.0))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(color)
-                    } else {
-                        div().flex_none().size(px(6.0)).rounded_full().bg(color)
-                    })
+                    .justify_center()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .text_color(if is_hidden {
-                                theme.text_faint
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(SharedString::from(series.id.clone())),
+                        icons::icon(icons::CHECK)
+                            .size(px(10.0))
+                            .text_color(theme.on_solid),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from(compact_tokens(series.tokens))),
-                    ),
+            })
+            .child(
+                div()
+                    .max_w(px(160.0))
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(series.id.clone())),
             )
             .child(
-                // The share bar: the row's fraction of the grand total —
-                // the usage card's track geometry at legend size.
                 div()
-                    .debug_selector(move || format!("usage-legend-{rank}-track"))
-                    .h(px(4.0))
-                    .w_full()
-                    .rounded(px(2.0))
-                    .overflow_hidden()
-                    .bg(theme.ink(0.10))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("usage-legend-{rank}-fill"))
-                            .h_full()
-                            .w(gpui::relative(
-                                (series.tokens as f32 / total as f32).clamp(0.0, 1.0),
-                            ))
-                            .rounded(px(2.0))
-                            .bg(if is_hidden { color.opacity(0.3) } else { color }),
-                    ),
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child(SharedString::from(compact_tokens(series.tokens))),
             )
-            .when(is_hidden, |row| row.opacity(0.75))
     }
 
-    /// The stacked area chart: the canvas plus one hover column per day,
-    /// each opening the day readout, over a shared Y gutter.
+    /// The stacked bar chart: the canvas, one hover column per day, and
+    /// the hovered day's pinned readout, over a shared Y gutter, with one
+    /// date label under its own day slot. A range with no usage anywhere
+    /// renders as one quiet placeholder instead of an empty grid.
     fn render_chart(
         &self,
         summary: &Arc<Summary>,
         hidden: &Arc<BTreeSet<String>>,
+        rungs: Arc<Vec<u64>>,
         theme: &Theme,
+        cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let peak = summary.peak_model_day(hidden);
-        let rungs = [1.0, 0.75, 0.5, 0.25, 0.0];
         let days = summary.dates.len();
+        let stride = label_stride(days);
+        // No usage in the whole reply: an empty grid with "0 / 1" rungs
+        // reads as a glitch, so the plot collapses to one quiet line.
+        if summary.grand_total == 0 {
+            return div()
+                .id("usage-chart")
+                .debug_selector(|| "usage-chart".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .debug_selector(|| "usage-chart-empty".into())
+                        .h(px(CHART_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_faint)
+                        .child("No usage in this range"),
+                );
+        }
         div()
             .id("usage-chart")
             .debug_selector(|| "usage-chart".into())
@@ -824,7 +1094,7 @@ impl UsagePage {
                     .flex()
                     .flex_row()
                     .gap(px(6.0))
-                    // Y gutter: a rung per quarter, top to zero.
+                    // Y gutter: one label per rung, the top rung first.
                     .child(
                         div()
                             .flex_none()
@@ -836,24 +1106,35 @@ impl UsagePage {
                             .justify_between()
                             .text_size(crate::typography::ui_rems(10.0))
                             .text_color(theme.text_faint)
-                            .children(rungs.map(|fraction| {
-                                SharedString::from(compact_tokens((peak as f32 * fraction) as u64))
-                            })),
+                            .children(
+                                rungs
+                                    .iter()
+                                    .rev()
+                                    .map(|rung| SharedString::from(compact_tokens(*rung))),
+                            ),
                     )
                     .child(
                         div()
                             .relative()
                             .flex_1()
                             .h(px(CHART_HEIGHT))
-                            .child(curve_chart(summary, hidden, peak, theme))
-                            .child(div().absolute().inset_0().flex().children(
-                                (0..days).map(|day| self.day_column(summary, hidden, day, theme)),
-                            )),
+                            .child(bar_chart(summary, hidden, rungs, theme))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .flex()
+                                    .children((0..days).map(|day| self.day_column(day, theme, cx))),
+                            )
+                            // The pinned readout rides ABOVE the hover
+                            // columns, but carries no interaction handlers,
+                            // so it never steals their pointer.
+                            .children(self.day_readout_overlay(summary, hidden, days, theme)),
                     ),
             )
             .child(
-                // X labels: the range's start, middle, and end dates, under
-                // the chart body (past the Y gutter).
+                // X labels: one slot per day, matching the bar slots; dense
+                // ranges label every stride-th day, anchored to the last.
                 div()
                     .flex()
                     .flex_row()
@@ -864,56 +1145,176 @@ impl UsagePage {
                             .flex_1()
                             .flex()
                             .flex_row()
-                            .justify_between()
                             .text_size(crate::typography::ui_rems(10.0))
                             .text_color(theme.text_faint)
-                            .children(
-                                [0, days.saturating_sub(1) / 2, days.saturating_sub(1)]
-                                    .into_iter()
-                                    .filter_map(|ix| summary.dates.get(ix).cloned())
-                                    .map(|date| SharedString::from(short_date(&date))),
-                            ),
+                            .children((0..days).map(|day| {
+                                let labeled = (days - 1 - day).is_multiple_of(stride);
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .justify_center()
+                                    // The label overflows its slot on ONE
+                                    // line — a narrow slot must never wrap
+                                    // it into stacked characters.
+                                    .whitespace_nowrap()
+                                    .when(self.hover_day == Some(day), |slot| {
+                                        slot.text_color(theme.text)
+                                    })
+                                    .when(labeled, |slot| {
+                                        let date =
+                                            summary.dates.get(day).cloned().unwrap_or_default();
+                                        slot.child(SharedString::from(
+                                            short_date(&date).to_uppercase(),
+                                        ))
+                                    })
+                            })),
                     ),
             )
     }
 
     /// One day's hover column — the full-height strip over that day's
-    /// slice of the axis. The strip itself stays invisible; its tooltip is
-    /// the day readout.
+    /// slice of the axis. Hovering washes the column and pins the day
+    /// readout over the slot; leaving clears it only if it still owns the
+    /// readout (adjacent columns' enter/leave can land out of order).
     fn day_column(
         &self,
-        summary: &Arc<Summary>,
-        hidden: &Arc<BTreeSet<String>>,
         day: usize,
         theme: &Theme,
+        cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let card = DayCard {
-            date: summary.dates.get(day).cloned().unwrap_or_default(),
-            rows: Arc::new(
-                summary
-                    .day_rows(hidden, day)
-                    .into_iter()
-                    .map(|(rank, id, tokens)| DayRow {
-                        color: series_color(rank, theme),
-                        id,
-                        tokens,
-                    })
-                    .collect(),
-            ),
-            total: summary.day_total(hidden, day),
-        };
         div()
             .id(SharedString::from(format!("usage-day-{day}")))
             .debug_selector(move || format!("usage-day-{day}"))
             .flex_1()
             .h_full()
             .cursor_default()
-            .tooltip(move |_, cx| cx.new(|_| card.clone()).into())
-            .tooltip_show_delay(DAY_TOOLTIP_DELAY)
+            .when(self.hover_day == Some(day), |col| col.bg(theme.ink(0.05)))
+            .on_hover(cx.listener(move |page, hovered: &bool, _, cx| {
+                if *hovered {
+                    page.hover_day = Some(day);
+                } else if page.hover_day == Some(day) {
+                    page.hover_day = None;
+                }
+                cx.notify();
+            }))
     }
 
-    /// The six metric tiles: compact values on the tiles, exact counts on
-    /// hover.
+    /// The hovered day's readout, pinned inside the plot over that day's
+    /// own slot — centered on it, clamped to the plot's edges so it never
+    /// escapes over the Y gutter or onto the content below.
+    fn day_readout_overlay(
+        &self,
+        summary: &Arc<Summary>,
+        hidden: &Arc<BTreeSet<String>>,
+        days: usize,
+        theme: &Theme,
+    ) -> Option<AnyElement> {
+        let day = self.hover_day.filter(|day| *day < days)?;
+        let mut slot = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(gpui::relative(day as f32 / days as f32))
+            .right(gpui::relative(1.0 - (day + 1) as f32 / days as f32))
+            .flex()
+            .items_start()
+            .child(self.day_readout(summary, hidden, day, theme));
+        slot = if day == 0 {
+            slot.justify_start()
+        } else if day == days - 1 {
+            slot.justify_end()
+        } else {
+            slot.justify_center()
+        };
+        Some(slot.into_any_element())
+    }
+
+    /// The pinned day readout: the date, one row per model with usage that
+    /// day (zero days drop out), and the day's Total — the same series
+    /// colors as the bars beneath. Compact counts, unlike the tooltip this
+    /// replaces: a raw "72659522" reads as noise at a glance.
+    fn day_readout(
+        &self,
+        summary: &Arc<Summary>,
+        hidden: &Arc<BTreeSet<String>>,
+        day: usize,
+        theme: &Theme,
+    ) -> AnyElement {
+        let date = summary.dates.get(day).cloned().unwrap_or_default();
+        // flex_none is load-bearing: the card is a flex child of a slot as
+        // narrow as one day, and without it flex-shrink crushes the card
+        // into a vertical sliver of wrapped characters.
+        let mut card = popover::popover_card(theme)
+            .flex_none()
+            .w(px(READOUT_WIDTH))
+            .p(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .debug_selector(|| "usage-day-readout".into())
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from(short_date(&date))),
+            );
+        let rows = summary.day_rows(hidden, day);
+        for (rank, id, tokens) in rows.iter().filter(|(_, _, tokens)| *tokens > 0) {
+            card = card.child(
+                div()
+                    .debug_selector(move || format!("usage-dayrow-{id}"))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(series_color(*rank, theme)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(id.clone())),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.text)
+                            .child(SharedString::from(compact_tokens(*tokens))),
+                    ),
+            );
+        }
+        if rows.is_empty() {
+            card = card.child(div().text_color(theme.text_faint).child("No usage"));
+        } else {
+            card = card.child(div().h(px(1.0)).bg(theme.ink(0.08))).child(
+                div()
+                    .debug_selector(|| "usage-day-total".into())
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child("Total")
+                    .child(SharedString::from(compact_tokens(
+                        summary.day_total(hidden, day),
+                    ))),
+            );
+        }
+        crate::frost::frosted(popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
+            .into_any_element()
+    }
+
+    /// The six metric tiles: one card split into six cells by hairline
+    /// dividers — compact values on the cells, exact counts on hover.
     fn render_metrics(
         &self,
         reply: &UsageStatsReply,
@@ -926,41 +1327,52 @@ impl UsagePage {
             .mt(px(20.0))
             .flex()
             .flex_row()
-            .gap(px(8.0))
-            .children(metric_tiles(reply).into_iter().map(|tile| {
-                let slug = tile.label.to_lowercase().replace(' ', "-");
-                div()
-                    .id(SharedString::from(format!("usage-metric-{slug}")))
-                    .debug_selector(move || format!("usage-metric-{slug}"))
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .px(px(12.0))
-                    .py(px(10.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_default()
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip(tile.detail.clone().into()))
-                            .into()
-                    })
-                    .tooltip_show_delay(DAY_TOOLTIP_DELAY)
-                    .child(
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border)
+            .children(
+                metric_tiles(reply)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, tile)| {
+                        let slug = tile.label.to_lowercase().replace(' ', "-");
                         div()
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text_muted)
-                            .child(tile.label),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(15.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text)
-                            .child(SharedString::from(tile.value)),
-                    )
-            }))
+                            .id(SharedString::from(format!("usage-metric-{slug}")))
+                            .debug_selector(move || format!("usage-metric-{slug}"))
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .px(px(14.0))
+                            .py(px(12.0))
+                            .when(index > 0, |cell| {
+                                cell.border_l_1().border_color(theme.border)
+                            })
+                            .cursor_default()
+                            .hover(|cell| cell.bg(theme.ink(0.03)))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| {
+                                    crate::image_viewer::ViewerTooltip(tile.detail.clone().into())
+                                })
+                                .into()
+                            })
+                            .tooltip_show_delay(DAY_TOOLTIP_DELAY)
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(theme.text_muted)
+                                    .child(tile.label),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(16.0))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(tile.value)),
+                            )
+                    }),
+            )
     }
 
     /// The Activity block: the year-long token heatmap. Fixed 365-day
@@ -1012,6 +1424,12 @@ impl UsagePage {
                                 div()
                                     .flex_none()
                                     .w(px(HEAT_CELL))
+                                    // The label overflows its week-column
+                                    // slot on ONE line — never wraps into
+                                    // vertical letters; the next 1st-of-
+                                    // month is weeks away, so nothing
+                                    // collides.
+                                    .whitespace_nowrap()
                                     .text_size(crate::typography::ui_rems(10.0))
                                     .text_color(theme.text_faint)
                                     .children(label.map(SharedString::from))
@@ -1119,24 +1537,56 @@ impl UsagePage {
             .tooltip_show_delay(DAY_TOOLTIP_DELAY)
     }
 
-    /// The Breakdown block: two switchable detail tables over the reply's
-    /// own by-model / by-project rows — the engine hands them total-
-    /// descending, the table prints them in that order. The four numeric
-    /// columns are exact counts (Total is the four token fields summed;
-    /// there is no cache-write column — the tiles above carry it).
+    /// The Breakdown block: a donut + legend card over the reply's own
+    /// by-model / by-project rows — the engine hands them total-
+    /// descending, the donut draws them clockwise from 12 o'clock and the
+    /// legend lists the same order with integer share percentages and
+    /// compact counts. Model entries carry the same color dot as their
+    /// chart counterparts.
     fn render_breakdown(
         &self,
         reply: &UsageStatsReply,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::of(cx).clone();
+        let summary = fold_summary(reply);
+        let entries = fold_breakdown(reply, &summary, self.breakdown_tab, &theme);
+        let grand: u64 = entries.iter().map(|entry| entry.tokens).sum();
+        let body = if grand == 0 {
+            div()
+                .debug_selector(|| "usage-breakdown-empty".into())
+                .mt(px(10.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_faint)
+                .child("No usage in this range")
+                .into_any_element()
+        } else {
+            div()
+                .debug_selector(|| "usage-breakdown-card".into())
+                .mt(px(10.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(56.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border)
+                .p(px(24.0))
+                .child(self.donut_block(
+                    &entries,
+                    grand,
+                    self.hover_slice.filter(|hover| *hover < entries.len()),
+                    &theme,
+                ))
+                .child(self.donut_legend(&entries, grand, &theme, cx))
+                .into_any_element()
+        };
         div()
             .id("usage-breakdown")
             .debug_selector(|| "usage-breakdown".into())
             .mt(px(28.0))
             .flex()
             .flex_col()
-            .gap(px(6.0))
             .child(
                 div()
                     .flex()
@@ -1147,58 +1597,161 @@ impl UsagePage {
                             .flex_1()
                             .min_w_0(),
                     )
-                    .child(self.breakdown_chip(BreakdownTab::Models, &theme, cx))
-                    .child(self.breakdown_chip(BreakdownTab::Projects, &theme, cx)),
+                    .child(segmented_control(
+                        vec![
+                            self.breakdown_chip(BreakdownTab::Models, &theme, cx),
+                            self.breakdown_chip(BreakdownTab::Projects, &theme, cx),
+                        ],
+                        &theme,
+                    )),
             )
-            .child(self.breakdown_header(&theme))
-            .children(match self.breakdown_tab {
-                BreakdownTab::Models => reply
-                    .by_model
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| {
-                        self.breakdown_row(
-                            &format!("{}/{}", row.provider, row.model),
-                            (row.input, row.output, row.cache_read, row.total),
-                            format!("usage-bd-model-row-{index}"),
-                            false,
-                            &theme,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-                BreakdownTab::Projects => reply
-                    .by_project
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(index, group)| {
-                        let mut rows = vec![match &group.path {
-                            Some(path) => self.breakdown_row(
-                                path,
-                                (group.input, group.output, group.cache_read, group.total),
-                                format!("usage-bd-project-row-{index}"),
-                                false,
-                                &theme,
-                            ),
-                            None => self.deleted_group_row(group, &theme, cx),
-                        }];
-                        if group.path.is_none() && self.deleted_expanded {
-                            rows.extend(group.chats.iter().enumerate().map(|(ix, chat)| {
-                                self.breakdown_row(
-                                    &chat.chat_id,
-                                    (chat.input, chat.output, chat.cache_read, chat.total),
-                                    format!("usage-bd-deleted-sub-{ix}"),
-                                    true,
-                                    &theme,
-                                )
-                            }));
-                        }
-                        rows
-                    })
-                    .collect::<Vec<_>>(),
-            })
+            .child(body)
     }
 
-    /// One of the two section tabs — the range chips' shape.
+    /// The donut: a fixed-size square canvas with the readout riding the
+    /// hole — the grand total over the muted "tokens" unit at rest, the
+    /// hovered entry's compact count over its truncated name on hover.
+    fn donut_block(
+        &self,
+        entries: &[BreakdownEntry],
+        grand: u64,
+        hover: Option<usize>,
+        theme: &Theme,
+    ) -> gpui::Div {
+        let (value, label) = match hover.and_then(|index| entries.get(index)) {
+            Some(entry) => (compact_tokens(entry.tokens), Some(entry.name.clone())),
+            None => (compact_tokens(grand), None),
+        };
+        div()
+            .debug_selector(|| "usage-breakdown-donut".into())
+            .flex_none()
+            .size(px(DONUT_SIZE))
+            .relative()
+            .child(donut_chart(entries, grand, hover))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-breakdown-total".into())
+                            .text_size(crate::typography::ui_rems(18.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(SharedString::from(value)),
+                    )
+                    .child(
+                        div()
+                            // A name rides the hole on hover: clamped to
+                            // the inner diameter, truncated, never pushing
+                            // the hole's text wider than the ring.
+                            .max_w(px(100.0))
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(
+                                label.unwrap_or_else(|| "tokens".to_string()),
+                            )),
+                    ),
+            )
+    }
+
+    /// The legend: one row per entry — dot, name, integer share on the
+    /// first line; the compact count indented under the name on the
+    /// second; a hairline between rows, none after the last. Hovering a
+    /// row washes it, dims the donut down to its slice, and swaps the
+    /// center readout to that entry.
+    fn donut_legend(
+        &self,
+        entries: &[BreakdownEntry],
+        grand: u64,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .children(entries.iter().enumerate().map(|(index, entry)| {
+                div()
+                    .id(SharedString::from(format!("usage-breakdown-row-{index}")))
+                    .debug_selector(move || format!("usage-breakdown-row-{index}"))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .py(px(12.0))
+                    // The hover wash rides a slightly padded pill whose
+                    // negative margins cancel the padding, keeping the
+                    // hairline grid and text alignment untouched.
+                    .rounded(px(6.0))
+                    .px(px(8.0))
+                    .mx(px(-8.0))
+                    .cursor_default()
+                    .hover(|row| row.bg(theme.ink(0.04)))
+                    .on_hover(cx.listener(move |page, hovered: &bool, _, cx| {
+                        if *hovered {
+                            page.hover_slice = Some(index);
+                        } else if page.hover_slice == Some(index) {
+                            page.hover_slice = None;
+                        }
+                        cx.notify();
+                    }))
+                    .when(index + 1 < entries.len(), |row| {
+                        row.border_b_1().border_color(theme.border)
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(9.0))
+                                    .rounded_full()
+                                    .bg(entry.color),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(entry.name.clone())),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(format!(
+                                        "{}%",
+                                        breakdown_percent(entry.tokens, grand)
+                                    ))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .pl(px(19.0))
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(format!(
+                                "{} tokens",
+                                compact_tokens(entry.tokens)
+                            ))),
+                    )
+            }))
+    }
+
+    /// One of the two section segments — the range switcher's shape.
     fn breakdown_chip(
         &self,
         tab: BreakdownTab,
@@ -1210,309 +1763,102 @@ impl UsagePage {
             BreakdownTab::Projects => ("project", "By project"),
         };
         let active = self.breakdown_tab == tab;
-        let mut chip = div()
-            .id(SharedString::from(format!("usage-bd-tab-{tag}")))
-            .debug_selector(move || format!("usage-bd-tab-{tag}"))
-            .flex_none()
-            .h(px(24.0))
-            .px(px(10.0))
-            .flex()
-            .items_center()
-            .rounded(px(6.0))
-            .text_size(crate::typography::ui_rems(11.5))
-            .font_weight(if active {
-                gpui::FontWeight::SEMIBOLD
-            } else {
-                gpui::FontWeight::MEDIUM
-            })
-            .text_color(if active { theme.text } else { theme.text_muted });
-        if active {
-            chip = chip.bg(crate::theme::wash(0.06));
-        } else {
-            chip = chip
-                .cursor_pointer()
-                .hover(|state| state.bg(crate::theme::wash(0.05)).text_color(theme.text))
-                .on_click(cx.listener(move |page, _, _, cx| page.set_breakdown_tab(tab, cx)));
-        }
-        chip.child(label).into_any_element()
-    }
-
-    /// The table's header: the identity column is named by the active tab,
-    /// the four numeric columns are fixed.
-    fn breakdown_header(&self, theme: &Theme) -> gpui::Stateful<gpui::Div> {
-        let name = match self.breakdown_tab {
-            BreakdownTab::Models => "Model",
-            BreakdownTab::Projects => "Project",
-        };
-        div()
-            .id("usage-bd-head")
-            .debug_selector(|| "usage-bd-head".into())
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.0))
-            .py(px(6.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .text_color(theme.text_muted)
-                    .child(name),
-            )
-            .child(
-                div()
-                    .debug_selector(|| "usage-bd-head-input".into())
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .text_color(theme.text_muted)
-                    .children(["Input", "Output", "Cache read", "Total"].map(|label| {
-                        div()
-                            .flex_none()
-                            .w(px(BREAKDOWN_COL))
-                            .text_right()
-                            .child(label)
-                    })),
-            )
-    }
-
-    /// One table row: the identity cell, then the four exact counts.
-    /// `indent` drops the identity cell toward the Deleted chats'
-    /// sub-rows.
-    fn breakdown_row(
-        &self,
-        name: &str,
-        numbers: (u64, u64, u64, u64),
-        selector: String,
-        indent: bool,
-        theme: &Theme,
-    ) -> gpui::Stateful<gpui::Div> {
-        div()
-            .id(SharedString::from(selector.clone()))
-            .debug_selector(move || selector.clone())
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.0))
-            .py(px(6.0))
-            .when(indent, |row| row.pl(px(20.0)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(name.to_string())),
-            )
-            .child(self.breakdown_numbers(numbers, theme))
-    }
-
-    /// The four exact-count cells — the same fixed widths every table row
-    /// and the header share.
-    fn breakdown_numbers(
-        &self,
-        (input, output, cache_read, total): (u64, u64, u64, u64),
-        theme: &Theme,
-    ) -> gpui::Div {
-        div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.text)
-            .children(
-                [
-                    (input, false),
-                    (output, false),
-                    (cache_read, false),
-                    (total, true),
-                ]
-                .map(|(tokens, is_total)| {
-                    let mut cell = div()
-                        .flex_none()
-                        .w(px(BREAKDOWN_COL))
-                        .text_right()
-                        .child(SharedString::from(tokens.to_string()));
-                    if is_total {
-                        cell = cell.font_weight(gpui::FontWeight::MEDIUM);
-                    }
-                    cell
-                }),
-            )
-    }
-
-    /// The Deleted chats group row: the expandable catch-all for records
-    /// whose chat resolves to no working directory.
-    fn deleted_group_row(
-        &self,
-        group: &holt_proto::UsageProjectGroup,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let caret = if self.deleted_expanded {
-            icons::ALT_ARROW_DOWN
-        } else {
-            icons::ALT_ARROW_RIGHT
-        };
-        div()
-            .id("usage-bd-deleted-row")
-            .debug_selector(|| "usage-bd-deleted-row".into())
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.0))
-            .py(px(6.0))
-            .cursor_pointer()
-            .hover(|state| state.bg(crate::theme::wash(0.04)))
-            .on_click(cx.listener(|page, _, _, cx| page.toggle_deleted(cx)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        icons::icon(caret)
-                            .size(px(12.0))
-                            .text_color(theme.text_faint),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text_muted)
-                            .child("Deleted chats"),
-                    ),
-            )
-            .child(self.breakdown_numbers(
-                (group.input, group.output, group.cache_read, group.total),
-                theme,
-            ))
-    }
-}
-
-/// How finely the fill columns sample the curve between days — enough
-/// that the quads read as one smooth area at chart size.
-const FILL_SAMPLES_PER_SEGMENT: usize = 8;
-
-/// A Catmull-Rom spline through the values, sampled `per` times per
-/// segment — the fill's columns ride the same smooth curve the stroke
-/// draws. Endpoints duplicate neighbors, so the curve stays clamped.
-fn smooth_series(values: &[f32], per: usize) -> Vec<f32> {
-    if values.len() < 2 || per == 0 {
-        return values.to_vec();
-    }
-    let at = |index: i64| values[index.clamp(0, values.len() as i64 - 1) as usize];
-    let mut out = Vec::with_capacity((values.len() - 1) * per + 1);
-    for segment in 0..values.len() - 1 {
-        let (p0, p1, p2, p3) = (
-            at(segment as i64 - 1),
-            at(segment as i64),
-            at(segment as i64 + 1),
-            at(segment as i64 + 2),
+        let mut chip = segment(
+            SharedString::from(format!("usage-bd-tab-{tag}")),
+            format!("usage-bd-tab-{tag}"),
+            SharedString::from(label),
+            active,
+            theme,
         );
-        for step in 0..per {
-            let t = step as f32 / per as f32;
-            let t2 = t * t;
-            let t3 = t2 * t;
-            out.push(
-                0.5 * ((2.0 * p1)
-                    + (-p0 + p2) * t
-                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-                    + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3),
-            );
+        if !active {
+            chip =
+                chip.on_click(cx.listener(move |page, _, _, cx| page.set_breakdown_tab(tab, cx)));
         }
+        chip.into_any_element()
     }
-    out.push(*values.last().unwrap());
-    out
 }
 
-/// The chart's paint pass, per visible model: a soft fill under a smooth
-/// curve, the curves overlapping rather than stacking (each day reads as
-/// that model's own total, and the readout's Total is their sum). The
-/// fills are thin quads sampled along the same spline the stroke draws —
-/// one primitive per sample — because this renderer draws strokes and
-/// quads everywhere and nothing else is proven; `peak` is the tallest
-/// single-model day, the Y gutter's top rung, derived once.
-fn curve_chart(
-    summary: &Arc<Summary>,
-    hidden: &Arc<BTreeSet<String>>,
-    peak: u64,
-    theme: &Theme,
-) -> AnyElement {
-    let grid = theme.ink(0.08);
-    let visible: Vec<(Hsla, Vec<u64>)> = summary
-        .visible(hidden)
-        .into_iter()
-        .map(|(rank, series)| (series_color(rank, theme), series.per_day.clone()))
-        .collect();
-    let days = summary.dates.len();
+/// The Breakdown donut's paint pass: filled annular sectors (gpui paths
+/// have no arc primitive), one per entry, clockwise from 12 o'clock in
+/// engine order. Each segment gives up its share of a constant-width
+/// gap so slices read as slices, clamped to a hairline minimum so tiny
+/// shares stay visible; a single-entry
+/// donut closes its circle without a gap. A two-slice donut instead
+/// centers its smaller slice at 12 o'clock, so the two seams mirror
+/// across the vertical axis — one axis-aligned seam beside a data-angle
+/// seam reads as crooked, a mirrored pair reads as balanced.
+fn donut_chart(entries: &[BreakdownEntry], grand: u64, hover: Option<usize>) -> AnyElement {
+    let grand = grand.max(1) as f32;
+    let gap = if entries.len() > 1 { DONUT_GAP } else { 0.0 };
+    let mut start = -std::f32::consts::FRAC_PI_2;
+    if entries.len() == 2 {
+        // Entries are total-descending, so slice 1 is the smaller one;
+        // its center rides at start + sweep0 + sweep1/2.
+        let sweep0 = entries[0].tokens as f32 / grand * std::f32::consts::TAU;
+        start -= sweep0 + (std::f32::consts::TAU - sweep0) / 2.0;
+    }
+    // Segments carry their nominal boundaries; the gap trim happens
+    // per radius in the paint pass.
+    let mut segments: Vec<(Hsla, f32, f32)> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let sweep = entry.tokens as f32 / grand * std::f32::consts::TAU;
+        // Hover dims the ring down to the hovered slice.
+        let color = match hover {
+            Some(hovered) if hovered != index => entry.color.opacity(0.3),
+            _ => entry.color,
+        };
+        segments.push((color, start, start + sweep));
+        start += sweep;
+    }
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            if days < 2 {
-                return;
-            }
-            let height = bounds.size.height;
-            let width = bounds.size.width;
-            let max = peak.max(1) as f32;
-            let baseline = bounds.origin.y + height;
-            let x_at = |day: f32| bounds.origin.x + width * (day / (days - 1) as f32);
-            let y_at =
-                |tokens: f32| bounds.origin.y + height * (1.0 - (tokens / max).clamp(0.0, 1.0));
-            // The quarter rungs the Y gutter labels — thin quads, the same
-            // primitive as the fills.
-            for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                let y = bounds.origin.y + height * (1.0 - fraction);
-                window.paint_quad(gpui::fill(
-                    Bounds::new(point(bounds.origin.x, y - px(0.5)), size(width, px(1.0))),
-                    grid,
-                ));
-            }
-            for (color, per_day) in &visible {
-                let values: Vec<f32> = (0..days)
-                    .map(|day| per_day.get(day).copied().unwrap_or(0) as f32)
-                    .collect();
-                let smooth = smooth_series(&values, FILL_SAMPLES_PER_SEGMENT);
-
-                // The soft fill: one quad per sampled step, curve → baseline.
-                let steps = smooth.len() - 1;
-                for step in 0..steps {
-                    let x0 = bounds.origin.x + width * (step as f32 / steps as f32);
-                    let x1 = bounds.origin.x + width * ((step + 1) as f32 / steps as f32);
-                    let top = y_at(smooth[step]).min(y_at(smooth[step + 1]));
-                    window.paint_quad(gpui::fill(
-                        Bounds::new(point(x0, top), size((x1 - x0) + px(1.0), baseline - top)),
-                        color.opacity(0.12),
-                    ));
-                }
-
-                // The curve: Catmull-Rom through the day points as cubics —
-                // the history graph's technique.
-                let point_at = |day: i64| {
-                    let clamped = day.clamp(0, days as i64 - 1) as usize;
-                    point(x_at(clamped as f32), y_at(values[clamped]))
+            let center = bounds.center();
+            // The margin keeps the ring's outer edge clear of the canvas
+            // bounds — an edge touching them clips its anti-aliasing.
+            let outer = DONUT_SIZE / 2.0 - DONUT_MARGIN;
+            let inner = outer - DONUT_THICKNESS;
+            for (color, start, end) in &segments {
+                let sweep = end - start;
+                let mid = (start + end) / 2.0;
+                // Each seam is a constant-width strip, not an angular
+                // wedge: a slice edge is the chord parallel to the seam's
+                // radial line at half the gap from it, so the trim angle
+                // grows toward the hole — asin((gap/2) / r) — and the
+                // slit's two edges stay parallel.
+                let edge = |radius: f32| {
+                    let trim = if gap == 0.0 {
+                        0.0
+                    } else {
+                        (gap / 2.0 / radius).asin()
+                    };
+                    let drawn = (sweep - 2.0 * trim).max(DONUT_MIN_SLIVER);
+                    (mid - drawn / 2.0, mid + drawn / 2.0)
                 };
-                let mut builder = PathBuilder::stroke(px(1.5));
-                builder.move_to(point_at(0));
-                for day in 0..(days - 1) as i64 {
-                    let (p1, p2) = (point_at(day), point_at(day + 1));
-                    let p0 = point_at(day - 1);
-                    let p3 = point_at(day + 2);
-                    builder.cubic_bezier_to(
-                        p2,
-                        point(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0),
-                        point(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0),
-                    );
+                let (outer_start, outer_end) = edge(outer);
+                let (inner_start, inner_end) = edge(inner);
+                // 96 chords per full circle: the chord error at ring size
+                // is a fraction of a pixel — the polyline reads as an arc.
+                let span = (outer_end - outer_start).max(inner_end - inner_start);
+                let steps = ((span / std::f32::consts::TAU) * 96.0).ceil().max(2.0) as usize;
+                let at = |radius: f32, from: f32, to: f32, i: usize| {
+                    let theta = from + (to - from) * (i as f32 / steps as f32);
+                    point(
+                        center.x + px(radius * theta.cos()),
+                        center.y + px(radius * theta.sin()),
+                    )
+                };
+                // A filled annular sector — outer arc, inner arc, close —
+                // not a stroked arc: a stroke's butt cap cuts perpendicular
+                // to the last chord, which reads as a slanted wedge at ring
+                // thickness, while a fill's cut follows the seam's edge.
+                let mut builder = PathBuilder::fill();
+                builder.move_to(at(outer, outer_start, outer_end, 0));
+                for i in 1..=steps {
+                    builder.line_to(at(outer, outer_start, outer_end, i));
+                }
+                for i in (0..=steps).rev() {
+                    builder.line_to(at(inner, inner_start, inner_end, i));
                 }
                 if let Ok(path) = builder.build() {
                     window.paint_path(path, *color);
@@ -1525,80 +1871,87 @@ fn curve_chart(
     .into_any_element()
 }
 
-/// One model's line in the day readout.
-#[derive(Clone)]
-struct DayRow {
-    color: Hsla,
-    id: String,
-    tokens: u64,
-}
-
-/// The day readout a hover column opens: the date, one row per visible
-/// model in stack order — same dot colors as the chart — and the day's
-/// Total. The same card the usage ring's hover opens, fed by the reply.
-#[derive(Clone)]
-struct DayCard {
-    date: String,
-    rows: Arc<Vec<DayRow>>,
-    total: u64,
-}
-
-impl Render for DayCard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
-        let mut card = popover::popover_card(&theme)
-            .w(px(200.0))
-            .p(px(8.0))
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .text_size(crate::typography::ui_rems(11.5))
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(SharedString::from(self.date.clone())),
-            );
-        for row in self.rows.iter() {
-            card = card.child(
-                div()
-                    .debug_selector(move || format!("usage-dayrow-{}", row.id))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(div().flex_none().size(px(6.0)).rounded_full().bg(row.color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(row.id.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text)
-                            .child(SharedString::from(row.tokens.to_string())),
-                    ),
-            );
-        }
-        if !self.rows.is_empty() {
-            card = card.child(div().h(px(1.0)).bg(theme.ink(0.08))).child(
-                div()
-                    .debug_selector(|| "usage-day-total".into())
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child("Total")
-                    .child(SharedString::from(compact_tokens(self.total))),
-            );
-        }
-        crate::frost::frosted(popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
-    }
+/// The chart's paint pass: one hairline per Y rung, then one bar per day —
+/// the visible models stacked bottom-to-top in rank order, the stack's
+/// topmost nonzero segment carrying the rounded cap (the reference
+/// chart's pill-tipped bars). `rungs` is the shared Y scale bottom-up;
+/// its last value is the ceiling every bar and gridline divides by.
+fn bar_chart(
+    summary: &Arc<Summary>,
+    hidden: &Arc<BTreeSet<String>>,
+    rungs: Arc<Vec<u64>>,
+    theme: &Theme,
+) -> AnyElement {
+    let grid = theme.ink(0.08);
+    let visible: Vec<(Hsla, Vec<u64>)> = summary
+        .visible(hidden)
+        .into_iter()
+        .map(|(rank, series)| (series_color(rank, theme), series.per_day.clone()))
+        .collect();
+    let days = summary.dates.len();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let height = f32::from(bounds.size.height);
+            let width = f32::from(bounds.size.width);
+            let left = f32::from(bounds.origin.x);
+            let baseline = f32::from(bounds.origin.y) + height;
+            let top = rungs.last().copied().unwrap_or(1).max(1) as f32;
+            // The Y rungs the gutter labels — thin quads, the same
+            // primitive as the bars.
+            for rung in rungs.iter() {
+                let y = baseline - height * (*rung as f32 / top);
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(px(left), px(y - 0.5)), size(px(width), px(1.0))),
+                    grid,
+                ));
+            }
+            if days == 0 {
+                return;
+            }
+            // One slot per day; the bar takes the reference's share of its
+            // slot, capped so a short range paints bars, not slabs.
+            let slot = width / days as f32;
+            let bar_w = (slot * 0.55).min(28.0);
+            for day in 0..days {
+                let segments: Vec<(Hsla, f32)> = visible
+                    .iter()
+                    .map(|(color, per_day)| (*color, per_day.get(day).copied().unwrap_or(0) as f32))
+                    .collect();
+                // The stack's topmost nonzero segment owns the rounded cap.
+                let cap = segments.iter().rposition(|(_, tokens)| *tokens > 0.0);
+                let x0 = left + slot * (day as f32 + 0.5) - bar_w / 2.0;
+                let mut below = 0.0f32;
+                for (index, (color, tokens)) in segments.iter().enumerate() {
+                    if *tokens <= 0.0 {
+                        continue;
+                    }
+                    let seg_h = height * (tokens / top);
+                    let y = baseline - below - seg_h;
+                    let mut quad = gpui::fill(
+                        Bounds::new(point(px(x0), px(y)), size(px(bar_w), px(seg_h))),
+                        *color,
+                    );
+                    if Some(index) == cap {
+                        // The cap's radius yields to the segment it rounds:
+                        // a corner taller than half its side paints sharp.
+                        let radius = 5.0f32.min(seg_h * 0.5).min(bar_w * 0.5);
+                        quad = quad.corner_radii(gpui::Corners {
+                            top_left: px(radius),
+                            top_right: px(radius),
+                            bottom_right: px(0.0),
+                            bottom_left: px(0.0),
+                        });
+                    }
+                    window.paint_quad(quad);
+                    below += seg_h;
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }
 
 impl Render for UsagePage {
@@ -1623,6 +1976,10 @@ impl Render for UsagePage {
                     div()
                         .flex()
                         .flex_col()
+                        // Stale-while-revalidate: a reload dims the page in
+                        // place — the header spinner carries the activity —
+                        // instead of blanking to skeletons.
+                        .when(self.reloading, |page| page.opacity(0.6))
                         .child(self.render_header(reply, cx))
                         .child(self.render_summary(reply, cx))
                         .child(self.render_metrics(reply, cx))
@@ -1636,12 +1993,7 @@ impl Render for UsagePage {
             .id("usage-page")
             .size_full()
             .overflow_y_scroll()
-            .child(
-                widgets::page_column()
-                    .child(widgets::page_header(&theme, PAGE_TITLE, None))
-                    .child(widgets::page_subtitle(&theme, PAGE_DESCRIPTION))
-                    .child(body),
-            )
+            .child(widgets::page_column().child(title_row(&theme)).child(body))
     }
 }
 
@@ -1766,6 +2118,14 @@ mod tests {
             self.visual.read(|cx| self.page.read(cx).stats.is_loading())
         }
 
+        fn reloading(&self) -> bool {
+            self.visual.read(|cx| self.page.read(cx).reloading)
+        }
+
+        fn loaded_days(&self) -> u32 {
+            self.visual.read(|cx| self.page.read(cx).loaded_days)
+        }
+
         fn error(&self) -> Option<String> {
             self.visual
                 .read(|cx| self.page.read(cx).stats.error().map(str::to_string))
@@ -1781,14 +2141,6 @@ mod tests {
                 .debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{selector} renders"))
         }
-    }
-
-    /// A fraction of a measured width, within a pixel of layout rounding.
-    fn assert_close(measured: f32, expected: f32, what: &str) {
-        assert!(
-            (measured - expected).abs() < 0.02,
-            "{what}: {measured} != {expected}"
-        );
     }
 
     fn harness<'a>(
@@ -1926,33 +2278,42 @@ mod tests {
     }
 
     #[gpui::test]
-    fn switching_range_and_refreshing_rerun_the_rpc_through_loading(cx: &mut gpui::TestAppContext) {
+    fn switching_range_and_refreshing_rerun_the_rpc_stale_visible(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], reply(5));
         assert_eq!(harness.calls(), vec![30]);
 
-        // The range switch re-queries with the new days, through the loading
-        // state — not a re-filter of the old reply.
+        // The range switch re-queries with the new days — but the stale
+        // page stays on screen (dimmed, spinner in the header) until the
+        // fresh reply lands; a switch never blanks the page to skeletons.
         harness.click("usage-range-7");
-        assert!(harness.loading(), "the switch lands the page on skeletons");
+        assert!(!harness.loading(), "ready data never drops to skeletons");
+        assert!(harness.reloading());
         assert_eq!(harness.days(), 7);
+        assert_eq!(
+            harness.loaded_days(),
+            30,
+            "the count line still names the window on screen"
+        );
         harness.repaint();
         assert!(
-            harness.present("usage-skeleton"),
-            "the loading state renders skeleton rows"
+            harness.present("usage-header"),
+            "stale content stays visible"
         );
-        assert!(
-            !harness.present("usage-header"),
-            "no stale header while the reload is in flight"
-        );
+        assert!(harness.present("usage-refresh-spinner"));
         harness.pump();
-        assert!(harness.present("usage-header"));
+        assert!(!harness.reloading());
+        assert_eq!(harness.loaded_days(), 7);
+        assert!(
+            !harness.present("usage-refresh-spinner"),
+            "the spinner retires with the reload"
+        );
         assert_eq!(harness.calls(), vec![30, 7]);
 
-        // Refresh re-runs the current range.
+        // Refresh re-runs the current range through the same veil.
         harness.click("usage-refresh");
-        assert!(harness.loading());
+        assert!(harness.reloading());
         harness.pump();
-        assert!(harness.present("usage-header"));
+        assert!(!harness.reloading());
         assert_eq!(harness.days(), 7);
         assert_eq!(harness.calls(), vec![30, 7, 7]);
 
@@ -2031,10 +2392,10 @@ mod tests {
         let mut hidden = BTreeSet::new();
 
         // All visible: the tooltip rows list both models, the day Total is
-        // their sum, and the Y scale tops at the tallest single-model day.
+        // their sum, and the Y scale tops at the tallest stacked day.
         assert_eq!(summary.day_rows(&hidden, 1).len(), 2);
         assert_eq!(summary.day_total(&hidden, 1), 110);
-        assert_eq!(summary.peak_model_day(&hidden), 200);
+        assert_eq!(summary.peak_day(&hidden), 200);
 
         // Hiding openai drops its tokens from the day total, the rows, and
         // the Y scale — the readout always matches the picture.
@@ -2042,9 +2403,9 @@ mod tests {
         assert_eq!(summary.day_total(&hidden, 1), 60);
         assert_eq!(summary.day_total(&hidden, 0), 0);
         assert_eq!(
-            summary.peak_model_day(&hidden),
+            summary.peak_day(&hidden),
             60,
-            "the scale follows the visible curves"
+            "the scale follows the visible bars"
         );
         let rows = summary.day_rows(&hidden, 1);
         assert_eq!(rows.len(), 1);
@@ -2065,6 +2426,18 @@ mod tests {
         // And the hidden one comes back on a second click.
         toggle_hidden(&mut hidden, &summary, "anthropic/claude-opus");
         assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn the_headline_total_follows_the_visible_models() {
+        let summary = fold_summary(&decode_reply(summary_reply_json()));
+        let mut hidden = BTreeSet::new();
+        assert_eq!(summary.visible_total(&hidden), 400);
+
+        // Hiding a model retires its tokens from the headline — the Total
+        // always matches the bars on screen.
+        hidden.insert("openai/gpt-5.4".into());
+        assert_eq!(summary.visible_total(&hidden), 100);
     }
 
     #[test]
@@ -2129,7 +2502,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_summary_paints_legend_bars_in_share_proportions(cx: &mut gpui::TestAppContext) {
+    fn the_summary_paints_the_legend_line_and_day_columns(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], summary_reply());
         assert!(harness.present("usage-summary"));
         assert!(harness.present("usage-total"));
@@ -2143,18 +2516,13 @@ mod tests {
         assert!(harness.present("usage-day-2"));
         assert!(!harness.present("usage-day-3"));
 
-        // Legend share bars carry each model's fraction of the grand total
-        // — 75% and 25% of a 400-token month.
-        let track = harness.bounds("usage-legend-0-track");
-        let fill = harness.bounds("usage-legend-0-fill");
-        assert_close(fill.size.width / track.size.width, 0.75, "openai share");
-        let track = harness.bounds("usage-legend-1-track");
-        let fill = harness.bounds("usage-legend-1-fill");
-        assert_close(fill.size.width / track.size.width, 0.25, "anthropic share");
+        // The legend line carries one checkbox item per model.
+        assert!(harness.present("usage-legend-0"));
+        assert!(harness.present("usage-legend-1"));
     }
 
     #[gpui::test]
-    fn legend_clicks_toggle_curves_and_a_reload_resets_them(cx: &mut gpui::TestAppContext) {
+    fn legend_clicks_toggle_bars_and_a_reload_resets_them(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], summary_reply());
         let shows = |harness: &Harness<'_>, id: &str| {
             harness
@@ -2163,7 +2531,8 @@ mod tests {
         };
         assert!(shows(&harness, "anthropic/claude-opus"));
 
-        // A click hides one curve — its day readout and its stack layer.
+        // A click hides one model's bars — its day readout and its stack
+        // layer.
         harness.click("usage-legend-1");
         assert!(!shows(&harness, "anthropic/claude-opus"));
         // The last visible model refuses to hide.
@@ -2180,9 +2549,105 @@ mod tests {
         harness.pump();
         assert!(
             shows(&harness, "anthropic/claude-opus"),
-            "a reload restores every curve"
+            "a reload restores every series"
         );
         assert!(harness.present("usage-day-0"), "back on the ready state");
+    }
+
+    #[gpui::test]
+    fn an_empty_range_shows_a_quiet_placeholder(cx: &mut gpui::TestAppContext) {
+        // Chats exist, but the range's model series is empty (usage lives
+        // outside the window, or none at all): the chart collapses to one
+        // quiet line instead of an empty grid with a "0 / 1" axis.
+        let mut harness = harness(cx, vec![], reply(3));
+
+        assert!(harness.present("usage-header"), "the page still renders");
+        assert!(harness.present("usage-chart-empty"));
+        assert!(
+            !harness.present("usage-day-0"),
+            "no hover columns without data"
+        );
+        assert!(!harness.present("usage-legend-0"));
+    }
+
+    #[gpui::test]
+    fn the_readout_keeps_its_width_over_a_narrow_slot(cx: &mut gpui::TestAppContext) {
+        // Thirty days of one model: each day slot shrinks far below the
+        // readout's fixed width — the card must ride its flex_none and
+        // overflow the slot, not crush into a vertical sliver.
+        let today = chrono::Local::now().date_naive();
+        let days: Vec<serde_json::Value> = (0..30)
+            .map(|i| {
+                day_json(
+                    &(today - chrono::Duration::days(29 - i as i64))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    (i + 1) as u64,
+                )
+            })
+            .collect();
+        let reply = Scripted::Ok(serde_json::json!({
+            "chatCount": 1, "days": 30,
+            "totals": { "input": 10, "output": 10, "cacheRead": 0,
+                        "cacheWrite": 0, "cacheHit": null, "activeDays": 30 },
+            "models": [{"provider": "p", "model": "m", "days": days}],
+            "byModel": [], "byProject": [], "heatmap": [],
+        }));
+        let mut harness = harness(cx, vec![], reply);
+
+        let column = harness.bounds("usage-day-15");
+        assert!(
+            column.size.width < px(READOUT_WIDTH),
+            "the fixture must produce slots narrower than the readout"
+        );
+        harness
+            .visual
+            .simulate_mouse_move(column.center(), None, Default::default());
+        harness.repaint();
+
+        let readout = harness.bounds("usage-day-readout");
+        assert!(
+            (f32::from(readout.size.width) - READOUT_WIDTH).abs() < 1.0,
+            "the readout keeps its fixed width, got {:?}",
+            readout.size.width
+        );
+    }
+
+    #[gpui::test]
+    fn a_hovered_day_pins_its_readout_inside_the_plot(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], summary_reply());
+        assert!(
+            !harness.present("usage-day-readout"),
+            "no readout until a column is hovered"
+        );
+
+        // Hover the middle day: the readout pins inside the chart body —
+        // never over the Y gutter or outside the plot.
+        let column = harness.bounds("usage-day-1");
+        harness
+            .visual
+            .simulate_mouse_move(column.center(), None, Default::default());
+        harness.repaint();
+        assert!(harness.present("usage-day-readout"));
+        assert!(harness.present("usage-dayrow-anthropic/claude-opus"));
+        let readout = harness.bounds("usage-day-readout");
+        let plot = harness.bounds("usage-day-0");
+        let plot_right = harness.bounds("usage-day-2").right();
+        assert!(
+            readout.left() >= plot.left() && readout.right() <= plot_right,
+            "the readout stays between the plot's edges: {readout:?}"
+        );
+
+        // Moving off the chart clears it.
+        let header = harness.bounds("usage-refresh");
+        harness
+            .visual
+            .simulate_mouse_move(header.center(), None, Default::default());
+        harness.repaint();
+        assert!(
+            !harness.present("usage-day-readout"),
+            "the readout follows the pointer off the columns"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2288,16 +2753,29 @@ mod tests {
     }
 
     #[test]
-    fn the_fill_sampling_rides_the_spline() {
-        // Straight segments interpolate exactly; endpoints hold.
-        assert_eq!(smooth_series(&[0.0, 10.0], 2), vec![0.0, 5.0, 10.0]);
-        let smooth = smooth_series(&[0.0, 100.0], 4);
-        assert_eq!(smooth.first(), Some(&0.0));
-        assert_eq!(smooth.last(), Some(&100.0));
-        // Monotone input stays monotone through the spline.
-        assert!(smooth.windows(2).all(|pair| pair[0] <= pair[1]));
-        // Degenerate inputs pass through.
-        assert_eq!(smooth_series(&[7.0], 4), vec![7.0]);
+    fn the_scale_rounds_the_peak_to_clean_rungs() {
+        // The reference chart's shape: rungs land on round numbers and the
+        // top rung clears the peak.
+        assert_eq!(
+            scale_rungs(188_000_000),
+            vec![0, 50_000_000, 100_000_000, 150_000_000, 200_000_000]
+        );
+        assert_eq!(
+            scale_rungs(30_000_000),
+            vec![0, 10_000_000, 20_000_000, 30_000_000]
+        );
+        assert_eq!(scale_rungs(110), vec![0, 50, 100, 150]);
+        // Small counts stay whole-token rungs.
+        assert_eq!(scale_rungs(9), vec![0, 5, 10]);
+        assert_eq!(scale_rungs(1), vec![0, 1]);
+    }
+
+    #[test]
+    fn x_labels_label_every_bar_until_dense() {
+        assert_eq!(label_stride(7), 1);
+        assert_eq!(label_stride(14), 1);
+        assert_eq!(label_stride(30), 3);
+        assert_eq!(label_stride(90), 8);
     }
 
     #[test]
@@ -2308,21 +2786,26 @@ mod tests {
     }
 
     #[test]
-    fn the_heatmap_hover_names_the_full_date() {
+    fn the_heatmap_hover_prints_compact_and_short() {
         let grid = fold_heatmap(&decode_reply(two_week_reply()));
         let wednesday = cell(&grid, 2, 3);
-        assert_eq!(
-            heatmap_tooltip(wednesday),
-            "130 tokens on September 16, 2026"
-        );
+        assert_eq!(heatmap_tooltip(wednesday), "130 tokens on Sep 16, 2026");
+        // Big counts stay glanceable, never a digit soup.
+        let big = HeatCell {
+            date: wednesday.date,
+            tokens: 114_891,
+            col: 0,
+            row: 0,
+        };
+        assert_eq!(heatmap_tooltip(&big), "114.9k tokens on Sep 16, 2026");
     }
 
     #[test]
     fn month_labels_mark_where_a_month_first_appears() {
         // A 33-day window spanning one month boundary: Aug 15 (Sat) 2026
-        // to Sep 16. GitHub's rule labels the column containing the 1st:
-        // Sep 1 lands in column 3 (6 leading offsets + 17 days), August
-        // itself never gets one (its 1st is before the window starts).
+        // to Sep 16. The column-month-change rule labels the leading
+        // partial month at column 0, then Sep where its days first appear
+        // (Sep 1 lands in column 3: 6 leading offsets + 17 days).
         let end = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
         let heatmap: Vec<serde_json::Value> = (0..33)
             .map(|i| {
@@ -2343,7 +2826,11 @@ mod tests {
         });
         let grid = fold_heatmap(&decode_reply(reply));
         let labels = heatmap_month_labels(&grid);
-        assert_eq!(labels, vec![(3, "Sep".to_string())], "{labels:?}");
+        assert_eq!(
+            labels,
+            vec![(0, "Aug".to_string()), (3, "Sep".to_string())],
+            "{labels:?}"
+        );
     }
 
     #[gpui::test]
@@ -2404,12 +2891,12 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Ticket 05 — the Breakdown tables
+    // Ticket 05 — the Breakdown card (donut + legend)
     // -------------------------------------------------------------------
 
-    /// Two model rows, three project groups (same-basename directories,
-    /// plus the Deleted chats catch-all whose per-chat subtotals sum to
-    /// the group), and one path long enough to test truncation.
+    /// Three model rows, three project groups (same-basename directories,
+    /// plus the Deleted chats catch-all), one path long enough to test
+    /// truncation, and one zero-total model that must never render.
     fn breakdown_reply_json() -> serde_json::Value {
         let long_path = format!("/very/deep/{}", "nested/".repeat(24));
         serde_json::json!({
@@ -2427,6 +2914,8 @@ mod tests {
                  "input": 70, "output": 20, "cacheRead": 10, "total": 100},
                 {"provider": "openai", "model": "gpt-5-mini",
                  "input": 30, "output": 15, "cacheRead": 5, "total": 50},
+                {"provider": "noop", "model": "none",
+                 "input": 0, "output": 0, "cacheRead": 0, "total": 0},
             ],
             "byProject": [
                 {"path": "/work/api",
@@ -2451,110 +2940,161 @@ mod tests {
     }
 
     #[test]
-    fn deleted_chat_subtotals_sum_to_the_group_row() {
+    fn deleted_chat_subtotals_sum_to_the_group_entry() {
         let reply = decode_reply(breakdown_reply_json());
         let deleted = reply
             .by_project
             .iter()
             .find(|group| group.path.is_none())
             .expect("the deleted-chats group");
-        // The engine's four-field totals: the expandable row's number is
-        // exactly the sum of what unfolds beneath it.
+        // The legend entry's number is exactly the sum of the chats it
+        // aggregates — the engine's own four-field arithmetic.
         let sum: u64 = deleted.chats.iter().map(|chat| chat.total).sum();
         assert_eq!(sum, deleted.total);
         assert_eq!(deleted.chats.len(), 2);
-        // The input column alone reconciles too — the same arithmetic the
-        // table prints column-wise.
-        let input_sum: u64 = deleted.chats.iter().map(|chat| chat.input).sum();
-        assert_eq!(input_sum, deleted.input);
+    }
+
+    #[test]
+    fn the_breakdown_folds_engine_order_and_drops_zero_rows() {
+        let reply = decode_reply(breakdown_reply_json());
+        let summary = fold_summary(&reply);
+        let theme = Theme::default();
+
+        // By model: engine order (total-descending); the zero-total model
+        // never becomes a row, so the shares stay meaningful.
+        let models = fold_breakdown(&reply, &summary, BreakdownTab::Models, &theme);
+        let names: Vec<&str> = models.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "openai/gpt-5.4",
+                "anthropic/claude-opus",
+                "openai/gpt-5-mini"
+            ]
+        );
+        assert_eq!(models[0].tokens, 300);
+        assert_eq!(models.iter().map(|e| e.tokens).sum::<u64>(), 450);
+        // Distinct colors per rank, tied to the chart's palette.
+        assert_ne!(models[0].color, models[1].color);
+
+        // By project: the catch-all folds under its fixed name.
+        let projects = fold_breakdown(&reply, &summary, BreakdownTab::Projects, &theme);
+        assert_eq!(projects.len(), 4);
+        assert_eq!(projects[2].name, "Deleted chats");
+        assert_eq!(projects[2].tokens, 60);
+    }
+
+    #[test]
+    fn breakdown_percent_rounds_to_integer_shares() {
+        assert_eq!(breakdown_percent(300, 450), 67);
+        assert_eq!(breakdown_percent(150, 450), 33);
+        assert_eq!(breakdown_percent(1, 450), 0, "tiny shares read as 0%");
+        assert_eq!(breakdown_percent(450, 450), 100);
+        assert_eq!(
+            breakdown_percent(0, 0),
+            0,
+            "an empty card divides by nothing"
+        );
     }
 
     #[gpui::test]
     fn the_breakdown_opens_on_by_model_in_engine_order(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], breakdown_reply());
 
-        // Default tab: By model, rows in the engine's total-descending
-        // order (300 then 100), no project rows.
-        assert!(harness.present("usage-bd-model-row-0"));
-        assert!(harness.present("usage-bd-model-row-1"));
-        let first = harness.bounds("usage-bd-model-row-0");
-        let second = harness.bounds("usage-bd-model-row-1");
+        // Default tab: By model — legend rows in the engine's total-
+        // descending order (300 then 100 then 50), the zero-total model
+        // dropped, the donut riding beside them with the total in its hole.
+        assert!(harness.present("usage-breakdown-row-0"));
+        assert!(harness.present("usage-breakdown-row-1"));
+        assert!(harness.present("usage-breakdown-row-2"));
+        assert!(!harness.present("usage-breakdown-row-3"));
+        let first = harness.bounds("usage-breakdown-row-0");
+        let second = harness.bounds("usage-breakdown-row-1");
         assert!(first.origin.y < second.origin.y, "largest total first");
-        // Many models just repeat the row shape: the third sits below the
-        // second, nothing reflows.
-        let third = harness.bounds("usage-bd-model-row-2");
-        assert!(second.origin.y < third.origin.y);
-        assert_eq!(third.size.height, first.size.height);
-        assert!(!harness.present("usage-bd-project-row-0"));
+        assert!(harness.present("usage-breakdown-donut"));
+        assert!(harness.present("usage-breakdown-total"));
 
-        // Switching tabs swaps the table.
+        // Switching tabs swaps the entries in place.
         harness.click("usage-bd-tab-project");
         harness.pump();
-        assert!(harness.present("usage-bd-project-row-0"));
-        assert!(harness.present("usage-bd-project-row-1"));
-        assert!(harness.present("usage-bd-deleted-row"));
-        assert!(!harness.present("usage-bd-model-row-0"), "model rows gone");
+        assert!(harness.present("usage-breakdown-row-0"));
+        assert!(
+            harness.present("usage-breakdown-row-2"),
+            "deleted chats row"
+        );
+        assert!(harness.present("usage-breakdown-row-3"), "long path row");
     }
 
     #[gpui::test]
-    fn the_deleted_chats_group_expands_and_collapses(cx: &mut gpui::TestAppContext) {
+    fn hovering_a_legend_row_highlights_its_slice(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], breakdown_reply());
+        let hovered =
+            |harness: &Harness<'_>| harness.visual.read(|cx| harness.page.read(cx).hover_slice);
+        assert_eq!(hovered(&harness), None);
+
+        // Hover row 0: its slice is the highlighted one.
+        let row = harness.bounds("usage-breakdown-row-0");
+        harness
+            .visual
+            .simulate_mouse_move(row.center(), None, Default::default());
+        harness.repaint();
+        assert_eq!(hovered(&harness), Some(0));
+
+        // Moving to another row moves the highlight, even if the leave
+        // events land out of order.
+        let row = harness.bounds("usage-breakdown-row-1");
+        harness
+            .visual
+            .simulate_mouse_move(row.center(), None, Default::default());
+        harness.repaint();
+        assert_eq!(hovered(&harness), Some(1));
+
+        // Off the legend, the highlight clears.
+        let header = harness.bounds("usage-refresh");
+        harness
+            .visual
+            .simulate_mouse_move(header.center(), None, Default::default());
+        harness.repaint();
+        assert_eq!(hovered(&harness), None);
+
+        // A tab switch clears a stale highlight: the index means a
+        // different entry there.
+        let row = harness.bounds("usage-breakdown-row-0");
+        harness
+            .visual
+            .simulate_mouse_move(row.center(), None, Default::default());
+        harness.repaint();
+        assert_eq!(hovered(&harness), Some(0));
+        harness.click("usage-bd-tab-project");
+        harness.pump();
+        assert_eq!(hovered(&harness), None);
+    }
+
+    #[gpui::test]
+    fn a_long_path_truncates_instead_of_breaking_the_card(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], breakdown_reply());
         harness.click("usage-bd-tab-project");
         harness.pump();
 
-        // Collapsed by default: the group row is there, its chats are not.
-        assert!(harness.present("usage-bd-deleted-row"));
-        assert!(!harness.present("usage-bd-deleted-sub-0"));
-
-        // Expanding reveals the per-chat rows, keyed by chat id.
-        harness.click("usage-bd-deleted-row");
-        harness.pump();
-        assert!(harness.present("usage-bd-deleted-sub-0"));
-        assert!(harness.present("usage-bd-deleted-sub-1"));
-        let group = harness.bounds("usage-bd-deleted-row");
-        let sub = harness.bounds("usage-bd-deleted-sub-0");
+        // The 300-character path stays on one line at the legend's own
+        // width: the row truncates, never wraps, and never reflows its
+        // siblings.
+        let normal = harness.bounds("usage-breakdown-row-0");
+        let long_row = harness.bounds("usage-breakdown-row-3");
+        assert_eq!(long_row.size.width, normal.size.width);
+        // A hairline's width apart at most: the last row carries no bottom
+        // border, everything else is the same single-line row — the path
+        // truncates, never wraps.
         assert!(
-            sub.origin.y > group.origin.y,
-            "chats unfold under the group"
+            (f32::from(long_row.size.height) - f32::from(normal.size.height)).abs() <= 1.0,
+            "a long path truncates, never wraps: {:?} vs {:?}",
+            long_row.size.height,
+            normal.size.height
         );
-
-        // Collapsing hides them again — and the state survives a reload.
-        harness.click("usage-bd-deleted-row");
-        harness.pump();
-        assert!(!harness.present("usage-bd-deleted-sub-0"));
-        harness.click("usage-bd-deleted-row");
-        harness.pump();
-        harness.click("usage-range-7");
-        harness.pump();
+        let second = harness.bounds("usage-breakdown-row-1");
         assert!(
-            harness.present("usage-bd-deleted-sub-0"),
-            "the expansion survives a reload — it is a view preference"
+            second.origin.y < long_row.origin.y,
+            "total-descending order"
         );
-    }
-
-    #[gpui::test]
-    fn a_long_path_truncates_instead_of_breaking_the_table(cx: &mut gpui::TestAppContext) {
-        let mut harness = harness(cx, vec![], breakdown_reply());
-        harness.click("usage-bd-tab-project");
-        harness.pump();
-
-        // The 300-character path stays on one line at the table's own
-        // width: the identity cell truncates, the numeric columns keep
-        // their alignment, and the page never grows a horizontal scroll.
-        let head = harness.bounds("usage-bd-head");
-        let normal = harness.bounds("usage-bd-project-row-0");
-        let long_row = harness.bounds("usage-bd-project-row-3");
-        assert_eq!(head.size.width, long_row.size.width, "same table width");
-        assert_eq!(
-            long_row.size.height, normal.size.height,
-            "a long path truncates, never wraps"
-        );
-        // The two directory rows sit above the long-path one,
-        // total-descending; the deleted group between them carries its
-        // own selector.
-        let first = harness.bounds("usage-bd-project-row-0");
-        let second = harness.bounds("usage-bd-project-row-1");
-        assert!(first.origin.y < second.origin.y);
-        assert!(second.origin.y < long_row.origin.y);
     }
 }
