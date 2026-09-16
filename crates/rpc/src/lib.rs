@@ -74,6 +74,19 @@ pub mod methods {
     /// `{chatId}`) — the whole-ledger gross token total, the per-kind sums,
     /// and the context occupancy of the request the chat would run next.
     pub const WATCH_CHAT_USAGE: &str = "WatchChatUsage";
+    /// The Usage overview's device-level aggregate (one unary reply):
+    /// params `{days: 7|30|90}`, replying `holt_proto::UsageStatsReply`.
+    /// Merges the live chats' ledgers and the Usage archive — all five
+    /// record kinds, deleted chats included — into the deduplicated chat
+    /// count with records in range, the six range metrics (the four token
+    /// sums, the cache hit rate with cache writes out of the denominator,
+    /// active days), per-(provider, model) daily series zero-filled across
+    /// the range, the by-model and by-project breakdowns (records with no
+    /// resolvable working directory group under the "Deleted chats"
+    /// group), and a fixed 365-day local-timezone heatmap independent of
+    /// `days`. Strictly read-only and best-effort: a damaged ledger is
+    /// skipped, never quarantined.
+    pub const USAGE_STATS: &str = "UsageStats";
     /// Live Turn terminal events (ADR-0019): one typed
     /// `holt_rpc::turns::TurnTerminalEvent` per real main-chat Turn,
     /// published only after its Transcript, History, and queue completion

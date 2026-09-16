@@ -58,6 +58,7 @@ mod turn_change_watch;
 mod turn_changes;
 mod turn_events;
 mod usage;
+mod usage_stats;
 mod web_search_settings;
 mod workspace_watch;
 

@@ -365,6 +365,154 @@ pub struct ChatOccupancy {
     pub estimated: bool,
 }
 
+/// One `UsageStats` reply: the device-level usage aggregate behind the
+/// Usage overview — every surviving Usage record on the device (live
+/// chats' ledgers plus the Usage archive, all five source kinds) merged
+/// into one read-only answer. Every field defaults, so a reply from an
+/// engine that predates one of them still decodes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStatsReply {
+    /// Chats with at least one record inside the range, deduplicated —
+    /// live ledgers attribute by file name, archive rows by the chat id
+    /// they were restamped with.
+    #[serde(default)]
+    pub chat_count: u64,
+    /// The range the aggregate covers — the request's `days`, echoed so a
+    /// client can tell a stale reply from the range it switched to.
+    #[serde(default)]
+    pub days: u32,
+    /// The six range metrics.
+    #[serde(default)]
+    pub totals: UsageStatsTotals,
+    /// One series per (provider, model), sorted by total descending. Each
+    /// series covers exactly the `days` range, oldest first, zero-filled.
+    #[serde(default)]
+    pub models: Vec<UsageModelSeries>,
+    /// The By-model breakdown rows, sorted by total descending.
+    #[serde(default)]
+    pub by_model: Vec<UsageModelBreakdown>,
+    /// The By-project breakdown groups, sorted by total descending. A
+    /// project is a chat's working directory, full path; records that
+    /// resolve to no directory group under `path: null` ("Deleted chats").
+    #[serde(default)]
+    pub by_project: Vec<UsageProjectGroup>,
+    /// Exactly 365 local-timezone day buckets ending today — the Activity
+    /// heatmap's data, independent of `days`. Oldest first, zero-filled.
+    #[serde(default)]
+    pub heatmap: Vec<UsageStatsDay>,
+}
+
+/// The six range metrics: the four headline token sums, the cache hit
+/// rate, and the active-days count — all over the selected range only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStatsTotals {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+    /// `cacheRead / (cacheRead + input)` — the share of prompt tokens
+    /// served from cache; cache writes stay out of the denominator. `None`
+    /// when no record in range carried prompt tokens.
+    #[serde(default)]
+    pub cache_hit: Option<f64>,
+    /// How many days in the range carried at least one record.
+    #[serde(default)]
+    pub active_days: u32,
+}
+
+/// One local-timezone day bucket: a calendar date and the gross tokens
+/// (input, output, and both cache fields) recorded on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStatsDay {
+    /// Local calendar day, `YYYY-MM-DD`.
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub tokens: u64,
+}
+
+/// One (provider, model) key's daily token series — the same model name
+/// under two providers is two independent series.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageModelSeries {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    /// One bucket per day of the range, oldest first, zero-filled.
+    #[serde(default)]
+    pub days: Vec<UsageStatsDay>,
+}
+
+/// One By-model breakdown row. Total is the four token fields summed;
+/// there is deliberately no cache-write column beyond `cacheWrite` in the
+/// totals.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageModelBreakdown {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub total: u64,
+}
+
+/// One By-project group: a working directory's records, or — with
+/// `path: null` — the "Deleted chats" group of records whose chat resolves
+/// to no working directory (archive rows of deleted chats, cwd-less chat
+/// rows), which carries one per-chat row each.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProjectGroup {
+    /// The project's working directory, full path — full, so same-named
+    /// basenames never collide. `None` marks the "Deleted chats" group.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// The "Deleted chats" group's per-chat rows, keyed by chat id (the
+    /// title died with the chat). Empty on project groups.
+    #[serde(default)]
+    pub chats: Vec<UsageChatBreakdown>,
+}
+
+/// One chat's row inside the "Deleted chats" group.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageChatBreakdown {
+    #[serde(default)]
+    pub chat_id: String,
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub total: u64,
+}
+
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
 /// by the HOST while draining the queued Run — not by the sender over a
 /// blocking CreateWorktree RPC — so the send path stays durable: a lost relay

@@ -23,9 +23,9 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~97k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module and the device-level usage aggregate behind `UsageStats` in its `usage_stats` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
-| `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, and the usage frame (`ChatUsage`: ledger totals plus occupancy). |
+| `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, the per-chat usage frame (`ChatUsage`: ledger totals plus occupancy), and the device-level usage aggregate (`UsageStatsReply`). |
 | `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
 
@@ -230,6 +230,27 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   does not know. Occupancy is derived at read time and never persisted: the
   first report flips it from a History-based estimate (`estimated: true`)
   to measured (`estimated: false`).
+- Usage overview: `UsageStats` (`{days: 7|30|90}`) answers the device-level
+  aggregate in one unary reply (`holt_proto::UsageStatsReply`). It merges
+  the live chats' ledgers and the `usage/archive.jsonl` stream — all five
+  record kinds, deleted chats included — and returns: the deduplicated
+  count of chats with at least one record in range (live ledgers attribute
+  by file name, archive rows by their restamped chat id); the six range
+  metrics (Input, Output, Cache read, Cache write, Cache hit =
+  cache_read / (cache_read + input) with cache writes out of the
+  denominator and no rate when no record carried prompt tokens, and Active
+  days); per-(provider, model) daily series over exactly the range,
+  zero-filled on empty local-timezone days and sorted by total descending
+  (the same model name under two providers is two entries); the by-model
+  and by-project breakdowns (columns Input | Output | Cache read | Total,
+  Total the four token fields summed; a project is the chat's stored
+  working directory at full path, so same-named basenames never merge, and
+  records with no resolvable directory — deleted chats, cwd-less rows —
+  group under a `path: null` "Deleted chats" group that expands to one row
+  per chat id); and a fixed 365-day local-timezone heatmap series
+  independent of `days`. The read is strictly read-only and best-effort:
+  a damaged ledger is skipped for the aggregate, never quarantined from
+  here.
 - Turn terminal events (ADR-0019): `WatchTurnTerminalEvents` emits one typed
   `TurnTerminalEvent` (`holt_rpc::turns` — `eventId`, `chatId`, `messageId`,
   `outcome` of `succeeded` / `failed` / `interrupted`, `finishedAt`, plus an
@@ -383,8 +404,9 @@ the raw directive never reaches the model, and both invocations and
 
 The served surface is the contract above: provider configuration and
 discovery, chats/spaces/sessions, the message queue, streamed transcript
-frames, the git capability, the file sidebar, terminals, the usage ledger,
-Turn change sets, plan mode, and the run loop itself. What stays deliberately
+frames, the git capability, the file sidebar, terminals, the usage ledger
+and the device-level usage stats, Turn change sets, plan mode, and the run
+loop itself. What stays deliberately
 unserved is the collaboration and account surface listed above. The run loop
 mounts pi-core's built-in read/write/edit/bash tools (via `engine::tools`, a
 local `ExecutionEnv` rooted at the chat's cwd) plus holt's own `ls` tool and
@@ -592,7 +614,7 @@ settlement loses the batch unrepaired. A damaged file is quarantined
 `.corrupt` and totals continue from zero; replay on open warms per-kind
 sums plus the gross token count. Deleting a chat archives first: its whole
 ledger segment, chat-attributed, appends to the device-level
-`usage/archive.jsonl` (grow-only, the future usage dashboard's feed;
+`usage/archive.jsonl` (grow-only, the Usage overview's feed;
 best-effort — a failed archive never blocks the delete), then the per-chat
 file and its quarantined copies are removed.
 

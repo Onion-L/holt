@@ -34,7 +34,7 @@
 //!
 //! Deleting a chat archives before it deletes: the chat's whole ledger
 //! segment is appended — chat-attributed — to the device-level
-//! `usage/archive.jsonl` (grow-only, the future usage dashboard's feed),
+//! `usage/archive.jsonl` (grow-only, the Usage overview's feed),
 //! then the per-chat file and its `.corrupt` siblings are removed. Chat-level
 //! data dies with the chat; the device stream survives it. Archiving is
 //! best-effort — a failure logs and the delete proceeds.
@@ -533,6 +533,45 @@ pub(crate) fn load_records(data_dir: &Path, chat_id: &str) -> Result<Vec<UsageRe
         }
     }
     Ok(records)
+}
+
+/// The chat ids with a live ledger file on disk — the archive's reserved
+/// name and every quarantine sibling excluded. Attribution is the file
+/// name: a live chat's records carry no chat id of their own.
+pub(crate) fn ledger_chat_ids(data_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("usage")) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".jsonl") && id_is_path_safe(name.trim_end_matches(".jsonl")))
+        .map(|name| name.trim_end_matches(".jsonl").to_string())
+        // The reserved name never resolves through `usage_path`, so a
+        // stray file so named is not a chat's ledger either.
+        .filter(|id| id != "archive")
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The device-level archive's readable records, best-effort: the version
+/// header and any undecodable line are skipped, never fatal — the
+/// aggregate counts what survives. A damaged archive is never quarantined
+/// from here: stats are strictly read-only.
+pub(crate) fn load_archive_records(data_dir: &Path) -> Vec<UsageRecord> {
+    let bytes = match std::fs::read(archive_path(data_dir)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(target: "holt::usage", %error, "could not read the usage archive");
+            return Vec::new();
+        }
+    };
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<UsageRecord>(line).ok())
+        .collect()
 }
 
 /// Warm the chat's in-memory totals from its ledger. A damaged file is set

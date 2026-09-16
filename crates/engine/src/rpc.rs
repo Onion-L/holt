@@ -1461,6 +1461,14 @@ struct SetChatArchivedParams {
     archived: bool,
 }
 
+/// `UsageStats`'s only parameter; the value itself is validated against
+/// the offered ranges (7 | 30 | 90) at dispatch.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageStatsParams {
+    days: u32,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeleteChatParams {
@@ -1794,6 +1802,25 @@ impl RpcService for EngineService {
                 let receiver = chat.usage_tx.subscribe();
                 crate::usage::publish(&chat);
                 Ok(Self::watch_value(receiver))
+            }
+            methods::USAGE_STATS => {
+                let params: UsageStatsParams = serde_json::from_value(params)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                if !matches!(params.days, 7 | 30 | 90) {
+                    return Err(RpcError::BadParams(format!(
+                        "days must be 7, 30, or 90, got {}",
+                        params.days
+                    )));
+                }
+                // The aggregate walks every ledger on disk; like the other
+                // blocking-FS reads, that runs off the async workers.
+                let data_dir = self.data_dir.clone();
+                let reply = tokio::task::spawn_blocking(move || {
+                    crate::usage_stats::stats(&data_dir, params.days)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&reply)
             }
             methods::WATCH_TURN_TERMINAL_EVENTS => {
                 let stream = futures::stream::unfold(
