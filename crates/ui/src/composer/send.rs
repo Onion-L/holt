@@ -1046,16 +1046,23 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn empty_enter_on_a_live_run_arms_before_it_interrupts(cx: &mut gpui::TestAppContext) {
-        let cx = cx.add_empty_window();
+    /// A composer whose selected chat reads as live (a pending send keeps
+    /// the indicator Working) — the Interrupt confirmation tests'
+    /// precondition.
+    fn live_composer(cx: &mut gpui::VisualTestContext) -> gpui::Entity<Composer> {
         cx.update(|_, cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| crate::state::AppState::new());
         state.update(cx, |s, _| {
             s.selected_chat = Some("c".into());
             s.begin_pending_send("c", "m1", chrono::Utc::now());
         });
-        let composer = cx.new(|cx| Composer::new(state, cx));
+        cx.new(|cx| Composer::new(state, cx))
+    }
+
+    #[gpui::test]
+    fn empty_enter_on_a_live_run_arms_before_it_interrupts(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
@@ -1074,13 +1081,7 @@ mod tests {
     #[gpui::test]
     fn enter_with_content_while_armed_takes_the_ordinary_path(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
-        cx.update(|_, cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| crate::state::AppState::new());
-        state.update(cx, |s, _| {
-            s.selected_chat = Some("c".into());
-            s.begin_pending_send("c", "m1", chrono::Utc::now());
-        });
-        let composer = cx.new(|cx| Composer::new(state, cx));
+        let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
@@ -1130,19 +1131,13 @@ mod tests {
     #[gpui::test]
     fn the_arm_lapses_after_the_window(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
-        cx.update(|_, cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| crate::state::AppState::new());
-        state.update(cx, |s, _| {
-            s.selected_chat = Some("c".into());
-            s.begin_pending_send("c", "m1", chrono::Utc::now());
-        });
-        let composer = cx.new(|cx| Composer::new(state, cx));
+        let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
             assert!(this.interrupt_arm.is_some());
         });
-        // Inside the window the arm holds.
+        // Mid-window the arm holds.
         cx.executor()
             .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS / 2));
         cx.run_until_parked();
@@ -1152,13 +1147,21 @@ mod tests {
                 "the arm survives inside the window"
             );
         });
-        // Past the window the timer retires its own arm: the button reverts
-        // and the next stop needs two presses again.
+        // Exactly at the window's edge (2 × 750ms) the timer retires its
+        // own arm: the button reverts and the next stop needs two presses
+        // again.
         cx.executor()
-            .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS));
+            .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS / 2));
         cx.run_until_parked();
         composer.update(cx, |this, _| {
             assert!(this.interrupt_arm.is_none(), "the arm lapses at the window");
+        });
+        // The lapsed window leaves no residue: the next stop arms afresh
+        // (press one of the next two-press cycle) instead of interrupting
+        // outright or inheriting the retired deadline.
+        composer.update(cx, |this, cx| {
+            this.on_submit(cx);
+            assert!(this.interrupt_arm.is_some(), "the next stop arms afresh");
         });
     }
 
