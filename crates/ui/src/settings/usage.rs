@@ -8,13 +8,16 @@
 //! aggregate, and the legend's curve visibility is ephemeral page state —
 //! a reload resets it.
 //!
-//! The chart is gpui self-drawn: one canvas painting each visible model's
-//! stacked area as a filled polygon over the shared day axis (the git
-//! graph's palette, so legend dots and layers share one color per rank),
-//! with the day readout riding the existing tooltip infra — one hover
-//! column per day, each opening the same card the usage ring's hover
-//! opens. The heatmap is the same tooltip infra over a DOM grid of cells:
-//! every day is its own hover target.
+//! The chart is gpui self-drawn over the shared day axis: each visible
+//! model draws as one smooth curve (Catmull-Rom through the day points)
+//! with a soft fill beneath, curves overlapping rather than stacking, so
+//! a day's height is that model's own total (the git graph's palette, so
+//! legend dots and curves share one color per rank). The fills are thin
+//! quads sampled along the same spline the stroke draws — strokes and
+//! quads are the two primitives this renderer proves everywhere else.
+//! The day readout rides the existing tooltip infra — one hover column
+//! per day — and the heatmap is the same tooltip infra over a DOM grid
+//! of cells: every day is its own hover target.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,8 +25,8 @@ use std::time::Duration;
 
 use chrono::Datelike;
 use gpui::{
-    AnyElement, Context, Entity, Hsla, IntoElement, PathBuilder, Render, SharedString, Task,
-    Window, canvas, div, point, prelude::*, px,
+    AnyElement, Bounds, Context, Entity, Hsla, IntoElement, PathBuilder, Render, SharedString,
+    Task, Window, canvas, div, point, prelude::*, px, size,
 };
 use holt_proto::UsageStatsReply;
 use holt_rpc::methods;
@@ -65,6 +68,14 @@ const LEGEND_WIDTH: f32 = 260.0;
 /// Day tooltips appear faster than the 350ms hover cards: scanning across
 /// thirty columns should read each day without slowing to a crawl.
 const DAY_TOOLTIP_DELAY: Duration = Duration::from_millis(150);
+
+/// A `YYYY-MM-DD` bucket key as the axis prints it: "Sep 16". An
+/// unparsable date (never the engine's shape) prints as-is.
+fn short_date(date: &str) -> String {
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map(|parsed| parsed.format("%b %-d").to_string())
+        .unwrap_or_else(|_| date.to_string())
+}
 
 /// The header's count line, verbatim spec shape: "N chats · last N days".
 fn header_count_text(chat_count: u64, days: u32) -> String {
@@ -117,11 +128,14 @@ impl Summary {
             .sum()
     }
 
-    /// The Y scale: the tallest visible day total, floored at 1 so an
-    /// all-zero window still divides.
-    fn peak_day_total(&self, hidden: &BTreeSet<String>) -> u64 {
-        (0..self.dates.len())
-            .map(|day| self.day_total(hidden, day))
+    /// The Y scale for the curve chart: the tallest SINGLE-model day total
+    /// across visible models — the curves overlap rather than stack, so one
+    /// model's day is the unit of the axis. Floored at 1 so an all-zero
+    /// window still divides.
+    fn peak_model_day(&self, hidden: &BTreeSet<String>) -> u64 {
+        self.visible(hidden)
+            .iter()
+            .map(|(_, series)| series.per_day.iter().max().copied().unwrap_or(0))
             .max()
             .unwrap_or(0)
             .max(1)
@@ -794,8 +808,8 @@ impl UsagePage {
         hidden: &Arc<BTreeSet<String>>,
         theme: &Theme,
     ) -> gpui::Stateful<gpui::Div> {
-        let peak = summary.peak_day_total(hidden);
-        let mid = compact_tokens(peak / 2);
+        let peak = summary.peak_model_day(hidden);
+        let rungs = [1.0, 0.75, 0.5, 0.25, 0.0];
         let days = summary.dates.len();
         div()
             .id("usage-chart")
@@ -810,11 +824,11 @@ impl UsagePage {
                     .flex()
                     .flex_row()
                     .gap(px(6.0))
-                    // Y gutter: the scale's top, middle, and zero.
+                    // Y gutter: a rung per quarter, top to zero.
                     .child(
                         div()
                             .flex_none()
-                            .w(px(34.0))
+                            .w(px(HEAT_GUTTER))
                             .h(px(CHART_HEIGHT))
                             .flex()
                             .flex_col()
@@ -822,16 +836,16 @@ impl UsagePage {
                             .justify_between()
                             .text_size(crate::typography::ui_rems(10.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from(compact_tokens(peak)))
-                            .child(SharedString::from(mid))
-                            .child("0"),
+                            .children(rungs.map(|fraction| {
+                                SharedString::from(compact_tokens((peak as f32 * fraction) as u64))
+                            })),
                     )
                     .child(
                         div()
                             .relative()
                             .flex_1()
                             .h(px(CHART_HEIGHT))
-                            .child(area_chart(summary, hidden, peak, theme))
+                            .child(curve_chart(summary, hidden, peak, theme))
                             .child(div().absolute().inset_0().flex().children(
                                 (0..days).map(|day| self.day_column(summary, hidden, day, theme)),
                             )),
@@ -844,7 +858,7 @@ impl UsagePage {
                     .flex()
                     .flex_row()
                     .gap(px(6.0))
-                    .child(div().flex_none().w(px(34.0)))
+                    .child(div().flex_none().w(px(HEAT_GUTTER)))
                     .child(
                         div()
                             .flex_1()
@@ -857,7 +871,7 @@ impl UsagePage {
                                 [0, days.saturating_sub(1) / 2, days.saturating_sub(1)]
                                     .into_iter()
                                     .filter_map(|ix| summary.dates.get(ix).cloned())
-                                    .map(SharedString::from),
+                                    .map(|date| SharedString::from(short_date(&date))),
                             ),
                     ),
             )
@@ -1386,20 +1400,56 @@ impl UsagePage {
     }
 }
 
-/// The chart's paint pass: three faint gridlines, then each visible
-/// model's area as a filled polygon between the cumulative stack below it
-/// and above it — the reply's own order stacks the biggest model at the
-/// bottom. `peak` is the tallest visible stacked day total, the very
-/// number the Y gutter prints: one scale, derived once in
-/// [`Summary::peak_day_total`], so the picture can never disagree with
-/// its labels (a stacked top touches the peak line at most).
-fn area_chart(
+/// How finely the fill columns sample the curve between days — enough
+/// that the quads read as one smooth area at chart size.
+const FILL_SAMPLES_PER_SEGMENT: usize = 8;
+
+/// A Catmull-Rom spline through the values, sampled `per` times per
+/// segment — the fill's columns ride the same smooth curve the stroke
+/// draws. Endpoints duplicate neighbors, so the curve stays clamped.
+fn smooth_series(values: &[f32], per: usize) -> Vec<f32> {
+    if values.len() < 2 || per == 0 {
+        return values.to_vec();
+    }
+    let at = |index: i64| values[index.clamp(0, values.len() as i64 - 1) as usize];
+    let mut out = Vec::with_capacity((values.len() - 1) * per + 1);
+    for segment in 0..values.len() - 1 {
+        let (p0, p1, p2, p3) = (
+            at(segment as i64 - 1),
+            at(segment as i64),
+            at(segment as i64 + 1),
+            at(segment as i64 + 2),
+        );
+        for step in 0..per {
+            let t = step as f32 / per as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            out.push(
+                0.5 * ((2.0 * p1)
+                    + (-p0 + p2) * t
+                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                    + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3),
+            );
+        }
+    }
+    out.push(*values.last().unwrap());
+    out
+}
+
+/// The chart's paint pass, per visible model: a soft fill under a smooth
+/// curve, the curves overlapping rather than stacking (each day reads as
+/// that model's own total, and the readout's Total is their sum). The
+/// fills are thin quads sampled along the same spline the stroke draws —
+/// one primitive per sample — because this renderer draws strokes and
+/// quads everywhere and nothing else is proven; `peak` is the tallest
+/// single-model day, the Y gutter's top rung, derived once.
+fn curve_chart(
     summary: &Arc<Summary>,
     hidden: &Arc<BTreeSet<String>>,
     peak: u64,
     theme: &Theme,
 ) -> AnyElement {
-    let grid = theme.ink(0.06);
+    let grid = theme.ink(0.08);
     let visible: Vec<(Hsla, Vec<u64>)> = summary
         .visible(hidden)
         .into_iter()
@@ -1412,34 +1462,60 @@ fn area_chart(
             if days < 2 {
                 return;
             }
-            let max = peak.max(1) as f32;
             let height = bounds.size.height;
             let width = bounds.size.width;
-            for fraction in [0.25, 0.5, 0.75] {
-                let y = bounds.origin.y + height * fraction;
-                let mut builder = PathBuilder::stroke(px(1.0));
-                builder.move_to(point(bounds.origin.x, y));
-                builder.line_to(point(bounds.origin.x + width, y));
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, grid);
-                }
+            let max = peak.max(1) as f32;
+            let baseline = bounds.origin.y + height;
+            let x_at = |day: f32| bounds.origin.x + width * (day / (days - 1) as f32);
+            let y_at =
+                |tokens: f32| bounds.origin.y + height * (1.0 - (tokens / max).clamp(0.0, 1.0));
+            // The quarter rungs the Y gutter labels — thin quads, the same
+            // primitive as the fills.
+            for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let y = bounds.origin.y + height * (1.0 - fraction);
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(bounds.origin.x, y - px(0.5)), size(width, px(1.0))),
+                    grid,
+                ));
             }
-            let x_at = |day: usize| bounds.origin.x + width * (day as f32 / (days - 1) as f32);
-            let y_at = |tokens: u64| bounds.origin.y + height * (1.0 - tokens as f32 / max);
-            let mut below = vec![0u64; days];
             for (color, per_day) in &visible {
-                let mut polygon = Vec::with_capacity(days * 2);
-                for (day, spot) in below.iter_mut().enumerate() {
-                    *spot += per_day.get(day).copied().unwrap_or(0);
-                    polygon.push(point(x_at(day), y_at(*spot)));
+                let values: Vec<f32> = (0..days)
+                    .map(|day| per_day.get(day).copied().unwrap_or(0) as f32)
+                    .collect();
+                let smooth = smooth_series(&values, FILL_SAMPLES_PER_SEGMENT);
+
+                // The soft fill: one quad per sampled step, curve → baseline.
+                let steps = smooth.len() - 1;
+                for step in 0..steps {
+                    let x0 = bounds.origin.x + width * (step as f32 / steps as f32);
+                    let x1 = bounds.origin.x + width * ((step + 1) as f32 / steps as f32);
+                    let top = y_at(smooth[step]).min(y_at(smooth[step + 1]));
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(x0, top), size((x1 - x0) + px(1.0), baseline - top)),
+                        color.opacity(0.12),
+                    ));
                 }
-                for day in (0..days).rev() {
-                    polygon.push(point(x_at(day), y_at(below[day])));
+
+                // The curve: Catmull-Rom through the day points as cubics —
+                // the history graph's technique.
+                let point_at = |day: i64| {
+                    let clamped = day.clamp(0, days as i64 - 1) as usize;
+                    point(x_at(clamped as f32), y_at(values[clamped]))
+                };
+                let mut builder = PathBuilder::stroke(px(1.5));
+                builder.move_to(point_at(0));
+                for day in 0..(days - 1) as i64 {
+                    let (p1, p2) = (point_at(day), point_at(day + 1));
+                    let p0 = point_at(day - 1);
+                    let p3 = point_at(day + 2);
+                    builder.cubic_bezier_to(
+                        p2,
+                        point(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0),
+                        point(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0),
+                    );
                 }
-                let mut builder = PathBuilder::fill();
-                builder.add_polygon(&polygon, true);
                 if let Ok(path) = builder.build() {
-                    window.paint_path(path, color.opacity(0.85));
+                    window.paint_path(path, *color);
                 }
             }
         },
@@ -1955,10 +2031,10 @@ mod tests {
         let mut hidden = BTreeSet::new();
 
         // All visible: the tooltip rows list both models, the day Total is
-        // their sum.
+        // their sum, and the Y scale tops at the tallest single-model day.
         assert_eq!(summary.day_rows(&hidden, 1).len(), 2);
         assert_eq!(summary.day_total(&hidden, 1), 110);
-        assert_eq!(summary.peak_day_total(&hidden), 200);
+        assert_eq!(summary.peak_model_day(&hidden), 200);
 
         // Hiding openai drops its tokens from the day total, the rows, and
         // the Y scale — the readout always matches the picture.
@@ -1966,9 +2042,9 @@ mod tests {
         assert_eq!(summary.day_total(&hidden, 1), 60);
         assert_eq!(summary.day_total(&hidden, 0), 0);
         assert_eq!(
-            summary.peak_day_total(&hidden),
+            summary.peak_model_day(&hidden),
             60,
-            "the scale follows the visible stack"
+            "the scale follows the visible curves"
         );
         let rows = summary.day_rows(&hidden, 1);
         assert_eq!(rows.len(), 1);
@@ -2209,6 +2285,26 @@ mod tests {
         );
         // A year with no usage at all has no scale to climb.
         assert_eq!(heatmap_level(10, 0), 0);
+    }
+
+    #[test]
+    fn the_fill_sampling_rides_the_spline() {
+        // Straight segments interpolate exactly; endpoints hold.
+        assert_eq!(smooth_series(&[0.0, 10.0], 2), vec![0.0, 5.0, 10.0]);
+        let smooth = smooth_series(&[0.0, 100.0], 4);
+        assert_eq!(smooth.first(), Some(&0.0));
+        assert_eq!(smooth.last(), Some(&100.0));
+        // Monotone input stays monotone through the spline.
+        assert!(smooth.windows(2).all(|pair| pair[0] <= pair[1]));
+        // Degenerate inputs pass through.
+        assert_eq!(smooth_series(&[7.0], 4), vec![7.0]);
+    }
+
+    #[test]
+    fn axis_dates_print_short() {
+        assert_eq!(short_date("2026-09-16"), "Sep 16");
+        assert_eq!(short_date("2026-08-01"), "Aug 1");
+        assert_eq!(short_date("not a date"), "not a date");
     }
 
     #[test]
