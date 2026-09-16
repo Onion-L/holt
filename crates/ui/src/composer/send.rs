@@ -1000,9 +1000,12 @@ impl Composer {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::slash, Composer, failure_restore_text, plan_status_notice};
+    use super::{
+        super::slash, Composer, INTERRUPT_ARM_RESET_MS, failure_restore_text, plan_status_notice,
+    };
     use crate::theme::Theme;
     use gpui::AppContext as _;
+    use std::time::Duration;
 
     #[test]
     fn compact_failure_does_not_restore_the_command_as_draft() {
@@ -1121,6 +1124,41 @@ mod tests {
         });
         composer.update(cx, |this, _| {
             assert!(this.interrupt_arm.is_none(), "the arm dies with the Turn");
+        });
+    }
+
+    #[gpui::test]
+    fn the_arm_lapses_after_the_window(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| crate::state::AppState::new());
+        state.update(cx, |s, _| {
+            s.selected_chat = Some("c".into());
+            s.begin_pending_send("c", "m1", chrono::Utc::now());
+        });
+        let composer = cx.new(|cx| Composer::new(state, cx));
+
+        composer.update(cx, |this, cx| {
+            this.on_submit(cx);
+            assert!(this.interrupt_arm.is_some());
+        });
+        // Inside the window the arm holds.
+        cx.executor()
+            .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS / 2));
+        cx.run_until_parked();
+        composer.update(cx, |this, _| {
+            assert!(
+                this.interrupt_arm.is_some(),
+                "the arm survives inside the window"
+            );
+        });
+        // Past the window the timer retires its own arm: the button reverts
+        // and the next stop needs two presses again.
+        cx.executor()
+            .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS));
+        cx.run_until_parked();
+        composer.update(cx, |this, _| {
+            assert!(this.interrupt_arm.is_none(), "the arm lapses at the window");
         });
     }
 
