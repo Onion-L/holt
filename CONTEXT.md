@@ -81,6 +81,10 @@ _Avoid_: cost, spend (token counts only — no prices)
 - **Usage total**: a chat's running gross sum over its Usage records, all token fields included; the number the chat's usage ring and its hover card show. Consumers filter by source kind themselves.
 - **Context occupancy**: how full the next model request would make the next model's context window — a live fraction from the latest provider report, shown against the model the chat would run next. Never persisted, and never a name for the History itself.
 _Avoid_: context usage, token usage (those are Usage records)
+- **Usage overview**: the Settings page that aggregates every Usage record on the device — live chats' ledgers and the Usage archive, all source kinds — into ranged totals, per-model daily series, and a by-model/by-project breakdown; a project is a chat's Working directory.
+_Avoid_: usage dashboard, token stats page
+- **Usage archive**: the device-level, grow-only stream that a deleted chat's Usage records are restamped into; per-chat ledger data dies with the chat, the archive survives it.
+- **Cache hit rate**: the share of prompt tokens served from cache — cache reads over input plus cache reads; cache writes are excluded.
 _Avoid_: permission prompt, confirm dialog (for Approval)
 _Avoid_: auto-approve (Auto-review can reject)
 _Avoid_: grep tool, agent search
