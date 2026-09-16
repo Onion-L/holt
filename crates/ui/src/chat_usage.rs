@@ -208,7 +208,7 @@ fn usage_value(model: &CardModel) -> String {
 /// A fraction as a percentage with one decimal, a trailing `.0` dropped —
 /// the convention [`compact_tokens`] already follows, so a clean 4 reads
 /// `4%`, never `4.0%`.
-fn percent(fraction: f64) -> String {
+pub(crate) fn percent(fraction: f64) -> String {
     let value = format!("{:.1}", fraction * 100.0);
     format!("{}%", value.trim_end_matches(".0"))
 }
