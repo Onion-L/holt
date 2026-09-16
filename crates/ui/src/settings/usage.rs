@@ -277,6 +277,9 @@ const HEAT_GAP: f32 = 3.0;
 /// The weekday-label gutter left of the grid; the month-label row indents
 /// by the same amount so labels sit over their columns.
 const HEAT_GUTTER: f32 = 30.0;
+/// A Breakdown table's numeric column: wide enough for exact counts into
+/// the hundreds of millions without reflowing the identity column.
+const BREAKDOWN_COL: f32 = 76.0;
 
 /// One placed heatmap cell: a day's tokens plus where it sits in the
 /// 7-row grid — columns are weeks, rows are weekdays, Sunday first.
@@ -383,6 +386,14 @@ fn heatmap_month_labels(grid: &HeatmapGrid) -> Vec<(usize, String)> {
     labels
 }
 
+/// Which detail table the Breakdown block shows. By model is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum BreakdownTab {
+    #[default]
+    Models,
+    Projects,
+}
+
 pub struct UsagePage {
     state: Entity<AppState>,
     days: u32,
@@ -391,6 +402,12 @@ pub struct UsagePage {
     /// Hidden models' series ids — the legend's click-to-hide state. Page
     /// -local and ephemeral: every reload clears it.
     hidden: BTreeSet<String>,
+    /// The Breakdown block's table and its expanded group. Unlike the
+    /// legend's visibility these survive a reload: the tab is a view
+    /// preference, and flipping back to By model on every refresh would
+    /// fight the reader.
+    breakdown_tab: BreakdownTab,
+    deleted_expanded: bool,
 }
 
 impl UsagePage {
@@ -401,6 +418,8 @@ impl UsagePage {
             stats: Loadable::Idle,
             task: None,
             hidden: BTreeSet::new(),
+            breakdown_tab: BreakdownTab::default(),
+            deleted_expanded: false,
         };
         page.load(cx);
         page
@@ -460,6 +479,20 @@ impl UsagePage {
     fn toggle_model(&mut self, id: String, cx: &mut Context<Self>) {
         let summary = self.stats.ready().map(fold_summary).unwrap_or_default();
         toggle_hidden(&mut self.hidden, &summary, &id);
+        cx.notify();
+    }
+
+    /// Switch the Breakdown table.
+    fn set_breakdown_tab(&mut self, tab: BreakdownTab, cx: &mut Context<Self>) {
+        if self.breakdown_tab != tab {
+            self.breakdown_tab = tab;
+            cx.notify();
+        }
+    }
+
+    /// Expand or collapse the Deleted chats group.
+    fn toggle_deleted(&mut self, cx: &mut Context<Self>) {
+        self.deleted_expanded = !self.deleted_expanded;
         cx.notify();
     }
 
@@ -1071,6 +1104,286 @@ impl UsagePage {
             })
             .tooltip_show_delay(DAY_TOOLTIP_DELAY)
     }
+
+    /// The Breakdown block: two switchable detail tables over the reply's
+    /// own by-model / by-project rows — the engine hands them total-
+    /// descending, the table prints them in that order. The four numeric
+    /// columns are exact counts (Total is the four token fields summed;
+    /// there is no cache-write column — the tiles above carry it).
+    fn render_breakdown(
+        &self,
+        reply: &UsageStatsReply,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::of(cx).clone();
+        div()
+            .id("usage-breakdown")
+            .debug_selector(|| "usage-breakdown".into())
+            .mt(px(28.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(
+                        widgets::section_label(&theme, "Breakdown")
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .child(self.breakdown_chip(BreakdownTab::Models, &theme, cx))
+                    .child(self.breakdown_chip(BreakdownTab::Projects, &theme, cx)),
+            )
+            .child(self.breakdown_header(&theme))
+            .children(match self.breakdown_tab {
+                BreakdownTab::Models => reply
+                    .by_model
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        self.breakdown_row(
+                            &format!("{}/{}", row.provider, row.model),
+                            (row.input, row.output, row.cache_read, row.total),
+                            format!("usage-bd-model-row-{index}"),
+                            false,
+                            &theme,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                BreakdownTab::Projects => reply
+                    .by_project
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(index, group)| {
+                        let mut rows = vec![match &group.path {
+                            Some(path) => self.breakdown_row(
+                                path,
+                                (group.input, group.output, group.cache_read, group.total),
+                                format!("usage-bd-project-row-{index}"),
+                                false,
+                                &theme,
+                            ),
+                            None => self.deleted_group_row(group, &theme, cx),
+                        }];
+                        if group.path.is_none() && self.deleted_expanded {
+                            rows.extend(group.chats.iter().enumerate().map(|(ix, chat)| {
+                                self.breakdown_row(
+                                    &chat.chat_id,
+                                    (chat.input, chat.output, chat.cache_read, chat.total),
+                                    format!("usage-bd-deleted-sub-{ix}"),
+                                    true,
+                                    &theme,
+                                )
+                            }));
+                        }
+                        rows
+                    })
+                    .collect::<Vec<_>>(),
+            })
+    }
+
+    /// One of the two section tabs — the range chips' shape.
+    fn breakdown_chip(
+        &self,
+        tab: BreakdownTab,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::AnyElement {
+        let (tag, label) = match tab {
+            BreakdownTab::Models => ("model", "By model"),
+            BreakdownTab::Projects => ("project", "By project"),
+        };
+        let active = self.breakdown_tab == tab;
+        let mut chip = div()
+            .id(SharedString::from(format!("usage-bd-tab-{tag}")))
+            .debug_selector(move || format!("usage-bd-tab-{tag}"))
+            .flex_none()
+            .h(px(24.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .rounded(px(6.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .font_weight(if active {
+                gpui::FontWeight::SEMIBOLD
+            } else {
+                gpui::FontWeight::MEDIUM
+            })
+            .text_color(if active { theme.text } else { theme.text_muted });
+        if active {
+            chip = chip.bg(crate::theme::wash(0.06));
+        } else {
+            chip = chip
+                .cursor_pointer()
+                .hover(|state| state.bg(crate::theme::wash(0.05)).text_color(theme.text))
+                .on_click(cx.listener(move |page, _, _, cx| page.set_breakdown_tab(tab, cx)));
+        }
+        chip.child(label).into_any_element()
+    }
+
+    /// The table's header: the identity column is named by the active tab,
+    /// the four numeric columns are fixed.
+    fn breakdown_header(&self, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+        let name = match self.breakdown_tab {
+            BreakdownTab::Models => "Model",
+            BreakdownTab::Projects => "Project",
+        };
+        div()
+            .id("usage-bd-head")
+            .debug_selector(|| "usage-bd-head".into())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .py(px(6.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_muted)
+                    .child(name),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "usage-bd-head-input".into())
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_muted)
+                    .children(["Input", "Output", "Cache read", "Total"].map(|label| {
+                        div()
+                            .flex_none()
+                            .w(px(BREAKDOWN_COL))
+                            .text_right()
+                            .child(label)
+                    })),
+            )
+    }
+
+    /// One table row: the identity cell, then the four exact counts.
+    /// `indent` drops the identity cell toward the Deleted chats'
+    /// sub-rows.
+    fn breakdown_row(
+        &self,
+        name: &str,
+        numbers: (u64, u64, u64, u64),
+        selector: String,
+        indent: bool,
+        theme: &Theme,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .py(px(6.0))
+            .when(indent, |row| row.pl(px(20.0)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(name.to_string())),
+            )
+            .child(self.breakdown_numbers(numbers, theme))
+    }
+
+    /// The four exact-count cells — the same fixed widths every table row
+    /// and the header share.
+    fn breakdown_numbers(
+        &self,
+        (input, output, cache_read, total): (u64, u64, u64, u64),
+        theme: &Theme,
+    ) -> gpui::Div {
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(theme.text)
+            .children(
+                [
+                    (input, false),
+                    (output, false),
+                    (cache_read, false),
+                    (total, true),
+                ]
+                .map(|(tokens, is_total)| {
+                    let mut cell = div()
+                        .flex_none()
+                        .w(px(BREAKDOWN_COL))
+                        .text_right()
+                        .child(SharedString::from(tokens.to_string()));
+                    if is_total {
+                        cell = cell.font_weight(gpui::FontWeight::MEDIUM);
+                    }
+                    cell
+                }),
+            )
+    }
+
+    /// The Deleted chats group row: the expandable catch-all for records
+    /// whose chat resolves to no working directory.
+    fn deleted_group_row(
+        &self,
+        group: &holt_proto::UsageProjectGroup,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let caret = if self.deleted_expanded {
+            icons::ALT_ARROW_DOWN
+        } else {
+            icons::ALT_ARROW_RIGHT
+        };
+        div()
+            .id("usage-bd-deleted-row")
+            .debug_selector(|| "usage-bd-deleted-row".into())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .py(px(6.0))
+            .cursor_pointer()
+            .hover(|state| state.bg(crate::theme::wash(0.04)))
+            .on_click(cx.listener(|page, _, _, cx| page.toggle_deleted(cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        icons::icon(caret)
+                            .size(px(12.0))
+                            .text_color(theme.text_faint),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted)
+                            .child("Deleted chats"),
+                    ),
+            )
+            .child(self.breakdown_numbers(
+                (group.input, group.output, group.cache_read, group.total),
+                theme,
+            ))
+    }
 }
 
 /// The chart's paint pass: three faint gridlines, then each visible
@@ -1238,6 +1551,7 @@ impl Render for UsagePage {
                         .child(self.render_summary(reply, cx))
                         .child(self.render_metrics(reply, cx))
                         .child(self.render_heatmap(reply, cx))
+                        .child(self.render_breakdown(reply, cx))
                         .into_any_element()
                 }
             }
@@ -1991,5 +2305,160 @@ mod tests {
             )),
             "the heatmap survives a range switch unchanged"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Ticket 05 — the Breakdown tables
+    // -------------------------------------------------------------------
+
+    /// Two model rows, three project groups (same-basename directories,
+    /// plus the Deleted chats catch-all whose per-chat subtotals sum to
+    /// the group), and one path long enough to test truncation.
+    fn breakdown_reply_json() -> serde_json::Value {
+        let long_path = format!("/very/deep/{}", "nested/".repeat(24));
+        serde_json::json!({
+            "chatCount": 3,
+            "days": 30,
+            "totals": {
+                "input": 480, "output": 140, "cacheRead": 90, "cacheWrite": 0,
+                "cacheHit": 0.158, "activeDays": 5,
+            },
+            "models": [], "heatmap": [],
+            "byModel": [
+                {"provider": "openai", "model": "gpt-5.4",
+                 "input": 200, "output": 60, "cacheRead": 40, "total": 300},
+                {"provider": "anthropic", "model": "claude-opus",
+                 "input": 70, "output": 20, "cacheRead": 10, "total": 100},
+                {"provider": "openai", "model": "gpt-5-mini",
+                 "input": 30, "output": 15, "cacheRead": 5, "total": 50},
+            ],
+            "byProject": [
+                {"path": "/work/api",
+                 "input": 170, "output": 50, "cacheRead": 30, "total": 250, "chats": []},
+                {"path": "/other/api",
+                 "input": 60, "output": 20, "cacheRead": 10, "total": 90, "chats": []},
+                {"path": serde_json::Value::Null,
+                 "input": 40, "output": 10, "cacheRead": 10, "total": 60, "chats": [
+                     {"chatId": "chat-gone-1",
+                      "input": 30, "output": 6, "cacheRead": 4, "total": 40},
+                     {"chatId": "chat-gone-2",
+                      "input": 10, "output": 4, "cacheRead": 6, "total": 20},
+                 ]},
+                {"path": long_path,
+                 "input": 1, "output": 2, "cacheRead": 0, "total": 3, "chats": []},
+            ],
+        })
+    }
+
+    fn breakdown_reply() -> Scripted {
+        Scripted::Ok(breakdown_reply_json())
+    }
+
+    #[test]
+    fn deleted_chat_subtotals_sum_to_the_group_row() {
+        let reply = decode_reply(breakdown_reply_json());
+        let deleted = reply
+            .by_project
+            .iter()
+            .find(|group| group.path.is_none())
+            .expect("the deleted-chats group");
+        // The engine's four-field totals: the expandable row's number is
+        // exactly the sum of what unfolds beneath it.
+        let sum: u64 = deleted.chats.iter().map(|chat| chat.total).sum();
+        assert_eq!(sum, deleted.total);
+        assert_eq!(deleted.chats.len(), 2);
+        // The input column alone reconciles too — the same arithmetic the
+        // table prints column-wise.
+        let input_sum: u64 = deleted.chats.iter().map(|chat| chat.input).sum();
+        assert_eq!(input_sum, deleted.input);
+    }
+
+    #[gpui::test]
+    fn the_breakdown_opens_on_by_model_in_engine_order(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], breakdown_reply());
+
+        // Default tab: By model, rows in the engine's total-descending
+        // order (300 then 100), no project rows.
+        assert!(harness.present("usage-bd-model-row-0"));
+        assert!(harness.present("usage-bd-model-row-1"));
+        let first = harness.bounds("usage-bd-model-row-0");
+        let second = harness.bounds("usage-bd-model-row-1");
+        assert!(first.origin.y < second.origin.y, "largest total first");
+        // Many models just repeat the row shape: the third sits below the
+        // second, nothing reflows.
+        let third = harness.bounds("usage-bd-model-row-2");
+        assert!(second.origin.y < third.origin.y);
+        assert_eq!(third.size.height, first.size.height);
+        assert!(!harness.present("usage-bd-project-row-0"));
+
+        // Switching tabs swaps the table.
+        harness.click("usage-bd-tab-project");
+        harness.pump();
+        assert!(harness.present("usage-bd-project-row-0"));
+        assert!(harness.present("usage-bd-project-row-1"));
+        assert!(harness.present("usage-bd-deleted-row"));
+        assert!(!harness.present("usage-bd-model-row-0"), "model rows gone");
+    }
+
+    #[gpui::test]
+    fn the_deleted_chats_group_expands_and_collapses(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], breakdown_reply());
+        harness.click("usage-bd-tab-project");
+        harness.pump();
+
+        // Collapsed by default: the group row is there, its chats are not.
+        assert!(harness.present("usage-bd-deleted-row"));
+        assert!(!harness.present("usage-bd-deleted-sub-0"));
+
+        // Expanding reveals the per-chat rows, keyed by chat id.
+        harness.click("usage-bd-deleted-row");
+        harness.pump();
+        assert!(harness.present("usage-bd-deleted-sub-0"));
+        assert!(harness.present("usage-bd-deleted-sub-1"));
+        let group = harness.bounds("usage-bd-deleted-row");
+        let sub = harness.bounds("usage-bd-deleted-sub-0");
+        assert!(
+            sub.origin.y > group.origin.y,
+            "chats unfold under the group"
+        );
+
+        // Collapsing hides them again — and the state survives a reload.
+        harness.click("usage-bd-deleted-row");
+        harness.pump();
+        assert!(!harness.present("usage-bd-deleted-sub-0"));
+        harness.click("usage-bd-deleted-row");
+        harness.pump();
+        harness.click("usage-range-7");
+        harness.pump();
+        assert!(
+            harness.present("usage-bd-deleted-sub-0"),
+            "the expansion survives a reload — it is a view preference"
+        );
+    }
+
+    #[gpui::test]
+    fn a_long_path_truncates_instead_of_breaking_the_table(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], breakdown_reply());
+        harness.click("usage-bd-tab-project");
+        harness.pump();
+
+        // The 300-character path stays on one line at the table's own
+        // width: the identity cell truncates, the numeric columns keep
+        // their alignment, and the page never grows a horizontal scroll.
+        let head = harness.bounds("usage-bd-head");
+        let normal = harness.bounds("usage-bd-project-row-0");
+        let long_row = harness.bounds("usage-bd-project-row-3");
+        assert_eq!(head.size.width, long_row.size.width, "same table width");
+        assert_eq!(
+            long_row.size.height, normal.size.height,
+            "a long path truncates, never wraps"
+        );
+        // The two directory rows sit above the long-path one,
+        // total-descending; the deleted group between them carries its
+        // own selector.
+        let first = harness.bounds("usage-bd-project-row-0");
+        let second = harness.bounds("usage-bd-project-row-1");
+        assert!(first.origin.y < second.origin.y);
+        assert!(second.origin.y < long_row.origin.y);
     }
 }
