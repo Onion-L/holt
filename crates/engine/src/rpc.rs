@@ -155,6 +155,93 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// Remove a space (UI "Remove project"): the row goes, and every chat
+    /// in the space goes with it — the confirm dialog promises the sessions
+    /// are permanently deleted, matching the workspace-doc cascade. Unknown
+    /// ids: idempotent no-op, and no watch frame when nothing moved.
+    fn delete_space(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: DeleteSpaceParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.space_id.trim().is_empty() {
+            return Err(RpcError::BadParams("spaceId must not be empty".into()));
+        }
+        let chat_ids: Vec<String> = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let ids: Vec<String> = chats
+                .iter()
+                .filter(|chat| chat.space_id.as_deref() == Some(params.space_id.as_str()))
+                .map(|chat| chat.id.clone())
+                .collect();
+            chats.retain(|chat| chat.space_id.as_deref() != Some(params.space_id.as_str()));
+            drop(chats);
+            if !ids.is_empty() {
+                persist_chats(
+                    &self.data_dir,
+                    &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+                )
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            }
+            ids
+        };
+        for chat_id in &chat_ids {
+            self.runtime.remove_chat(chat_id);
+            self.terminals.close_chat(chat_id);
+        }
+        if !chat_ids.is_empty() {
+            self.runtime.publish_chats();
+        }
+        let mut spaces = self
+            .spaces
+            .write()
+            .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+        let before = spaces.len();
+        spaces.retain(|space| space.id != params.space_id);
+        let removed = spaces.len() != before;
+        if removed {
+            persist_spaces(&self.data_dir, &spaces)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
+        let value =
+            serde_json::to_value(&*spaces).map_err(|error| RpcError::Failed(error.to_string()))?;
+        drop(spaces);
+        if removed {
+            self.spaces_tx.send_replace(value);
+        }
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Rename a space (UI "Rename…"): sets the user-visible name override;
+    /// unknown ids are an idempotent no-op, matching the chat paths.
+    fn rename_space(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: RenameSpaceParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        let name = params.name.trim();
+        if params.space_id.trim().is_empty() || name.is_empty() {
+            return Err(RpcError::BadParams(
+                "spaceId and name must not be empty".into(),
+            ));
+        }
+        let mut spaces = self
+            .spaces
+            .write()
+            .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+        let Some(row) = spaces.iter_mut().find(|space| space.id == params.space_id) else {
+            return RpcReply::value(&serde_json::json!({}));
+        };
+        row.name = Some(name.to_string());
+        persist_spaces(&self.data_dir, &spaces)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        let value =
+            serde_json::to_value(&*spaces).map_err(|error| RpcError::Failed(error.to_string()))?;
+        drop(spaces);
+        self.spaces_tx.send_replace(value);
+        RpcReply::value(&serde_json::json!({}))
+    }
+
     fn create_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: CreateChatParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
@@ -1440,6 +1527,19 @@ struct CreateSpaceParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct DeleteSpaceParams {
+    space_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameSpaceParams {
+    space_id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateChatParams {
     chat_id: String,
     #[serde(default)]
@@ -2703,6 +2803,16 @@ impl RpcService for EngineService {
                 if params.get("op").and_then(|op| op.as_str()) == Some("createSpace") =>
             {
                 self.create_space(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("renameSpace") =>
+            {
+                self.rename_space(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("deleteSpace") =>
+            {
+                self.delete_space(params)
             }
             methods::MUTATE
                 if params.get("op").and_then(|op| op.as_str()) == Some("createChat") =>

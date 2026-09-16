@@ -497,6 +497,184 @@ mod tests {
         assert_eq!(restored[0]["id"], "space-1");
     }
 
+    #[tokio::test]
+    async fn delete_space_cascades_chats_and_survives_restart() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        assert_eq!(chats.next().await.unwrap(), serde_json::json!([]));
+
+        for space_id in ["space-1", "space-2"] {
+            engine
+                .handle(
+                    methods::MUTATE,
+                    serde_json::json!({
+                        "op": "createSpace",
+                        "spaceId": space_id,
+                        "deviceId": engine.engine_info().device_id,
+                        "path": format!("/tmp/{space_id}"),
+                        "gitDetected": false,
+                    }),
+                )
+                .await
+                .unwrap();
+            spaces.next().await.unwrap();
+        }
+        for (chat_id, space_ref) in [
+            ("chat-in-space", Some("space-1")),
+            ("chat-standalone", None),
+        ] {
+            engine
+                .handle(
+                    methods::MUTATE,
+                    serde_json::json!({
+                        "op": "createChat",
+                        "chatId": chat_id,
+                        "deviceId": engine.engine_info().device_id,
+                        "spaceId": space_ref,
+                    }),
+                )
+                .await
+                .unwrap();
+            chats.next().await.unwrap();
+        }
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "deleteSpace", "spaceId": "space-1" }),
+            )
+            .await
+            .unwrap();
+
+        let spaces_update = spaces.next().await.unwrap();
+        assert_eq!(spaces_update.as_array().unwrap().len(), 1);
+        assert_eq!(spaces_update[0]["id"], "space-2");
+        let chats_update = chats.next().await.unwrap();
+        assert_eq!(chats_update.as_array().unwrap().len(), 1);
+        assert_eq!(chats_update[0]["id"], "chat-standalone");
+        drop(spaces);
+        drop(chats);
+        drop(engine);
+
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        let restored = spaces.next().await.unwrap();
+        assert_eq!(restored.as_array().unwrap().len(), 1);
+        assert_eq!(restored[0]["id"], "space-2");
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        let restored_chats = chats.next().await.unwrap();
+        assert_eq!(restored_chats.as_array().unwrap().len(), 1);
+        assert_eq!(restored_chats[0]["id"], "chat-standalone");
+    }
+
+    #[tokio::test]
+    async fn rename_space_updates_watch_and_survives_restart() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "createSpace",
+                    "spaceId": "space-1",
+                    "deviceId": engine.engine_info().device_id,
+                    "path": "/tmp/project",
+                    "gitDetected": false,
+                }),
+            )
+            .await
+            .unwrap();
+        spaces.next().await.unwrap();
+
+        // Unknown id: ok, idempotent no-op — and no watch frame.
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "renameSpace", "spaceId": "unknown", "name": "X" }),
+            )
+            .await
+            .unwrap();
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "renameSpace",
+                    "spaceId": "space-1",
+                    "name": "Legal Notes",
+                }),
+            )
+            .await
+            .unwrap();
+
+        let update = spaces.next().await.unwrap();
+        assert_eq!(update[0]["name"], "Legal Notes");
+        drop(spaces);
+        drop(engine);
+
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut spaces) = engine
+            .handle(methods::WATCH_SPACES, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchSpaces did not return a stream");
+        };
+        let restored = spaces.next().await.unwrap();
+        assert_eq!(restored[0]["name"], "Legal Notes");
+    }
+
     #[test]
     fn provider_catalog_uses_provider_qualified_model_ids() {
         let dir = tempfile::tempdir().unwrap();
