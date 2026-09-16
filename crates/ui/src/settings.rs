@@ -21,6 +21,7 @@ pub mod general;
 pub mod providers;
 pub mod shortcuts;
 pub mod skills;
+pub mod usage;
 pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).

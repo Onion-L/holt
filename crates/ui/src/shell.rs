@@ -324,16 +324,18 @@ pub enum SettingsSection {
     Appearance,
     Shortcuts,
     Skills,
+    Usage,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 6] = [
+    pub const ALL: [SettingsSection; 7] = [
         SettingsSection::General,
         SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Shortcuts,
         SettingsSection::Skills,
+        SettingsSection::Usage,
         SettingsSection::Archived,
     ];
 
@@ -345,6 +347,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Skills => "Skills",
+            SettingsSection::Usage => "Usage",
             SettingsSection::General => "General",
             SettingsSection::Archived => "Archived sessions",
         }
@@ -693,6 +696,7 @@ pub struct Shell {
     providers_sub: Option<Subscription>,
     skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
     general_page: Option<Entity<crate::settings::general::GeneralPage>>,
+    usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -977,6 +981,7 @@ impl Shell {
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/skills") => Route::Settings(SettingsSection::Skills),
+            Some("settings/usage") => Route::Settings(SettingsSection::Usage),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
@@ -1061,6 +1066,7 @@ impl Shell {
             providers_sub: None,
             skills_page: None,
             general_page: None,
+            usage_page: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1683,6 +1689,11 @@ impl Shell {
         if section == SettingsSection::General {
             self.general_page = None;
         }
+        // Same for Usage: the aggregate is re-queried on every entry, so a
+        // refresh elsewhere in the app shows up without a restart.
+        if section == SettingsSection::Usage {
+            self.usage_page = None;
+        }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_chat_menu(cx);
@@ -1825,6 +1836,17 @@ impl Shell {
                         Some(cx.new(|cx| crate::settings::general::GeneralPage::new(state, cx)));
                 }
                 match &self.general_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Usage => {
+                if self.usage_page.is_none() {
+                    let state = self.state.clone();
+                    self.usage_page =
+                        Some(cx.new(|cx| crate::settings::usage::UsagePage::new(state, cx)));
+                }
+                match &self.usage_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }

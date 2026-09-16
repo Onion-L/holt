@@ -212,6 +212,9 @@ icon_assets![
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
+    // Baseline + three column bars, same linear family — the Usage
+    // settings page's sidebar glyph.
+    (CHART_COLUMN, "chart-column"),
     // Hand-drawn isometric cube in the Solar Linear style (like the
     // terminal/plus/return ports; the embedded set has no cube/box glyph).
     // The skill chip's identity glyph.
