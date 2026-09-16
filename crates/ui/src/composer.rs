@@ -118,6 +118,11 @@ pub struct Composer {
     /// under their own chat — a blanket clear-on-switch erased the one
     /// visible trace of a failed send (2026-08-19).
     failure_key: Option<String>,
+    /// Armed Interrupt confirmation (CONTEXT.md): `Some(deadline)` between
+    /// the first Esc press and its lapse. View-layer transient — cleared by
+    /// the confirming press, the reset timer, a chat switch, or the next
+    /// Esc on a dead run.
+    esc_arm: Option<Instant>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
     /// The confirm-changes approval bar that replaces the pill while a
@@ -306,6 +311,7 @@ impl Composer {
             queue_motion: None,
             answered_requests: HashSet::new(),
             failure_key: None,
+            esc_arm: None,
             action_task: None,
             advance_task: None,
             send_task: None,
@@ -423,6 +429,7 @@ impl Composer {
             // trace of a failed send.
             self.wizard = None;
             self.queue_edit = None;
+            self.esc_arm = None;
             // Attachments stay stashed under their chat key (the map swap IS
             // the navigation); only the transient chrome resets.
             self.preview = None;
