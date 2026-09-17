@@ -93,13 +93,16 @@ pub fn approval_target(call: &ToolCall) -> String {
     }
 }
 
-/// Marker color language for a settled verdict: neutral for every pass or
-/// automatic exemption (a completed tool chip speaks in muted tones too),
+/// Marker color language for a settled verdict: neutral for a user's or
+/// grant's pass, the judge's signpost color for a review pass (Auto-review
+/// blue, Jev review pink — the same hues the mode menu's tiers carry), and
 /// `danger` for every form of rejection — denial is the chip's error case,
-/// consistent with failed-tool chips.
+/// consistent with failed-tool chips; a rejection names its judge in text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerdictTint {
     Neutral,
+    AutoReview,
+    JevReview,
     Danger,
 }
 
@@ -108,8 +111,8 @@ pub enum VerdictTint {
 /// the chat model.
 fn judge_label(judge: ReviewJudge) -> &'static str {
     match judge {
-        ReviewJudge::ChatModel => "👁 Auto-review",
-        ReviewJudge::Jev => "🤖 Jev review",
+        ReviewJudge::ChatModel => "Auto-review",
+        ReviewJudge::Jev => "Jev review",
     }
 }
 
@@ -126,7 +129,10 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
         ),
         GateVerdict::ReviewPassed { judge } => (
             format!("{} · passed", judge_label(*judge)),
-            VerdictTint::Neutral,
+            match judge {
+                ReviewJudge::ChatModel => VerdictTint::AutoReview,
+                ReviewJudge::Jev => VerdictTint::JevReview,
+            },
         ),
         GateVerdict::ReviewRejected { reason, judge } => {
             let text = match reason {
@@ -150,6 +156,9 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
     match tint {
         // The neutral tone of an ordinary completed chip's label.
         VerdictTint::Neutral => theme.text_muted,
+        // The judges' signposts, matching the mode menu's tier tints.
+        VerdictTint::AutoReview => crate::theme::AccentColor::Blue.primary(theme.appearance),
+        VerdictTint::JevReview => crate::theme::AccentColor::Pink.primary(theme.appearance),
         VerdictTint::Danger => theme.danger,
     }
 }
@@ -272,22 +281,22 @@ mod tests {
                 GateVerdict::ReviewPassed {
                     judge: ReviewJudge::ChatModel,
                 },
-                "👁 Auto-review · passed",
-                VerdictTint::Neutral,
+                "Auto-review · passed",
+                VerdictTint::AutoReview,
             ),
             (
                 GateVerdict::ReviewPassed {
                     judge: ReviewJudge::Jev,
                 },
-                "🤖 Jev review · passed",
-                VerdictTint::Neutral,
+                "Jev review · passed",
+                VerdictTint::JevReview,
             ),
             (
                 GateVerdict::ReviewRejected {
                     reason: None,
                     judge: ReviewJudge::ChatModel,
                 },
-                "👁 Auto-review · rejected",
+                "Auto-review · rejected",
                 VerdictTint::Danger,
             ),
             (
@@ -295,7 +304,7 @@ mod tests {
                     reason: Some("no tests".into()),
                     judge: ReviewJudge::ChatModel,
                 },
-                "👁 Auto-review · rejected · \"no tests\"",
+                "Auto-review · rejected · \"no tests\"",
                 VerdictTint::Danger,
             ),
             (
@@ -303,7 +312,7 @@ mod tests {
                     reason: Some("destructive".into()),
                     judge: ReviewJudge::Jev,
                 },
-                "🤖 Jev review · rejected · \"destructive\"",
+                "Jev review · rejected · \"destructive\"",
                 VerdictTint::Danger,
             ),
             (
