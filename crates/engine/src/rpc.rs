@@ -8,8 +8,8 @@ use holt_doc::{
     diff_transcript,
 };
 use holt_proto::{
-    AuthState, Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSettings,
-    TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
+    AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, RunRequest, SessionStatus, Space,
+    TitleSettings, TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
     WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
@@ -1374,6 +1374,22 @@ impl EngineService {
         }
     }
 
+    /// The Jev settings view (ADR-0026) — the reply shape of the read and
+    /// save RPCs. The raw key never rides this view.
+    fn jev_state(&self) -> JevSettingsState {
+        JevSettingsState {
+            api_key_masked: self.jev.get().map(|record| masked_key(&record.api_key)),
+        }
+    }
+
+    async fn save_jev_settings(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let key = required_string(&params, "apiKey")?;
+        self.jev
+            .save(&key)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        RpcReply::value(&self.jev_state())
+    }
+
     async fn save_web_search_settings(
         &self,
         params: serde_json::Value,
@@ -1747,9 +1763,9 @@ fn optional_string(params: &serde_json::Value, field: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Mask a stored search key for display: the first and last four
-/// characters joined by an ellipsis. At least one character must stay
-/// hidden, so keys of eight or fewer characters reveal nothing at all.
+/// Mask a stored settings key (search or Jev) for display: the first and
+/// last four characters joined by an ellipsis. At least one character must
+/// stay hidden, so keys of eight or fewer characters reveal nothing at all.
 fn masked_key(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     if chars.len() <= 8 {
@@ -2109,6 +2125,17 @@ impl RpcService for EngineService {
             })),
             methods::REMOVE_WEB_SEARCH_SETTINGS => {
                 self.web_search
+                    .remove()
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::GET_JEV_SETTINGS => RpcReply::value(&self.jev_state()),
+            methods::SAVE_JEV_SETTINGS => self.save_jev_settings(params).await,
+            methods::REVEAL_JEV_KEY => RpcReply::value(&serde_json::json!({
+                "key": self.jev.get().map(|record| record.api_key),
+            })),
+            methods::REMOVE_JEV_SETTINGS => {
+                self.jev
                     .remove()
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))

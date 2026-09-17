@@ -35,6 +35,7 @@ mod git_watch;
 mod history;
 pub mod images;
 pub mod instance_lock;
+mod jev_settings;
 mod local_fs;
 mod mode_default;
 mod path_search;
@@ -163,6 +164,9 @@ struct EngineService {
     /// Engine-owned web-search settings (ADR-0023): the user-chosen search
     /// backend record behind the `web_search` tool's mounting.
     web_search: web_search_settings::WebSearchStore,
+    /// Engine-owned Jev settings (ADR-0026): the user's own TypeSafe key
+    /// behind the Jev review tier.
+    jev: jev_settings::JevStore,
     /// Test-injected backend resolver (`EngineConfig`); production resolves
     /// through the built-in adapter table (which the backend slices fill
     /// in).
@@ -219,6 +223,7 @@ impl LocalEngine {
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
+        let jev = jev_settings::JevStore::load(&config.data_dir)?;
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -244,6 +249,7 @@ impl LocalEngine {
                 title_settings,
                 mode_default,
                 web_search,
+                jev,
                 search_backend_resolver: config.search_backend_resolver.clone(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),

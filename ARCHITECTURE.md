@@ -67,6 +67,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   response shapes and error mapping stay per adapter — a mid-Turn
   change lands from the next Turn, and an unconfigured backend leaves
   the `web_search` agent tool unmounted: absent, never erroring.
+- Jev settings (ADR-0026): `GetJevSettings` / `SaveJevSettings`
+  (`{apiKey}`, both replying the masked `JevSettingsState`),
+  `RevealJevKey`, and `RemoveJevSettings` — the user's own TypeSafe key
+  in `jev.json` under the credentials pattern (0600, atomic replace,
+  malformed fails startup loudly). Saving trims and refuses a blank key
+  with no network validation; the key is an independent record, never
+  shared with a same-vendor provider key. Unconfigured leaves the
+  Jev review tier unavailable — grayed, never erroring.
 - Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —
