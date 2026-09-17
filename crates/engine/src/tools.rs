@@ -688,6 +688,23 @@ pub(crate) fn execution_tools_for_model(
 pub(crate) use read_chat::create_read_chat_tool;
 pub use web_search::{SearchBackend, SearchHit};
 
+/// Foreground commands get a bounded wait. The engine applies no timeout of
+/// its own (pi-core leaves it optional by design), so a runaway command — a
+/// recursive scan over `target/`, a server process inheriting the output
+/// pipe — would otherwise hang the tool until the user aborts.
+const DEFAULT_BASH_TIMEOUT_SECONDS: f64 = 300.0;
+
+/// Injected at the params level, not the exec layer, so pi-core's timeout
+/// validation and its "timed out after N seconds" message report the
+/// effective value.
+fn apply_default_bash_timeout(params: &mut serde_json::Value) {
+    if let Some(object) = params.as_object_mut()
+        && !object.contains_key("timeout")
+    {
+        object.insert("timeout".into(), DEFAULT_BASH_TIMEOUT_SECONDS.into());
+    }
+}
+
 /// The pi-core bash tool, retargeted to the user's login shell. The harness
 /// fixes the tool *name* as `bash`; the executable choice is holt's (see
 /// [`LocalExecutionEnv::exec`]) and so is the description — the user's shell
@@ -696,9 +713,10 @@ fn bash_tool(context: &AgentToolContext) -> AgentTool {
     let mut tool = with_execution_context(create_bash_tool(BashToolOptions::default()), context);
     let shell = login_shell();
     tool.description = format!(
-        "Execute a command in the user's login shell ({shell}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. A non-zero exit code is reported as a failed call, including a plain `grep` that matches nothing (exit 1) — the `grep` tool returns 'No matches found.' as an ordinary result instead. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+        "Execute a command in the user's login shell ({shell}). It runs as a non-interactive login shell in the current working directory, so the user's profile environment (PATH, toolchains) is loaded. Returns stdout and stderr. A non-zero exit code is reported as a failed call, including a plain `grep` that matches nothing (exit 1) — the `grep` tool returns 'No matches found.' as an ordinary result instead. Output is truncated to last {} lines or {}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds; when omitted, a {}-second default applies.",
         DEFAULT_MAX_LINES,
         DEFAULT_MAX_BYTES / 1024,
+        DEFAULT_BASH_TIMEOUT_SECONDS,
     );
     if shell.ends_with("zsh") {
         tool.description.push_str(
@@ -707,6 +725,14 @@ fn bash_tool(context: &AgentToolContext) -> AgentTool {
     }
     tool.parameters["properties"]["command"]["description"] =
         "Command to execute in the user's login shell".into();
+    tool.parameters["properties"]["timeout"]["description"] =
+        format!("Timeout in seconds (default {DEFAULT_BASH_TIMEOUT_SECONDS} when omitted)").into();
+    let execute = Arc::clone(&tool.execute);
+    tool.execute = Arc::new(move |id, params, signal, update| {
+        let mut params = params.clone();
+        apply_default_bash_timeout(&mut params);
+        execute(id, &params, signal, update)
+    });
     tool
 }
 
@@ -852,6 +878,38 @@ mod tests {
         signal.cancel();
         let error = task.await.unwrap().unwrap_err();
         assert_eq!(error.code, ExecutionErrorCode::Aborted);
+    }
+
+    #[test]
+    fn bash_timeout_default_only_fills_missing() {
+        let mut params = serde_json::json!({ "command": "ls" });
+        apply_default_bash_timeout(&mut params);
+        assert_eq!(params["timeout"], 300.0);
+
+        let mut params = serde_json::json!({ "command": "ls", "timeout": 900 });
+        apply_default_bash_timeout(&mut params);
+        assert_eq!(params["timeout"], 900);
+
+        // A non-object payload must not panic; it fails schema validation
+        // downstream, not here.
+        let mut params = serde_json::json!(null);
+        apply_default_bash_timeout(&mut params);
+        assert!(params.get("timeout").is_none());
+    }
+
+    #[tokio::test]
+    async fn bash_tool_wraps_execute_without_disturbing_fast_calls() {
+        let tools = execution_tools_for_model(".", true, None);
+        let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
+        let result = (bash.execute)(
+            "test-call",
+            &serde_json::json!({ "command": "true" }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.content.len(), 1);
     }
 
     #[cfg(unix)]
