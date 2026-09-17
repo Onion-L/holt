@@ -71,7 +71,7 @@ impl Composer {
 
     /// Whether the composer holds anything a send could carry — typed text,
     /// a staged path reference, or a diff comment. The send path, the
-    /// button mode, and the Interrupt confirmation's Enter gate all read it.
+    /// button mode, and the submit path's no-content guard all read it.
     pub(super) fn has_content(&self, cx: &App) -> bool {
         composer_has_content(
             self.input.read(cx).text(),
@@ -743,8 +743,8 @@ impl Composer {
         }
     }
 
-    /// Arm the Interrupt confirmation: the first stop-key press (Esc, or
-    /// Enter on an empty composer) while a Turn runs. The ESC pill renders
+    /// Arm the Interrupt confirmation: the first stop-key press (Esc —
+    /// Enter is out of the protocol) while a Turn runs. The ESC pill renders
     /// (and the confirming press interrupts) until the press arrives, this
     /// timer's lapse, the Turn's end, or a chat switch clears the arm.
     fn arm_interrupt(&mut self, cx: &mut Context<Self>) {
@@ -1112,7 +1112,8 @@ mod tests {
                 "the arm survives inside the window"
             );
         });
-        // Exactly at the window's edge (2 × 750ms) the timer retires its
+        // Exactly at the window's edge (two half-window advances) the timer
+        // retires its
         // own arm: the button reverts and the next stop needs two presses
         // again.
         cx.executor()
