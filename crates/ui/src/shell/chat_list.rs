@@ -75,16 +75,6 @@ pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
 /// on the standard 8px rhythm.
 pub(super) const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
 pub(super) const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
-/// The archive pill's paint: 18px tall, centred on the 14px status line, and
-/// its own 4px of horizontal padding — the padding is what right-aligns the
-/// pill's label on the status word/time it replaces.
-pub(super) const SIDEBAR_ARCHIVE_PILL_HEIGHT: f32 = 18.0;
-pub(super) const SIDEBAR_ARCHIVE_PILL_PAD_X: f32 = 4.0;
-/// Slack the archive HIT box adds around that paint, above and below it (and
-/// out to the card's right edge — see the hit box in the row renderer). 18px
-/// of target beside a card that opens the chat on every other pixel was too
-/// easy to miss (user report).
-pub(super) const SIDEBAR_ARCHIVE_HIT_SLACK: f32 = 4.0;
 
 /// Ramp height of the sidebar's scroll-edge fade (the gpui
 /// [`gpui::EdgeFade`] scope — per-primitive, so text fades per glyph).
@@ -228,7 +218,8 @@ impl Shell {
 
     /// One session row: context + status on line one, provider + title on line
     /// two, and source metadata below. Working uses the live thread glyph in
-    /// the status corner. Click selects; right-click opens the context menu.
+    /// the status corner. Click selects; right-click — or the hover "…" at
+    /// the row's right-middle — opens the context menu.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chat_row(
         &self,
@@ -241,7 +232,7 @@ impl Shell {
         provider: Option<holt_proto::ProviderId>,
         status: holt_proto::ChatIndicator,
         selected: bool,
-        archived: bool,
+        pinned: bool,
         // This row's jump combo while the hint overlay is up. It takes the
         // corner outright — above hover and above the status word — so all
         // nine chips appear together instead of leaving a hole on whichever
@@ -253,10 +244,8 @@ impl Shell {
         // Activity, not position (t3code Sidebar): status is a small colored
         // word + glyph in the row's top-right corner — Working animates the
         // composer-strip spinner, Done wears a check; Idle rows show the
-        // relative time instead. Hovering the ROW swaps the corner for the
-        // ARCHIVE button (UNARCHIVE on rows in the sidebar's archived
-        // accordion), t3code's settle-on-hover.
-        let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
+        // relative time instead. The corner never swaps on hover any more;
+        // the hover affordance is the "…" at the row's right-middle.
         // Send-truth overrides: a send unadopted past the grace window is
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the
@@ -317,75 +306,6 @@ impl Shell {
                     .child(label)
                     .into_any_element()
             }
-        } else if corner_hovered {
-            let archive_id = id.clone();
-            // Two elements, two jobs: an invisible HIT box carries the click
-            // and the PILL inside it carries the paint. The pill's own rect
-            // was the whole target before, and 18px of target beside a card
-            // that opens the chat on every other pixel was too easy to miss
-            // (user report). The box is 4px taller than the paint at each
-            // end, and its 4px padding on an 8px negative margin puts its
-            // right edge on the card's — the pill keeps the 4px of air the
-            // status word/time has, and the box's layout footprint is the
-            // pill's, so the title truncates where it always did.
-            let hit_group: SharedString = format!("chat-archive-hit-{id}").into();
-            div()
-                .id(SharedString::from(format!("chat-archive-{id}")))
-                // The hit box is the group: the pointer anywhere inside the
-                // target — padding included — brightens the pill.
-                .group(hit_group.clone())
-                .flex()
-                .flex_row()
-                .items_center()
-                .h(px(
-                    SIDEBAR_ARCHIVE_PILL_HEIGHT + 2.0 * SIDEBAR_ARCHIVE_HIT_SLACK
-                ))
-                .px(px(SIDEBAR_ARCHIVE_HIT_SLACK))
-                .mr(px(-(SIDEBAR_ARCHIVE_HIT_SLACK + SIDEBAR_ARCHIVE_PILL_PAD_X)))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    // Archiving confirms first (destructive-ish: the
-                    // thread leaves the sidebar); unarchive is direct.
-                    if archived {
-                        this.set_chat_archived(archive_id.clone(), false, cx);
-                    } else {
-                        this.request_archive_chat(archive_id.clone(), cx);
-                    }
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .h(px(SIDEBAR_ARCHIVE_PILL_HEIGHT))
-                        .px(px(SIDEBAR_ARCHIVE_PILL_PAD_X))
-                        .rounded(px(5.0))
-                        .bg(crate::theme::wash(0.10))
-                        .group_hover(hit_group.clone(), |s| s.bg(crate::theme::wash(0.18)))
-                        .child(
-                            icon(if archived {
-                                icons::ARCHIVE_UP_MINIMALISTIC
-                            } else {
-                                icons::ARCHIVE_MINIMALISTIC
-                            })
-                            .size(px(11.0))
-                            .flex_none()
-                            .text_color(theme.text_muted),
-                        )
-                        .child(
-                            div()
-                                .text_size(crate::typography::ui_rems(10.0))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(if archived {
-                                    "Unarchive"
-                                } else {
-                                    "Archive"
-                                })),
-                        ),
-                )
-                .into_any_element()
         } else {
             match status_label {
                 Some(label) => {
@@ -466,7 +386,10 @@ impl Shell {
         // Hover fades over transition-colors (holt session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
         let fade_key = format!("chat-row-{id}");
-        let rest_bg = if selected {
+        // A pinned row reads like the active one (user request): same wash,
+        // same steady-state brightness — placement plus emphasis only.
+        let active_like = selected || pinned;
+        let rest_bg = if active_like {
             selected_wash
         } else {
             crate::theme::wash(0.0)
@@ -475,10 +398,11 @@ impl Shell {
         // fills are identical so the blend is a no-op, but light's hover sits
         // below its near-opaque selected fill, and blending toward it visibly
         // dimmed the active row under the pointer (user report).
-        let hover_bg = if selected { selected_wash } else { hover };
-        let rest_text = if selected { text } else { text.opacity(0.8) };
+        let hover_bg = if active_like { selected_wash } else { hover };
+        let rest_text = if active_like { text } else { text.opacity(0.8) };
         div()
             .id(SharedString::from(format!("chat-{id}")))
+            .relative()
             .flex()
             .flex_col()
             .gap(px(2.0))
@@ -489,24 +413,63 @@ impl Shell {
             .bg(motion::hover_blend(&fade_key, rest_bg, hover_bg))
             // No selection ring (user request) — the wash alone marks the
             // active row.
-            // Row hover drives BOTH the wash blend and the corner's
-            // status→Archive swap (one listener — gpui allows a single
-            // hover listener per element).
-            .on_hover({
-                let fade_hover = motion::hover_listener(fade_key.clone());
-                let hover_id = id.clone();
-                cx.listener(move |this, hovered: &bool, window, cx| {
-                    fade_hover(hovered, window, cx);
-                    if *hovered {
-                        if this.chat_status_hover.as_deref() != Some(hover_id.as_str()) {
-                            this.chat_status_hover = Some(hover_id.clone());
-                            cx.notify();
-                        }
-                    } else if this.chat_status_hover.as_deref() == Some(hover_id.as_str()) {
-                        this.chat_status_hover = None;
-                        cx.notify();
-                    }
-                })
+            // Row hover drives the wash blend (one listener — gpui allows a
+            // single hover listener per element); the "…" reads the same
+            // fade below.
+            .on_hover(motion::hover_listener(fade_key.clone()))
+            // Hover "…" at the row's right-middle: the same context menu a
+            // right-click opens. Its opacity rides the row's hover fade; the
+            // click stops propagation so the row never activates. No
+            // occlude — an occluding button would un-hover the row under
+            // the pointer and flicker (see the old archive pill).
+            .child({
+                let more_selector = id.clone();
+                let more_menu = id.clone();
+                let dots_group: SharedString = format!("chat-more-hit-{id}").into();
+                div()
+                    .id(SharedString::from(format!("chat-more-{id}")))
+                    .debug_selector(move || format!("chat-more-{more_selector}"))
+                    .absolute()
+                    .right(px(6.0))
+                    .top(px(0.0))
+                    .bottom(px(0.0))
+                    .w(px(18.0))
+                    .group(dots_group.clone())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .opacity(motion::hover_t(&fade_key))
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            let gpui::ClickEvent::Mouse(click) = event else {
+                                return;
+                            };
+                            this.open_chat_menu(more_menu.clone(), click.up.position, window, cx);
+                        }),
+                    )
+                    // The column is the hit target (the old pill taught us
+                    // tight targets beside an open-on-click card get missed);
+                    // the pill inside carries the hover paint. The icon keeps
+                    // an explicit color — gpui's Svg paints only with its OWN
+                    // text color, it never inherits one.
+                    .child(
+                        div()
+                            .size(px(18.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .group_hover(dots_group.clone(), |s| s.bg(crate::theme::wash(0.12)))
+                            .child(
+                                icon(icons::MENU_DOTS)
+                                    .size(px(12.0))
+                                    .flex_none()
+                                    .text_color(theme.text_muted)
+                                    .group_hover(dots_group.clone(), |s| s.text_color(theme.text)),
+                            ),
+                    )
             })
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -538,8 +501,10 @@ impl Shell {
                     )
                     .child(div().text_color(subline).child(corner)),
             )
-            // Line 2: provider identity belongs directly with the title,
-            // instead of floating as unrelated metadata below it.
+            // Line 2: the front identity slot rides with the title instead
+            // of floating as unrelated metadata below it. Pinned rows front
+            // the pin itself (glossary "Pinned (a chat)"); unpinned rows
+            // keep the provider brand.
             .child(
                 div()
                     .w_full()
@@ -547,19 +512,35 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
-                    .when_some(
-                        provider
-                            .as_ref()
-                            .and_then(crate::pickers::provider_brand_icon),
-                        |el, (path, tint)| {
-                            el.child(
-                                icon(path)
-                                    .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                                    .flex_none()
-                                    .text_color(tint.unwrap_or(subline).opacity(0.8)),
-                            )
-                        },
-                    )
+                    .when(pinned, |el| {
+                        let pin_selector = id.clone();
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("chat-pin-{id}")))
+                                .debug_selector(move || format!("chat-pin-{pin_selector}"))
+                                .flex_none()
+                                .child(
+                                    icon(icons::PIN)
+                                        .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                                        .text_color(theme.text_muted),
+                                ),
+                        )
+                    })
+                    .when(!pinned, |el| {
+                        el.when_some(
+                            provider
+                                .as_ref()
+                                .and_then(crate::pickers::provider_brand_icon),
+                            |el, (path, tint)| {
+                                el.child(
+                                    icon(path)
+                                        .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                                        .flex_none()
+                                        .text_color(tint.unwrap_or(subline).opacity(0.8)),
+                                )
+                            },
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -876,22 +857,6 @@ mod tests {
         assert_eq!(chat_row_height(true, false), 61.0);
         assert_eq!(chat_row_height(false, true), 63.0);
         assert_eq!(chat_row_height(true, true), 63.0);
-    }
-
-    #[test]
-    fn the_archive_hit_box_pads_the_pill_to_the_card_edge() {
-        // 4px of slack above and below the 18px paint: the target is 26px
-        // tall while the paint stays on the status word/time's line.
-        assert_eq!(
-            SIDEBAR_ARCHIVE_PILL_HEIGHT + 2.0 * SIDEBAR_ARCHIVE_HIT_SLACK,
-            26.0
-        );
-        // The box's padding plus the row's: they cancel exactly, so its
-        // right edge lands on the card's and the pill keeps its 4px of air.
-        assert_eq!(
-            SIDEBAR_ARCHIVE_HIT_SLACK + SIDEBAR_ARCHIVE_PILL_PAD_X,
-            Theme::SPACE_SM
-        );
     }
 
     #[test]

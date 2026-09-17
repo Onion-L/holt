@@ -285,7 +285,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   exists, and marking a Chat seen retracts its banner — all best-effort.
 - Mutations: `Mutate` — the served ops are `createSpace`, `createChat`,
   `renameChat`, `setChatConfig`, `setChatPermissionMode`, `setChatArchived`,
-  `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
+  `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
   `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
   the UI surfaces as an error notice — and `QueueCommand`.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside

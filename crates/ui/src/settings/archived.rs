@@ -451,6 +451,7 @@ mod tests {
             title_source: Default::default(),
             title_task_started: false,
             archived,
+            pinned: false,
             cwd: None,
             branch: None,
             checkout_id: None,

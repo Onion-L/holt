@@ -87,6 +87,9 @@ impl crate::WorkspaceRegistry for WorkspaceDoc {
     fn set_chat_archived(&mut self, id: &str, archived: bool) -> Result<bool, DocError> {
         WorkspaceDoc::set_chat_archived(self, id, archived)
     }
+    fn set_chat_pinned(&mut self, id: &str, pinned: bool) -> Result<bool, DocError> {
+        WorkspaceDoc::set_chat_pinned(self, id, pinned)
+    }
     fn set_chat_seen(&mut self, id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
         WorkspaceDoc::set_chat_seen(self, id, at)
     }
@@ -268,6 +271,7 @@ impl WorkspaceDoc {
         row.insert("deviceId", chat.device_id.as_str())?;
         set_opt_str(&row, "title", chat.title.as_deref())?;
         row.insert("archived", chat.archived)?;
+        row.insert("pinned", chat.pinned)?;
         set_opt_str(&row, "cwd", chat.cwd.as_deref())?;
         set_opt_str(&row, "branch", chat.branch.as_deref())?;
         set_opt_str(&row, "checkoutId", chat.checkout_id.as_deref())?;
@@ -358,6 +362,16 @@ impl WorkspaceDoc {
             return Ok(false);
         };
         row.insert("archived", archived)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// LWW pinned flag from any device. `false` when no such row.
+    pub fn set_chat_pinned(&self, chat_id: &str, pinned: bool) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert("pinned", pinned)?;
         self.doc.commit();
         Ok(true)
     }
@@ -654,6 +668,10 @@ pub(crate) struct RawChat {
     title: Option<String>,
     #[serde(default)]
     archived: bool,
+    // Doc-store chat rows may predate sidebar pinning: the field decodes as
+    // absent on older rows.
+    #[serde(default)]
+    pinned: bool,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
@@ -719,6 +737,7 @@ impl From<RawChat> for Chat {
             title_source: TitleSource::UserManual,
             title_task_started: false,
             archived: raw.archived,
+            pinned: raw.pinned,
             cwd: raw.cwd,
             branch: raw.branch,
             checkout_id: raw.checkout_id,
@@ -788,6 +807,7 @@ mod tests {
             title_source: TitleSource::UserManual,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: Some("/tmp/repo".into()),
             branch: Some("main".into()),
             checkout_id: None,

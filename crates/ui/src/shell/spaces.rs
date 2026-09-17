@@ -1025,7 +1025,11 @@ impl Shell {
             .map(|(_, chat)| chat.clone())
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        chats.into_iter().map(|chat| chat.id).collect()
+        // The pinned section leads the list (glossary "Pinned (a chat)") —
+        // the user's sort applies inside each partition, so jump chips and
+        // ⌘-cycling read the exact on-screen order.
+        let (pinned, rest): (Vec<_>, Vec<_>) = chats.into_iter().partition(|chat| chat.pinned);
+        pinned.into_iter().chain(rest).map(|chat| chat.id).collect()
     }
 
     /// The sidebar's Sessions list: every session (idle included) of the
@@ -1089,8 +1093,14 @@ impl Shell {
             }
         }
 
+        // Pinned chats simply lead the list (glossary "Pinned (a chat)") —
+        // no section header; the user's sort applies inside the partition.
+        let (pinned, rest): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| row.chat.pinned);
         let mut groups: ChatGroups = Vec::new();
-        for row in rows {
+        if !pinned.is_empty() {
+            groups.push((None, pinned));
+        }
+        for row in rest {
             if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &row.group) {
                 existing.push(row);
             } else {
@@ -1150,7 +1160,7 @@ impl Shell {
                     provider,
                     status,
                     is_selected,
-                    false,
+                    chat.pinned,
                     jump_label,
                     theme,
                     cx,
@@ -2556,6 +2566,7 @@ mod tests {
             title_source: Default::default(),
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: None,
             branch: None,
             checkout_id: None,
@@ -2831,6 +2842,105 @@ mod tests {
             // and the dropdown stays up.
             assert!(shell.settings.space_filter.is_none());
             assert!(shell.spaces_menu.is_open());
+        });
+    }
+
+    // ---- session rows: pin marker + hover "…" ----
+
+    /// Renders just the session rows (the real render path) so the test can
+    /// drive row affordances without the whole sidebar.
+    struct RowsHarness {
+        shell: Entity<Shell>,
+        _observe: Subscription,
+    }
+
+    impl Render for RowsHarness {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::of(cx).clone();
+            let rows = self
+                .shell
+                .update(cx, |shell, cx| shell.render_active_rows(&theme, cx));
+            div()
+                .w(px(320.0))
+                .size_full()
+                .children(rows.into_iter().map(|(_, _, element)| element))
+        }
+    }
+
+    /// Pinned chats lead the visible order — the user's sort still applies
+    /// inside each partition (glossary "Pinned (a chat)").
+    #[gpui::test]
+    fn pinned_chats_lead_the_visible_order(cx: &mut gpui::TestAppContext) {
+        let (state, shell, _dir) = view_menu_shell(cx);
+        state.update(cx, |state, _| {
+            state
+                .chats
+                .iter_mut()
+                .find(|chat| chat.id == "older")
+                .unwrap()
+                .pinned = true;
+        });
+        shell.update(cx, |shell, cx| {
+            assert_eq!(
+                shell.sidebar_visible_order(cx),
+                vec!["older".to_string(), "recent".to_string()]
+            );
+        });
+    }
+
+    /// The pinned row wears its marker, and the hover "…" opens the same
+    /// context menu a right-click does — without selecting the row.
+    #[gpui::test]
+    fn session_rows_mark_pinned_and_open_the_menu_from_the_dots(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        cx.update(|cx| crate::settings::init(UiSettings::default(), data_dir.clone(), cx));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
+            state.local_device_id = Some("test-device".into());
+            state.chats.push(chat_at("plain", 10, 1));
+            let mut pinned = chat_at("kept", 5, 9);
+            pinned.pinned = true;
+            state.chats.push(pinned);
+            state
+        });
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        let (_, cx) = cx.add_window_view(|_window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            RowsHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+
+        // Pinned marker: on the pinned row only.
+        assert!(cx.debug_bounds("chat-pin-kept").is_some());
+        assert!(cx.debug_bounds("chat-pin-plain").is_none());
+
+        // The "…" opens the context menu; the row itself is not activated.
+        let dots = cx
+            .debug_bounds("chat-more-plain")
+            .expect("the dots affordance is rendered")
+            .center();
+        cx.simulate_click(dots, Default::default());
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            let menu = shell.chat_menu.get().expect("the dots open the menu");
+            assert_eq!(menu.chat_id, "plain");
+        });
+        state.read_with(cx, |state, _| {
+            assert!(state.selected_chat.is_none(), "the row must not activate");
         });
     }
 }

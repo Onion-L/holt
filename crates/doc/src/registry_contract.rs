@@ -19,6 +19,7 @@ pub trait WorkspaceRegistry {
     fn upsert_session(&mut self, session: &Session) -> Result<(), DocError>;
     fn delete_space(&mut self, space_id: &str) -> Result<DeletedSpace, DocError>;
     fn set_chat_archived(&mut self, chat_id: &str, archived: bool) -> Result<bool, DocError>;
+    fn set_chat_pinned(&mut self, chat_id: &str, pinned: bool) -> Result<bool, DocError>;
     fn set_chat_seen(&mut self, chat_id: &str, at: DateTime<Utc>) -> Result<bool, DocError>;
 }
 
@@ -54,6 +55,7 @@ mod tests {
             title_source: holt_proto::TitleSource::UserManual,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: Some(space.path.clone()),
             branch: None,
             checkout_id: None,
@@ -81,6 +83,7 @@ mod tests {
         registry.upsert_session(&session).unwrap();
         assert_eq!(registry.read_all().unwrap().chats.len(), 1);
         assert!(registry.set_chat_archived(&chat.id, true).unwrap());
+        assert!(registry.set_chat_pinned(&chat.id, true).unwrap());
         assert!(registry.set_chat_seen(&chat.id, now).unwrap());
         let deleted = registry.delete_space(&space.id).unwrap();
         assert!(deleted.existed);

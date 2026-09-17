@@ -1321,6 +1321,7 @@ rename to new_name.rs
             title_source: Default::default(),
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: cwd.map(Into::into),
             branch: None,
             checkout_id: checkout.map(Into::into),

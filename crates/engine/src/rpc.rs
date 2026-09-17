@@ -281,6 +281,7 @@ impl EngineService {
             title_source: TitleSource::Automatic,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: params
                 .cwd
                 .or_else(|| space.as_ref().map(|space| space.path.clone())),
@@ -380,6 +381,32 @@ impl EngineService {
             return RpcReply::value(&serde_json::json!({}));
         };
         row.archived = params.archived;
+        drop(chats);
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    fn set_chat_pinned(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: SetChatPinnedParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.chat_id.trim().is_empty() {
+            return Err(RpcError::BadParams("chatId must not be empty".into()));
+        }
+        let mut chats = self
+            .runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(row) = chats.iter_mut().find(|row| row.id == params.chat_id) else {
+            // Unknown chat: idempotent no-op, matching the archive path.
+            return RpcReply::value(&serde_json::json!({}));
+        };
+        row.pinned = params.pinned;
         drop(chats);
         persist_chats(
             &self.data_dir,
@@ -1587,6 +1614,13 @@ struct CreateChatParams {
 struct SetChatArchivedParams {
     chat_id: String,
     archived: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetChatPinnedParams {
+    chat_id: String,
+    pinned: bool,
 }
 
 /// `UsageStats`'s only parameter; the value itself is validated against
@@ -2872,6 +2906,11 @@ impl RpcService for EngineService {
                 if params.get("op").and_then(|op| op.as_str()) == Some("setChatArchived") =>
             {
                 self.set_chat_archived(params)
+            }
+            methods::MUTATE
+                if params.get("op").and_then(|op| op.as_str()) == Some("setChatPinned") =>
+            {
+                self.set_chat_pinned(params)
             }
             methods::MUTATE
                 if params.get("op").and_then(|op| op.as_str()) == Some("deleteChat") =>

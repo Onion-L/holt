@@ -386,6 +386,7 @@ mod tests {
             title_source: Default::default(),
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: Some("/project".into()),
             branch: None,
             checkout_id: None,

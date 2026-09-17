@@ -371,6 +371,9 @@ impl crate::WorkspaceRegistry for RegistryDoc {
     fn set_chat_archived(&mut self, id: &str, archived: bool) -> Result<bool, DocError> {
         RegistryDoc::set_chat_archived(self, id, archived)
     }
+    fn set_chat_pinned(&mut self, id: &str, pinned: bool) -> Result<bool, DocError> {
+        RegistryDoc::set_chat_pinned(self, id, pinned)
+    }
     fn set_chat_seen(&mut self, id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
         RegistryDoc::set_chat_seen(self, id, at)
     }
@@ -1009,6 +1012,19 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("archived", json!(archived))]),
+        );
+        Ok(true)
+    }
+
+    pub fn set_chat_pinned(&mut self, chat_id: &str, pinned: bool) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("pinned", json!(pinned))]),
         );
         Ok(true)
     }

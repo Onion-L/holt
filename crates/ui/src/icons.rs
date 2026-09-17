@@ -146,6 +146,9 @@ icon_assets![
     // Horizontal three-dot menu trigger — drawn for the space rows' hover
     // affordance (the embedded set has no menu-dots glyph).
     (MENU_DOTS, "menu-dots"),
+    // Pushpin in the same linear style — the session rows' Pinned marker
+    // and menu row (the set has no pin glyph).
+    (PIN, "pin"),
     (CLOCK_CIRCLE, "clock-circle"),
     // Context checkpoint glyph in the same linear style.
     (CONTEXT_COMPACT, "context-compact"),

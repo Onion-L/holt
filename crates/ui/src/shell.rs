@@ -727,10 +727,6 @@ pub struct Shell {
     sidebar_view_menu: popover::Popup<spaces::SidebarViewMenu>,
     /// Natural-tab-order focus target for the icon-only view-options button.
     sidebar_view_trigger_focus: gpui::FocusHandle,
-    /// Chat id whose STATUS CORNER is under the pointer — just that corner
-    /// swaps to the archive button (t3code's settle-on-hover); hovering the
-    /// row body leaves the status readable.
-    chat_status_hover: Option<String>,
     /// Scroll position of the sidebar lists region (drives its edge fades).
     sidebar_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
@@ -1082,7 +1078,6 @@ impl Shell {
             spaces_menu: popover::Popup::default(),
             sidebar_view_menu: popover::Popup::default(),
             sidebar_view_trigger_focus: cx.focus_handle().tab_stop(true),
-            chat_status_hover: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
             space_boot_applied: false,
             holt_notices: Vec::new(),
@@ -1951,6 +1946,23 @@ impl Shell {
         self.close_chat_menu(cx);
         self.mutate(
             serde_json::json!({ "op": "setChatArchived", "chatId": chat_id, "archived": archived }),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Sidebar placement (glossary "Pinned (a chat)"): the flag lives on the
+    /// chat's record, so it syncs like archived. Placement only — it gates
+    /// nothing, and it is reversible, so no confirm.
+    pub(super) fn set_chat_pinned(
+        &mut self,
+        chat_id: String,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_chat_menu(cx);
+        self.mutate(
+            serde_json::json!({ "op": "setChatPinned", "chatId": chat_id, "pinned": pinned }),
             cx,
         );
         cx.notify();

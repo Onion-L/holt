@@ -231,6 +231,11 @@ pub struct Chat {
     #[serde(default)]
     pub title_task_started: bool,
     pub archived: bool,
+    /// Sidebar placement: pinned chats collect in the pinned section above
+    /// the sorted Sessions list (glossary "Pinned (a chat)"). Placement
+    /// only — it gates nothing.
+    #[serde(default)]
+    pub pinned: bool,
     pub cwd: Option<String>,
     pub branch: Option<String>,
     /// Canonical id of the repo checkout/worktree this chat operates in.

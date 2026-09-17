@@ -321,6 +321,7 @@ mod tests {
             title_source: TitleSource::Automatic,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: Some("/repo".into()),
             branch: None,
             checkout_id: None,

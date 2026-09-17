@@ -4,13 +4,13 @@ use super::*;
 use gpui::{Bounds, FocusHandle, Size};
 use holt_doc::{MessagePart, MessageRole, SessionMessageEntry, TranscriptFrame};
 
-const COPY_ROW: usize = 2;
+const COPY_ROW: usize = 3;
 const MENU_INSET: f32 = 5.0;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 
 #[derive(Clone)]
 pub(super) struct ChatMenuState {
-    chat_id: String,
+    pub(super) chat_id: String,
     position: Point<Pixels>,
     highlighted: Option<usize>,
     copy_open: bool,
@@ -30,7 +30,7 @@ impl MenuLayout {
         let row_height = (font_size * 1.5 + px(12.0)).max(px(30.0));
         let root_size = Size::new(
             px(216.0).max(font_size * 15.0),
-            row_height * 4.0 + px(MENU_INSET * 2.0 + SEPARATOR_HEIGHT),
+            row_height * 5.0 + px(MENU_INSET * 2.0 + SEPARATOR_HEIGHT),
         );
         let copy_size = Size::new(
             px(240.0).max(font_size * 18.0),
@@ -131,13 +131,22 @@ impl Shell {
             }
         } else {
             match index {
-                0 => self.open_rename_chat(chat_id, cx),
-                1 => self.request_archive_chat(chat_id, cx),
+                0 => {
+                    let pinned = self
+                        .state
+                        .read(cx)
+                        .chats
+                        .iter()
+                        .any(|chat| chat.id == chat_id && chat.pinned);
+                    self.set_chat_pinned(chat_id, !pinned, cx);
+                }
+                1 => self.open_rename_chat(chat_id, cx),
+                2 => self.request_archive_chat(chat_id, cx),
                 COPY_ROW => {
                     menu.copy_open = true;
                     menu.copy_highlighted = Some(0);
                 }
-                3 => {
+                4 => {
                     self.close_chat_menu(cx);
                     self.delete_confirm = Some(chat_id);
                 }
@@ -166,7 +175,7 @@ impl Shell {
                 if menu.copy_open {
                     menu.copy_highlighted = popover::menu_step(menu.copy_highlighted, 3, step);
                 } else {
-                    menu.highlighted = popover::menu_step(menu.highlighted, 4, step);
+                    menu.highlighted = popover::menu_step(menu.highlighted, 5, step);
                 }
             }
             "enter" | "space" => {
@@ -222,7 +231,19 @@ impl Shell {
             }))
             .flex()
             .flex_col();
+        // The pin row is dynamic: label flips with the chat's current state
+        // (glossary "Pinned (a chat)") — placement only, so no confirm.
+        let pinned = {
+            let state = self.state.read(cx);
+            state
+                .chats
+                .iter()
+                .find(|chat| chat.id == menu.chat_id)
+                .map(|chat| chat.pinned)
+                .unwrap_or(false)
+        };
         for (index, (label, glyph)) in [
+            (if pinned { "Unpin" } else { "Pin" }, icons::PIN),
             ("Rename...", icons::PEN),
             ("Archive", icons::ARCHIVE_MINIMALISTIC),
             ("Copy", icons::COPY),
@@ -231,7 +252,7 @@ impl Shell {
         .into_iter()
         .enumerate()
         {
-            if index == 3 {
+            if index == 4 {
                 root = root.child(popover::menu_separator());
             }
             root = root.child(
@@ -244,14 +265,14 @@ impl Shell {
                 .debug_selector(move || format!("chat-menu-action-{index}"))
                 .h(layout.row_height)
                 .flex_none()
-                .when(index == 3, |row| row.text_color(theme.danger))
+                .when(index == 4, |row| row.text_color(theme.danger))
                 .on_mouse_move(cx.listener(move |this, _, _, cx| {
                     this.highlight_chat_menu(index, false, cx);
                 }))
                 .on_click(
                     cx.listener(move |this, _, _, cx| this.activate_chat_menu(index, false, cx)),
                 )
-                .child(icon(glyph).size(px(16.0)).text_color(if index == 3 {
+                .child(icon(glyph).size(px(16.0)).text_color(if index == 4 {
                     theme.danger
                 } else {
                     theme.text_muted
@@ -564,7 +585,35 @@ mod tests {
             }
         });
         cx.run_until_parked();
-        let copy_row = cx.debug_bounds("chat-menu-action-2").unwrap();
+        // Pin leads the menu (index 0) — the click routes to the pin op
+        // (here: the Mutate attempt fails on the absent engine, which is
+        // exactly the path under test; the op itself is covered in engine).
+        let pin_row = cx
+            .debug_bounds("chat-menu-action-0")
+            .expect("the pin row is rendered");
+        cx.simulate_click(pin_row.center(), Default::default());
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(
+                !shell.holt_notices.is_empty(),
+                "the pin row drives the setChatPinned mutate"
+            )
+        });
+
+        // Re-open: the menu closes on a pick, so the submenu tests run on a
+        // fresh one.
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_chat_menu(
+                    "context-session".into(),
+                    Point::new(px(100.0), px(100.0)),
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        let copy_row = cx.debug_bounds("chat-menu-action-3").unwrap();
         assert!(cx.debug_bounds("chat-copy-action-0").is_none());
         cx.simulate_mouse_move(copy_row.center(), None, Default::default());
         cx.run_until_parked();
@@ -596,7 +645,7 @@ mod tests {
             })
         });
         cx.run_until_parked();
-        cx.simulate_keystrokes("down down down right down enter");
+        cx.simulate_keystrokes("down down down down right down enter");
         cx.run_until_parked();
         cx.update(|_, cx| {
             let link = cx.read_from_clipboard().unwrap().text().unwrap();
@@ -637,7 +686,7 @@ mod tests {
         assert_eq!(layout.copy.left(), layout.root.right());
         assert_eq!(
             layout.copy.top(),
-            layout.root.top() + layout.row_height * 2.0
+            layout.root.top() + layout.row_height * 3.0
         );
     }
 

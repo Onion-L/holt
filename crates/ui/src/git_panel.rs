@@ -1883,6 +1883,7 @@ mod tests {
             title_source: TitleSource::Automatic,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: cwd.map(str::to_string),
             branch: None,
             checkout_id: checkout_id.map(str::to_string),

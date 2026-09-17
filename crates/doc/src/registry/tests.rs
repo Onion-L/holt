@@ -256,6 +256,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         title_source: TitleSource::UserManual,
         title_task_started: false,
         archived: false,
+        pinned: false,
         cwd: Some("/tmp/repo".into()),
         branch: Some("main".into()),
         checkout_id: None,

@@ -1854,6 +1854,7 @@ mod restore_tests {
             title_source: holt_proto::TitleSource::Automatic,
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: None,
             branch: None,
             checkout_id: None,

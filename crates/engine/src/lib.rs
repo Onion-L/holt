@@ -1283,6 +1283,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_chat_pinned_flips_persists_and_survives_restart() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        assert_eq!(chats.next().await.unwrap(), serde_json::json!([]));
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "createChat", "chatId": "chat-1" }),
+            )
+            .await
+            .unwrap();
+        chats.next().await.unwrap();
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "setChatPinned",
+                    "chatId": "chat-1",
+                    "pinned": true,
+                }),
+            )
+            .await
+            .unwrap();
+        let frame = chats.next().await.unwrap();
+        assert_eq!(frame[0]["pinned"], serde_json::json!(true));
+
+        // Unknown chat is an idempotent no-op, not an error.
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "setChatPinned",
+                    "chatId": "missing",
+                    "pinned": true,
+                }),
+            )
+            .await
+            .unwrap();
+        drop(chats);
+        drop(engine);
+
+        // The flag persists: a fresh engine replays it, and unpin round-trips.
+        let engine = LocalEngine::assemble(&config).unwrap();
+        let RpcReply::Stream(mut chats) = engine
+            .handle(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("WatchChats did not return a stream");
+        };
+        let frame = chats.next().await.unwrap();
+        assert_eq!(frame[0]["pinned"], serde_json::json!(true));
+
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({
+                    "op": "setChatPinned",
+                    "chatId": "chat-1",
+                    "pinned": false,
+                }),
+            )
+            .await
+            .unwrap();
+        let frame = chats.next().await.unwrap();
+        assert_eq!(frame[0]["pinned"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
     async fn mark_chat_seen_stamps_persists_and_skips_already_seen() {
         use futures::StreamExt;
 

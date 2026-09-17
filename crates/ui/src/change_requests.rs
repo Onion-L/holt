@@ -310,6 +310,7 @@ mod tests {
             title_source: Default::default(),
             title_task_started: false,
             archived: false,
+            pinned: false,
             cwd: cwd.map(str::to_owned),
             branch: Some("feature/pr".into()),
             checkout_id: checkout.map(str::to_owned),

@@ -54,6 +54,8 @@ _Avoid_: double-Esc stop
 - **History**: an agent's model-facing message sequence — what it sends to the model as prior conversation. A chat and each of its Subagents have separate Histories. Persisted alongside the Transcript, but a separate record: Compaction shrinks the History, never the Transcript.
 - **Compaction**: replacing the older part of an agent's History with a model-written summary while keeping a recent tail verbatim. Triggered automatically when the History approaches the model's context window; a chat also supports manual `/compact`. Marked in the Transcript by a divider whose summary can be expanded.
 - **Pinned** (a transcript): the state in which the viewport follows the tail as new rows stream in. Scrolling up releases the pin; scrolling back near the tail re-engages it.
+- **Pinned** (a chat): a chat held in the sidebar's pinned section above the sorted Sessions list. The mark belongs to the chat itself — it travels with the chat's record, not with a device — and Unpin is its only inverse. Pinning changes placement only; it gates nothing.
+  _Avoid_: star, favorite
 - **Saved viewport**: a chat's remembered scroll position, restored when the chat is reopened. A chat with no saved viewport opens at its latest content.
 - **Title source**: whether a chat title was supplied by the user or produced automatically; a user-supplied title is authoritative over later automatic suggestions.
 - **Automatic title**: a short, model-generated name derived from a chat's first user prompt, used only when the chat has no user-supplied title.
