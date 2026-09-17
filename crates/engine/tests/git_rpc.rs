@@ -95,6 +95,7 @@ impl Fixture {
                 .stream_fn(),
             ),
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap()
     }
@@ -1814,6 +1815,7 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
         personal_skills_dir: None,
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
+        jev_judge_resolver: None,
     })
     .unwrap();
     register_space(&engine, &fixture, "space-1").await;

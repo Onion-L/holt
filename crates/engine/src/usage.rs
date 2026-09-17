@@ -64,6 +64,7 @@ pub(crate) enum UsageKind {
     Subagent,
     Compaction,
     AutoReview,
+    JevReview,
     Title,
 }
 
@@ -78,6 +79,7 @@ impl UsageKind {
             Self::Subagent => "subagent",
             Self::Compaction => "compaction",
             Self::AutoReview => "auto-review",
+            Self::JevReview => "jev-review",
             Self::Title => "title",
         }
     }
@@ -681,6 +683,47 @@ pub(crate) fn capture_review(chat: &ChatRuntime, response: &AssistantMessage) {
     capture(chat, UsageKind::AutoReview, response);
 }
 
+/// Book one Jev judge round-trip (ADR-0026): a decision request outside
+/// the Turn's model — provider `typesafe`, model `jev-latest`, the
+/// reported token counts, no cache fields. A subagent's judged call is
+/// the parent chat's spend and books there under the delegation's
+/// `subagent` kind with the child doc id, exactly like every other
+/// request a child causes; the parent's own judged calls book as
+/// `jev-review`. Failed requests book nothing — the API reported no
+/// tokens to bill.
+pub(crate) fn capture_jev(chat: &Arc<ChatRuntime>, input: u64, output: u64) {
+    let (ledger, kind, subagent_doc_id) = match &chat.child {
+        Some(child) => (
+            child.parent.clone(),
+            UsageKind::Subagent,
+            Some(chat.chat_id.clone()),
+        ),
+        None => (chat.clone(), UsageKind::JevReview, None),
+    };
+    ledger
+        .usage_pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(UsageRecord {
+            kind,
+            provider: crate::jev::PROVIDER.into(),
+            model: crate::jev::MODEL.into(),
+            message_id: None,
+            turn_outcome: None,
+            input,
+            output,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: None,
+            reasoning: None,
+            cost: UsageCost::default(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            subagent_doc_id,
+            chat_id: None,
+        });
+    publish(&ledger);
+}
+
 /// Buffer one automatic (in-Turn) Compaction summary response — it settles
 /// with the Turn's batch. Child runs compact on the delegation's metered
 /// transport and never book here.
@@ -902,6 +945,7 @@ mod tests {
             UsageKind::Subagent,
             UsageKind::Compaction,
             UsageKind::AutoReview,
+            UsageKind::JevReview,
             UsageKind::Title,
         ] {
             assert_eq!(

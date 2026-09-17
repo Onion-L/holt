@@ -17,8 +17,10 @@ Jev review is a fourth Permission mode riding the same before-tool-call
 gate as auto-review. Each mutating tool call is judged by one TypeSafe
 request: state is the tool identity, arguments, working directory, and
 the user's latest message; a fixed set of atomic Noul questions is
-combined in engine code (action threshold 0.6, confidence below 0.7
-escalates). An unsure or failed judgment — retries exhausted on
+combined in engine code. TypeSafe Nouls carry no separate confidence
+field, so the agreed confidence gate is expressed as a dead band on the
+Noul probabilities — answers between 0.4 and 0.6 escalate — plus a
+dedicated ask-the-user question (action threshold 0.6). An unsure or failed judgment — retries exhausted on
 429/529, network error, invalid key — escalates to the user as an
 ordinary Approval. The gate never fails open and never masks an
 infrastructure error as a model rejection.

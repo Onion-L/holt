@@ -35,6 +35,7 @@ mod git_watch;
 mod history;
 pub mod images;
 pub mod instance_lock;
+mod jev;
 mod jev_settings;
 mod local_fs;
 mod mode_default;
@@ -66,6 +67,7 @@ mod workspace_watch;
 use agent::AgentRuntime;
 use credentials::HoltCredentialStore;
 pub use instance_lock::InstanceLock;
+pub use jev::{JevCall, JevJudge, JevJudgment, JevVerdict};
 use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 use store::{load_chats, load_or_create_device_id, load_spaces};
@@ -77,6 +79,9 @@ pub use tools::{SearchBackend, SearchHit};
 /// as the backend slices land; tests inject one through `EngineConfig` to
 /// script the `web_search` tool end to end.
 pub type SearchBackendResolver = Arc<dyn Fn(&str) -> Option<Arc<dyn SearchBackend>> + Send + Sync>;
+/// Injectable Jev judge resolver (tests only): given the stored key, mount
+/// a judge — the stand-in for the built-in HTTP client.
+pub type JevJudgeResolver = Arc<dyn Fn(&str) -> Option<Arc<dyn JevJudge>> + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -107,6 +112,11 @@ pub struct EngineConfig {
     /// table when the engine resolves the configured backend at Turn
     /// admission. Production assembly leaves it unset.
     pub search_backend_resolver: Option<SearchBackendResolver>,
+    /// Injectable Jev judge resolver, set only by tests (like
+    /// `search_backend_resolver`): when present, it stands in for the
+    /// built-in HTTP client when the engine resolves the judge at Turn
+    /// admission. Production assembly leaves it unset.
+    pub jev_judge_resolver: Option<JevJudgeResolver>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -120,6 +130,10 @@ impl std::fmt::Debug for EngineConfig {
             .field(
                 "search_backend_resolver",
                 &self.search_backend_resolver.as_ref().map(|_| "injected"),
+            )
+            .field(
+                "jev_judge_resolver",
+                &self.jev_judge_resolver.as_ref().map(|_| "injected"),
             )
             .finish()
     }
@@ -171,6 +185,7 @@ struct EngineService {
     /// through the built-in adapter table (which the backend slices fill
     /// in).
     search_backend_resolver: Option<SearchBackendResolver>,
+    jev_judge_resolver: Option<JevJudgeResolver>,
     terminals: Arc<terminals::Terminals>,
     /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
@@ -251,6 +266,7 @@ impl LocalEngine {
                 web_search,
                 jev,
                 search_backend_resolver: config.search_backend_resolver.clone(),
+                jev_judge_resolver: config.jev_judge_resolver.clone(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),
             },
@@ -301,6 +317,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let first = LocalEngine::assemble(&config).unwrap();
         let id = first.engine_info().device_id.clone();
@@ -318,6 +335,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let _first = LocalEngine::assemble(&config).unwrap();
         assert!(LocalEngine::assemble(&config).is_err());
@@ -331,6 +349,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let store: serde_json::Value =
@@ -362,6 +381,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         drop(engine);
@@ -413,6 +433,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let path = dir.path().join("provider-store.json");
         std::fs::write(&path, b"{broken").unwrap();
@@ -433,6 +454,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         // A directory at the destination is unreadable as a store: the load
         // falls back to the compiled catalog while the rest of the data dir
@@ -458,6 +480,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -513,6 +536,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -618,6 +642,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut spaces) = engine
@@ -706,6 +731,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -774,6 +800,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap();
         engine
@@ -865,6 +892,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap();
         engine
@@ -923,6 +951,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -1026,6 +1055,7 @@ mod tests {
             personal_skills_dir: Some(personal),
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
 
@@ -1090,6 +1120,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         engine
@@ -1153,6 +1184,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1203,6 +1235,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1290,6 +1323,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine
@@ -1372,6 +1406,7 @@ mod tests {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
         let RpcReply::Stream(mut chats) = engine

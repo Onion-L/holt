@@ -258,6 +258,9 @@ pub(crate) struct Delegation {
     /// The parent Turn's web-search backend snapshot (ADR-0023): children
     /// mount `web_search` under the same admission-time choice.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
+    /// The parent Turn's Jev judge snapshot (ADR-0026): children gate
+    /// under the same admission-time judge.
+    pub(crate) jev_judge: Option<Arc<dyn crate::jev::JevJudge>>,
     pub(crate) stream_fn: StreamFn,
     pub(crate) cancel: CancellationToken,
 }
@@ -398,6 +401,7 @@ async fn execute(
                 permission_mode: d.permission_mode,
                 plan_mode: false,
                 search_backend: d.search_backend,
+                jev_judge: d.jev_judge,
                 stream_fn: Some(stream_fn),
             })
             .await,

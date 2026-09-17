@@ -82,6 +82,7 @@ impl GitFixture {
             personal_skills_dir: None,
             stream_fn: Some(ScriptedProvider::new(Vec::new()).stream_fn()),
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap()
     }
@@ -120,6 +121,7 @@ impl UnbornFixture {
             personal_skills_dir: None,
             stream_fn: Some(ScriptedProvider::new(Vec::new()).stream_fn()),
             search_backend_resolver: None,
+            jev_judge_resolver: None,
         })
         .unwrap()
     }

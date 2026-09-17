@@ -928,6 +928,7 @@ impl EngineService {
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.
             search_backend: self.search_backend(),
+            jev_judge: self.jev_judge(),
             stream_fn: self.runtime.stream_fn.clone(),
         })
     }
@@ -1014,6 +1015,7 @@ impl EngineService {
             raw_mode,
             "confirm-changes"
                 | "auto-review"
+                | "jev-review"
                 | "full-access"
                 | "workspace-write"
                 | "read-only"
@@ -1418,6 +1420,18 @@ impl EngineService {
     /// like the permission mode. Unconfigured — or an id whose adapter
     /// slice has not landed — resolves to no backend, so `web_search`
     /// stays out of the toolset.
+    /// The Turn's Jev judge (ADR-0026), resolved once per Turn admission
+    /// over the settings record — the same snapshot semantics as the
+    /// search backend and the mode. An unconfigured record resolves to
+    /// no judge, and a Jev review Turn then gates as confirm-changes.
+    fn jev_judge(&self) -> Option<Arc<dyn crate::JevJudge>> {
+        let record = self.jev.get()?;
+        match &self.jev_judge_resolver {
+            Some(resolve) => resolve(&record.api_key),
+            None => Some(Arc::new(crate::jev::JevClient::new(&record.api_key))),
+        }
+    }
+
     fn search_backend(&self) -> Option<Arc<dyn crate::SearchBackend>> {
         let record = self.web_search.get()?;
         match &self.search_backend_resolver {

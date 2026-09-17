@@ -466,6 +466,7 @@ async fn live_kimi_reads_image_pixels() {
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
         stream_fn: None,
         search_backend_resolver: None,
+        jev_judge_resolver: None,
     })
     .unwrap();
     let image = fixture.project_dir.path().join("color.png");

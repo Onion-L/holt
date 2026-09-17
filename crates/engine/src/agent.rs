@@ -1269,6 +1269,9 @@ pub(crate) struct AgentRun {
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
+    /// The admission-time Jev judge snapshot (ADR-0026): the mode's gate
+    /// mounts the same judge for the run and its delegations.
+    pub(crate) jev_judge: Option<Arc<dyn crate::jev::JevJudge>>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -1312,6 +1315,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         permission_mode,
         plan_mode,
         search_backend,
+        jev_judge,
         stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
@@ -1635,7 +1639,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         history: history.clone(),
         consumed: 0,
     }));
-    let prompt_message = user_agent_message(prompt, timestamp);
+    let prompt_message = user_agent_message(prompt.clone(), timestamp);
     // The user prompt joins the History when the Turn starts (ADR-0010) —
     // before any request, so even a Turn that dies immediately keeps what
     // the user asked.
@@ -1740,11 +1744,13 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         Arc::clone(&base_parts),
         Arc::clone(&runtime.approvals),
         cwd.clone(),
+        prompt.clone(),
         crate::gate::ReviewTransport {
             model: model.clone(),
             api_key: api_key.clone(),
             stream_fn: stream_fn.clone(),
         },
+        jev_judge.clone(),
         cancel.clone(),
     );
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
@@ -1778,6 +1784,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             skills: skills.clone(),
             permission_mode,
             search_backend,
+            jev_judge,
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
         }));

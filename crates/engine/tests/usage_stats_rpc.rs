@@ -147,6 +147,7 @@ fn engine(data_dir: &Path) -> LocalEngine {
         personal_skills_dir: None,
         stream_fn: None,
         search_backend_resolver: None,
+        jev_judge_resolver: None,
     })
     .unwrap()
 }

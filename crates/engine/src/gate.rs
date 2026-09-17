@@ -14,7 +14,9 @@ use std::{
 
 use holt_doc::parts::{GateVerdict, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, PermissionMode};
-use pi_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
+use pi_core::agent::types::{
+    AgentMessage, BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::ChatRuntime;
@@ -147,6 +149,29 @@ pub(crate) fn stamp_gate(
     if changed {
         chat.publish();
     }
+}
+
+/// The intent a Jev judgment is weighed against (ADR-0026): the run's
+/// own prompt — the user's latest message for a main run, the Task brief
+/// for a subagent — falling back to the latest user message in the
+/// History for runs that carry no prompt of their own.
+fn latest_user_request(chat: &ChatRuntime, prompt: &str) -> String {
+    if !prompt.trim().is_empty() {
+        return prompt.to_string();
+    }
+    chat.history
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::User(user) => {
+                let text = user.content.text().to_string();
+                (!text.trim().is_empty()).then_some(text)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// What the run needs to make one review pass (ADR-0014): the chat's own
@@ -303,7 +328,9 @@ pub(crate) fn before_tool_call_hook(
     base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
     approvals: Arc<ApprovalRegistry>,
     cwd: String,
+    prompt: String,
     review: ReviewTransport,
+    jev: Option<Arc<dyn crate::jev::JevJudge>>,
     cancel: CancellationToken,
 ) -> BeforeToolCallFn {
     Arc::new(
@@ -312,7 +339,9 @@ pub(crate) fn before_tool_call_hook(
             let base_parts = base_parts.clone();
             let approvals = approvals.clone();
             let cwd = cwd.clone();
+            let prompt = prompt.clone();
             let review = review.clone();
+            let jev = jev.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
@@ -403,9 +432,95 @@ pub(crate) fn before_tool_call_hook(
                         ReviewOutcome::Cancelled => None,
                     };
                 }
-                // Jev review (ADR-0026) has no judge of its own yet: until
-                // the Jev gate lands it gates as confirm-changes — never
-                // ungated.
+                // Jev review (ADR-0026): the external judge. A clear pass
+                // settles without the user; a clear veto blocks with the
+                // judge's reason; an unsure or failed judgment escalates
+                // into the same approval wait confirm-changes uses — fail
+                // closed, never an infrastructure error dressed up as a
+                // rejection. An unconfigured judge (no key) skips straight
+                // to that wait: the mode degrades to confirm-changes,
+                // silently, for as long as no key exists.
+                let mut escalation_note: Option<String> = None;
+                if mode == PermissionMode::JevReview
+                    && let Some(judge) = jev.as_ref()
+                {
+                    let request = latest_user_request(&chat, &prompt);
+                    match judge
+                        .judge(
+                            crate::jev::JevCall {
+                                tool: &ctx.tool_call.name,
+                                arguments: &arguments,
+                                cwd: &cwd,
+                                request: &request,
+                            },
+                            cancel.clone(),
+                        )
+                        .await
+                    {
+                        Ok(judgment) => {
+                            // Booked whatever the verdict — a judged call
+                            // is a metered decision request (ADR-0026).
+                            crate::usage::capture_jev(
+                                &chat,
+                                judgment.input_tokens,
+                                judgment.output_tokens,
+                            );
+                            match judgment.verdict {
+                                crate::jev::JevVerdict::Allow => {
+                                    stamp_gate(
+                                        &chat,
+                                        &base_parts,
+                                        &ctx.tool_call.id,
+                                        ToolGate {
+                                            origin: None,
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            state: ToolGateState::Settled {
+                                                verdict: GateVerdict::ReviewPassed,
+                                            },
+                                        },
+                                    );
+                                    return None;
+                                }
+                                crate::jev::JevVerdict::Deny { reason } => {
+                                    let reason = format!("Jev review: {reason}");
+                                    stamp_gate(
+                                        &chat,
+                                        &base_parts,
+                                        &ctx.tool_call.id,
+                                        ToolGate {
+                                            origin: None,
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            state: ToolGateState::Settled {
+                                                verdict: GateVerdict::ReviewRejected {
+                                                    reason: Some(reason.clone()),
+                                                },
+                                            },
+                                        },
+                                    );
+                                    return Some(BeforeToolCallResult {
+                                        block: Some(true),
+                                        reason: Some(reason),
+                                        terminate: None,
+                                    });
+                                }
+                                crate::jev::JevVerdict::Unsure => {
+                                    escalation_note = Some(
+                                        "Jev review was unsure — this call is your judgment".into(),
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            // The note carries the failure — invalid key,
+                            // exhausted retries, network death read
+                            // differently to the user asked to decide.
+                            let error = error.chars().take(140).collect::<String>();
+                            escalation_note = Some(format!(
+                                "Jev review could not reach a verdict ({error}) — this call is your judgment"
+                            ));
+                        }
+                    }
+                }
                 if !matches!(
                     mode,
                     PermissionMode::ConfirmChanges | PermissionMode::JevReview
@@ -425,7 +540,9 @@ pub(crate) fn before_tool_call_hook(
                     ToolGate {
                         origin: None,
                         id: approval_id.clone(),
-                        state: ToolGateState::Pending,
+                        state: ToolGateState::Pending {
+                            note: escalation_note,
+                        },
                     },
                 );
                 // The wait: a verdict through the RPC, or the Turn's end —
@@ -522,7 +639,7 @@ pub(crate) fn settle_pending_gates_on_load(transcript: &mut [holt_doc::SessionMe
             if let holt_doc::MessagePart::Tool {
                 gate: Some(gate), ..
             } = part
-                && gate.state == ToolGateState::Pending
+                && matches!(gate.state, ToolGateState::Pending { .. })
             {
                 gate.state = ToolGateState::Settled {
                     verdict: GateVerdict::Aborted,
@@ -698,7 +815,7 @@ mod tests {
                 id: "entry-1".into(),
                 role: holt_doc::MessageRole::Assistant,
                 parts: vec![
-                    gated_tool("call-1", ToolGateState::Pending),
+                    gated_tool("call-1", ToolGateState::Pending { note: None }),
                     gated_tool(
                         "call-2",
                         ToolGateState::Settled {

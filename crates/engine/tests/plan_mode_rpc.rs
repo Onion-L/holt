@@ -253,6 +253,7 @@ async fn plan_mode_state_survives_restart_without_starting_a_turn() {
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
+        jev_judge_resolver: None,
     })
     .unwrap();
     let RpcReply::Stream(mut sessions) = engine

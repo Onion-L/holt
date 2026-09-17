@@ -17,6 +17,7 @@ fn reassemble(fixture: &common::Fixture) -> LocalEngine {
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
         stream_fn: None,
         search_backend_resolver: None,
+        jev_judge_resolver: None,
     })
     .unwrap()
 }
