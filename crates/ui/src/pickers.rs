@@ -24,7 +24,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
-use holt_proto::{Model, Provider, ProviderId, ReasoningLevel, RepoRef};
+use holt_proto::{Model, PermissionMode, Provider, ProviderId, ReasoningLevel, RepoRef};
 
 /// Display cap for the ref list (t3code shows pages of 100 with a status
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
@@ -170,6 +170,10 @@ pub struct Pickers {
     refs_target: Option<String>,
     /// Highlighted row in the open list (keyboard nav).
     active: usize,
+    /// Whether the Jev review tier is selectable (ADR-0026): a configured
+    /// TypeSafe key mounts the judge; no record keeps the tier grayed and
+    /// keyboard-skipped in the mode menu.
+    jev_available: bool,
     /// Models-list scroll — keyboard nav keeps the highlighted row in view.
     /// A `UniformListScrollHandle`: the model list virtualizes (7k-model
     /// catalogs must scroll smoothly), and this is its handle; the plain
@@ -329,7 +333,7 @@ impl Pickers {
         }
         let draft_owner = state.read(cx).selected_chat.clone();
         let space_owner = state.read(cx).selected_space.clone();
-        Self {
+        let mut pickers = Self {
             state,
             space_owner,
             config: DraftConfig::default(),
@@ -344,6 +348,7 @@ impl Pickers {
             refs: Loadable::Idle,
             refs_target: None,
             active: 0,
+            jev_available: false,
             model_scroll: gpui::UniformListScrollHandle::new(),
             model_rows_cache: std::cell::RefCell::new(None),
             catalog_rev: 0,
@@ -365,7 +370,11 @@ impl Pickers {
             _create_events: create_events,
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
-        }
+        };
+        // The Jev tier's availability rides the settings record — read once
+        // at mount so the first menu open already knows it.
+        pickers.refresh_jev_available(cx);
+        pickers
     }
 
     /// Persist the sticky defaults (best-effort; picks are rare and tiny).
@@ -604,6 +613,11 @@ impl Pickers {
             return;
         }
         self.open.open(kind);
+        // The mode menu's Jev tier availability is re-read on every open —
+        // a key saved in Settings reaches the menu without a restart.
+        if kind == PickerKind::Mode {
+            self.refresh_jev_available(cx);
+        }
         // Clearing stale text emits Edited AFTER this function returns —
         // mute that one event so its reset can't clobber the highlight
         // anchored below (the no-op clear is also skipped for the same
@@ -632,7 +646,17 @@ impl Pickers {
             PickerKind::Branch => self.selected_ref_index(cx),
             PickerKind::ProviderModel => self.selected_model_index(cx),
             // Pre-anchored on the current tier (the Checkout pattern).
-            PickerKind::Mode => mode_index(self.effective_permission_mode(cx)),
+            PickerKind::Mode => {
+                let mode = self.effective_permission_mode(cx);
+                // A chat parked on Jev review with no key keeps its mode,
+                // but the grayed tier cannot hold the highlight — the
+                // nearest available tier below anchors it.
+                if mode == PermissionMode::JevReview && !self.jev_available {
+                    mode::JEV_TIER_INDEX - 1
+                } else {
+                    mode_index(mode)
+                }
+            }
             PickerKind::Space => self.selected_space_index(cx),
         };
         if kind == PickerKind::ProviderModel {
@@ -756,6 +780,13 @@ impl Pickers {
             }
             MenuKey::Up | MenuKey::Down => {
                 let delta = if key == MenuKey::Up { -1 } else { 1 };
+                // The mode menu walks its own stepper (the grayed Jev index
+                // is skipped there); the rest count rows and step generically.
+                if self.open_kind() == Some(PickerKind::Mode) {
+                    self.step_mode_selection(delta, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 let count = match self.open_kind() {
                     Some(PickerKind::Branch) => self.filtered_ref_rows(cx).len().min(MAX_REF_ROWS),
                     Some(PickerKind::Checkout) => 2,
@@ -763,12 +794,12 @@ impl Pickers {
                     // chips below (reasoning ladder, model options) are
                     // mouse-only.
                     Some(PickerKind::ProviderModel) => self.model_rows_len(cx),
-                    Some(PickerKind::Mode) => MODE_TIERS.len(),
                     Some(PickerKind::Space) => self.filtered_space_rows(cx).len(),
-                    None => 0,
+                    // The mode menu returned to its own stepper above.
+                    Some(PickerKind::Mode) | None => 0,
                 };
                 let current = (self.active != NO_ACTIVE_ROW).then_some(self.active);
-                self.active = popover::menu_step(current, count, delta).unwrap_or(0);
+                self.active = popover::menu_step(current, count, delta as isize).unwrap_or(0);
                 // Keep the highlighted MODEL row in view (the rows are the
                 // scroll container's direct children, so indices map 1:1);
                 // the traits chips below live in the pinned tray and never
@@ -792,8 +823,7 @@ impl Pickers {
                     };
                     self.pick_checkout(kind, cx);
                 } else if self.open_kind() == Some(PickerKind::Mode) {
-                    let mode = MODE_TIERS[self.active.min(MODE_TIERS.len() - 1)];
-                    self.pick_permission_mode(mode, cx);
+                    self.pick_active_mode(cx);
                 } else {
                     self.on_search_submit(cx);
                 }

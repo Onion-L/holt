@@ -352,7 +352,7 @@ fn hash_gate(acc: &mut Vec<u8>, gate: Option<&ToolGate>) {
                 acc.extend_from_slice(origin.label.as_bytes());
             }
             match &gate.state {
-                ToolGateState::Pending => acc.push(1),
+                ToolGateState::Pending { .. } => acc.push(1),
                 ToolGateState::Settled { verdict } => {
                     acc.push(2);
                     acc.extend_from_slice(format!("{verdict:?}").as_bytes());
@@ -710,7 +710,7 @@ pub fn rows_for_entry(
                 // verdict chip.
                 if matches!(
                     item.gate.as_ref().map(|gate| &gate.state),
-                    Some(ToolGateState::Pending)
+                    Some(ToolGateState::Pending { note: None })
                 ) {
                     // The skip steals the entry's TAIL part from the group
                     // above: without the gate that group IS the live tail of

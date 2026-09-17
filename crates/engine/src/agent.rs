@@ -1738,21 +1738,21 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // The permission gate (ADR-0014): the before-tool-call hook that pauses
     // every mutating call behind the Turn's snapshotted mode. The title
     // task and compaction mount no tools and never pass through here.
-    let gate = crate::gate::before_tool_call_hook(
-        permission_mode,
-        chat.clone(),
-        Arc::clone(&base_parts),
-        Arc::clone(&runtime.approvals),
-        cwd.clone(),
-        prompt.clone(),
-        crate::gate::ReviewTransport {
+    let gate = crate::gate::before_tool_call_hook(crate::gate::GateWiring {
+        mode: permission_mode,
+        chat: chat.clone(),
+        base_parts: Arc::clone(&base_parts),
+        approvals: Arc::clone(&runtime.approvals),
+        cwd: cwd.clone(),
+        prompt: prompt.clone(),
+        review: crate::gate::ReviewTransport {
             model: model.clone(),
             api_key: api_key.clone(),
             stream_fn: stream_fn.clone(),
         },
-        jev_judge.clone(),
-        cancel.clone(),
-    );
+        jev_judge: jev_judge.clone(),
+        cancel: cancel.clone(),
+    });
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
     let mut tools =
         crate::tools::execution_tools_for_model(&cwd, allow_images, search_backend.clone());

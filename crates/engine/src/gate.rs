@@ -318,21 +318,38 @@ async fn run_review_pass(
     }
 }
 
-/// Build the gate's before-tool-call hook for one run. `mode` is the
+/// Everything the run hands the gate hook (ADR-0014/0026): the Turn's
+/// snapshotted mode, the chat it gates, and the gatekeepers' transports
+/// — the reviewer model for auto-review, the Jev judge for jev-review,
+/// and the approval registry both approvals and Jev escalations wait on.
+pub(crate) struct GateWiring {
+    pub(crate) mode: PermissionMode,
+    pub(crate) chat: Arc<ChatRuntime>,
+    pub(crate) base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
+    pub(crate) approvals: Arc<ApprovalRegistry>,
+    pub(crate) cwd: String,
+    pub(crate) prompt: String,
+    pub(crate) review: ReviewTransport,
+    pub(crate) jev_judge: Option<Arc<dyn crate::jev::JevJudge>>,
+    pub(crate) cancel: CancellationToken,
+}
+
+/// Build the gate's before-tool-call hook for one run. The mode is the
 /// Turn's snapshot (ADR-0014): switches mid-Turn leave the running Turn
 /// under its original mode. The hook blocks in the verdict wait and races
 /// the run's cancellation token, so no approval can outlive its Turn.
-pub(crate) fn before_tool_call_hook(
-    mode: PermissionMode,
-    chat: Arc<ChatRuntime>,
-    base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
-    approvals: Arc<ApprovalRegistry>,
-    cwd: String,
-    prompt: String,
-    review: ReviewTransport,
-    jev: Option<Arc<dyn crate::jev::JevJudge>>,
-    cancel: CancellationToken,
-) -> BeforeToolCallFn {
+pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
+    let GateWiring {
+        mode,
+        chat,
+        base_parts,
+        approvals,
+        cwd,
+        prompt,
+        review,
+        jev_judge,
+        cancel,
+    } = wiring;
     Arc::new(
         move |ctx: BeforeToolCallContext, signal: Option<CancellationToken>| {
             let chat = chat.clone();
@@ -341,7 +358,7 @@ pub(crate) fn before_tool_call_hook(
             let cwd = cwd.clone();
             let prompt = prompt.clone();
             let review = review.clone();
-            let jev = jev.clone();
+            let jev_judge = jev_judge.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
@@ -442,7 +459,7 @@ pub(crate) fn before_tool_call_hook(
                 // silently, for as long as no key exists.
                 let mut escalation_note: Option<String> = None;
                 if mode == PermissionMode::JevReview
-                    && let Some(judge) = jev.as_ref()
+                    && let Some(judge) = jev_judge.as_ref()
                 {
                     let request = latest_user_request(&chat, &prompt);
                     match judge

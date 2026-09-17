@@ -2945,7 +2945,7 @@ fn chip_header_row(
             // detail — "✓ Approved", "⊘ Denied · "note"", "⚡ Prefix exempt", …
             tool.gate.as_ref().and_then(|gate| match &gate.state {
                 ToolGateState::Settled { verdict } => Some(super::verdict_chip(verdict)),
-                ToolGateState::Pending => None,
+                ToolGateState::Pending { .. } => None,
             }),
             |row, (text, tint)| {
                 row.child(

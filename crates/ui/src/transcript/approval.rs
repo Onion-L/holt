@@ -34,7 +34,9 @@ pub fn pending_approval_tool(transcript: &[SessionMessageEntry]) -> Option<(Tool
                 call,
                 gate: Some(gate),
                 ..
-            } if gate.state == ToolGateState::Pending => Some((call.clone(), gate.clone())),
+            } if matches!(gate.state, ToolGateState::Pending { .. }) => {
+                Some((call.clone(), gate.clone()))
+            }
             _ => None,
         })
 }
@@ -183,7 +185,7 @@ mod tests {
         ToolGate {
             origin: None,
             id: id.into(),
-            state: ToolGateState::Pending,
+            state: ToolGateState::Pending { note: None },
         }
     }
 
@@ -370,7 +372,7 @@ mod tests {
             "m1",
             vec![
                 tool_part("p1", None),
-                gated_part("p2", ToolGateState::Pending),
+                gated_part("p2", ToolGateState::Pending { note: None }),
                 tool_part("p3", None),
             ],
         );

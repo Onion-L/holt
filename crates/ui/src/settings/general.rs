@@ -16,7 +16,8 @@ use gpui::{
     Task, Window, div, prelude::*, px,
 };
 use holt_proto::{
-    Model, Provider, TitleSettingsState, WebSearchBackendOption, WebSearchSettingsState,
+    JevSettingsState, Model, Provider, TitleSettingsState, WebSearchBackendOption,
+    WebSearchSettingsState,
 };
 use holt_rpc::methods;
 
@@ -175,9 +176,21 @@ pub struct GeneralPage {
     web_search_draft_concealed: bool,
     web_search_error: Option<String>,
     backend_menu: Popup<()>,
+    /// The engine-owned Jev record (ADR-0026): the user's own TypeSafe key
+    /// behind the Jev review tier.
+    jev: Loadable<JevSettingsState>,
+    jev_key: Entity<ComposerInput>,
+    /// The raw stored key the field currently shows, fetched by
+    /// `RevealJevKey`; `None` while it shows the masked display or a draft.
+    jev_revealed_key: Option<String>,
+    /// Draft-only projection: the eye hides the key the user is typing.
+    jev_draft_concealed: bool,
+    jev_error: Option<String>,
     /// Re-derives the key field's projection on every edit: a pasted key is
     /// concealed the moment it stops being the masked display.
     _key_events: Subscription,
+    /// Same for the Jev key field.
+    _jev_key_events: Subscription,
 }
 
 impl GeneralPage {
@@ -188,6 +201,15 @@ impl GeneralPage {
             |page: &mut Self, _, event: &ComposerInputEvent, cx| {
                 if matches!(event, ComposerInputEvent::Edited) {
                     page.sync_key_mask(cx);
+                }
+            },
+        );
+        let jev_key = cx.new(|cx| ComposerInput::new_secret("TypeSafe API key", cx));
+        let jev_key_events = cx.subscribe(
+            &jev_key,
+            |page: &mut Self, _, event: &ComposerInputEvent, cx| {
+                if matches!(event, ComposerInputEvent::Edited) {
+                    page.sync_jev_mask(cx);
                 }
             },
         );
@@ -210,7 +232,13 @@ impl GeneralPage {
             web_search_draft_concealed: true,
             web_search_error: None,
             backend_menu: Popup::default(),
+            jev: Loadable::Idle,
+            jev_key,
+            jev_revealed_key: None,
+            jev_draft_concealed: true,
+            jev_error: None,
             _key_events: key_events,
+            _jev_key_events: jev_key_events,
         };
         page.load(cx);
         page
@@ -285,11 +313,13 @@ impl GeneralPage {
             self.settings = Loadable::Error("Engine not connected".into());
             self.models = Loadable::Error("Engine not connected".into());
             self.web_search = Loadable::Error("Engine not connected".into());
+            self.jev = Loadable::Error("Engine not connected".into());
             return;
         };
         self.settings = Loadable::Loading;
         self.models = Loadable::Loading;
         self.web_search = Loadable::Loading;
+        self.jev = Loadable::Loading;
         self.task = Some(cx.spawn(async move |this, cx| {
             let settings_result = engine
                 .client()
@@ -305,6 +335,10 @@ impl GeneralPage {
             let web_result = engine
                 .client()
                 .call(methods::GET_WEB_SEARCH_SETTINGS, serde_json::json!({}))
+                .await;
+            let jev_result = engine
+                .client()
+                .call(methods::GET_JEV_SETTINGS, serde_json::json!({}))
                 .await;
             this.update(cx, |page, cx| {
                 match settings_result {
@@ -339,6 +373,19 @@ impl GeneralPage {
                         );
                     }
                     Err(error) => page.web_search = Loadable::Error(error.to_string()),
+                }
+                match jev_result {
+                    Ok(value) => match serde_json::from_value::<JevSettingsState>(value) {
+                        Ok(state) => page.apply_jev_state(state, cx),
+                        Err(error) => page.jev = Loadable::Error(error.to_string()),
+                    },
+                    Err(holt_rpc::RpcError::UnknownMethod(_)) => {
+                        page.jev = Loadable::Error(
+                            "Jev settings aren't available — the engine doesn't support them yet"
+                                .into(),
+                        );
+                    }
+                    Err(error) => page.jev = Loadable::Error(error.to_string()),
                 }
                 cx.notify();
             })
@@ -555,6 +602,211 @@ impl GeneralPage {
         }));
     }
 
+    /// The Jev field's projection state — the same three-state machine as
+    /// the web-search key, tracked against the Jev record's masked display.
+    fn jev_key_field_state(&self, cx: &App) -> KeyField {
+        let text = self.jev_key.read(cx).text();
+        if self.jev_revealed_key.as_deref() == Some(text) {
+            return KeyField::Revealed;
+        }
+        let stored = self
+            .jev
+            .ready()
+            .and_then(|state| state.api_key_masked.as_deref());
+        if stored == Some(text) {
+            KeyField::Stored
+        } else {
+            KeyField::Draft
+        }
+    }
+
+    fn sync_jev_mask(&mut self, cx: &mut Context<Self>) {
+        let masked = self.jev_key_field_state(cx) == KeyField::Draft && self.jev_draft_concealed;
+        self.jev_key
+            .update(cx, |input, cx| input.set_masked(masked, cx));
+    }
+
+    /// Echo a Jev reply (read, save, or remove) into the group's editable
+    /// state — the stored truth is what the page shows.
+    fn apply_jev_state(&mut self, state: JevSettingsState, cx: &mut Context<Self>) {
+        let masked = state.api_key_masked.clone().unwrap_or_default();
+        self.jev = Loadable::Ready(state);
+        self.jev_revealed_key = None;
+        self.jev_draft_concealed = true;
+        self.jev_key.update(cx, |input, cx| {
+            input.set_masked(false, cx);
+            input.set_text(masked, cx);
+        });
+    }
+
+    /// The eye button on the Jev key field: stored keys reveal and conceal
+    /// through `RevealJevKey`; a draft is only a projection flip.
+    fn toggle_jev_key(&mut self, cx: &mut Context<Self>) {
+        match self.jev_key_field_state(cx) {
+            KeyField::Stored => self.reveal_jev_key(cx),
+            KeyField::Revealed => self.restore_masked_jev_key(cx),
+            KeyField::Draft => {
+                self.jev_draft_concealed = !self.jev_draft_concealed;
+                self.sync_jev_mask(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    fn reveal_jev_key(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.jev_error = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::REVEAL_JEV_KEY, serde_json::json!({}))
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(value) => match value
+                        .get("key")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|key| !key.is_empty())
+                    {
+                        Some(key) => {
+                            page.jev_revealed_key = Some(key.to_string());
+                            page.jev_key.update(cx, |input, cx| {
+                                input.set_masked(false, cx);
+                                input.set_text(key, cx);
+                            });
+                            page.jev_error = None;
+                        }
+                        None => {
+                            page.jev_error = Some("No API key is stored".into());
+                        }
+                    },
+                    Err(error) => page.jev_error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Conceal again: put the engine's masked key back in the field.
+    fn restore_masked_jev_key(&mut self, cx: &mut Context<Self>) {
+        let masked = self
+            .jev
+            .ready()
+            .and_then(|state| state.api_key_masked.clone())
+            .unwrap_or_default();
+        self.jev_key.update(cx, |input, cx| {
+            input.set_masked(false, cx);
+            input.set_text(masked, cx);
+        });
+        self.jev_revealed_key = None;
+        self.jev_draft_concealed = true;
+        cx.notify();
+    }
+
+    /// Save the key field's content. An untouched field holds the engine's
+    /// masked display, never a usable key: the stored key is re-read through
+    /// `RevealJevKey` and re-saved — writing the masked display would
+    /// corrupt the record.
+    fn save_jev(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.jev_error = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        let draft = self.jev_key.read(cx).text().to_string();
+        let untouched = self.jev_key_field_state(cx) == KeyField::Stored;
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let key = if untouched {
+                match engine
+                    .client()
+                    .call(methods::REVEAL_JEV_KEY, serde_json::json!({}))
+                    .await
+                {
+                    Ok(value) => value
+                        .get("key")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    Err(error) => {
+                        this.update(cx, |page, cx| {
+                            page.jev_error = Some(error.to_string());
+                            cx.notify();
+                        })
+                        .ok();
+                        return;
+                    }
+                }
+            } else {
+                draft
+            };
+            if key.trim().is_empty() {
+                this.update(cx, |page, cx| {
+                    page.jev_error = Some("Enter an API key".into());
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+            let result = engine
+                .client()
+                .call(
+                    methods::SAVE_JEV_SETTINGS,
+                    serde_json::json!({ "apiKey": key }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(value) => match serde_json::from_value::<JevSettingsState>(value) {
+                        Ok(state) => {
+                            page.apply_jev_state(state, cx);
+                            page.jev_error = None;
+                        }
+                        Err(error) => page.jev_error = Some(error.to_string()),
+                    },
+                    Err(error) => page.jev_error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Clear the Jev record — the unconfigured state is no file at all,
+    /// and the tier goes gray again.
+    fn remove_jev(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.jev_error = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::REMOVE_JEV_SETTINGS, serde_json::json!({}))
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(_) => {
+                        page.jev_error = None;
+                        page.apply_jev_state(
+                            JevSettingsState {
+                                api_key_masked: None,
+                            },
+                            cx,
+                        );
+                    }
+                    Err(error) => page.jev_error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Clear the record — the unconfigured state is back to "no tool".
     fn remove_web_search(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -709,6 +961,112 @@ impl GeneralPage {
             self.backend_menu.open(());
         }
         cx.notify();
+    }
+
+    /// The Jev review group (ADR-0026): the TypeSafe key field with the
+    /// same reveal affordance and Save/Remove actions as Web search — no
+    /// backend picker, the model is pinned. The group's state is
+    /// independent of its neighbors: one failure never hides the rest.
+    fn render_jev(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let body = match &self.jev {
+            Loadable::Idle | Loadable::Loading => {
+                popover::skeleton_rows("jev-skeleton", theme, 1, cx.entity_id(), cx)
+                    .into_any_element()
+            }
+            Loadable::Error(error) => widgets::error_strip(theme, error.clone())
+                .id("jev-unavailable")
+                .debug_selector(|| "jev-unavailable".into())
+                .into_any_element(),
+            Loadable::Ready(state) => {
+                let unconfigured = state.api_key_masked.is_none();
+                let mut column = div().flex().flex_col();
+                if unconfigured {
+                    column = column.child(
+                        div()
+                            .id("jev-unconfigured")
+                            .debug_selector(|| "jev-unconfigured".into())
+                            .pb(px(4.0))
+                            .child(widgets::row_description(
+                                theme,
+                                "No key configured — Jev review stays grayed out in the \
+                                 permission menu.",
+                            )),
+                    );
+                }
+                column = column.child(
+                    widgets::flat_row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .child(widgets::row_title(theme, "API key"))
+                                .child(widgets::row_description(
+                                    theme,
+                                    "Your own TypeSafe key, stored on this device, separate \
+                                     from your provider keys.",
+                                )),
+                        )
+                        .child(jev_key_field(
+                            theme,
+                            self.jev_key.clone(),
+                            self.jev_key_field_state(cx),
+                            self.jev_draft_concealed,
+                            cx,
+                        )),
+                );
+
+                let save_theme = theme.clone();
+                let save = widgets::ghost_action(theme)
+                    .id("save-jev")
+                    .debug_selector(|| "save-jev".into())
+                    .border_1()
+                    .border_color(theme.border)
+                    .hover(move |style| widgets::ghost_hover(&save_theme, style))
+                    .on_click(cx.listener(|page, _, _, cx| page.save_jev(cx)))
+                    .child("Save");
+                let danger = theme.danger;
+                let danger_muted = theme.danger_muted;
+                let remove = widgets::ghost_action(theme)
+                    .id("remove-jev")
+                    .debug_selector(|| "remove-jev".into())
+                    .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
+                    .on_click(cx.listener(|page, _, _, cx| page.remove_jev(cx)))
+                    .child("Remove");
+                column = column.child(
+                    div()
+                        .mt(px(8.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(remove)
+                        .child(save),
+                );
+                if let Some(error) = self.jev_error.clone() {
+                    column = column.child(
+                        widgets::error_strip(theme, error)
+                            .id("jev-error")
+                            .debug_selector(|| "jev-error".into()),
+                    );
+                }
+                column.into_any_element()
+            }
+        };
+        div()
+            .id("jev-group")
+            .mt(px(32.0))
+            .child(widgets::section_label(theme, "Jev review (TypeSafe)"))
+            .child(div().mt(px(4.0)).child(widgets::row_description(
+                theme,
+                "A fast decision model reviews each change in Jev review mode, \
+                 escalating to you when unsure. Bring your own key; without one the \
+                 mode stays unavailable.",
+            )))
+            .child(div().mt(px(12.0)).child(body))
+            .into_any_element()
     }
 
     /// The Web search group (web-tools ticket 07): the backend picker, the
@@ -959,6 +1317,53 @@ impl GeneralPage {
             .child(div().mt(px(12.0)).child(body))
             .into_any_element()
     }
+}
+
+/// The API-key field for the Jev group — the same affordance as the
+/// Web search key field, with its own ids and toggle.
+fn jev_key_field(
+    theme: &Theme,
+    input: Entity<ComposerInput>,
+    field: KeyField,
+    draft_concealed: bool,
+    cx: &mut Context<GeneralPage>,
+) -> impl IntoElement {
+    let hover_theme = theme.clone();
+    let showing_plain =
+        field == KeyField::Revealed || (field == KeyField::Draft && !draft_concealed);
+    div()
+        .id("jev-key-field")
+        .debug_selector(|| "jev-key-field".into())
+        .w(px(300.0))
+        .h(px(36.0))
+        .pl(px(12.0))
+        .pr(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(Theme::CONTROL_RADIUS))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.input_glass_bg())
+        .child(div().flex_1().min_w_0().child(input))
+        .child(
+            widgets::ghost_action(theme)
+                .flex_none()
+                .id("toggle-jev-key")
+                .debug_selector(|| "toggle-jev-key".into())
+                .hover(move |style| widgets::ghost_hover(&hover_theme, style))
+                .on_click(cx.listener(|page, _, _, cx| page.toggle_jev_key(cx)))
+                .child(
+                    crate::icons::icon(if showing_plain {
+                        crate::icons::EYE_SLASH
+                    } else {
+                        crate::icons::EYE
+                    })
+                    .size(px(15.0))
+                    .text_color(theme.text_muted),
+                ),
+        )
+        .into_any_element()
 }
 
 /// The API-key field for the Web search group: the bordered input carrying
@@ -1287,7 +1692,8 @@ impl Render for GeneralPage {
                              renames always win.",
                     )))
                     .child(div().mt(px(12.0)).child(body))
-                    .child(self.render_web_search(&theme, cx)),
+                    .child(self.render_web_search(&theme, cx))
+                    .child(self.render_jev(&theme, cx)),
             )
     }
 }
@@ -1554,6 +1960,9 @@ mod tests {
     struct FakeWebSearchEngine {
         state: std::sync::Mutex<WebSearchSettingsState>,
         key: std::sync::Mutex<Option<String>>,
+        jev_state: std::sync::Mutex<JevSettingsState>,
+        jev_key: std::sync::Mutex<Option<String>>,
+        jev_saved: std::sync::Mutex<Vec<serde_json::Value>>,
         providers: std::sync::Mutex<Vec<Provider>>,
         saved: std::sync::Mutex<Vec<serde_json::Value>>,
         /// False stands in for an engine that predates the web-search RPCs.
@@ -1627,6 +2036,33 @@ mod tests {
                         backends,
                     };
                     RpcReply::value(&*self.state.lock().unwrap())
+                }
+                methods::GET_JEV_SETTINGS => RpcReply::value(&*self.jev_state.lock().unwrap()),
+                methods::REVEAL_JEV_KEY => RpcReply::value(&serde_json::json!({
+                    "key": self.jev_key.lock().unwrap().clone(),
+                })),
+                methods::SAVE_JEV_SETTINGS => {
+                    let api_key = params
+                        .get("apiKey")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if api_key.trim().is_empty() {
+                        return Err(RpcError::BadParams("apiKey is required".into()));
+                    }
+                    self.jev_saved.lock().unwrap().push(params);
+                    *self.jev_key.lock().unwrap() = Some(api_key.clone());
+                    *self.jev_state.lock().unwrap() = JevSettingsState {
+                        api_key_masked: Some(masked(&api_key)),
+                    };
+                    RpcReply::value(&*self.jev_state.lock().unwrap())
+                }
+                methods::REMOVE_JEV_SETTINGS => {
+                    *self.jev_key.lock().unwrap() = None;
+                    *self.jev_state.lock().unwrap() = JevSettingsState {
+                        api_key_masked: None,
+                    };
+                    RpcReply::value(&serde_json::json!({}))
                 }
                 methods::REMOVE_WEB_SEARCH_SETTINGS => {
                     let backends = self.state.lock().unwrap().backends.clone();
@@ -1709,19 +2145,35 @@ mod tests {
         key: Option<&str>,
         providers: Vec<Provider>,
     ) -> WebSearchHarness<'a> {
-        web_search_harness_with(cx, state, key, providers, true)
+        web_search_harness_with(
+            cx,
+            state,
+            key,
+            providers,
+            true,
+            JevSettingsState {
+                api_key_masked: None,
+            },
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn web_search_harness_with<'a>(
         cx: &'a mut gpui::TestAppContext,
         state: WebSearchSettingsState,
         key: Option<&str>,
         providers: Vec<Provider>,
         available: bool,
+        jev_state: JevSettingsState,
+        jev_key: Option<&str>,
     ) -> WebSearchHarness<'a> {
         let engine = std::sync::Arc::new(FakeWebSearchEngine {
             state: std::sync::Mutex::new(state),
             key: std::sync::Mutex::new(key.map(str::to_string)),
+            jev_state: std::sync::Mutex::new(jev_state),
+            jev_key: std::sync::Mutex::new(jev_key.map(str::to_string)),
+            jev_saved: std::sync::Mutex::new(Vec::new()),
             providers: std::sync::Mutex::new(providers),
             saved: std::sync::Mutex::new(Vec::new()),
             available,
@@ -1995,6 +2447,10 @@ mod tests {
             None,
             vec![],
             false,
+            JevSettingsState {
+                api_key_masked: None,
+            },
+            None,
         );
         assert!(
             harness
@@ -2015,5 +2471,79 @@ mod tests {
                 .debug_bounds("web-search-backend-dropdown")
                 .is_none()
         );
+    }
+
+    /// The Jev group (ADR-0026): the masked key from `GetJevSettings` is
+    /// what the field shows; Save rides `SaveJevSettings` (an untouched
+    /// field re-reads the stored key through `RevealJevKey` instead of
+    /// writing the mask); the eye reveals and re-conceals; Remove returns
+    /// the group to its unconfigured note.
+    #[gpui::test]
+    fn the_jev_group_masks_saves_reveals_and_removes(cx: &mut gpui::TestAppContext) {
+        let harness = web_search_harness_with(
+            cx,
+            WebSearchSettingsState {
+                backend: None,
+                api_key_masked: None,
+                backends: launch_backends(),
+            },
+            None,
+            vec![],
+            true,
+            JevSettingsState {
+                api_key_masked: Some("sk-j…mnop".into()),
+            },
+            Some("sk-jev-abcdefghijklmnop"),
+        );
+
+        // The masked display, never bullets; configured means no
+        // unconfigured note.
+        let text = |h: &WebSearchHarness| {
+            h.visual
+                .read(|cx| h.page.read(cx).jev_key.read(cx).text().to_string())
+        };
+        assert_eq!(text(&harness), "sk-j…mnop");
+        assert!(harness.visual.debug_bounds("jev-unconfigured").is_none());
+
+        // Saving untouched re-reads and re-saves the stored key — the
+        // masked display itself is never written as a key.
+        // The Jev group renders below the window fold in the test scene,
+        // so simulate_click cannot reach its buttons — drive the page
+        // methods the buttons' listeners call (the idiom is the Web search
+        // group's, whose click path is covered above) and assert the
+        // buttons themselves render.
+        assert!(harness.visual.debug_bounds("save-jev").is_some());
+        assert!(harness.visual.debug_bounds("remove-jev").is_some());
+        assert!(harness.visual.debug_bounds("toggle-jev-key").is_some());
+        harness
+            .page
+            .update(&mut *harness.visual, |page, cx| page.save_jev(cx));
+        harness.pump();
+        assert_eq!(
+            harness.engine.jev_saved.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "apiKey": "sk-jev-abcdefghijklmnop" })]
+        );
+        assert_eq!(text(&harness), "sk-j…mnop");
+
+        // The eye reveals through RevealJevKey, then conceals back to the
+        // engine's masked display.
+        harness
+            .page
+            .update(&mut *harness.visual, |page, cx| page.toggle_jev_key(cx));
+        harness.pump();
+        assert_eq!(text(&harness), "sk-jev-abcdefghijklmnop");
+        harness
+            .page
+            .update(&mut *harness.visual, |page, cx| page.toggle_jev_key(cx));
+        harness.pump();
+        assert_eq!(text(&harness), "sk-j…mnop");
+
+        // Remove returns the group to the unconfigured note.
+        harness
+            .page
+            .update(&mut *harness.visual, |page, cx| page.remove_jev(cx));
+        harness.pump();
+        assert_eq!(text(&harness), "");
+        assert!(harness.visual.debug_bounds("jev-unconfigured").is_some());
     }
 }

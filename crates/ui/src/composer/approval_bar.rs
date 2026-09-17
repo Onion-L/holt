@@ -80,6 +80,10 @@ pub(crate) struct ApprovalPrompt {
     pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
     pub note_placeholder: &'static str,
+    /// Why this approval came to the user when the gatekeeper says so —
+    /// a Jev review escalation's "Jev review was unsure — …" note
+    /// (ADR-0026); `None` on every ordinary approval.
+    pub note: Option<String>,
 }
 
 /// The gate's prompt (ADR-0014): the kind-specific title, the mono target
@@ -114,6 +118,7 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
                 danger: true,
             },
         ],
+        note: None,
         note_placeholder: "Deny with a note…",
     }
 }
@@ -131,6 +136,7 @@ pub(crate) fn plan_prompt() -> ApprovalPrompt {
             verdict: BarVerdict::Plan("approve"),
             danger: false,
         }],
+        note: None,
         note_placeholder: "Enter feedback…",
     }
 }
@@ -217,8 +223,13 @@ impl Composer {
         let bar = self.approval_bar.as_ref()?;
         match bar.kind {
             BarKind::Gate => {
-                let (call, _) = pending_approval_tool(&self.state.read(cx).transcript)?;
-                Some(gate_prompt(&call))
+                let (call, gate) = pending_approval_tool(&self.state.read(cx).transcript)?;
+                let mut prompt = gate_prompt(&call);
+                prompt.note = match &gate.state {
+                    holt_doc::parts::ToolGateState::Pending { note } => note.clone(),
+                    _ => None,
+                };
+                Some(prompt)
             }
             BarKind::Plan => Some(plan_prompt()),
         }
@@ -467,6 +478,19 @@ impl Composer {
                                 .text_color(theme.text)
                                 .child(prompt.title),
                         )
+                        // The gatekeeper's reason this came to the user: the
+                        // Jev escalation's note, directly under the title —
+                        // the one place the judge's uncertainty is visible.
+                        .when_some(prompt.note.clone(), |el, note| {
+                            el.child(
+                                div()
+                                    .mt(px(6.0))
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .line_height(px(17.0))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(note)),
+                            )
+                        })
                         // The target leads when the producer has one: a
                         // bare mono line — the strip's idiom, no framing
                         // box. The plan's document is the transcript card.
@@ -649,7 +673,7 @@ mod tests {
         // Gate and plan both pending: the gate wins the tie.
         let both = vec![
             plan_pending(holt_doc::PlanApprovalState::Pending),
-            gated(ToolGateState::Pending),
+            gated(ToolGateState::Pending { note: None }),
         ];
         let Some(PendingApproval::Gate { id, .. }) = PendingApproval::from_transcript(&both) else {
             panic!("expected the gate to win")
@@ -685,7 +709,8 @@ mod tests {
         // A pending gate opens the bar keyed to its approval id, with the
         // keyboard landing on the bar's own focus handle (not the input).
         state.update(cx, |s, cx| {
-            s.transcript.push(gated(ToolGateState::Pending));
+            s.transcript
+                .push(gated(ToolGateState::Pending { note: None }));
             cx.notify();
         });
         composer.update(cx, |this, _| {
@@ -734,7 +759,7 @@ mod tests {
             assert!(!this.answered_approvals.contains("g1"));
         });
         state.update(cx, |s, cx| {
-            let mut next = gated(ToolGateState::Pending);
+            let mut next = gated(ToolGateState::Pending { note: None });
             let MessagePart::Tool { gate, .. } = &mut next.parts[0] else {
                 panic!()
             };
@@ -808,7 +833,8 @@ mod tests {
         let (composer, cx) = cx.add_window_view(|_window, cx| Composer::new(state.clone(), cx));
 
         state.update(cx, |s, cx| {
-            s.transcript.push(gated(ToolGateState::Pending));
+            s.transcript
+                .push(gated(ToolGateState::Pending { note: None }));
             cx.notify();
         });
         cx.run_until_parked();
