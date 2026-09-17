@@ -992,6 +992,22 @@ impl CodeEditor {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
+    /// UTF-16 offset inside an arbitrary string → UTF-8 byte offset. The
+    /// IME's `new_selected_range` is relative to the marked string, so it
+    /// maps against that string — never the whole content.
+    fn str_offset_from_utf16(text: &str, offset: usize) -> usize {
+        let mut utf8_offset = 0;
+        let mut utf16_count = 0;
+        for ch in text.chars() {
+            if utf16_count >= offset {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            utf8_offset += ch.len_utf8();
+        }
+        utf8_offset
+    }
+
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
     }
@@ -1196,7 +1212,13 @@ impl EntityInputHandler for CodeEditor {
         }
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
+            // Relative to the marked string (`new_text`), in UTF-16 — mapping
+            // it through the whole content would shift the caret past every
+            // multi-byte char before the cursor.
+            .map(|r| {
+                Self::str_offset_from_utf16(new_text, r.start)
+                    ..Self::str_offset_from_utf16(new_text, r.end)
+            })
             .map(|new_range| new_range.start + range.start..new_range.end + range.start)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.follow_cursor = true;
@@ -1963,5 +1985,26 @@ mod tests {
         assert_eq!(lens, vec![1, 1, 1, 3]);
         assert!(overlay[1].underline.is_some());
         assert!(overlay[0].underline.is_none());
+    }
+
+    /// Same contract as the composer input: the IME's `new_selected_range`
+    /// is UTF-16 RELATIVE to the marked string — mapping it through the
+    /// whole content strands the caret past every multi-byte char before
+    /// the cursor.
+    #[gpui::test]
+    fn ime_marked_selection_is_relative_to_the_marked_text(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            let editor = editor_with(cx, "然后你再看一下研究：docs");
+            editor.update(cx, |editor, cx| {
+                // Caret mid-text, right before "：".
+                let at = "然后你再看一下研究".len();
+                editor.selected_range = at..at;
+                editor.replace_and_mark_text_in_range(None, "liao j", Some(6..6), window, cx);
+                let caret = at + "liao j".len();
+                assert_eq!(editor.marked_range, Some(at..caret));
+                assert_eq!(editor.selected_range, caret..caret);
+            });
+        });
     }
 }

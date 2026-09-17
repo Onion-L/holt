@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, BorderStyle, Bounds, CursorStyle, FontStyle, FontWeight, Hsla, InteractiveText,
-    SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point,
+    Pixels, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point,
     prelude::*, px, quad, size,
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
@@ -135,6 +135,8 @@ pub struct CachedCode {
     /// Slice-pointer identity + len of the highlight Arc that produced this.
     hl_key: (usize, usize),
     lines: Vec<(SharedString, Vec<TextRun>)>,
+    /// Widest shaped line — the horizontal scroll extent's source of truth.
+    max_width: Pixels,
 }
 
 impl RenderCache {
@@ -231,6 +233,7 @@ pub fn render_block(
             ix,
             opts,
             theme,
+            window,
             highlight,
         ),
         Block::BlockQuote { children } => div()
@@ -1044,13 +1047,16 @@ fn render_code_block(
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
+    window: &Window,
     highlight: CodeHighlight,
 ) -> AnyElement {
     let mono = font(theme.font_mono.clone());
     // Per-line strings + runs through the cross-frame cache (validity: code
     // length + highlight slice identity — a fresh highlight Arc re-derives).
     let hl_key = highlight.map_or((0, 0), |h| (h.as_ptr() as usize, h.len()));
+    let text_system = window.text_system();
     let build = || {
+        let mut max_width = px(0.0);
         let lines: Vec<(SharedString, Vec<TextRun>)> = code
             .split('\n')
             .enumerate()
@@ -1059,16 +1065,25 @@ fn render_code_block(
                     .and_then(|h| h.get(li))
                     .map(|t| &t[..])
                     .unwrap_or(&[]);
-                (
-                    SharedString::from(line.to_string()),
-                    runs_for_syntax_line(line, spans, &mono, theme),
-                )
+                let line: SharedString = line.to_string().into();
+                let runs = runs_for_syntax_line(&line, spans, &mono, theme);
+                if !line.is_empty() {
+                    // Same font/size the paint path shapes with — recolors
+                    // (highlight, veil) never change the width.
+                    max_width = max_width.max(
+                        text_system
+                            .shape_line(line.clone(), px(CODE_TEXT_SIZE), &runs, None)
+                            .width(),
+                    );
+                }
+                (line, runs)
             })
             .collect();
         Rc::new(CachedCode {
             code_len: code.len(),
             hl_key,
             lines,
+            max_width,
         })
     };
     let cached: Rc<CachedCode> = match &opts.cache {
@@ -1138,6 +1153,41 @@ fn render_code_block(
             )
             .when(copied, |el| el.child(SharedString::from("Copied")))
     });
+    // The scroll viewport's width is capped by the row and a flex column's
+    // children stretch to it, so without an explicit content width the x
+    // scroll extent degenerates to zero — same shape as the table scroller
+    // above: the inner block keeps the widest line's width and the viewport
+    // scrolls it.
+    let mut body = div()
+        .id(scroll_id)
+        .overflow_x_scroll()
+        .px(px(CODE_PADDING_X))
+        .py(px(CODE_PADDING_Y))
+        .font_family(theme.font_mono.clone())
+        .text_size(px(CODE_TEXT_SIZE))
+        .line_height(px(CODE_LINE_HEIGHT))
+        .whitespace_nowrap()
+        .flex()
+        .flex_col()
+        .child(div().flex().flex_col().min_w(cached.max_width).children(
+            (0..cached.lines.len()).scan(0usize, move |off, li| {
+                let (line, runs) = &cached.lines[li];
+                let start = *off;
+                *off = start + line.len() + 1; // +1 for the '\n'
+                let local = slice_spans(&veil_spans, start, start + line.len());
+                let runs = apply_veil(runs.clone(), &local);
+                Some(
+                    div()
+                        .h(px(CODE_LINE_HEIGHT))
+                        .flex_none()
+                        .child(StyledText::new(line.clone()).with_runs(runs)),
+                )
+            }),
+        ));
+    // A vertical wheel over a code block scrolls the transcript; only real
+    // horizontal deltas (trackpad swipe, Shift+wheel) pan the code — gpui
+    // otherwise maps delta.y onto the x axis of x-only scrollers.
+    body.style().restrict_scroll_to_axis = Some(true);
     div()
         .rounded(px(10.0))
         // Faint white wash over the near-black panel ≈ #101010 (holt's code
@@ -1161,32 +1211,7 @@ fn render_code_block(
                     .child(SharedString::from(lang.to_string())),
             )
         })
-        .child(
-            div()
-                .id(scroll_id)
-                .overflow_x_scroll()
-                .px(px(CODE_PADDING_X))
-                .py(px(CODE_PADDING_Y))
-                .font_family(theme.font_mono.clone())
-                .text_size(px(CODE_TEXT_SIZE))
-                .line_height(px(CODE_LINE_HEIGHT))
-                .whitespace_nowrap()
-                .flex()
-                .flex_col()
-                .children((0..cached.lines.len()).scan(0usize, move |off, li| {
-                    let (line, runs) = &cached.lines[li];
-                    let start = *off;
-                    *off = start + line.len() + 1; // +1 for the '\n'
-                    let local = slice_spans(&veil_spans, start, start + line.len());
-                    let runs = apply_veil(runs.clone(), &local);
-                    Some(
-                        div()
-                            .h(px(CODE_LINE_HEIGHT))
-                            .flex_none()
-                            .child(StyledText::new(line.clone()).with_runs(runs)),
-                    )
-                })),
-        )
+        .child(body)
         // Overlay LAST so it paints above the header/body.
         .children(copy_button)
         .into_any_element()
@@ -1510,5 +1535,114 @@ mod tests {
             "font or color changes invalidate runs"
         );
         assert!(cache.code.is_empty());
+    }
+
+    /// The horizontal scroll extent comes from the widest SHAPED line (see
+    /// `render_code_block`): a long line must widen `max_width`, and editing
+    /// the code re-derives it through the same cache entry.
+    #[gpui::test]
+    fn code_block_cache_tracks_the_widest_line(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|window, _cx| {
+            let theme = Theme::dark();
+            let cache = Rc::new(RefCell::new(RenderCache::default()));
+            let opts = RenderOptions {
+                row_key: "row".into(),
+                veil: None,
+                cache: Some(cache.clone()),
+                now: Instant::now(),
+                copy: None,
+            };
+            let key = || -> (SharedString, usize, usize) { ("row".into(), 0, 0) };
+
+            let _ = render_code_block(
+                Some("rust"),
+                "fn a() {}\nfn b() {}",
+                0,
+                0,
+                &opts,
+                &theme,
+                window,
+                None,
+            );
+            let narrow = cache.borrow().code[&key()].max_width;
+
+            let long = format!("fn a() {{ /* {} */ }}", "x".repeat(400));
+            let _ = render_code_block(Some("rust"), &long, 0, 0, &opts, &theme, window, None);
+            let wide = cache.borrow().code[&key()].max_width;
+
+            assert!(narrow > px(0.0));
+            assert!(
+                wide > narrow * 4.0,
+                "a 400-char line dwarfs a 10-char one ({wide:?} vs {narrow:?})"
+            );
+        });
+    }
+
+    /// The code scroller's shape (viewport + inner block pinned to the widest
+    /// line + `restrict_scroll_to_axis`): the x extent exists, real horizontal
+    /// deltas pan it, and vertical wheel deltas stay on the transcript's axis
+    /// instead of panning the code sideways.
+    #[gpui::test]
+    fn code_block_scroller_scrolls_x_and_ignores_vertical_wheel(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let scroll = gpui::ScrollHandle::new();
+
+        struct TestView {
+            scroll: gpui::ScrollHandle,
+        }
+
+        impl gpui::Render for TestView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let mut body = div()
+                    .id("code-body")
+                    .overflow_x_scroll()
+                    .track_scroll(&self.scroll)
+                    .whitespace_nowrap()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w(px(400.0))
+                            .child(div().h(px(18.0)).flex_none().child("code")),
+                    );
+                body.style().restrict_scroll_to_axis = Some(true);
+                div().w(px(100.0)).child(body)
+            }
+        }
+
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TestView {
+                scroll: scroll.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.0), px(0.0)),
+            size(px(100.0), px(100.0)),
+            |_, _| view.clone().into_any_element(),
+        );
+
+        // 400px of content in a 100px viewport = 300px of scrollable extent.
+        assert_eq!(scroll.max_offset().x, px(300.0));
+
+        let wheel = |dx: f32, dy: f32| gpui::ScrollWheelEvent {
+            position: point(px(50.0), px(9.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(dx), px(dy))),
+            ..Default::default()
+        };
+
+        // Vertical wheel: belongs to the transcript, never pans code sideways.
+        cx.simulate_event(wheel(0.0, -40.0));
+        assert_eq!(scroll.offset().x, px(0.0));
+
+        // A real horizontal delta pans the code.
+        cx.simulate_event(wheel(-60.0, 0.0));
+        assert_eq!(scroll.offset().x, px(-60.0));
     }
 }

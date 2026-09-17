@@ -1595,6 +1595,22 @@ impl ComposerInput {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
+    /// UTF-16 offset inside an arbitrary string → UTF-8 byte offset. The
+    /// IME's `new_selected_range` is relative to the marked string, so it
+    /// maps against that string — never the whole content.
+    fn str_offset_from_utf16(text: &str, offset: usize) -> usize {
+        let mut utf8_offset = 0;
+        let mut utf16_count = 0;
+        for ch in text.chars() {
+            if utf16_count >= offset {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            utf8_offset += ch.len_utf8();
+        }
+        utf8_offset
+    }
+
     /// Shape the text at a width; store measured layout; return content height.
     /// Called from the element's measured-layout closure.
     pub(super) fn layout_text(
@@ -1851,7 +1867,13 @@ impl EntityInputHandler for ComposerInput {
         }
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
+            // Relative to the marked string (`new_text`), in UTF-16 — mapping
+            // it through the whole content would shift the caret past every
+            // multi-byte char before the cursor.
+            .map(|r| {
+                Self::str_offset_from_utf16(new_text, r.start)
+                    ..Self::str_offset_from_utf16(new_text, r.end)
+            })
             .map(|new_range| new_range.start + range.start..new_range.end + range.start)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.follow_cursor = true;
@@ -2037,5 +2059,34 @@ mod tests {
             display_row_segments(8..24, [12, 40]),
             vec![(0, 0, 8..12), (1, 12, 12..24)]
         );
+    }
+
+    /// The IME's `new_selected_range` is UTF-16 RELATIVE to the marked
+    /// string. Mapping it through the whole content (the pre-fix behaviour)
+    /// inflated the caret past every multi-byte char before the cursor —
+    /// visible as a caret stranded in the text after the composition when
+    /// typing mid-text after CJK.
+    #[gpui::test]
+    fn ime_marked_selection_is_relative_to_the_marked_text(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| cx.new(|cx| ComposerInput::new("say", cx)));
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("然后你再看一下研究：docs", cx);
+                // Caret mid-text, right before "：".
+                let at = "然后你再看一下研究".len();
+                input.selected_range = at..at;
+                // Apple Pinyin marks "liao j" with the caret at its end
+                // (6 UTF-16 units — the string is ASCII here).
+                input.replace_and_mark_text_in_range(None, "liao j", Some(6..6), window, cx);
+                let caret = at + "liao j".len();
+                assert_eq!(input.marked_range, Some(at..caret));
+                assert_eq!(
+                    input.selected_range,
+                    caret..caret,
+                    "caret sits at the end of the marked text, not 6 utf16 units into the content"
+                );
+            });
+        });
     }
 }

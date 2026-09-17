@@ -279,8 +279,9 @@ async fn a_changed_skill_is_resolved_at_execution_with_captured_configuration() 
 }
 
 #[tokio::test]
-async fn a_missing_skill_retains_the_head_and_continue_admits_after_repair() {
+async fn a_skill_deleted_before_admission_retains_the_head_and_continue_admits_after_repair() {
     let fixture = Fixture::new();
+    skill(fixture.personal_dir.path(), "grill", "GRILL-BODY");
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::gated(gate.clone(), "answer A"),
@@ -291,10 +292,12 @@ async fn a_missing_skill_retains_the_head_and_continue_admits_after_repair() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
     common::wait_for_requests(&provider, 1).await;
 
-    // No `grill` on disk: the failure is detected at admission, so the
-    // pending item is retained with an error and the queue pauses BEFORE
-    // any Turn exists.
+    // The submit-time check passes; the item is enqueued while the Turn is
+    // still running. The catalog is scanned fresh at admission, so deleting
+    // the skill now retains the pending item with an error and pauses the
+    // queue BEFORE any Turn exists.
     invoke_skill(&engine, &fixture.cwd(), "grill", None, "m-skill").await;
+    std::fs::remove_dir_all(fixture.personal_dir.path().join("grill")).unwrap();
     gate.notify_one();
     let state = wait_for_queue(&engine, |q| q["paused"] == true).await;
     assert_eq!(state["pending"][0]["messageId"], "m-skill");
