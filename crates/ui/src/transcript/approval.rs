@@ -111,7 +111,7 @@ pub enum VerdictTint {
 /// the chat model.
 fn judge_label(judge: ReviewJudge) -> &'static str {
     match judge {
-        ReviewJudge::ChatModel => "Auto-review",
+        ReviewJudge::ChatModel => "Auto review",
         ReviewJudge::Jev => "Jev review",
     }
 }
@@ -281,7 +281,7 @@ mod tests {
                 GateVerdict::ReviewPassed {
                     judge: ReviewJudge::ChatModel,
                 },
-                "Auto-review · passed",
+                "Auto review · passed",
                 VerdictTint::AutoReview,
             ),
             (
@@ -296,7 +296,7 @@ mod tests {
                     reason: None,
                     judge: ReviewJudge::ChatModel,
                 },
-                "Auto-review · rejected",
+                "Auto review · rejected",
                 VerdictTint::Danger,
             ),
             (
@@ -304,7 +304,7 @@ mod tests {
                     reason: Some("no tests".into()),
                     judge: ReviewJudge::ChatModel,
                 },
-                "Auto-review · rejected · \"no tests\"",
+                "Auto review · rejected · \"no tests\"",
                 VerdictTint::Danger,
             ),
             (
