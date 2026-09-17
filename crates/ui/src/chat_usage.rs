@@ -165,7 +165,8 @@ fn kind_label(kind: &str) -> String {
         "turn" => "Turns".to_string(),
         "subagent" => "Subagents".to_string(),
         "compaction" => "Compaction".to_string(),
-        "auto-review" => "Auto-review".to_string(),
+        "auto-review" => "Auto review".to_string(),
+        "jev-review" => "Jev review".to_string(),
         "title" => "Titles".to_string(),
         other => other.to_string(),
     }

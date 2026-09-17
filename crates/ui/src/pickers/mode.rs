@@ -40,7 +40,7 @@ pub(crate) const JEV_TIER_INDEX: usize = 2;
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ConfirmChanges => "Confirm changes",
-        PermissionMode::AutoReview => "Auto-review",
+        PermissionMode::AutoReview => "Auto review",
         PermissionMode::JevReview => "Jev review",
         PermissionMode::FullAccess => "Full access",
     }
@@ -531,7 +531,7 @@ mod tests {
             mode_label(PermissionMode::ConfirmChanges),
             "Confirm changes"
         );
-        assert_eq!(mode_label(PermissionMode::AutoReview), "Auto-review");
+        assert_eq!(mode_label(PermissionMode::AutoReview), "Auto review");
         assert_eq!(mode_label(PermissionMode::JevReview), "Jev review");
         assert_eq!(mode_label(PermissionMode::FullAccess), "Full access");
         // The skip index and the array order must never drift apart.
