@@ -126,9 +126,9 @@ pub struct Composer {
     interrupt_arm: Option<Instant>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
-    /// The confirm-changes approval bar that replaces the pill while a
-    /// gate pends (ADR-0014) — the wizard's takeover pattern over the
-    /// same shared input.
+    /// The confirm-changes approval bar that takes over the composer
+    /// while a gate pends (ADR-0014) — the wizard's takeover pattern over
+    /// the same shared input.
     approval_bar: Option<ApprovalBar>,
     approval_bar_focus: FocusHandle,
     /// Gates answered locally: suppresses the bar until the doc frame
@@ -448,9 +448,9 @@ impl Composer {
         }
 
         // The arm clears when the Turn ends (CONTEXT.md), not merely when
-        // the pill stops rendering: a queued Turn starting inside the
-        // confirm window must need two fresh presses, never inherit the
-        // previous run's armed confirmation.
+        // the button reverts to its normal form: a queued Turn starting
+        // inside the confirm window must need two fresh presses, never
+        // inherit the previous run's armed confirmation.
         if self.interrupt_arm.is_some() && !self.run_live(cx) {
             self.interrupt_arm = None;
         }
@@ -499,8 +499,8 @@ impl Composer {
 
         // Approval bar lifecycle (the wizard's takeover pattern, keyed per
         // approval id): a pending approval — a confirm-changes gate
-        // (ADR-0014) or a submitted plan (ADR-0025) — replaces the pill;
-        // the wizard, when also live, wins the surface.
+        // (ADR-0014) or a submitted plan (ADR-0025) — takes over the
+        // composer; the wizard, when also live, wins the surface.
         let pending = {
             let s = self.state.read(cx);
             PendingApproval::from_transcript(&s.transcript)
@@ -843,7 +843,7 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
         // A pending confirm-changes gate takes over the composer next
-        // (ADR-0014): the approval bar answers it where the pill was.
+        // (ADR-0014): the approval bar answers it in the composer's place.
         if let Some(bar) = self.render_approval_bar(&theme, window, cx) {
             // The bar's own focus handle owns the keyboard by default —
             // with the shared input focused, its caret bindings would eat

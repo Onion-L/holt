@@ -186,8 +186,8 @@ impl Composer {
         match self.button_mode(cx) {
             // Live with nothing to send: no submit-path stop anymore —
             // empty-Enter is inert by user decision (never arms, confirms,
-            // or interrupts). The mouse stop square and the armed pill
-            // interrupt via their own handlers.
+            // or interrupts). The mouse stop square interrupts via its own
+            // handler.
             SendButtonMode::Stop => {}
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
@@ -682,13 +682,12 @@ impl Composer {
     }
 
     /// Raw Escape on the composer: the Interrupt confirmation protocol
-    /// (CONTEXT.md). While a Turn runs and the pill is showing, the first
-    /// Esc arms — the button becomes the ESC pill — and the second Esc (or
-    /// a click on it) interrupts. One exception keeps prototype 3-A's
-    /// behavior: while a confirm-changes Approval gate pends, the approval
-    /// bar replaces the pill, so an arm would have no visible feedback
-    /// channel — there Esc interrupts directly, in one press. A Plan-kind
-    /// bar leaves Esc inert (no Turn is blocked on a plan).
+    /// (CONTEXT.md). While a Turn runs, the first Esc arms — invisibly, the
+    /// button keeps its normal form — and a second Esc within the window
+    /// interrupts. One exception keeps prototype 3-A's behavior: while a
+    /// confirm-changes Approval gate pends, Esc interrupts directly, in one
+    /// press. A Plan-kind bar leaves Esc inert (no Turn is blocked on a
+    /// plan).
     ///
     /// Other surfaces own their Escape first — the attachment lightbox, the
     /// question wizard, an open picker popover or switch dialog (which also
@@ -724,7 +723,7 @@ impl Composer {
             self.interrupt(cx);
             return;
         }
-        // A Plan-kind bar replaces the pill too — nothing to arm against.
+        // A Plan-kind bar owns the keyboard too — nothing to arm against.
         if self.approval_bar.is_some() {
             return;
         }
@@ -744,9 +743,10 @@ impl Composer {
     }
 
     /// Arm the Interrupt confirmation: the first stop-key press (Esc —
-    /// Enter is out of the protocol) while a Turn runs. The ESC pill renders
-    /// (and the confirming press interrupts) until the press arrives, this
-    /// timer's lapse, the Turn's end, or a chat switch clears the arm.
+    /// Enter is out of the protocol) while a Turn runs. Arming is invisible
+    /// — the button keeps its normal form; the confirming press interrupts
+    /// until this timer's lapse, the Turn's end, or a chat switch clears
+    /// the arm.
     fn arm_interrupt(&mut self, cx: &mut Context<Self>) {
         let deadline = Instant::now() + Duration::from_millis(INTERRUPT_ARM_RESET_MS);
         self.interrupt_arm = Some(deadline);
@@ -863,47 +863,9 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
-        // Armed Interrupt confirmation (CONTEXT.md): the ESC pill replaces
-        // whatever mode the button is in — Stop square or Queue arrow —
-        // until the arm is confirmed or lapses.
-        if self.interrupt_arm.is_some() && self.run_live(cx) {
-            return div()
-                .id("composer-esc-confirm")
-                .role(gpui::Role::Button)
-                .aria_label("Interrupt the running turn")
-                .focusable()
-                .tooltip(|_, cx| {
-                    cx.new(|_| super::queue::ActionTooltip("Press Esc again to stop".into()))
-                        .into()
-                })
-                .h(px(28.0))
-                .px(px(10.0))
-                .flex_none()
-                .rounded_full()
-                .bg(theme.text)
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|s| s.opacity(0.85))
-                .focus(|s| s.border_2().border_color(theme.border_strong))
-                .text_size(crate::typography::ui_rems(10.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme.bg)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.interrupt_arm = None;
-                    this.interrupt(cx);
-                }))
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.interrupt_arm = None;
-                        this.interrupt(cx);
-                    }
-                }))
-                .child("ESC")
-                .into_any_element();
-        }
+        // Arming is intentionally invisible (user decision): the button
+        // keeps its normal form — Stop square or Queue arrow — while an
+        // Interrupt confirmation is armed; the confirming Esc interrupts.
         // Holt composer-actions.tsx: a size-7 filled circle — up-arrow to
         // send/queue, a dark rounded square on the same light circle to stop.
         match mode {
