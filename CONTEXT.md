@@ -64,9 +64,11 @@ _Avoid_: double-Esc stop
 - **Task brief**: the goal, necessary background, and acceptance criteria a parent agent supplies to a Subagent. It does not include the parent's entire History.
 - **Explorer**: a Subagent that investigates and reports findings using only reading, Content search, another Chat's Transcript, and the web tools; it cannot change files or execute commands.
 - **Worker**: a Subagent that can change files and execute commands under its parent Turn's Permission mode.
-- **Permission mode**: the per-chat standing policy that stands between a Turn's mutating tool calls and execution — which gatekeeper judges each one: the user (confirm changes), a model review pass (auto-review), or none (full access). Reads are never gated. New chats inherit the last mode used on the device.
+- **Permission mode**: the per-chat standing policy that stands between a Turn's mutating tool calls and execution — which gatekeeper judges each one: the user (confirm changes), a model review pass (auto-review), Jev (Jev review), or none (full access). Reads are never gated. New chats inherit the last mode used on the device.
 - **Approval**: a mutating tool call paused for the user's verdict in confirm-changes mode — allow once, always-allow, deny, or deny with a written note (the note becomes the reason the model sees). Rendered as an approval chip in the Transcript that settles to its verdict.
 - **Auto-review**: the model pass that judges each mutating tool call before execution in auto-review mode — same model as the chat; a rejection blocks the call and returns the reason to the agent. Rendered as review chips in the Transcript.
+- **Jev review**: the Permission mode whose gatekeeper is Jev, an external fast decision model instead of the chat's own: each mutating tool call is judged against the user's latest request, and an unsure or failed judgment escalates to the user as an Approval. With no API key configured the mode is unavailable — never an error.
+_Avoid_: jev mode, typesafe review, fast review
 - **Always-allow**: a chat-scoped, in-memory grant that passes matching mutating calls through the gate for the rest of the app session — bash matches by command prefix, write/edit by exact file path. Checked before the gatekeeper, so it holds across mode switches; cleared on restart and never persisted.
 _Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
 

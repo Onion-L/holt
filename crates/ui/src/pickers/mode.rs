@@ -1,7 +1,8 @@
 //! The permission-mode control (ADR-0014, prototype 1-B): the composer
 //! footer's persistent shield chip + tier menu — one control, identical in
 //! empty and populated chats. The menu rows carry fixed per-tier tints
-//! (Auto-review blue, Full access orange — semantic signposts, deliberately
+//! (Auto-review blue, Jev review pink, Full access orange — semantic
+//! signposts, deliberately
 //! NOT the selectable accent); the footer chip itself stays in the app's
 //! neutral chip idiom.
 //!
@@ -33,6 +34,7 @@ pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ConfirmChanges => "Confirm changes",
         PermissionMode::AutoReview => "Auto-review",
+        PermissionMode::JevReview => "Jev review",
         PermissionMode::FullAccess => "Full access",
     }
 }
@@ -43,6 +45,9 @@ pub fn mode_description(mode: PermissionMode) -> &'static str {
         PermissionMode::ConfirmChanges => "Asks before every write, edit, or command",
         PermissionMode::AutoReview => {
             "The model reviews each change first; rejections come with a reason"
+        }
+        PermissionMode::JevReview => {
+            "A fast decision model reviews each change, escalating only when unsure"
         }
         PermissionMode::FullAccess => {
             "Everything runs without asking — only for tasks you fully trust"
@@ -55,12 +60,14 @@ pub fn mode_icon(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ConfirmChanges => crate::icons::SHIELD,
         PermissionMode::AutoReview => crate::icons::EYE,
+        PermissionMode::JevReview => crate::icons::BOT,
         PermissionMode::FullAccess => crate::icons::LOCK_OPEN,
     }
 }
 
-/// The tier's fixed menu tint: Auto-review reads informational blue, Full
-/// access warning orange; Confirm changes — the safe default — stays
+/// The tier's fixed menu tint: Auto-review reads informational blue, Jev
+/// review pink, Full access warning orange; Confirm changes — the safe
+/// default — stays
 /// neutral. Fixed hues, NOT the selectable accent: the tiers are semantic
 /// signposts and must read the same under every accent choice.
 pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Option<gpui::Hsla> {
@@ -68,6 +75,9 @@ pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Option<gpui::Hsla> {
         PermissionMode::ConfirmChanges => None,
         PermissionMode::AutoReview => {
             Some(crate::theme::AccentColor::Blue.primary(theme.appearance))
+        }
+        PermissionMode::JevReview => {
+            Some(crate::theme::AccentColor::Pink.primary(theme.appearance))
         }
         PermissionMode::FullAccess => {
             Some(crate::theme::AccentColor::Orange.primary(theme.appearance))
