@@ -550,10 +550,22 @@ impl EngineService {
                         "messageId and skill name must not be empty".into(),
                     ));
                 }
-                // Typed from submission to execution: the skill itself is
-                // resolved against a fresh catalog when the queue admits the
-                // item (rule 16) — an unknown or invalid name then retains
-                // the pending item with an error instead of failing here.
+                // A name no root catalog answers is a typo — deterministic
+                // on every retry — so fail the RPC instead of parking an
+                // unrecoverable item at the queue head: the composer keeps
+                // its draft (the UI clears only on Ok) and the queue stays
+                // unblocked. The admission-time resolve (rule 16) remains
+                // the backstop for the submit-to-admit race: a skill deleted
+                // after this check still settles as a retained, retriable
+                // pending item.
+                if self
+                    .skills
+                    .resolve(Some(request.cwd.as_str()), &name)
+                    .await
+                    .is_none()
+                {
+                    return Err(RpcError::Failed(format!("unknown skill: {name}")));
+                }
                 {
                     let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                     if chat.is_removed() {

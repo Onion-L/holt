@@ -20,15 +20,24 @@ already have consumed the event.
 
 ## Consequences
 
-- The inner scroll area owns wheel input while the pointer is over it.
+- The inner scroll area owns wheel input while the pointer is over it and it
+  can still move in the gesture's direction.
 - The outer transcript does not move during inner scrolling.
-- Scrolling the outer transcript requires moving the pointer outside the inner
-  scroll area.
+- At the inner area's scroll boundary the gesture chains: the unabsorbed
+  remainder of the wheel delta is forwarded to the transcript list
+  (`forward_scroll_remainder` in `crates/ui/src/transcript/render.rs`), so the
+  gesture continues instead of dead-ending. The div's built-in listener
+  applies the delta (unclamped) before the bubble-phase handler runs, so the
+  tracked handle's offset past its clamp IS the remainder; the handle is
+  written back clamped so two wheel events in one frame cannot forward the
+  same overshoot twice. Forwarding runs the same viewport bookkeeping a
+  direct wheel scroll would (`Transcript::on_user_scroll`).
 - Nested scroll implementations should include a GPUI event-dispatch
   regression test covering both offsets.
 
 ## Evidence
 
 The regression is covered by
-`nested_compaction_scroll_does_not_move_transcript_list` in
+`nested_compaction_scroll_does_not_move_transcript_list` (isolation) and
+`nested_scroll_chains_to_transcript_list_at_bounds` (chaining) in
 `crates/ui/src/transcript/render.rs`.

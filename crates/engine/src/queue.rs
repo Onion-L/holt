@@ -736,10 +736,12 @@ impl EngineService {
                             .await,
                     ),
                     PendingKind::Ordinary | PendingKind::Skill => {
-                        // A queued skill resolves against a fresh catalog at
-                        // admission (rule 16): an unknown or invalid name
-                        // retains the pending item with an error and pauses
-                        // the queue BEFORE any Turn is created.
+                        // A queued skill resolves against a fresh catalog
+                        // at admission (rule 16) — the race backstop behind
+                        // the submit-time check in the RPC handler: a skill
+                        // deleted after submission retains the pending item
+                        // with an error and pauses the queue BEFORE any Turn
+                        // is created.
                         let skill = if kind == PendingKind::Skill {
                             let name = message.skill_name.clone().unwrap_or_default();
                             match service

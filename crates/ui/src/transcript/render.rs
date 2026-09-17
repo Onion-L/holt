@@ -234,6 +234,30 @@ impl HighlightStore {
     }
 }
 
+/// ADR-0013 chaining for a nested reading viewport (skill body, compaction
+/// summary) inside the transcript list: the occluded div owns the wheel only
+/// while it can move, and whatever it could NOT absorb is forwarded to the
+/// outer list so the gesture continues instead of dead-ending at the
+/// boundary. The div's built-in scroll listener applies the delta
+/// (unclamped) before bubble dispatch reaches this handler, so the tracked
+/// offset sitting past its clamp IS the unabsorbed remainder. The handle is
+/// written back clamped so a second wheel event in the same frame cannot
+/// re-forward the same overshoot. Returns the forwarded distance — zero when
+/// the body absorbed the whole delta.
+pub(super) fn forward_scroll_remainder(
+    list: &gpui::ListState,
+    handle: &gpui::ScrollHandle,
+) -> gpui::Pixels {
+    let offset = handle.offset();
+    let clamped_y = offset.y.clamp(-handle.max_offset().y, px(0.0));
+    let remainder = offset.y - clamped_y;
+    if remainder != px(0.0) {
+        handle.set_offset(gpui::point(offset.x, clamped_y));
+        list.scroll_by(-remainder);
+    }
+    remainder
+}
+
 impl Transcript {
     /// The invocation chip that OPENS the agent's reply (seeded by the
     /// engine ahead of any thinking): a flush-left process row in the
@@ -327,6 +351,7 @@ impl Transcript {
         let mut column = div().w_full().flex().flex_col().child(header);
         if open || closing {
             let url = format!("file://{}", file.trim_start_matches("file://"));
+            let scroll = self.nested_scroll_handle(row_id);
             let body = div()
                 .flex()
                 .flex_col()
@@ -343,8 +368,14 @@ impl Transcript {
                         .overflow_y_scroll()
                         // Nested reading viewport inside the transcript list:
                         // occlude so one wheel gesture cannot scroll both this
-                        // body and the outer list (ADR-0013).
+                        // body and the outer list (ADR-0013); the wheel
+                        // handler chains the unabsorbed remainder to the list
+                        // at the body's scroll boundary.
                         .occlude()
+                        .track_scroll(&scroll)
+                        .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                            this.chain_nested_scroll(&scroll, cx);
+                        }))
                         .font_family(theme.font_mono.clone())
                         .text_size(crate::typography::ui_rems(11.0))
                         .line_height(crate::typography::ui_rems(16.0))
@@ -475,6 +506,7 @@ impl Transcript {
                 );
         let mut column = div().w_full().flex().flex_col().child(header);
         if open {
+            let scroll = self.nested_scroll_handle(row_id);
             column = column.child(
                 div()
                     .w_full()
@@ -489,8 +521,14 @@ impl Transcript {
                     .overflow_y_scroll()
                     // This is a nested reading viewport. Occlude the outer
                     // transcript hitbox so one wheel gesture cannot scroll
-                    // both the summary and the transcript list.
+                    // both the summary and the transcript list; the wheel
+                    // handler chains the unabsorbed remainder to the list at
+                    // the summary's scroll boundary.
                     .occlude()
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                        this.chain_nested_scroll(&scroll, cx);
+                    }))
                     .text_size(px(12.0))
                     .line_height(px(17.0))
                     .text_color(theme.text.opacity(0.85))
@@ -3333,6 +3371,113 @@ mod tests {
         assert_eq!(outer.logical_scroll_top().item_ix, 0);
         assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(0.0));
         assert_eq!(inner.offset().y, gpui::px(-40.0));
+    }
+
+    /// ADR-0013 chaining: at the nested viewport's scroll boundary the
+    /// wheel's unabsorbed remainder moves the OUTER list, instead of
+    /// dead-ending. The inner body is 50px tall with 200px of content (max
+    /// offset 150); the outer list has four 100px items in a 100px window.
+    /// The body must be a BLOCK div capped by max_h (the skill/compaction
+    /// shape): a fixed-height flex column lets taffy shrink the children
+    /// into the container and the scroll extent degenerates to zero.
+    #[gpui::test]
+    fn nested_scroll_chains_to_transcript_list_at_bounds(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let outer = gpui::ListState::new(4, gpui::ListAlignment::Top, gpui::px(200.0));
+        let inner = gpui::ScrollHandle::new();
+
+        struct TestView {
+            outer: gpui::ListState,
+            inner: gpui::ScrollHandle,
+        }
+
+        impl gpui::Render for TestView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let inner = self.inner.clone();
+                let outer = self.outer.clone();
+                gpui::list(self.outer.clone(), move |ix, _, _| {
+                    if ix == 0 {
+                        let wheel_inner = inner.clone();
+                        let wheel_outer = outer.clone();
+                        gpui::div()
+                            .h(gpui::px(100.0))
+                            .child(
+                                gpui::div()
+                                    .id("chaining-body")
+                                    .max_h(gpui::px(50.0))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&inner)
+                                    .occlude()
+                                    .on_scroll_wheel(move |_, _, _| {
+                                        forward_scroll_remainder(&wheel_outer, &wheel_inner);
+                                    })
+                                    .children((0..10).map(|_| gpui::div().h(gpui::px(20.0)))),
+                            )
+                            .into_any()
+                    } else {
+                        gpui::div().h(gpui::px(100.0)).into_any()
+                    }
+                })
+                .w_full()
+                .h_full()
+            }
+        }
+
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TestView {
+                outer: outer.clone(),
+                inner: inner.clone(),
+            })
+        });
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(100.0), gpui::px(100.0)),
+            |_, _| view.clone().into_any_element(),
+        );
+
+        let wheel = |delta_y: f32| gpui::ScrollWheelEvent {
+            position: gpui::point(gpui::px(50.0), gpui::px(25.0)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(delta_y))),
+            ..Default::default()
+        };
+
+        // Mid-body: the inner absorbs the whole delta, the outer stays put.
+        cx.simulate_event(wheel(-40.0));
+        assert_eq!(inner.offset().y, gpui::px(-40.0));
+        assert_eq!(outer.logical_scroll_top().item_ix, 0);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(0.0));
+
+        // Past the bottom: the inner keeps 110 of the 200 (clamped at -150),
+        // the remaining 90 move the outer list.
+        cx.simulate_event(wheel(-200.0));
+        assert_eq!(inner.offset().y, gpui::px(-150.0));
+        assert_eq!(outer.logical_scroll_top().item_ix, 0);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(90.0));
+
+        // A second wheel event in the SAME frame: the clamped write-back
+        // keeps the first overshoot from being forwarded twice — exactly
+        // 200 more reach the outer list, no more.
+        cx.simulate_event(wheel(-200.0));
+        assert_eq!(inner.offset().y, gpui::px(-150.0));
+        assert_eq!(outer.logical_scroll_top().item_ix, 2);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(90.0));
+
+        // Back up past the top: the inner absorbs 150, 250 chain upward.
+        cx.simulate_event(wheel(400.0));
+        assert_eq!(inner.offset().y, gpui::px(0.0));
+        assert_eq!(outer.logical_scroll_top().item_ix, 0);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(40.0));
+
+        // Inner already at the top: the whole delta chains; the outer
+        // clamps at its own top.
+        cx.simulate_event(wheel(100.0));
+        assert_eq!(inner.offset().y, gpui::px(0.0));
+        assert_eq!(outer.logical_scroll_top().item_ix, 0);
+        assert_eq!(outer.logical_scroll_top().offset_in_item, gpui::px(0.0));
     }
 
     #[test]

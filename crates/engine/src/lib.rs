@@ -1002,6 +1002,80 @@ mod tests {
         );
     }
 
+    /// A `/skill` submit with a name no root answers fails the RPC (the
+    /// composer keeps its draft); a resolvable name enqueues. The queue
+    /// never sees the unresolvable one, so nothing parks at the head.
+    #[tokio::test]
+    async fn invoke_skill_unknown_name_fails_fast_without_queueing() {
+        let dir = tempfile::tempdir().unwrap();
+        let personal = dir.path().join("personal");
+        std::fs::create_dir_all(personal.join("grill")).unwrap();
+        std::fs::write(
+            personal.join("grill").join("SKILL.md"),
+            "---\nname: grill\ndescription: Grill plans.\n---\nbody\n",
+        )
+        .unwrap();
+        let config = EngineConfig {
+            data_dir: dir.path().into(),
+            personal_skills_dir: Some(personal),
+            stream_fn: None,
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+
+        let invoke = |message_id: &str, name: &str| {
+            serde_json::json!({
+                "chatId": "chat-1",
+                "command": {
+                    "kind": "invokeSkill",
+                    "messageId": message_id,
+                    "name": name,
+                    "extraInstructions": "focus on the data layer",
+                    "request": {
+                        "prompt": "",
+                        "provider": "openai",
+                        "model": "openai/gpt-5.4",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": dir.path(),
+                        "sandbox": "workspace-write"
+                    }
+                }
+            })
+        };
+
+        let unknown = engine
+            .handle(methods::QUEUE_COMMAND, invoke("message-1", "ninini"))
+            .await;
+        let Err(error) = unknown else {
+            panic!("an unknown skill name must fail the RPC");
+        };
+        assert!(error.to_string().contains("unknown skill: ninini"));
+        // The queue watch is the observable state: nothing pending, not
+        // paused — a rejected submit never touches the queue.
+        let chat = engine.service.runtime.chat("chat-1");
+        let watch = chat
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tx
+            .subscribe();
+        let state = watch.borrow();
+        assert_eq!(state["pending"].as_array().map(Vec::len), Some(0));
+        assert_ne!(state["paused"], true);
+        drop(state);
+        drop(chat);
+
+        // A resolvable name passes the gate and enqueues (the run itself
+        // then fails on the unconfigured provider — the pre-existing
+        // admission behavior, not this check).
+        let known = engine
+            .handle(methods::QUEUE_COMMAND, invoke("message-2", "grill"))
+            .await;
+        assert!(known.is_ok());
+        drop(engine);
+    }
+
     #[tokio::test]
     async fn removing_a_key_preserves_persisted_chat_selection() {
         let dir = tempfile::tempdir().unwrap();
