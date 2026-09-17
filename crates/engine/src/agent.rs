@@ -23,8 +23,9 @@ use pi_core::{
     ai::{
         compat,
         types::{
-            AssistantContent, BlockContent, Context as PiContext, Model as PiModel, RoleUser,
-            SimpleStreamOptions, ThinkingLevel as ProviderThinkingLevel, UserContent, UserMessage,
+            AssistantContent, BlockContent, CacheRetention, Context as PiContext, Model as PiModel,
+            RoleUser, SimpleStreamOptions, ThinkingLevel as ProviderThinkingLevel, UserContent,
+            UserMessage,
         },
     },
 };
@@ -1645,6 +1646,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         ..Default::default()
     };
     stream_options.base.base.api_key = Some(api_key.clone());
+    // Long (1h) prompt-cache retention: runs routinely idle past the 5m TTL
+    // (long tool executions, the user reviewing a diff), and a cold restart
+    // re-pays the whole context while the 1h premium lands only on each
+    // turn's new suffix. Models without 1h support fall back to short in
+    // the provider layer.
+    stream_options.base.cache_retention = Some(CacheRetention::Long);
     // Between tool rounds (ADR-0011): the same estimate-and-compact check
     // as the Turn-start one, through the loop's `prepare_next_turn` hook,
     // as often as the estimate calls for it — the round after a compaction
