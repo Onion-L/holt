@@ -1076,7 +1076,7 @@ mod tests {
         });
         // Exactly at the window's edge (two half-window advances) the timer
         // retires its
-        // own arm: the button reverts and the next stop needs two presses
+        // own arm: the next stop needs two presses
         // again.
         cx.executor()
             .advance_clock(Duration::from_millis(INTERRUPT_ARM_RESET_MS / 2));

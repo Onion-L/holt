@@ -119,10 +119,9 @@ pub struct Composer {
     /// visible trace of a failed send (2026-08-19).
     failure_key: Option<String>,
     /// Armed Interrupt confirmation (CONTEXT.md): `Some(deadline)` between
-    /// the first press — Esc, or Enter on an empty composer — and its
-    /// lapse. View-layer transient — cleared by the confirming press, the
-    /// reset timer, the Turn's end (a state frame reading not-live), or a
-    /// chat switch.
+    /// the first Esc press and its lapse. Enter never arms. View-layer
+    /// transient — cleared by the confirming press, the reset timer, the
+    /// Turn's end (a state frame reading not-live), or a chat switch.
     interrupt_arm: Option<Instant>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
@@ -448,7 +447,7 @@ impl Composer {
         }
 
         // The arm clears when the Turn ends (CONTEXT.md), not merely when
-        // the button reverts to its normal form: a queued Turn starting
+        // its window would lapse on the next press: a queued Turn starting
         // inside the confirm window must need two fresh presses, never
         // inherit the previous run's armed confirmation.
         if self.interrupt_arm.is_some() && !self.run_live(cx) {
