@@ -58,7 +58,11 @@ fn reset_scroll_offset(scroll: &gpui::ScrollHandle) {
 
 /// The `/` must open the input: slash commands are whole-prompt prefixes
 /// (`/compact`, `/goal ship it`), so only the first token triggers, and a
-/// query containing another `/` (a typed path) never does.
+/// query containing another `/` (a typed path) never does. The token's
+/// range ends at the CARET, not at the command word's end: text that
+/// followed the `/` (a `/` typed ahead of existing prose) was never typed
+/// as the command, survives the fill, and reads as the directive's extra
+/// instructions (`/skill <name> <kept text>`).
 fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     if cursor > text.len() || !text.is_char_boundary(cursor) || !text.starts_with('/') {
         return None;
@@ -76,7 +80,7 @@ fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
         return None;
     }
     Some(MentionToken {
-        range: 0..end,
+        range: 0..cursor,
         query: query.to_string(),
     })
 }
@@ -1113,14 +1117,26 @@ mod tests {
                 query: "comp".into(),
             })
         );
-        // Token range spans the whole command word even mid-cursor.
+        // The fill replaces only what the caret has crossed of the
+        // command word — the word's tail is not swept into the token.
         assert_eq!(
             slash_token("/compact now", 3),
             Some(MentionToken {
-                range: 0..8,
+                range: 0..3,
                 query: "co".into(),
             })
         );
+        // A `/` typed ahead of existing prose: the prose is not part of the
+        // token — accepting a skill keeps it as the directive's extra text
+        // instead of overwriting it (user report).
+        assert_eq!(
+            slash_token("/hello world", 1),
+            Some(MentionToken {
+                range: 0..1,
+                query: String::new(),
+            })
+        );
+        assert_eq!(slash_token("/重构这个函数", 1).map(|t| t.range), Some(0..1));
         // Not at offset 0 → prose, not a command.
         assert!(slash_token("run /compact", 12).is_none());
         // Cursor past the command word (typing the argument) → closed.
