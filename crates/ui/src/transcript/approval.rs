@@ -95,7 +95,7 @@ pub fn approval_target(call: &ToolCall) -> String {
 
 /// Marker color language for a settled verdict: neutral for a user's or
 /// grant's pass, the judge's signpost color for a review pass (Auto-review
-/// blue, Jev review pink — the same hues the mode menu's tiers carry), and
+/// blue, Jev review pink), and
 /// `danger` for every form of rejection — denial is the chip's error case,
 /// consistent with failed-tool chips; a rejection names its judge in text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

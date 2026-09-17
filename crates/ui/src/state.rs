@@ -104,7 +104,6 @@ impl EngineHandle {
             personal_skills_dir: None,
             stream_fn: None,
             search_backend_resolver: None,
-            jev_judge_resolver: None,
         })?);
         let engine_info = engine.engine_info().clone();
         let client = memory_client(engine.clone());

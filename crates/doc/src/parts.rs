@@ -152,9 +152,10 @@ pub struct SubagentOrigin {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolGateState {
-    /// confirm-changes: the Turn is paused waiting for the user. A Jev
-    /// review escalation carries the note explaining why the judge handed
-    /// the call over (`"Jev review: …"`); an ordinary Approval has none.
+    /// confirm-changes: the Turn is paused waiting for the user. A retired
+    /// Jev review escalation record may carry the note explaining why the
+    /// judge handed the call over (`"Jev review: …"`); an ordinary
+    /// Approval has none.
     #[serde(rename_all = "camelCase")]
     Pending {
         #[serde(default, skip_serializing_if = "Option::is_none")]

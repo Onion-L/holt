@@ -174,8 +174,8 @@ pub struct WebSearchSettingsState {
     pub backends: Vec<WebSearchBackendOption>,
 }
 
-/// The Jev settings view (ADR-0026): the user's own TypeSafe key behind
-/// the Jev review tier. The raw key never rides this view.
+/// The Jev settings view (ADR-0027): the user's own TypeSafe key for the
+/// Jev connection layer. The raw key never rides this view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JevSettingsState {

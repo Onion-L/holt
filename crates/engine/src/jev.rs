@@ -1,14 +1,15 @@
-//! The Jev judge (ADR-0026): the external decision layer behind the
-//! `jev-review` permission mode. One TypeSafe System One request per judged
-//! mutating tool call — state carries only what the judgment needs (the
-//! tool identity, its arguments, the working directory, and the user's
-//! latest message), and the questions are a fixed set of atomic Nouls
-//! combined by this module, never one wide "is this call OK?" question.
+//! The Jev connection layer (ADR-0027): the TypeSafe client kept ready
+//! for future Jev-powered features — currently without a consumer, so
+//! its internals are deliberately allowed to rest unused.
+#![allow(dead_code)]
+//!
+//! One TypeSafe System One request per judgment — state carries only what
+//! the judgment needs, and the questions are a fixed set of atomic Nouls
+//! combined by this module, never one wide "is this OK?" question.
 //!
 //! Verdict mapping is conservative by construction: a clear veto denies,
-//! a dead-band answer (neither clearly yes nor clearly no) escalates to
-//! the user, and transport failures escalate too — the gate never fails
-//! open. 429/529 retry with exponential backoff before that.
+//! anything ambiguous escalates, and 429/529 retry with exponential
+//! backoff before a call gives up.
 //!
 //! The judge is harness-written, never a provider: the decision API has no
 //! chat-completion shape, so this module speaks its single endpoint

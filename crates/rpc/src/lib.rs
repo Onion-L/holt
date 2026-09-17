@@ -61,12 +61,11 @@ pub mod methods {
     pub const SAVE_WEB_SEARCH_SETTINGS: &str = "SaveWebSearchSettings";
     pub const REVEAL_WEB_SEARCH_KEY: &str = "RevealWebSearchKey";
     pub const REMOVE_WEB_SEARCH_SETTINGS: &str = "RemoveWebSearchSettings";
-    /// Jev settings (ADR-0026): the user's own TypeSafe key behind the Jev
-    /// review tier. Read replies the masked state `{apiKeyMasked}`; save
+    /// Jev settings (ADR-0027): the user's own TypeSafe key for the Jev
+    /// connection layer. Read replies the masked state `{apiKeyMasked}`; save
     /// takes `{apiKey}` — trimmed, non-empty, no network validation —
     /// replying the same state; reveal returns the raw `{key}`; remove
-    /// clears the record. Unconfigured leaves the tier unavailable, never
-    /// erroring.
+    /// clears the record.
     pub const GET_JEV_SETTINGS: &str = "GetJevSettings";
     pub const SAVE_JEV_SETTINGS: &str = "SaveJevSettings";
     pub const REVEAL_JEV_KEY: &str = "RevealJevKey";

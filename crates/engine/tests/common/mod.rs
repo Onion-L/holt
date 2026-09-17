@@ -518,7 +518,6 @@ impl Fixture {
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
-            jev_judge_resolver: None,
         })
         .unwrap()
     }
@@ -536,25 +535,6 @@ impl Fixture {
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: Some(resolver),
-            jev_judge_resolver: None,
-        })
-        .unwrap()
-    }
-
-    /// An engine whose Jev judge is injected (ADR-0026): the stub stands
-    /// in for the HTTP client the settings record would mount. A Jev
-    /// review Turn resolves this judge at admission.
-    pub fn engine_with_jev_judge(
-        &self,
-        provider: &ScriptedProvider,
-        judge: holt_engine::JevJudgeResolver,
-    ) -> LocalEngine {
-        LocalEngine::assemble(&EngineConfig {
-            data_dir: self.data_dir.path().to_path_buf(),
-            personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
-            stream_fn: Some(provider.stream_fn()),
-            search_backend_resolver: None,
-            jev_judge_resolver: Some(judge),
         })
         .unwrap()
     }

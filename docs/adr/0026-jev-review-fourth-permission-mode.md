@@ -1,5 +1,7 @@
 # Jev review is a permission mode judged by an external decision API
 
+Status: superseded by ADR-0027
+
 ## Context
 
 The mode picker carries a display-only "Jev review" tier between

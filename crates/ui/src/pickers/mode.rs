@@ -1,7 +1,7 @@
 //! The permission-mode control (ADR-0014, prototype 1-B): the composer
 //! footer's persistent shield chip + tier menu — one control, identical in
 //! empty and populated chats. The menu rows carry fixed per-tier tints
-//! (Auto-review blue, Jev review pink, Full access orange — semantic
+//! (Auto-review blue, Full access orange — semantic
 //! signposts, deliberately
 //! NOT the selectable accent); the footer chip itself stays in the app's
 //! neutral chip idiom.
@@ -22,26 +22,18 @@ use crate::theme::Theme;
 
 use super::{PickerKind, Pickers};
 
-/// The tiers in menu order — keyboard nav walks this array. Jev review
-/// rides it only while a key is configured ([`Pickers::jev_available`]);
-/// unconfigured it renders grayed and nav skips its index.
-pub const MODE_TIERS: [PermissionMode; 4] = [
+/// The tiers in menu order — keyboard nav walks this array.
+pub const MODE_TIERS: [PermissionMode; 3] = [
     PermissionMode::ConfirmChanges,
     PermissionMode::AutoReview,
-    PermissionMode::JevReview,
     PermissionMode::FullAccess,
 ];
-
-/// The Jev tier's slot in [`MODE_TIERS`] — the one index keyboard nav can
-/// skip (the grayed tier takes no highlight and no Enter).
-pub(crate) const JEV_TIER_INDEX: usize = 2;
 
 /// The tier's display name.
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ConfirmChanges => "Confirm changes",
         PermissionMode::AutoReview => "Auto review",
-        PermissionMode::JevReview => "Jev review",
         PermissionMode::FullAccess => "Full access",
     }
 }
@@ -52,9 +44,6 @@ pub fn mode_description(mode: PermissionMode) -> &'static str {
         PermissionMode::ConfirmChanges => "Asks before every write, edit, or command",
         PermissionMode::AutoReview => {
             "The model reviews each change first; rejections come with a reason"
-        }
-        PermissionMode::JevReview => {
-            "A fast decision model reviews each change, escalating only when unsure"
         }
         PermissionMode::FullAccess => {
             "Everything runs without asking — only for tasks you fully trust"
@@ -67,14 +56,12 @@ pub fn mode_icon(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ConfirmChanges => crate::icons::SHIELD,
         PermissionMode::AutoReview => crate::icons::EYE,
-        PermissionMode::JevReview => crate::icons::BOT,
         PermissionMode::FullAccess => crate::icons::LOCK_OPEN,
     }
 }
 
-/// The tier's fixed menu tint: Auto-review reads informational blue, Jev
-/// review pink, Full access warning orange; Confirm changes — the safe
-/// default — stays
+/// The tier's fixed menu tint: Auto-review reads informational blue, Full
+/// access warning orange; Confirm changes — the safe default — stays
 /// neutral. Fixed hues, NOT the selectable accent: the tiers are semantic
 /// signposts and must read the same under every accent choice.
 pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Option<gpui::Hsla> {
@@ -82,9 +69,6 @@ pub fn mode_tint(mode: PermissionMode, theme: &Theme) -> Option<gpui::Hsla> {
         PermissionMode::ConfirmChanges => None,
         PermissionMode::AutoReview => {
             Some(crate::theme::AccentColor::Blue.primary(theme.appearance))
-        }
-        PermissionMode::JevReview => {
-            Some(crate::theme::AccentColor::Pink.primary(theme.appearance))
         }
         PermissionMode::FullAccess => {
             Some(crate::theme::AccentColor::Orange.primary(theme.appearance))
@@ -156,55 +140,6 @@ impl Pickers {
                 .map(|config| config.permission_mode),
             self.config.permission_mode,
         )
-    }
-
-    /// Refresh the Jev tier's availability (ADR-0026): a configured key
-    /// makes the tier selectable; no record leaves it grayed. Read when the
-    /// page mounts and again every time the mode menu opens, so a key
-    /// saved in Settings reaches the menu on its next open.
-    pub(super) fn refresh_jev_available(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::GET_JEV_SETTINGS, serde_json::json!({}))
-                .await;
-            let available = matches!(&result, Ok(value) if value.get("apiKeyMasked").is_some());
-            this.update(cx, |this, cx| {
-                if this.jev_available != available {
-                    this.jev_available = available;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// One keyboard step through the mode tiers (ADR-0026): the grayed
-    /// Jev index is skipped in the step's direction — it renders, but the
-    /// highlight never lands on it.
-    pub(super) fn step_mode_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let current = (self.active != super::NO_ACTIVE_ROW).then_some(self.active);
-        self.active = popover::menu_step(current, MODE_TIERS.len(), delta as isize).unwrap_or(0);
-        if !self.jev_available && self.active == JEV_TIER_INDEX {
-            self.active = if delta < 0 {
-                JEV_TIER_INDEX - 1
-            } else {
-                JEV_TIER_INDEX + 1
-            };
-        }
-        cx.notify();
-    }
-
-    /// Enter on the highlighted tier — the grayed Jev tier picks nothing.
-    pub(super) fn pick_active_mode(&mut self, cx: &mut Context<Self>) {
-        let mode = MODE_TIERS[self.active.min(MODE_TIERS.len() - 1)];
-        if mode != PermissionMode::JevReview || self.jev_available {
-            self.pick_permission_mode(mode, cx);
-        }
     }
 
     /// A tier pick from the menu. An existing chat switches through the mode
@@ -350,91 +285,59 @@ impl Pickers {
         let theme = Theme::of(cx).clone();
         let current = self.effective_permission_mode(cx);
         let active = self.active;
-        let jev_available = self.jev_available;
         let rows: Vec<AnyElement> = MODE_TIERS
             .into_iter()
             .enumerate()
             .map(|(ix, mode)| {
                 let selected = mode == current;
-                // The Jev tier is the one that can be unavailable: no key
-                // configured — grayed, unclickable, its description pointing
-                // at Settings instead of describing the judge.
-                let disabled = mode == PermissionMode::JevReview && !jev_available;
-                let tint = if disabled {
-                    None
-                } else {
-                    mode_tint(mode, &theme)
-                };
-                let description = if disabled {
-                    "Needs a TypeSafe API key — add one in Settings"
-                } else {
-                    mode_description(mode)
-                };
-                let mut row = popover::menu_row_nav(
-                    &theme,
-                    false,
-                    ix == active && !disabled,
-                    format!("mode-row-{ix}"),
-                )
-                .id(("mode-row", ix))
-                .items_start()
-                .when(!disabled, |row| {
-                    row.on_click(cx.listener(move |this, _, _, cx| {
+                let tint = mode_tint(mode, &theme);
+                popover::menu_row_nav(&theme, false, ix == active, format!("mode-row-{ix}"))
+                    .id(("mode-row", ix))
+                    .items_start()
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.pick_permission_mode(mode, cx);
                     }))
-                })
-                .child(
-                    crate::icons::icon(mode_icon(mode))
-                        .size(px(14.0))
-                        .mt(px(2.0))
-                        .text_color(tint.unwrap_or(if disabled {
-                            theme.text_faint
-                        } else {
-                            theme.text_muted
-                        })),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(if disabled {
-                                            theme.text_faint
-                                        } else {
-                                            tint.unwrap_or(theme.text)
-                                        })
-                                        .child(SharedString::from(mode_label(mode))),
-                                )
-                                .child(
-                                    crate::icons::icon(crate::icons::CHECK)
-                                        .size(px(12.0))
-                                        .text_color(theme.text)
-                                        .opacity(if selected && !disabled { 1.0 } else { 0.0 }),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(crate::typography::ui_rems(12.0))
-                                .line_height(px(16.0))
-                                .text_color(theme.text_faint)
-                                .child(SharedString::from(description)),
-                        ),
-                );
-                if disabled {
-                    row = row.opacity(0.55);
-                }
-                row.into_any_element()
+                    .child(
+                        crate::icons::icon(mode_icon(mode))
+                            .size(px(14.0))
+                            .mt(px(2.0))
+                            .text_color(tint.unwrap_or(theme.text_muted)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(tint.unwrap_or(theme.text))
+                                            .child(SharedString::from(mode_label(mode))),
+                                    )
+                                    .child(
+                                        crate::icons::icon(crate::icons::CHECK)
+                                            .size(px(12.0))
+                                            .text_color(theme.text)
+                                            .opacity(if selected { 1.0 } else { 0.0 }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .line_height(px(16.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from(mode_description(mode))),
+                            ),
+                    )
+                    .into_any_element()
             })
             .collect();
         div()
@@ -523,7 +426,6 @@ mod tests {
             [
                 PermissionMode::ConfirmChanges,
                 PermissionMode::AutoReview,
-                PermissionMode::JevReview,
                 PermissionMode::FullAccess,
             ]
         );
@@ -532,10 +434,7 @@ mod tests {
             "Confirm changes"
         );
         assert_eq!(mode_label(PermissionMode::AutoReview), "Auto review");
-        assert_eq!(mode_label(PermissionMode::JevReview), "Jev review");
         assert_eq!(mode_label(PermissionMode::FullAccess), "Full access");
-        // The skip index and the array order must never drift apart.
-        assert_eq!(MODE_TIERS[JEV_TIER_INDEX], PermissionMode::JevReview);
     }
 
     #[test]
@@ -543,15 +442,10 @@ mod tests {
         for theme in [Theme::dark(), Theme::light()] {
             assert_eq!(mode_tint(PermissionMode::ConfirmChanges, &theme), None);
             let blue = mode_tint(PermissionMode::AutoReview, &theme).expect("blue tint");
-            let pink = mode_tint(PermissionMode::JevReview, &theme).expect("pink tint");
             let orange = mode_tint(PermissionMode::FullAccess, &theme).expect("orange tint");
             assert_eq!(
                 blue,
                 crate::theme::AccentColor::Blue.primary(theme.appearance)
-            );
-            assert_eq!(
-                pink,
-                crate::theme::AccentColor::Pink.primary(theme.appearance)
             );
             assert_eq!(
                 orange,
@@ -560,8 +454,6 @@ mod tests {
             // The signposts must not collapse into each other or follow the
             // (differently-hued) default accent.
             assert_ne!(blue, orange);
-            assert_ne!(pink, blue);
-            assert_ne!(pink, orange);
         }
     }
 
@@ -607,12 +499,12 @@ mod tests {
             );
         });
 
-        // Reopening anchors on the picked tier (FullAccess = row 3).
+        // Reopening anchors on the picked tier (FullAccess = row 2).
         cx.update(|window, cx| {
             pickers.update(cx, |this, cx| this.toggle(PickerKind::Mode, window, cx));
         });
         pickers.update(cx, |this, cx| {
-            assert_eq!(this.active, 3);
+            assert_eq!(this.active, 2);
             this.animate_close(cx);
         });
 
@@ -675,9 +567,6 @@ mod tests {
         });
 
         for (ix, mode) in MODE_TIERS.into_iter().enumerate() {
-            // A configured key makes all four tiers live — the Jev tier
-            // anchors and draws like its siblings.
-            pickers.update(cx, |this, _| this.jev_available = true);
             // Draft the tier so chip and menu present its state, then draw
             // the chip (tier icon + label + chevron).
             pickers.update(cx, |this, cx| {
@@ -689,8 +578,8 @@ mod tests {
                 gpui::size(gpui::px(300.0), gpui::px(40.0)),
                 |_, _| view.clone().into_any_element(),
             );
-            // Open: the highlight anchors on THIS tier, and the menu (four
-            // rows + footnote) draws.
+            // Open: the highlight anchors on THIS tier, and the menu (three
+            // selectable rows + footnote) draws.
             cx.update(|window, cx| {
                 pickers.update(cx, |this, cx| this.toggle(PickerKind::Mode, window, cx));
             });
@@ -705,100 +594,6 @@ mod tests {
             );
             pickers.update(cx, |this, cx| this.animate_close(cx));
         }
-    }
-
-    /// The unconfigured half (ADR-0026): without a key the Jev tier is
-    /// grayed — it cannot anchor the highlight (a chat parked on it falls
-    /// back to the tier below), keyboard nav skips its index, Enter picks
-    /// nothing while the highlight would sit on it, and the menu still
-    /// draws all four rows.
-    #[gpui::test]
-    fn the_jev_tier_is_grayed_without_a_key(cx: &mut gpui::TestAppContext) {
-        use crate::state::AppState;
-
-        struct ModeControlView {
-            pickers: gpui::Entity<Pickers>,
-        }
-        impl gpui::Render for ModeControlView {
-            fn render(
-                &mut self,
-                _: &mut gpui::Window,
-                cx: &mut gpui::Context<Self>,
-            ) -> impl gpui::IntoElement {
-                let theme = Theme::of(cx).clone();
-                self.pickers.update(cx, |this, cx| {
-                    if this.is_open() {
-                        this.render_mode_popover(cx)
-                    } else {
-                        this.mode_chip(&theme, cx).into_any_element()
-                    }
-                })
-            }
-        }
-
-        let cx = cx.add_empty_window();
-        cx.update(|_, cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| AppState::new());
-        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
-        let view = cx.new(|_| ModeControlView {
-            pickers: pickers.clone(),
-        });
-
-        // A chat parked on Jev review with no key keeps its mode, but the
-        // menu anchor falls to the tier below (AutoReview = row 1).
-        pickers.update(cx, |this, cx| {
-            assert!(!this.jev_available);
-            this.config.permission_mode = Some(PermissionMode::JevReview);
-            assert_eq!(
-                this.effective_permission_mode(cx),
-                PermissionMode::JevReview
-            );
-        });
-        cx.update(|window, cx| {
-            pickers.update(cx, |this, cx| this.toggle(PickerKind::Mode, window, cx));
-        });
-        pickers.update(cx, |this, _| assert_eq!(this.active, JEV_TIER_INDEX - 1));
-        // All four rows draw — the Jev row grayed with its Settings-pointing
-        // description.
-        cx.draw(
-            gpui::point(gpui::px(0.0), gpui::px(0.0)),
-            gpui::size(gpui::px(320.0), gpui::px(320.0)),
-            |_, _| view.clone().into_any_element(),
-        );
-        pickers.update(cx, |this, cx| {
-            // Keyboard nav skips the grayed index in both directions.
-            this.active = JEV_TIER_INDEX - 1;
-            this.step_mode_selection(1, cx);
-            assert_eq!(this.active, JEV_TIER_INDEX + 1);
-            this.step_mode_selection(-1, cx);
-            assert_eq!(this.active, JEV_TIER_INDEX - 1);
-            // And a highlight parked on it picks nothing — the menu does
-            // not even close (a real pick closes on click).
-            this.active = JEV_TIER_INDEX;
-            this.pick_active_mode(cx);
-            assert_eq!(
-                this.config.permission_mode,
-                Some(PermissionMode::JevReview),
-                "the grayed tier cannot change the draft pick"
-            );
-            assert!(this.is_open(), "a no-op pick leaves the menu open");
-            this.animate_close(cx);
-        });
-
-        // Configured, the tier is live again: the anchor returns to the
-        // Jev index and nav walks onto it in both directions.
-        pickers.update(cx, |this, _| this.jev_available = true);
-        cx.update(|window, cx| {
-            pickers.update(cx, |this, cx| this.toggle(PickerKind::Mode, window, cx));
-        });
-        pickers.update(cx, |this, cx| {
-            assert_eq!(this.active, JEV_TIER_INDEX);
-            this.step_mode_selection(-1, cx);
-            assert_eq!(this.active, JEV_TIER_INDEX - 1);
-            this.step_mode_selection(1, cx);
-            assert_eq!(this.active, JEV_TIER_INDEX);
-            this.animate_close(cx);
-        });
     }
 
     /// The Plan chip's × (the whole point of it): the button renders in the

@@ -1,15 +1,14 @@
-//! Engine-owned Jev settings (ADR-0026): the device-wide record of the
-//! user's own TypeSafe API key behind Jev review, persisted as `jev.json`
+//! Engine-owned Jev settings (ADR-0027): the device-wide record of the
+//! user's own TypeSafe API key — the Jev connection layer's credential,
+//! persisted as `jev.json`
 //! under the credentials pattern — 0600 permissions, atomic replace +
 //! sync, and a malformed file fails startup loudly (this record holds a
 //! secret, so silent fallback is wrong; the file is left untouched for
 //! manual repair). Like the search key, it is an independent record:
 //! never shared with, or prefilled from, a same-vendor provider key.
 //!
-//! Mutated only through the typed RPC surface. An unconfigured record
-//! leaves the Jev review tier unavailable — grayed in the picker, never
-//! an error — and a chat left in the mode runs its Turns under
-//! confirm-changes until a key returns.
+//! Mutated only through the typed RPC surface. No feature consumes the
+//! record yet; future Jev-powered features mount from here.
 
 use std::{
     io::Write,

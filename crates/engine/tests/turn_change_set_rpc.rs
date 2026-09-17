@@ -75,7 +75,6 @@ impl Fixture {
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
-            jev_judge_resolver: None,
         })
         .unwrap()
     }

@@ -176,8 +176,8 @@ pub struct GeneralPage {
     web_search_draft_concealed: bool,
     web_search_error: Option<String>,
     backend_menu: Popup<()>,
-    /// The engine-owned Jev record (ADR-0026): the user's own TypeSafe key
-    /// behind the Jev review tier.
+    /// The engine-owned Jev record (ADR-0027): the user's own TypeSafe
+    /// key, mounted by future Jev-powered features.
     jev: Loadable<JevSettingsState>,
     jev_key: Entity<ComposerInput>,
     /// The raw stored key the field currently shows, fetched by
@@ -963,10 +963,10 @@ impl GeneralPage {
         cx.notify();
     }
 
-    /// The Jev review group (ADR-0026): the TypeSafe key field with the
-    /// same reveal affordance and Save/Remove actions as Web search — no
-    /// backend picker, the model is pinned. The group's state is
-    /// independent of its neighbors: one failure never hides the rest.
+    /// The Jev connection group (ADR-0027): the TypeSafe key future
+    /// Jev-powered features mount from, with the same reveal affordance
+    /// and Save/Remove actions as Web search. No feature consumes it yet;
+    /// the group's state is independent of its neighbors.
     fn render_jev(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let body = match &self.jev {
             Loadable::Idle | Loadable::Loading => {
@@ -986,11 +986,7 @@ impl GeneralPage {
                             .id("jev-unconfigured")
                             .debug_selector(|| "jev-unconfigured".into())
                             .pb(px(4.0))
-                            .child(widgets::row_description(
-                                theme,
-                                "No key configured — Jev review stays grayed out in the \
-                                 permission menu.",
-                            )),
+                            .child(widgets::row_description(theme, "No key stored yet.")),
                     );
                 }
                 column = column.child(
@@ -1058,12 +1054,11 @@ impl GeneralPage {
         div()
             .id("jev-group")
             .mt(px(32.0))
-            .child(widgets::section_label(theme, "Jev review (TypeSafe)"))
+            .child(widgets::section_label(theme, "Jev (TypeSafe)"))
             .child(div().mt(px(4.0)).child(widgets::row_description(
                 theme,
-                "A fast decision model reviews each change in Jev review mode, \
-                 escalating to you when unsure. Bring your own key; without one the \
-                 mode stays unavailable.",
+                "Your own TypeSafe API key. Jev-powered features use it as they \
+                 arrive; the key is stored and ready either way.",
             )))
             .child(div().mt(px(12.0)).child(body))
             .into_any_element()
@@ -2473,11 +2468,11 @@ mod tests {
         );
     }
 
-    /// The Jev group (ADR-0026): the masked key from `GetJevSettings` is
-    /// what the field shows; Save rides `SaveJevSettings` (an untouched
-    /// field re-reads the stored key through `RevealJevKey` instead of
-    /// writing the mask); the eye reveals and re-conceals; Remove returns
-    /// the group to its unconfigured note.
+    /// The Jev group: the masked key from `GetJevSettings` is what the
+    /// field shows; Save rides `SaveJevSettings` (an untouched field
+    /// re-reads the stored key through `RevealJevKey` instead of writing
+    /// the mask); the eye reveals and re-conceals; Remove returns the
+    /// group to its unconfigured note.
     #[gpui::test]
     fn the_jev_group_masks_saves_reveals_and_removes(cx: &mut gpui::TestAppContext) {
         let harness = web_search_harness_with(

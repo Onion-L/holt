@@ -1269,9 +1269,6 @@ pub(crate) struct AgentRun {
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
-    /// The admission-time Jev judge snapshot (ADR-0026): the mode's gate
-    /// mounts the same judge for the run and its delegations.
-    pub(crate) jev_judge: Option<Arc<dyn crate::jev::JevJudge>>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -1315,7 +1312,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         permission_mode,
         plan_mode,
         search_backend,
-        jev_judge,
         stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
@@ -1744,13 +1740,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         base_parts: Arc::clone(&base_parts),
         approvals: Arc::clone(&runtime.approvals),
         cwd: cwd.clone(),
-        prompt: prompt.clone(),
         review: crate::gate::ReviewTransport {
             model: model.clone(),
             api_key: api_key.clone(),
             stream_fn: stream_fn.clone(),
         },
-        jev_judge: jev_judge.clone(),
         cancel: cancel.clone(),
     });
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
@@ -1784,7 +1778,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             skills: skills.clone(),
             permission_mode,
             search_backend,
-            jev_judge,
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
         }));

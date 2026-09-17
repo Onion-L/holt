@@ -80,9 +80,10 @@ pub(crate) struct ApprovalPrompt {
     pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
     pub note_placeholder: &'static str,
-    /// Why this approval came to the user when the gatekeeper says so —
-    /// a Jev review escalation's "Jev review was unsure — …" note
-    /// (ADR-0026); `None` on every ordinary approval.
+    /// Why this approval came to the user when the gatekeeper said so —
+    /// retired Jev review escalations carry "Jev review was unsure — …"
+    /// (historical records; no producer today); `None` on every ordinary
+    /// approval.
     pub note: Option<String>,
 }
 
@@ -478,9 +479,9 @@ impl Composer {
                                 .text_color(theme.text)
                                 .child(prompt.title),
                         )
-                        // The gatekeeper's reason this came to the user: the
-                        // Jev escalation's note, directly under the title —
-                        // the one place the judge's uncertainty is visible.
+                        // The gatekeeper's reason this came to the user —
+                        // a retired Jev escalation's note, directly under
+                        // the title.
                         .when_some(prompt.note.clone(), |el, note| {
                             el.child(
                                 div()

@@ -14,9 +14,7 @@ use std::{
 
 use holt_doc::parts::{GateVerdict, ReviewJudge, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, PermissionMode};
-use pi_core::agent::types::{
-    AgentMessage, BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult,
-};
+use pi_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::ChatRuntime;
@@ -149,29 +147,6 @@ pub(crate) fn stamp_gate(
     if changed {
         chat.publish();
     }
-}
-
-/// The intent a Jev judgment is weighed against (ADR-0026): the run's
-/// own prompt — the user's latest message for a main run, the Task brief
-/// for a subagent — falling back to the latest user message in the
-/// History for runs that carry no prompt of their own.
-fn latest_user_request(chat: &ChatRuntime, prompt: &str) -> String {
-    if !prompt.trim().is_empty() {
-        return prompt.to_string();
-    }
-    chat.history
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            AgentMessage::User(user) => {
-                let text = user.content.text().to_string();
-                (!text.trim().is_empty()).then_some(text)
-            }
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 /// What the run needs to make one review pass (ADR-0014): the chat's own
@@ -318,19 +293,16 @@ async fn run_review_pass(
     }
 }
 
-/// Everything the run hands the gate hook (ADR-0014/0026): the Turn's
-/// snapshotted mode, the chat it gates, and the gatekeepers' transports
-/// — the reviewer model for auto-review, the Jev judge for jev-review,
-/// and the approval registry both approvals and Jev escalations wait on.
+/// Everything the run hands the gate hook (ADR-0014): the Turn's
+/// snapshotted mode, the chat it gates, the reviewer model for
+/// auto-review, and the approval registry confirm-changes waits on.
 pub(crate) struct GateWiring {
     pub(crate) mode: PermissionMode,
     pub(crate) chat: Arc<ChatRuntime>,
     pub(crate) base_parts: Arc<Mutex<Vec<holt_doc::MessagePart>>>,
     pub(crate) approvals: Arc<ApprovalRegistry>,
     pub(crate) cwd: String,
-    pub(crate) prompt: String,
     pub(crate) review: ReviewTransport,
-    pub(crate) jev_judge: Option<Arc<dyn crate::jev::JevJudge>>,
     pub(crate) cancel: CancellationToken,
 }
 
@@ -345,9 +317,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
         base_parts,
         approvals,
         cwd,
-        prompt,
         review,
-        jev_judge,
         cancel,
     } = wiring;
     Arc::new(
@@ -356,9 +326,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
             let base_parts = base_parts.clone();
             let approvals = approvals.clone();
             let cwd = cwd.clone();
-            let prompt = prompt.clone();
             let review = review.clone();
-            let jev_judge = jev_judge.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
@@ -452,105 +420,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                         ReviewOutcome::Cancelled => None,
                     };
                 }
-                // Jev review (ADR-0026): the external judge. A clear pass
-                // settles without the user; a clear veto blocks with the
-                // judge's reason; an unsure or failed judgment escalates
-                // into the same approval wait confirm-changes uses — fail
-                // closed, never an infrastructure error dressed up as a
-                // rejection. An unconfigured judge (no key) skips straight
-                // to that wait: the mode degrades to confirm-changes,
-                // silently, for as long as no key exists.
-                let mut escalation_note: Option<String> = None;
-                if mode == PermissionMode::JevReview
-                    && let Some(judge) = jev_judge.as_ref()
-                {
-                    let request = latest_user_request(&chat, &prompt);
-                    match judge
-                        .judge(
-                            crate::jev::JevCall {
-                                tool: &ctx.tool_call.name,
-                                arguments: &arguments,
-                                cwd: &cwd,
-                                request: &request,
-                            },
-                            cancel.clone(),
-                        )
-                        .await
-                    {
-                        Ok(judgment) => {
-                            // Booked whatever the verdict — a judged call
-                            // is a metered decision request (ADR-0026).
-                            crate::usage::capture_jev(
-                                &chat,
-                                judgment.input_tokens,
-                                judgment.output_tokens,
-                            );
-                            match judgment.verdict {
-                                crate::jev::JevVerdict::Allow => {
-                                    stamp_gate(
-                                        &chat,
-                                        &base_parts,
-                                        &ctx.tool_call.id,
-                                        ToolGate {
-                                            origin: None,
-                                            id: uuid::Uuid::new_v4().to_string(),
-                                            state: ToolGateState::Settled {
-                                                verdict: GateVerdict::ReviewPassed {
-                                                    judge: ReviewJudge::Jev,
-                                                },
-                                            },
-                                        },
-                                    );
-                                    return None;
-                                }
-                                crate::jev::JevVerdict::Deny { reason, advice } => {
-                                    // The chip carries the raw reason plus
-                                    // the judge; the model-facing error keeps
-                                    // the prefix and appends the advice — it
-                                    // addresses the agent, the chip stays short.
-                                    stamp_gate(
-                                        &chat,
-                                        &base_parts,
-                                        &ctx.tool_call.id,
-                                        ToolGate {
-                                            origin: None,
-                                            id: uuid::Uuid::new_v4().to_string(),
-                                            state: ToolGateState::Settled {
-                                                verdict: GateVerdict::ReviewRejected {
-                                                    reason: Some(reason.clone()),
-                                                    judge: ReviewJudge::Jev,
-                                                },
-                                            },
-                                        },
-                                    );
-                                    return Some(BeforeToolCallResult {
-                                        block: Some(true),
-                                        reason: Some(format!("Jev review: {reason} — {advice}")),
-                                        terminate: None,
-                                    });
-                                }
-                                crate::jev::JevVerdict::Unsure => {
-                                    escalation_note = Some(
-                                        "Jev review was unsure — this call is your judgment".into(),
-                                    );
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            // The note carries the failure — invalid key,
-                            // exhausted retries, network death read
-                            // differently to the user asked to decide.
-                            let error = error.chars().take(140).collect::<String>();
-                            escalation_note = Some(format!(
-                                "Jev review could not reach a verdict ({error}) — this call is your judgment"
-                            ));
-                        }
-                    }
-                }
-                if !matches!(
-                    mode,
-                    PermissionMode::ConfirmChanges | PermissionMode::JevReview
-                ) {
+                if mode != PermissionMode::ConfirmChanges {
                     return None;
                 }
                 let approval_id = uuid::Uuid::new_v4().to_string();
@@ -566,9 +436,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                     ToolGate {
                         origin: None,
                         id: approval_id.clone(),
-                        state: ToolGateState::Pending {
-                            note: escalation_note,
-                        },
+                        state: ToolGateState::Pending { note: None },
                     },
                 );
                 // The wait: a verdict through the RPC, or the Turn's end —

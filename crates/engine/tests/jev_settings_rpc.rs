@@ -1,4 +1,4 @@
-//! Jev settings RPCs (ADR-0026): the `jev.json` record's
+//! Jev settings RPCs (ADR-0027): the `jev.json` record's
 //! get/save/reveal/remove surface, masked-get semantics, and empty-key
 //! validation, driven end to end through `RpcService::handle`.
 
@@ -129,7 +129,6 @@ async fn a_corrupt_record_fails_engine_startup() {
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
         stream_fn: None,
         search_backend_resolver: None,
-        jev_judge_resolver: None,
     }) {
         Err(error) => error.to_string(),
         Ok(_) => panic!("a corrupt jev record must fail engine startup"),
