@@ -39,8 +39,9 @@ confirm-changes silently; the mode choice itself is retained.
 Permission mode serialization gains `jev-review`; persisted chats keep
 their choice, and unknown-value fallback still lands on
 confirm-changes. Usage records stamp source `Jev review`, provider
-`typesafe`, model `jev-latest`. Transcript chips reuse the existing
-review verdicts — the judge is identifiable only through reason text
-("Jev review: …"), with no serialized chip change. The RPC surface
-gains the Jev settings methods (get/save/reveal/remove), mirroring Web
-search.
+`typesafe`, model `jev-latest`. Transcript chips name the judge: review
+verdicts carry a serialized `judge` (chat model or Jev; pre-field records
+read as the chat model), and a Jev rejection's chip shows the raw reason
+— the "Jev review:" prefix rides only the model-facing error. The RPC
+surface gains the Jev settings methods (get/save/reveal/remove),
+mirroring Web search.

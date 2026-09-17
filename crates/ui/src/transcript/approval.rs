@@ -11,7 +11,9 @@
 
 use gpui::{App, Entity, Hsla};
 
-use holt_doc::{GateVerdict, MessagePart, SessionMessageEntry, ToolGate, ToolGateState};
+use holt_doc::{
+    GateVerdict, MessagePart, ReviewJudge, SessionMessageEntry, ToolGate, ToolGateState,
+};
 use holt_proto::{ApprovalVerdict, ToolCall};
 use holt_rpc::methods;
 
@@ -101,6 +103,16 @@ pub enum VerdictTint {
     Danger,
 }
 
+/// The reviewer a review verdict's chip names — the chat's own model
+/// (ADR-0014) or the Jev decision model (ADR-0026). Old records read as
+/// the chat model.
+fn judge_label(judge: ReviewJudge) -> &'static str {
+    match judge {
+        ReviewJudge::ChatModel => "👁 Auto-review",
+        ReviewJudge::Jev => "🤖 Jev review",
+    }
+}
+
 /// The settled verdict's compact marker text + tint (prototype 3-A's chip
 /// suffixes). A denial/rejection carries the note/reason when there was one
 /// — that text is the reason the model received, so the transcript shows it.
@@ -112,11 +124,14 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
             "⚡ Prefix exempt · auto-passed".to_string(),
             VerdictTint::Neutral,
         ),
-        GateVerdict::ReviewPassed => ("👁 Auto-review · passed".to_string(), VerdictTint::Neutral),
-        GateVerdict::ReviewRejected { reason } => {
+        GateVerdict::ReviewPassed { judge } => (
+            format!("{} · passed", judge_label(*judge)),
+            VerdictTint::Neutral,
+        ),
+        GateVerdict::ReviewRejected { reason, judge } => {
             let text = match reason {
-                Some(reason) => format!("👁 Auto-review · rejected · \"{reason}\""),
-                None => "👁 Auto-review · rejected".to_string(),
+                Some(reason) => format!("{} · rejected · \"{reason}\"", judge_label(*judge)),
+                None => format!("{} · rejected", judge_label(*judge)),
             };
             (text, VerdictTint::Danger)
         }
@@ -241,7 +256,7 @@ mod tests {
 
     #[test]
     fn verdict_chips_cover_every_flavor() {
-        let cases: [(GateVerdict, &str, VerdictTint); 9] = [
+        let cases: [(GateVerdict, &str, VerdictTint); 11] = [
             (GateVerdict::Allowed, "✓ Approved", VerdictTint::Neutral),
             (
                 GateVerdict::AlwaysAllowed,
@@ -254,20 +269,41 @@ mod tests {
                 VerdictTint::Neutral,
             ),
             (
-                GateVerdict::ReviewPassed,
+                GateVerdict::ReviewPassed {
+                    judge: ReviewJudge::ChatModel,
+                },
                 "👁 Auto-review · passed",
                 VerdictTint::Neutral,
             ),
             (
-                GateVerdict::ReviewRejected { reason: None },
+                GateVerdict::ReviewPassed {
+                    judge: ReviewJudge::Jev,
+                },
+                "🤖 Jev review · passed",
+                VerdictTint::Neutral,
+            ),
+            (
+                GateVerdict::ReviewRejected {
+                    reason: None,
+                    judge: ReviewJudge::ChatModel,
+                },
                 "👁 Auto-review · rejected",
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::ReviewRejected {
                     reason: Some("no tests".into()),
+                    judge: ReviewJudge::ChatModel,
                 },
                 "👁 Auto-review · rejected · \"no tests\"",
+                VerdictTint::Danger,
+            ),
+            (
+                GateVerdict::ReviewRejected {
+                    reason: Some("destructive".into()),
+                    judge: ReviewJudge::Jev,
+                },
+                "🤖 Jev review · rejected · \"destructive\"",
                 VerdictTint::Danger,
             ),
             (
@@ -455,7 +491,9 @@ mod tests {
                         origin: None,
                         id: "g1".into(),
                         state: ToolGateState::Settled {
-                            verdict: GateVerdict::ReviewPassed,
+                            verdict: GateVerdict::ReviewPassed {
+                                judge: ReviewJudge::Jev,
+                            },
                         },
                     }),
                 )],

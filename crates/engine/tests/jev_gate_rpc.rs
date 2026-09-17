@@ -128,6 +128,13 @@ async fn a_passing_judgment_executes_the_call() {
     common::wait_for_gate(&engine, "chat-1", "call-1", "settled:reviewPassed").await;
     common::wait_for_requests(&provider, 2).await;
     assert!(fixture.project_dir.path().join("out.txt").exists());
+    // The pass carries the judge: the chip renders "Jev review · passed",
+    // never the mislabel of a chat-model verdict.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(
+        snapshot.to_string().contains("\"judge\":\"jev\""),
+        "{snapshot}"
+    );
     // One decision request per judged call, weighed against the user's
     // latest message — never a bare model completion like auto-review.
     assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
@@ -194,9 +201,16 @@ async fn a_veto_blocks_with_the_jev_reason() {
         "the prefixed reason never reached the model: {:?}",
         common::summarize(&requests[1].messages)
     );
-    // The chip carries the prefixed reason for the transcript record.
+    // The verdict carries the judge and the raw reason; the rendered
+    // chip reads "Jev review · rejected · …" from those (the prefix lives
+    // only on the model-facing error).
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    assert!(snapshot.to_string().contains("Jev review: the call looks"));
+    let text = snapshot.to_string();
+    assert!(text.contains("\"judge\":\"jev\""), "{text}");
+    assert!(
+        text.contains("the call looks destructive or irreversible"),
+        "{text}"
+    );
 }
 
 /// An unsure judgment escalates to an ordinary Approval whose note says

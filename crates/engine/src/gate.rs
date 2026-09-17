@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use holt_doc::parts::{GateVerdict, ToolGate, ToolGateState};
+use holt_doc::parts::{GateVerdict, ReviewJudge, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, PermissionMode};
 use pi_core::agent::types::{
     AgentMessage, BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult,
@@ -417,7 +417,9 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     origin: None,
                                     id: uuid::Uuid::new_v4().to_string(),
                                     state: ToolGateState::Settled {
-                                        verdict: GateVerdict::ReviewPassed,
+                                        verdict: GateVerdict::ReviewPassed {
+                                            judge: ReviewJudge::ChatModel,
+                                        },
                                     },
                                 },
                             );
@@ -434,6 +436,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     state: ToolGateState::Settled {
                                         verdict: GateVerdict::ReviewRejected {
                                             reason: Some(reason.clone()),
+                                            judge: ReviewJudge::ChatModel,
                                         },
                                     },
                                 },
@@ -492,14 +495,18 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                             origin: None,
                                             id: uuid::Uuid::new_v4().to_string(),
                                             state: ToolGateState::Settled {
-                                                verdict: GateVerdict::ReviewPassed,
+                                                verdict: GateVerdict::ReviewPassed {
+                                                    judge: ReviewJudge::Jev,
+                                                },
                                             },
                                         },
                                     );
                                     return None;
                                 }
                                 crate::jev::JevVerdict::Deny { reason } => {
-                                    let reason = format!("Jev review: {reason}");
+                                    // The chip carries the raw reason plus
+                                    // the judge; the model-facing error keeps
+                                    // the prefix — it addresses the agent.
                                     stamp_gate(
                                         &chat,
                                         &base_parts,
@@ -510,13 +517,14 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                             state: ToolGateState::Settled {
                                                 verdict: GateVerdict::ReviewRejected {
                                                     reason: Some(reason.clone()),
+                                                    judge: ReviewJudge::Jev,
                                                 },
                                             },
                                         },
                                     );
                                     return Some(BeforeToolCallResult {
                                         block: Some(true),
-                                        reason: Some(reason),
+                                        reason: Some(format!("Jev review: {reason}")),
                                         terminate: None,
                                     });
                                 }

@@ -99,10 +99,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   full-access never gate. `jev-review` (ADR-0026) judges each mutating
   call with one TypeSafe decision request through a harness-written
   client — never a provider, never in a model picker: a pass executes, a
-  clear veto blocks with a `Jev review:`-prefixed reason, and an unsure
-  or failed judgment (429/529 retries exhausted, network error, invalid
-  key) escalates to an ordinary Approval whose note says why — the gate
-  never fails open. Judged calls book `jev-review` usage records
+  clear veto blocks with a `Jev review:`-prefixed reason for the agent,
+  and an unsure or failed judgment (429/529 retries exhausted, network
+  error, invalid key) escalates to an ordinary Approval whose note says
+  why — the gate never fails open. Review verdicts serialize their judge
+  (`chat-model` or `jev`; records predating the field read as the chat
+  model), so the transcript chip names the judge — a Jev pass reads
+  "Jev review · passed", never auto-review's label. Judged calls book
+  `jev-review` usage records
   (provider `typesafe`, model `jev-latest`). The judge resolves once per
   Turn admission from the Jev settings record; unconfigured, a
   `jev-review` Turn gates as confirm-changes silently while the chat

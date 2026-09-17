@@ -165,6 +165,17 @@ pub enum ToolGateState {
     Settled { verdict: GateVerdict },
 }
 
+/// Which reviewer produced a review verdict (ADR-0026): the chat's own
+/// model (auto-review) or the Jev decision model (Jev review). Old
+/// transcripts predate the field and read as the chat model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewJudge {
+    #[default]
+    ChatModel,
+    Jev,
+}
+
 /// How a gate resolved. A denial's note (when the user wrote one) is the
 /// reason the model received as the call's error tool result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,15 +189,23 @@ pub enum GateVerdict {
     /// An always-allow grant matched this call — auto-passed without
     /// asking.
     Exempted,
-    /// Auto-review passed the call (ADR-0014): the chat's own model judged
-    /// it safe before execution.
-    ReviewPassed,
-    /// Auto-review rejected the call with the reviewer's reason — the
-    /// reason is the error tool result the agent received.
+    /// A review pass (ADR-0014/0026): `judge` names who passed it — the
+    /// chat's own model or Jev. Records from before the field existed
+    /// read as the chat model.
+    #[serde(rename_all = "camelCase")]
+    ReviewPassed {
+        #[serde(default)]
+        judge: ReviewJudge,
+    },
+    /// A review rejection with the reviewer's reason — the reason is the
+    /// error tool result the agent received, and `judge` names the
+    /// reviewer.
     #[serde(rename_all = "camelCase")]
     ReviewRejected {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(default)]
+        judge: ReviewJudge,
     },
     /// Denied — with the user's note when there was one.
     #[serde(rename_all = "camelCase")]
