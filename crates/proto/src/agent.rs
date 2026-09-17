@@ -101,12 +101,15 @@ pub enum ReasoningLevel {
 /// `workspace-write`/`read-only` → `confirm-changes`,
 /// `danger-full-access` → `full-access` — and any other value falls back to
 /// `confirm-changes` (the first-launch default) rather than failing startup.
+/// `jev-review` (ADR-0026) is judged by the external Jev decision model
+/// rather than the chat's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     #[default]
     ConfirmChanges,
     AutoReview,
+    JevReview,
     FullAccess,
 }
 
@@ -127,6 +130,7 @@ impl<'de> Deserialize<'de> for PermissionMode {
                         PermissionMode::ConfirmChanges
                     }
                     "auto-review" => PermissionMode::AutoReview,
+                    "jev-review" => PermissionMode::JevReview,
                     "full-access" | "danger-full-access" => PermissionMode::FullAccess,
                     _ => PermissionMode::ConfirmChanges,
                 })
@@ -980,11 +984,13 @@ mod tests {
         };
         assert_eq!(round(PermissionMode::ConfirmChanges), "confirm-changes");
         assert_eq!(round(PermissionMode::AutoReview), "auto-review");
+        assert_eq!(round(PermissionMode::JevReview), "jev-review");
         assert_eq!(round(PermissionMode::FullAccess), "full-access");
         // Round-trip through JSON.
         for mode in [
             PermissionMode::ConfirmChanges,
             PermissionMode::AutoReview,
+            PermissionMode::JevReview,
             PermissionMode::FullAccess,
         ] {
             let json = serde_json::to_value(mode).unwrap();
@@ -1001,6 +1007,7 @@ mod tests {
         assert_eq!(decode("workspace-write"), PermissionMode::ConfirmChanges);
         assert_eq!(decode("read-only"), PermissionMode::ConfirmChanges);
         assert_eq!(decode("danger-full-access"), PermissionMode::FullAccess);
+        assert_eq!(decode("jev-review"), PermissionMode::JevReview);
         // Unknown values fall back to the first-launch default instead of
         // failing startup.
         assert_eq!(decode("bogus-tier"), PermissionMode::ConfirmChanges);

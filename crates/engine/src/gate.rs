@@ -403,7 +403,13 @@ pub(crate) fn before_tool_call_hook(
                         ReviewOutcome::Cancelled => None,
                     };
                 }
-                if mode != PermissionMode::ConfirmChanges {
+                // Jev review (ADR-0026) has no judge of its own yet: until
+                // the Jev gate lands it gates as confirm-changes — never
+                // ungated.
+                if !matches!(
+                    mode,
+                    PermissionMode::ConfirmChanges | PermissionMode::JevReview
+                ) {
                     return None;
                 }
                 let approval_id = uuid::Uuid::new_v4().to_string();

@@ -88,7 +88,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   separately-configured reviewer): a pass executes, a rejection blocks
   with the reviewer's reason, an unclear or failed review rejects
   closed, and no Approval is created. Reads, grep, the web tools, and
-  full-access never gate. The gate rides the agent loop's
+  full-access never gate. `jev-review` (ADR-0026) is a serialized tier on
+  the wire ahead of its feature: the Jev judge, its key settings, and the
+  picker tier land with the Jev review build — until the gate exists, a
+  chat set to `jev-review` gates as confirm-changes, never ungated. The
+  gate rides the agent loop's
   `before_tool_call` hook (no upstream changes); the Title task and
   Compaction mount no tools and never see it.
 - Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
