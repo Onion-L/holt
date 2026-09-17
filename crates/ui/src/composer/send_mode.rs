@@ -49,24 +49,6 @@ pub fn esc_interrupt_outcome(run_live: bool, armed: bool) -> EscInterruptOutcome
     }
 }
 
-/// What one press of Enter does to a possibly-live Turn. Empty-composer
-/// Enter mirrors Esc exactly (ticket 01): it drives the same Interrupt
-/// confirmation, so the outcome is [`esc_interrupt_outcome`]'s. Enter with
-/// composer content is not the protocol's business — it submits, queues, or
-/// no-ops as before, and typing while armed must not disarm — so the press
-/// never reaches the protocol and the caller falls through to the ordinary
-/// submit path.
-pub fn enter_interrupt_outcome(
-    run_live: bool,
-    armed: bool,
-    has_content: bool,
-) -> Option<EscInterruptOutcome> {
-    if has_content {
-        return None;
-    }
-    Some(esc_interrupt_outcome(run_live, armed))
-}
-
 /// Find the unresolved input request the panel should serve, if any: an
 /// unresolved input part on the LAST assistant entry — regardless of the
 /// entry's run status. The question stays answerable until the user actually
@@ -161,22 +143,6 @@ mod tests {
         // Live Turn: first press arms, second press interrupts.
         assert_eq!(esc_interrupt_outcome(true, false), Arm);
         assert_eq!(esc_interrupt_outcome(true, true), Interrupt);
-    }
-
-    #[test]
-    fn empty_enter_mirrors_esc_on_the_interrupt_protocol() {
-        use EscInterruptOutcome::*;
-        // Content gates first: an Enter with anything staged (text, path
-        // reference, diff comment) belongs to the ordinary submit path —
-        // including while armed, since typing must not disarm.
-        assert_eq!(enter_interrupt_outcome(true, false, true), None);
-        assert_eq!(enter_interrupt_outcome(true, true, true), None);
-        assert_eq!(enter_interrupt_outcome(false, true, true), None);
-        // Empty composer: Enter mirrors Esc exactly.
-        assert_eq!(enter_interrupt_outcome(false, false, false), Some(NotLive));
-        assert_eq!(enter_interrupt_outcome(false, true, false), Some(NotLive));
-        assert_eq!(enter_interrupt_outcome(true, false, false), Some(Arm));
-        assert_eq!(enter_interrupt_outcome(true, true, false), Some(Interrupt));
     }
     use crate::composer::wizard::question;
 

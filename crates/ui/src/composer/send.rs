@@ -3,8 +3,8 @@
 
 use super::Composer;
 use super::send_mode::{
-    EscInterruptOutcome, SendButtonMode, composer_has_content, enter_interrupt_outcome,
-    esc_interrupt_outcome, send_button_mode,
+    EscInterruptOutcome, SendButtonMode, composer_has_content, esc_interrupt_outcome,
+    send_button_mode,
 };
 
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use crate::theme::Theme;
 
 /// How long an armed Interrupt confirmation (CONTEXT.md) waits for the
 /// confirming press before it lapses back to the normal button.
-const INTERRUPT_ARM_RESET_MS: u64 = 1500;
+const INTERRUPT_ARM_RESET_MS: u64 = 2500;
 
 /// The `/plan status` notice line from a `PlanModeState` reply. The
 /// proposed plan's own card carries the per-proposal state in the
@@ -101,41 +101,10 @@ impl Composer {
             self.wizard_advance(cx);
             return;
         }
-        // Empty-composer Enter on a live run joins the Interrupt
-        // confirmation (CONTEXT.md) instead of interrupting outright: the
-        // first press arms the pill and reaches nothing, the second
-        // confirms. With content the press never enters the protocol — it
-        // submits, queues, or no-ops exactly as before, and an armed
-        // confirmation survives typing. While an Approval gate pends, Enter
-        // keeps the single-press direct interrupt, mirroring Esc: the bar
-        // replaces the pill, so (as there) an arm would have no visible
-        // feedback channel — the fall-through lands on `submit_text`'s Stop
-        // arm.
-        let gate_pends =
-            crate::transcript::pending_approval_gate(&self.state.read(cx).transcript).is_some();
-        if !gate_pends
-            && let Some(outcome) = enter_interrupt_outcome(
-                self.run_live(cx),
-                self.interrupt_arm.is_some(),
-                self.has_content(cx),
-            )
-        {
-            match outcome {
-                // Not live: nothing to send from an empty composer anyway;
-                // a stale arm dies on the press, mirroring Esc.
-                EscInterruptOutcome::NotLive => self.interrupt_arm = None,
-                EscInterruptOutcome::Arm => {
-                    self.arm_interrupt(cx);
-                    cx.notify();
-                    return;
-                }
-                EscInterruptOutcome::Interrupt => {
-                    self.interrupt_arm = None;
-                    self.interrupt(cx);
-                    return;
-                }
-            }
-        }
+        // Empty-composer Enter is INERT (user decision, post-verification):
+        // it never arms, never confirms, never interrupts — the fall-through
+        // below lands on submit_text's no-content guard. The keyboard stop
+        // is Esc alone; Enter only submits or queues actual content.
         let text = self.input.read(cx).text().trim().to_string();
         self.submit_text(text, cx);
     }
@@ -215,12 +184,11 @@ impl Composer {
             self.staged_comments(cx).len(),
         );
         match self.button_mode(cx) {
-            // Live with nothing to send. on_submit intercepts empty-Enter
-            // into the Interrupt confirmation first, so this arm serves the
-            // approval-gate window (the bar replaces the pill there — the
-            // press keeps the single-press interrupt, mirroring Esc) and
-            // any non-Enter submit route.
-            SendButtonMode::Stop => self.interrupt(cx),
+            // Live with nothing to send: no submit-path stop anymore —
+            // empty-Enter is inert by user decision (never arms, confirms,
+            // or interrupts). The mouse stop square and the armed pill
+            // interrupt via their own handlers.
+            SendButtonMode::Stop => {}
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
             SendButtonMode::Send | SendButtonMode::Queue => self.send(text, cx),
@@ -1060,21 +1028,19 @@ mod tests {
     }
 
     #[gpui::test]
-    fn empty_enter_on_a_live_run_arms_before_it_interrupts(cx: &mut gpui::TestAppContext) {
+    fn empty_enter_on_a_live_run_is_inert(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
         let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
-            assert!(this.interrupt_arm.is_some(), "the first empty Enter arms");
-            assert!(!this.is_sending(), "arming sends nothing");
+            assert!(this.interrupt_arm.is_none(), "empty Enter never arms");
+            assert!(!this.is_sending(), "empty Enter sends nothing");
         });
+        // A repeat press is equally inert — Enter never confirms either.
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
-            assert!(
-                this.interrupt_arm.is_none(),
-                "the second empty Enter confirms"
-            );
+            assert!(this.interrupt_arm.is_none(), "Enter never confirms the arm");
         });
     }
 
@@ -1084,12 +1050,11 @@ mod tests {
         let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
-            this.on_submit(cx);
+            this.arm_interrupt(cx);
             assert!(this.interrupt_arm.is_some());
         });
-        // Typing while armed must not disarm: with content the press leaves
-        // the protocol alone and takes the ordinary submit path (which in
-        // this engine-less harness no-ops behind `send_blocked`).
+        // Typing then submitting never disarms: the press queues as usual
+        // and Enter plays no part in the protocol.
         composer.update(cx, |this, cx| {
             this.input
                 .update(cx, |input, cx| input.set_text("hello", cx));
@@ -1113,7 +1078,7 @@ mod tests {
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
 
         composer.update(cx, |this, cx| {
-            this.on_submit(cx);
+            this.arm_interrupt(cx);
             assert!(this.interrupt_arm.is_some());
         });
         // The run ends; a queued Turn starting inside the window must need
@@ -1134,7 +1099,7 @@ mod tests {
         let composer = live_composer(cx);
 
         composer.update(cx, |this, cx| {
-            this.on_submit(cx);
+            this.arm_interrupt(cx);
             assert!(this.interrupt_arm.is_some());
         });
         // Mid-window the arm holds.
@@ -1156,11 +1121,17 @@ mod tests {
         composer.update(cx, |this, _| {
             assert!(this.interrupt_arm.is_none(), "the arm lapses at the window");
         });
-        // The lapsed window leaves no residue: the next stop arms afresh
-        // (press one of the next two-press cycle) instead of interrupting
-        // outright or inheriting the retired deadline.
+        // The lapsed window leaves no residue: the next stop press (Esc —
+        // Enter is out of the protocol) arms afresh, press one of the next
+        // two-press cycle, instead of interrupting outright or inheriting
+        // the retired deadline.
+        let esc = gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("escape").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        };
         composer.update(cx, |this, cx| {
-            this.on_submit(cx);
+            this.on_escape(&esc, cx);
             assert!(this.interrupt_arm.is_some(), "the next stop arms afresh");
         });
     }
