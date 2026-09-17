@@ -120,15 +120,16 @@ impl gpui::Element for ComposerTextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.input.update(cx, |input, cx| {
-            let scrolled = input.clamp_scroll(f32::from(bounds.size.height));
+            let scrolled =
+                input.clamp_scroll(f32::from(bounds.size.height), f32::from(bounds.size.width));
             input.last_bounds = Some(bounds);
             if scrolled {
                 cx.emit(ComposerInputEvent::ViewportChanged);
             }
         });
         let input = self.input.read(cx);
-        let scroll = px(input.scroll_top);
-        let origin = point(bounds.left(), bounds.top() - scroll);
+        let scroll = point(px(input.scroll_left), px(input.scroll_top));
+        let origin = point(bounds.left() - scroll.x, bounds.top() - scroll.y);
         let selection_color = Theme::of(cx).selection;
         let caret_color = Theme::of(cx).caret;
         // The inline-code recipe: chips use the spectrum wash like `code` spans.
@@ -329,11 +330,12 @@ impl gpui::Element for ComposerTextElement {
 
         // WrappedLine isn't Clone — temporarily take the shaped lines out of the
         // entity for painting, then put them back for mouse mapping.
-        let (lines, line_height, scroll) = self.input.update(cx, |input, _| {
+        let (lines, line_height, scroll_top, scroll_left) = self.input.update(cx, |input, _| {
             (
                 std::mem::take(&mut input.last_lines),
                 input.line_height,
                 input.scroll_top,
+                input.scroll_left,
             )
         });
 
@@ -344,11 +346,11 @@ impl gpui::Element for ComposerTextElement {
             for quad in prepaint.selection_quads.drain(..) {
                 window.paint_quad(quad);
             }
-            let mut y = bounds.top() - px(scroll);
+            let mut y = bounds.top() - px(scroll_top);
             for line in &lines {
                 let height = line.size(line_height).height;
                 let _ = line.paint(
-                    point(bounds.left(), y),
+                    point(bounds.left() - px(scroll_left), y),
                     line_height,
                     gpui::TextAlign::Left,
                     Some(bounds),

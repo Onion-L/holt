@@ -758,11 +758,12 @@ impl Shell {
                     ix == active,
                     format!("spaces-menu-row-{ix}"),
                 )
+                .group(format!("spaces-menu-row-group-{ix}"))
                 .id(("spaces-menu-row", ix))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.activate_spaces_menu_row(activate.clone(), cx);
                 }))
-                .when_some(menu_space, |el, space_id| {
+                .when_some(menu_space.clone(), |el, space_id| {
                     el.on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -778,6 +779,40 @@ impl Shell {
                         .text_color(theme.text_muted.opacity(0.8)),
                 )
                 .child(div().flex_1().min_w_0().truncate().child(label))
+                // Hover "..." at the row's right edge — the same context menu
+                // the right-click opens, for pointers that never right-click.
+                // Opacity (not mount/unmount) keeps the row's layout stable;
+                // the click stops propagation so the row never activates.
+                .when_some(menu_space, |el, space_id| {
+                    el.child(
+                        div()
+                            .id(("spaces-menu-more", ix))
+                            .debug_selector(move || format!("spaces-menu-more-{ix}"))
+                            .opacity(0.0)
+                            .group_hover(format!("spaces-menu-row-group-{ix}"), |s| s.opacity(1.0))
+                            .flex_none()
+                            .size(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.element_hover))
+                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                let gpui::ClickEvent::Mouse(click) = event else {
+                                    return;
+                                };
+                                this.space_menu.open((space_id.clone(), click.up.position));
+                                cx.notify();
+                            }))
+                            .child(
+                                icon(icons::MENU_DOTS)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    )
+                })
                 // No check glyph — the selected row's wash (menu_row's
                 // active styling) is the selection signal.
             }));
@@ -2704,6 +2739,98 @@ mod tests {
         cx.simulate_keystrokes("escape");
         shell.read_with(cx, |shell, _| {
             assert!(shell.sidebar_view_menu.closing_since().is_some())
+        });
+    }
+
+    // ---- spaces menu row "..." affordance ----
+
+    /// Renders the open spaces dropdown plus the shell's overlay layer (where
+    /// the context menu paints) so the test can drive both.
+    struct SpacesMenuHarness {
+        shell: Entity<Shell>,
+        _observe: Subscription,
+    }
+
+    impl Render for SpacesMenuHarness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::of(cx).clone();
+            let menu = self
+                .shell
+                .update(cx, |shell, cx| shell.render_spaces_menu(&theme, cx));
+            let overlays = self.shell.update(cx, |shell, cx| {
+                shell.render_space_overlays(window.viewport_size(), window, cx)
+            });
+            div().size_full().child(menu).children(overlays)
+        }
+    }
+
+    /// Boots a shell over one project — the dropdown lists it between "All
+    /// projects" (0) and "New project…" (2).
+    fn spaces_menu_shell(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<AppState>, Entity<Shell>, tempfile::TempDir) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        cx.update(|cx| crate::settings::init(UiSettings::default(), data_dir.clone(), cx));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
+            state.local_device_id = Some("test-device".into());
+            state.spaces.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "space-1", "deviceId": "test-device",
+                    "path": "/tmp/space-1", "createdAt": "2026-09-07T00:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state
+        });
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        (state, shell, dir)
+    }
+
+    /// The row's "..." affordance opens the same context menu as right-click
+    /// — and must not also activate the row (the click stops propagation).
+    #[gpui::test]
+    fn spaces_row_dots_open_the_context_menu_without_selecting(cx: &mut gpui::TestAppContext) {
+        let (_, shell, _dir) = spaces_menu_shell(cx);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            shell.update(cx, |shell, cx| shell.open_spaces_menu(window, cx));
+            SpacesMenuHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+
+        let dots = cx
+            .debug_bounds("spaces-menu-more-1")
+            .expect("the dots affordance is rendered")
+            .center();
+        cx.simulate_click(dots, Default::default());
+        cx.run_until_parked();
+
+        shell.read_with(cx, |shell, _| {
+            let (space_id, _) = shell
+                .space_menu
+                .get()
+                .cloned()
+                .expect("the dots open the context menu");
+            assert_eq!(space_id, "space-1");
+            // A menu trigger, not a row activation: the filter is untouched
+            // and the dropdown stays up.
+            assert!(shell.settings.space_filter.is_none());
+            assert!(shell.spaces_menu.is_open());
         });
     }
 }

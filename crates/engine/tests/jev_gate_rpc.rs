@@ -172,13 +172,14 @@ async fn a_passing_judgment_executes_the_call() {
     assert_eq!(jev[0]["output"], json!(34));
 }
 
-/// A clear veto blocks the call with the prefixed reason; the Turn
-/// continues on the error tool result.
+/// A clear veto blocks the call with the prefixed reason and the advice;
+/// the Turn continues on the error tool result.
 #[tokio::test]
 async fn a_veto_blocks_with_the_jev_reason() {
     let fixture = Fixture::new();
     let judge = StubJudge::verdict(JevVerdict::Deny {
         reason: "the call looks destructive or irreversible".into(),
+        advice: "destructive score 0.90; do not retry this call — use a recoverable alternative or ask the user".into(),
     });
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::tool_call("call-1", "bash", json!({ "command": "rm -rf /" })),
@@ -197,7 +198,7 @@ async fn a_veto_blocks_with_the_jev_reason() {
         common::summarize(&requests[1].messages)
             .iter()
             .any(|row| row
-                == "toolresult:call-1:Jev review: the call looks destructive or irreversible"),
+                == "toolresult:call-1:Jev review: the call looks destructive or irreversible — destructive score 0.90; do not retry this call — use a recoverable alternative or ask the user"),
         "the prefixed reason never reached the model: {:?}",
         common::summarize(&requests[1].messages)
     );

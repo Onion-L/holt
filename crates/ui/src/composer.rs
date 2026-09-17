@@ -714,6 +714,11 @@ impl Render for Composer {
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
+            // The column floats over the transcript viewport (shell.rs's
+            // underlay): don't let clicks/hover fall through to the rows
+            // scrolling behind it. Wheel events still chain — the input
+            // swallows them itself when its content is scrollable.
+            .block_mouse_except_scroll()
             // Raw Escape (no popup/dialog consumed it) = interrupt the
             // running Turn while an Approval gates it (ADR-0014).
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -1210,5 +1215,90 @@ impl Render for Composer {
             return container.child(viewer);
         }
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Modifiers, Render, point};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// The composer floats over the transcript viewport (shell.rs's
+    /// underlay): clicks on its surface must not fall through to the rows
+    /// scrolling behind it (a click on the pill opened the change-card file
+    /// behind — user report).
+    #[gpui::test]
+    fn composer_blocks_clicks_to_content_behind_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+
+        struct TestView {
+            composer: Entity<Composer>,
+            behind_clicks: Rc<Cell<usize>>,
+        }
+
+        impl Render for TestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let behind_clicks = self.behind_clicks.clone();
+                div()
+                    .size_full()
+                    .child(
+                        div()
+                            .id("behind")
+                            .debug_selector(|| "behind".into())
+                            .absolute()
+                            .inset_0()
+                            .on_click(move |_, _, _| {
+                                behind_clicks.set(behind_clicks.get() + 1);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .flex_col()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .debug_selector(|| "composer-block".into())
+                                    .child(self.composer.clone()),
+                            ),
+                    )
+            }
+        }
+
+        let behind_clicks = Rc::new(Cell::new(0));
+        let clicks = behind_clicks.clone();
+        let (view, visual) = cx.add_window_view(|_window, cx| {
+            let state = cx.new(|_| AppState::new());
+            let composer = cx.new(|cx| Composer::new(state, cx));
+            TestView {
+                composer,
+                behind_clicks: clicks,
+            }
+        });
+        // Force the first frame: a window only paints after a notify.
+        view.update_in(&mut *visual, |_, _, cx| cx.notify());
+        visual.run_until_parked();
+
+        // A click on the composer's own surface must not reach behind it.
+        let block = visual
+            .debug_bounds("composer-block")
+            .expect("composer renders");
+        visual.simulate_click(block.center(), Modifiers::none());
+        visual.run_until_parked();
+        assert_eq!(behind_clicks.get(), 0);
+
+        // Clear of the composer (window's top edge) the same click lands.
+        let behind = visual.debug_bounds("behind").expect("behind renders");
+        visual.simulate_click(
+            point(behind.center().x, behind.top() + px(10.0)),
+            Modifiers::none(),
+        );
+        visual.run_until_parked();
+        assert_eq!(behind_clicks.get(), 1);
     }
 }

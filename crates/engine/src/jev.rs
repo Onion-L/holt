@@ -48,12 +48,15 @@ pub struct JevCall<'a> {
     pub request: &'a str,
 }
 
-/// The judge's verdict on one call.
+/// The judge's verdict on one call. A deny pairs the chip-facing reason
+/// (short, stable) with model-facing advice — what to do instead, carrying
+/// the decisive answer's score the chip never shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JevVerdict {
     Allow,
     Deny {
         reason: String,
+        advice: String,
     },
     /// The judge could not decide — the user decides.
     Unsure,
@@ -91,20 +94,35 @@ pub(crate) struct JevAnswers {
 /// questions deny at full strength; a clear irrelevance denies; anything
 /// landing in the dead band, or the ask-the-user question firing,
 /// escalates. Order matters: a clear veto outranks uncertainty elsewhere.
+/// Each deny's advice is written for the agent's retry decision: it names
+/// the decisive score and states the rule so a denied call is not
+/// blindly retried (the judge's view does not change between retries).
 pub(crate) fn combine(a: &JevAnswers) -> JevVerdict {
     if a.destructive >= ACTION_THRESHOLD {
         return JevVerdict::Deny {
             reason: "the call looks destructive or irreversible".into(),
+            advice: format!(
+                "destructive score {:.2}; do not retry this call — use a recoverable alternative or ask the user",
+                a.destructive
+            ),
         };
     }
     if a.secrets >= ACTION_THRESHOLD {
         return JevVerdict::Deny {
             reason: "the call may expose credentials or private data".into(),
+            advice: format!(
+                "secrets score {:.2}; keep the data on this machine, or ask the user before moving it anywhere",
+                a.secrets
+            ),
         };
     }
     if a.matches_request <= DEAD_BAND_LOW {
         return JevVerdict::Deny {
             reason: "the call does not appear to advance the user's request".into(),
+            advice: format!(
+                "relevance score {:.2}; the judge sees only this call, the working directory, and the user's latest message — not your plan or earlier results, and a retry reads the same. Run a call whose purpose is evident from its arguments, or end the turn and ask the user",
+                a.matches_request
+            ),
         };
     }
     if a.needs_human >= ACTION_THRESHOLD {
@@ -340,12 +358,14 @@ mod tests {
 
     #[test]
     fn vetoes_deny_with_their_reason() {
-        let JevVerdict::Deny { reason } = combine(&answers(ACTION_THRESHOLD, 0.0, 0.99, 0.0))
+        let JevVerdict::Deny { reason, advice } =
+            combine(&answers(ACTION_THRESHOLD, 0.0, 0.99, 0.0))
         else {
             panic!("destructive at the threshold denies");
         };
         assert!(reason.contains("destructive"), "{reason}");
-        let JevVerdict::Deny { reason } = combine(&answers(0.0, 0.9, 0.99, 0.0)) else {
+        assert!(advice.contains("destructive score 0.60"), "{advice}");
+        let JevVerdict::Deny { reason, .. } = combine(&answers(0.0, 0.9, 0.99, 0.0)) else {
             panic!("secrets denies");
         };
         assert!(reason.contains("credentials"), "{reason}");
@@ -353,10 +373,15 @@ mod tests {
 
     #[test]
     fn a_clearly_unrelated_call_denies() {
-        let JevVerdict::Deny { reason } = combine(&answers(0.0, 0.0, DEAD_BAND_LOW, 0.0)) else {
+        let JevVerdict::Deny { reason, advice } = combine(&answers(0.0, 0.0, DEAD_BAND_LOW, 0.0))
+        else {
             panic!("unrelated at the lower bound denies");
         };
         assert!(reason.contains("request"), "{reason}");
+        // The advice carries the decisive score and states the judge's
+        // view — the agent must learn a blind retry reads the same.
+        assert!(advice.contains("relevance score 0.40"), "{advice}");
+        assert!(advice.contains("a retry reads the same"), "{advice}");
     }
 
     #[test]

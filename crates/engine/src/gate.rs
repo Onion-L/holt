@@ -503,10 +503,11 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     );
                                     return None;
                                 }
-                                crate::jev::JevVerdict::Deny { reason } => {
+                                crate::jev::JevVerdict::Deny { reason, advice } => {
                                     // The chip carries the raw reason plus
                                     // the judge; the model-facing error keeps
-                                    // the prefix — it addresses the agent.
+                                    // the prefix and appends the advice — it
+                                    // addresses the agent, the chip stays short.
                                     stamp_gate(
                                         &chat,
                                         &base_parts,
@@ -524,7 +525,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     );
                                     return Some(BeforeToolCallResult {
                                         block: Some(true),
-                                        reason: Some(format!("Jev review: {reason}")),
+                                        reason: Some(format!("Jev review: {reason} — {advice}")),
                                         terminate: None,
                                     });
                                 }

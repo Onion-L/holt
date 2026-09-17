@@ -372,6 +372,9 @@ pub struct ComposerInput {
     drag_autoscroll_active: bool,
     /// Vertical scroll inside the input once content exceeds the max height.
     pub(super) scroll_top: f32,
+    /// Horizontal pan in single-line fields (secret keys): the content never
+    /// wraps, so the caret is reached by scrolling sideways instead.
+    pub(super) scroll_left: f32,
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
     follow_cursor: bool,
@@ -396,6 +399,9 @@ pub struct ComposerInput {
     /// Secret input (API keys): every character projects to a bullet. The
     /// content itself is untouched — only the shaped display masks.
     masked: bool,
+    /// One-line fields (secret keys): never wrap — long content pans
+    /// horizontally, and pasted/typed newlines are stripped.
+    single_line: bool,
     /// Bumped once per `layout_text` pass — the flip logic uses it to apply at
     /// most one compact↔expanded flip per layout (a flip is only re-evaluated
     /// after the input has been measured in the new mode).
@@ -432,11 +438,13 @@ impl ComposerInput {
         Self::with_context(placeholder, "Composer", cx)
     }
 
-    /// A secret input (API keys): the content renders as bullets until the
-    /// parent flips the projection with [`Self::set_masked`].
+    /// Secret input (API keys): the content renders as bullets until the
+    /// parent flips the projection with [`Self::set_masked`]. Single-line:
+    /// a key never wraps — long content pans horizontally instead.
     pub fn new_secret(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let mut input = Self::with_context(placeholder, "Composer", cx);
         input.masked = true;
+        input.single_line = true;
         input
     }
 
@@ -461,6 +469,7 @@ impl ComposerInput {
             drag_generation: 0,
             drag_autoscroll_active: false,
             scroll_top: 0.0,
+            scroll_left: 0.0,
             follow_cursor: true,
             last_lines: Vec::new(),
             line_starts: vec![0],
@@ -473,6 +482,7 @@ impl ComposerInput {
             ghost: None,
             mentions_enabled: false,
             masked: false,
+            single_line: false,
             layout_epoch: 0,
             display_is_placeholder: true,
             blink_anchor: Instant::now(),
@@ -677,6 +687,7 @@ impl ComposerInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.scroll_top = 0.0;
+        self.scroll_left = 0.0;
         self.follow_cursor = true;
         // Programmatic replacement (draft load, clear-on-submit) is a new
         // document, not an edit — undo must not reach back past it.
@@ -1250,6 +1261,9 @@ impl ComposerInput {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.single_line {
+            return;
+        }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
@@ -1389,7 +1403,7 @@ impl ComposerInput {
             return 0;
         };
         let local = point(
-            position.x - bounds.left(),
+            position.x - bounds.left() + px(self.scroll_left),
             position.y - bounds.top() + px(self.scroll_top),
         );
         self.index_for_point(local)
@@ -1533,8 +1547,23 @@ impl ComposerInput {
         let Some(bounds) = self.last_bounds else {
             return;
         };
+        let delta = event.delta.pixel_delta(self.line_height);
+        // Single-line fields pan horizontally instead of wrapping; the wheel's
+        // x component drives them, contained at either edge.
+        if self.single_line {
+            let max_x = (self.max_line_width - f32::from(bounds.size.width)).max(0.0);
+            let delta_x = f32::from(delta.x);
+            if max_x > 0.0 && delta_x != 0.0 {
+                self.scroll_left = (self.scroll_left + delta_x).clamp(0.0, max_x);
+                self.follow_cursor = false;
+                cx.stop_propagation();
+                cx.emit(ComposerInputEvent::ViewportChanged);
+                cx.notify();
+                return;
+            }
+        }
         let viewport_height = f32::from(bounds.size.height);
-        let delta_y = f32::from(event.delta.pixel_delta(self.line_height).y);
+        let delta_y = f32::from(delta.y);
         let next = input_scroll_offset(
             self.scroll_top,
             delta_y,
@@ -1700,7 +1729,15 @@ impl ComposerInput {
 
         let lines = window
             .text_system()
-            .shape_text(display, font_size, &runs, Some(width), None)
+            // Single-line fields never wrap: a long secret pans horizontally
+            // (scroll_left) instead of overflowing its fixed-height box.
+            .shape_text(
+                display,
+                font_size,
+                &runs,
+                if self.single_line { None } else { Some(width) },
+                None,
+            )
             .map(|small| small.into_vec())
             .unwrap_or_default();
 
@@ -1734,9 +1771,11 @@ impl ComposerInput {
         self.content_height
     }
 
-    /// Keep the cursor visible when content exceeds the element height.
-    pub(super) fn clamp_scroll(&mut self, element_height: f32) -> bool {
-        let previous = self.scroll_top;
+    /// Keep the cursor visible when content exceeds the element. The
+    /// multiline composer scrolls vertically; a single-line field pans
+    /// horizontally instead.
+    pub(super) fn clamp_scroll(&mut self, viewport_height: f32, viewport_width: f32) -> bool {
+        let previous = (self.scroll_top, self.scroll_left);
         if self.follow_cursor
             && let Some(cursor) = self.point_for_index(self.cursor_offset())
         {
@@ -1745,13 +1784,27 @@ impl ComposerInput {
                 f32::from(cursor.y),
                 f32::from(self.line_height),
                 self.content_height,
-                element_height,
+                viewport_height,
             );
+            if self.single_line {
+                let caret_x = f32::from(cursor.x);
+                // The 2px caret quad reads past the caret point.
+                if caret_x + 2.0 - self.scroll_left > viewport_width {
+                    self.scroll_left = caret_x + 2.0 - viewport_width;
+                } else if caret_x < self.scroll_left {
+                    self.scroll_left = caret_x;
+                }
+            }
         }
         self.scroll_top = self
             .scroll_top
-            .clamp(0.0, input_max_scroll(self.content_height, element_height));
-        self.scroll_top != previous
+            .clamp(0.0, input_max_scroll(self.content_height, viewport_height));
+        if self.single_line {
+            self.scroll_left = self
+                .scroll_left
+                .clamp(0.0, (self.max_line_width - viewport_width).max(0.0));
+        }
+        (self.scroll_top, self.scroll_left) != previous
     }
 }
 
@@ -1813,6 +1866,15 @@ impl EntityInputHandler for ComposerInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
         let range = self.projection.normalize_range(range);
+        // Single-line fields never grow a second line: strip line breaks
+        // from pasted/committed text (a copied key often trails a newline).
+        let stripped;
+        let new_text = if self.single_line && new_text.contains(['\r', '\n']) {
+            stripped = new_text.replace(['\r', '\n'], "");
+            stripped.as_str()
+        } else {
+            new_text
+        };
         self.invalidate_mention_tooltip();
         // An IME commit is the tail of a composition whose pre-composition
         // snapshot was already taken (`replace_and_mark_text_in_range`);
@@ -1894,7 +1956,7 @@ impl EntityInputHandler for ComposerInput {
             .normalize_range(self.range_from_utf16(&range_utf16));
         let start = self.point_for_index(range.start)?;
         let origin = point(
-            bounds.left() + start.x,
+            bounds.left() + start.x - px(self.scroll_left),
             bounds.top() + start.y - px(self.scroll_top),
         );
         Some(Bounds::new(origin, size(px(2.0), self.line_height)))
@@ -2086,6 +2148,53 @@ mod tests {
                     caret..caret,
                     "caret sits at the end of the marked text, not 6 utf16 units into the content"
                 );
+            });
+        });
+    }
+
+    /// Secret fields are one-line controls: a long key must not wrap out of
+    /// its fixed-height box — the viewport pans horizontally to the caret.
+    #[gpui::test]
+    fn secret_input_never_wraps_and_pans_to_the_caret(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| cx.new(|cx| ComposerInput::new_secret("API key", cx)));
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let width = px(100.0);
+                let viewport = f32::from(width);
+                input.set_text("k".repeat(120), cx);
+                let style = window.text_style();
+                input.layout_text(width, &style, window, cx);
+                assert_eq!(input.last_lines.len(), 1, "no wrap in a secret field");
+                assert_eq!(input.content_height, INPUT_LINE_HEIGHT);
+
+                // The caret is at the end (set_text): clamp_scroll pans right.
+                assert!(input.clamp_scroll(INPUT_LINE_HEIGHT, viewport));
+                let caret_x = f32::from(input.point_for_index(input.content.len()).unwrap().x);
+                assert!(input.scroll_left > 0.0);
+                assert!(caret_x - input.scroll_left <= viewport + 0.01);
+
+                // Home pans back to the leading edge.
+                input.move_to(0, cx);
+                input.clamp_scroll(INPUT_LINE_HEIGHT, viewport);
+                assert_eq!(input.scroll_left, 0.0);
+            });
+        });
+    }
+
+    /// Line breaks pasted or typed into a single-line field are stripped —
+    /// the field never grows a second row.
+    #[gpui::test]
+    fn secret_input_strips_line_breaks(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| cx.new(|cx| ComposerInput::new_secret("API key", cx)));
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "ab\ncd\r\n", window, cx);
+                assert_eq!(input.text(), "abcd");
+                input.newline(&Newline, window, cx);
+                assert_eq!(input.text(), "abcd", "the newline action is a no-op");
             });
         });
     }

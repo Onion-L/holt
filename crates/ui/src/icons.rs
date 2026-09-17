@@ -143,6 +143,9 @@ icon_assets![
     (PEN_NEW_SQUARE, "pen-new-square"),
     (SORT, "sort"),
     (SORT_VERTICAL, "sort-vertical"),
+    // Horizontal three-dot menu trigger — drawn for the space rows' hover
+    // affordance (the embedded set has no menu-dots glyph).
+    (MENU_DOTS, "menu-dots"),
     (CLOCK_CIRCLE, "clock-circle"),
     // Context checkpoint glyph in the same linear style.
     (CONTEXT_COMPACT, "context-compact"),
