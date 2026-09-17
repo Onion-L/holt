@@ -131,10 +131,10 @@ async fn a_passing_judgment_executes_the_call() {
     // One decision request per judged call, weighed against the user's
     // latest message — never a bare model completion like auto-review.
     assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
-    let seen = judge.seen.lock().unwrap();
-    assert_eq!(seen[0].0, "bash");
-    assert_eq!(seen[0].1, fixture.cwd());
-    assert_eq!(seen[0].2, "clean the build");
+    let seen = judge.seen.lock().unwrap()[0].clone();
+    assert_eq!(seen.0, "bash");
+    assert_eq!(seen.1, fixture.cwd());
+    assert_eq!(seen.2, "clean the build");
 
     // The judged call books a jev-review usage record with the TypeSafe
     // identity, whatever the verdict. The ledger settles with the Turn,

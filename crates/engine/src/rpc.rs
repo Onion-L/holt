@@ -1387,7 +1387,7 @@ impl EngineService {
     async fn save_jev_settings(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let key = required_string(&params, "apiKey")?;
         self.jev
-            .save(&key)
+            .save(key)
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         RpcReply::value(&self.jev_state())
     }
