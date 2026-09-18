@@ -255,16 +255,18 @@ async fn the_denominator_follows_the_queue_head_then_the_selection() {
 async fn a_custom_model_has_no_denominator() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("done")]);
+    // A bare custom model arrives through a legacy provider-settings.json.
+    std::fs::write(
+        fixture.data_dir.path().join("provider-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "customModels": { "openai": ["gpt-private-2026-09-01"] }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let engine = fixture.engine(&provider);
     setup_chat(&engine, "chat-1").await;
     let custom = "openai/gpt-private-2026-09-01";
-    engine
-        .handle(
-            methods::ADD_PROVIDER_MODEL,
-            json!({"providerId": "openai", "modelId": custom}),
-        )
-        .await
-        .unwrap();
     select_model(&engine, custom).await;
 
     let mut usage = usage_watch(&engine).await;

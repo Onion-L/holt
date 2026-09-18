@@ -35,10 +35,6 @@ pub mod methods {
     pub const SAVE_PROVIDER_KEY: &str = "SaveProviderKey";
     pub const REVEAL_PROVIDER_KEY: &str = "RevealProviderKey";
     pub const REMOVE_PROVIDER_KEY: &str = "RemoveProviderKey";
-    pub const ADD_PROVIDER_MODEL: &str = "AddProviderModel";
-    /// Drops one user-added model: params `{providerId, modelId}`. Builtin
-    /// catalog ids are not custom models — the engine no-ops on them.
-    pub const REMOVE_PROVIDER_MODEL: &str = "RemoveProviderModel";
     pub const LIST_MODELS: &str = "ListModels";
     /// The provider's hidden models — id and label rows the Settings page
     /// greys out; the model picker's `ListModels` never includes them.

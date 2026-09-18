@@ -221,16 +221,6 @@ async fn a_custom_provider_flows_from_definition_to_key_to_models() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "acme/acme-1");
     assert_eq!(rows[0]["contextWindow"], 321_000);
-
-    // Bare custom ids still work on it: the record is the template.
-    engine
-        .handle(
-            methods::ADD_PROVIDER_MODEL,
-            serde_json::json!({ "providerId": "acme", "modelId": "acme-bare" }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(list_models(&engine, "acme").await.len(), 2);
 }
 
 /// A record without `baseUrl` inherits the provider's default endpoint —
@@ -347,19 +337,6 @@ async fn hidden_models_leave_listings_but_stay_resolvable() {
     assert_eq!(hidden_rows[0]["id"], first["id"]);
     assert_eq!(hidden_rows[0]["label"], first["label"]);
 
-    // Resolution keeps working: the id is still known, so re-adding it as a
-    // custom id is a duplicate, not a fresh row.
-    let reply = engine
-        .handle(
-            methods::ADD_PROVIDER_MODEL,
-            serde_json::json!({
-                "providerId": "openai",
-                "modelId": first["id"].as_str().unwrap().strip_prefix("openai/").unwrap(),
-            }),
-        )
-        .await;
-    assert!(reply.is_err());
-
     // Unhiding is the same call with an empty set.
     engine
         .handle(
@@ -398,7 +375,18 @@ async fn hidden_models_leave_listings_but_stay_resolvable() {
 
 #[tokio::test]
 async fn reset_drops_the_live_layer_and_keeps_the_catalog() {
-    let (_fixture, engine) = setup();
+    let fixture = Fixture::new();
+    // A bare custom model rides a legacy provider-settings.json — its add
+    // RPC is gone.
+    std::fs::write(
+        fixture.data_dir.path().join("provider-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "customModels": { "openai": ["gpt-bare"] }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
     engine
         .handle(
             methods::SAVE_MODEL_RECORD,
@@ -406,13 +394,6 @@ async fn reset_drops_the_live_layer_and_keeps_the_catalog() {
                 "providerId": "openai",
                 "record": record("openai", "gpt-via-record", "https://api.openai.com/v1"),
             }),
-        )
-        .await
-        .unwrap();
-    engine
-        .handle(
-            methods::ADD_PROVIDER_MODEL,
-            serde_json::json!({ "providerId": "openai", "modelId": "gpt-bare" }),
         )
         .await
         .unwrap();

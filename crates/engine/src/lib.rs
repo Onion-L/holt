@@ -703,6 +703,16 @@ mod tests {
     #[tokio::test]
     async fn custom_provider_model_is_listed_resolved_and_persisted() {
         let dir = tempfile::tempdir().unwrap();
+        // Bare custom models arrive through legacy provider-settings.json
+        // files — their add RPC is gone.
+        std::fs::write(
+            dir.path().join("provider-settings.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-private-2026-09-01"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let config = EngineConfig {
             data_dir: dir.path().into(),
             personal_skills_dir: None,
@@ -710,16 +720,6 @@ mod tests {
             search_backend_resolver: None,
         };
         let engine = LocalEngine::assemble(&config).unwrap();
-        engine
-            .handle(
-                methods::ADD_PROVIDER_MODEL,
-                serde_json::json!({
-                    "providerId": "openai",
-                    "modelId": "openai/gpt-private-2026-09-01"
-                }),
-            )
-            .await
-            .unwrap();
 
         let custom_id = "openai/gpt-private-2026-09-01";
         let RpcReply::Value(models) = engine

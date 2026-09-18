@@ -43,9 +43,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   row only), `WatchConnectivity` (one static Disabled snapshot — no edge
   transports).
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
-  `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`,
-  `RemoveProviderModel` (drops a user-added model; built-in catalog ids
-  no-op), plus the live catalog writes (ADR-0028): `SaveModelRecord` /
+  `RevealProviderKey`, `RemoveProviderKey`, plus the live catalog writes
+  (ADR-0028): `SaveModelRecord` /
   `RemoveModelRecord` (a complete record replaces a same-id entry outright),
   `SaveCustomProvider` / `RemoveCustomProvider` (user-defined providers),
   `SetHiddenModels` (listings only — resolution keeps working),

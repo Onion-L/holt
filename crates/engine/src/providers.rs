@@ -153,10 +153,6 @@ impl ProviderAdapter {
             .ok_or_else(|| format!("unknown model: {qualified_id}"))
     }
 
-    pub fn can_add_custom_model(&self, provider_id: &str) -> bool {
-        !self.core_models_for(provider_id).is_empty()
-    }
-
     /// The provider's default transport base URL — a custom definition's
     /// `base_url`, else the boot-catalog entry's, else its first model's.
     /// `SaveModelRecord` records that omit `baseUrl` inherit this, so the
@@ -524,11 +520,17 @@ mod tests {
     #[test]
     fn legacy_ids_stay_opaque_and_records_shadow_them() {
         let dir = tempfile::tempdir().unwrap();
+        // Bare custom ids have no write path left (the Add RPC is gone);
+        // they arrive through legacy provider-settings.json files.
+        std::fs::write(
+            dir.path().join("provider-settings.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-bare"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let adapter = adapter(dir.path());
-        adapter
-            .settings
-            .add_custom_model("openai", "gpt-bare")
-            .unwrap();
         let rows = adapter.models_for("openai");
         let bare = rows.iter().find(|row| row.id == "openai/gpt-bare").unwrap();
         assert_eq!(bare.context_window, None);
@@ -604,17 +606,10 @@ mod tests {
         assert!(!row.configured);
 
         assert!(adapter.is_eligible("acme"));
-        assert!(adapter.can_add_custom_model("acme"));
         let models = adapter.models_for("acme");
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "acme/acme-1");
         assert_eq!(models[0].context_window, Some(321_000));
-        // The record is the template a later bare id borrows.
-        adapter
-            .settings
-            .add_custom_model("acme", "acme-bare")
-            .unwrap();
-        assert!(adapter.has_model("acme", "acme-bare"));
     }
 
     #[test]

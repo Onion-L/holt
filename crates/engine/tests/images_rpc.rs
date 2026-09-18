@@ -201,14 +201,17 @@ async fn unknown_custom_models_attempt_images_and_report_rejections_without_retr
         ScriptedReply::Failed("This model rejects image input".into()),
     ]);
     std::fs::write(fixture.project_dir.path().join("image.png"), png(4, 2)).unwrap();
+    // A bare custom model arrives through a legacy provider-settings.json.
+    std::fs::write(
+        fixture.data_dir.path().join("provider-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "customModels": { "openai": ["custom-image-model"] }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    value(
-        &engine,
-        methods::ADD_PROVIDER_MODEL,
-        json!({"providerId":"openai","modelId":"custom-image-model"}),
-    )
-    .await;
     let models = value(
         &engine,
         methods::LIST_MODELS,

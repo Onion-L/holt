@@ -178,27 +178,6 @@ impl ProviderSettingsStore {
         self.commit(settings, previous)
     }
 
-    pub fn add_custom_model(&self, provider_id: &str, model_id: &str) -> Result<(), EngineError> {
-        let mut settings = self
-            .settings
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous = settings.clone();
-        let changed = settings
-            .custom_models
-            .entry(provider_id.to_string())
-            .or_default()
-            .insert(model_id.to_string());
-        if !changed {
-            return Ok(());
-        }
-        if let Err(error) = self.persist(&settings) {
-            *settings = previous;
-            return Err(error);
-        }
-        Ok(())
-    }
-
     /// Drops one user-added model id. Returns `false` when the id is not a
     /// custom model for this provider — builtin catalog rows live outside
     /// this store, so they can never be removed here.
@@ -478,9 +457,16 @@ mod tests {
     #[test]
     fn custom_models_persist_and_reload() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
+        // Bare custom ids have no write path left (the Add RPC is gone);
+        // they arrive through legacy provider-settings.json files.
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-custom"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
         let restored = ProviderSettingsStore::load(dir.path()).unwrap();
         assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
@@ -489,9 +475,15 @@ mod tests {
     #[test]
     fn remove_custom_model_drops_only_custom_ids() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-custom", "gpt-other"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let settings = ProviderSettingsStore::load(dir.path()).unwrap();
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
-        settings.add_custom_model("openai", "gpt-other").unwrap();
 
         // Unknown provider / builtin id: a no-op that reports false.
         assert!(
@@ -533,17 +525,28 @@ mod tests {
         let settings = ProviderSettingsStore::load(dir.path()).unwrap();
         assert!(settings.custom_models_for("openai").is_empty());
 
-        // The store keeps working: a later add persists over the empty file.
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
+        // The store keeps working: a later write persists over the empty file.
+        let mut hidden = BTreeSet::new();
+        hidden.insert("gpt-5.4".to_string());
+        settings.set_hidden_models("openai", hidden).unwrap();
         let restored = ProviderSettingsStore::load(dir.path()).unwrap();
-        assert_eq!(restored.custom_models_for("openai"), vec!["gpt-custom"]);
+        assert_eq!(restored.hidden_models_for("openai"), vec!["gpt-5.4"]);
     }
 
     #[test]
     fn every_section_round_trips_and_legacy_files_stay_compatible() {
+        // Bare custom models ride the file (their add path is gone); every
+        // other section through the store's write API.
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-custom"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let settings = ProviderSettingsStore::load(dir.path()).unwrap();
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
         settings
             .upsert_model_record(
                 "openai",
@@ -635,7 +638,7 @@ mod tests {
         )
         .unwrap();
         let settings = ProviderSettingsStore::load(dir.path()).unwrap();
-        // Blank legacy ids are the add path's business, not the loader's.
+        // Blank legacy ids stay: the loader keeps the section whole.
         assert_eq!(settings.custom_models_for("openai").len(), 2);
         let records = settings.model_records_for("openai");
         assert_eq!(records.len(), 1);
@@ -648,8 +651,15 @@ mod tests {
     #[test]
     fn reset_provider_drops_every_section_and_reset_all_clears_everything() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&serde_json::json!({
+                "customModels": { "openai": ["gpt-custom"] }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let settings = ProviderSettingsStore::load(dir.path()).unwrap();
-        settings.add_custom_model("openai", "gpt-custom").unwrap();
         settings
             .upsert_model_record(
                 "openai",

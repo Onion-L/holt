@@ -90,10 +90,6 @@ pub struct ProvidersPage {
     selected_variant: HashMap<String, String>,
     inputs: HashMap<String, Entity<ComposerInput>>,
     models: HashMap<String, Loadable<Vec<Model>>>,
-    model_inputs: HashMap<String, Entity<ComposerInput>>,
-    /// Per-variant hint for a rejected "Add model" attempt (duplicate ID,
-    /// engine rejection) — small inline text, not the page error strip.
-    model_errors: HashMap<String, String>,
     model_tasks: HashMap<String, Task<()>>,
     /// Variants whose API-key input is currently unmasked; everything starts
     /// masked on every expansion and re-masks when the panel collapses or the
@@ -170,8 +166,6 @@ impl ProvidersPage {
             selected_variant: HashMap::new(),
             inputs: HashMap::new(),
             models: HashMap::new(),
-            model_inputs: HashMap::new(),
-            model_errors: HashMap::new(),
             model_tasks: HashMap::new(),
             revealed: HashSet::new(),
             add_dialog: None,
@@ -301,9 +295,6 @@ impl ProvidersPage {
         self.inputs
             .entry(variant_id.to_string())
             .or_insert_with(|| cx.new(|cx| ComposerInput::new_secret("API key", cx)));
-        self.model_inputs
-            .entry(variant_id.to_string())
-            .or_insert_with(|| cx.new(|cx| ComposerInput::new("Model ID", cx)));
     }
 
     /// Fetch the stored key and populate the variant's input. A return visit
@@ -466,51 +457,6 @@ impl ProvidersPage {
             .ok();
         });
         self.model_tasks.insert(provider, task);
-    }
-
-    fn add_model(&mut self, provider: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let model = self
-            .model_inputs
-            .get(&provider)
-            .map(|input| input.read(cx).text().trim().to_string())
-            .unwrap_or_default();
-        if model.is_empty() {
-            self.model_errors
-                .insert(provider, "Model ID is required".to_string());
-            cx.notify();
-            return;
-        }
-        self.model_errors.remove(&provider);
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::ADD_PROVIDER_MODEL,
-                    serde_json::json!({"providerId": provider, "modelId": model}),
-                )
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(_) => {
-                        page.model_errors.remove(&provider);
-                        if let Some(input) = page.model_inputs.get(&provider) {
-                            input.update(cx, |input, cx| input.set_text("", cx));
-                        }
-                        crate::pickers::bump_provider_catalog(cx);
-                        page.load_models(&provider, true, cx);
-                    }
-                    Err(error) => {
-                        page.model_errors
-                            .insert(provider.clone(), error.to_string());
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
     }
 
     fn remove_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
@@ -1448,8 +1394,6 @@ impl Render for ProvidersPage {
                 let controls: Option<AnyElement> = panel_mounted.then(|| {
                     let variant_id = self.active_variant_id(&id).unwrap_or_else(|| id.clone());
                     let input = self.inputs.get(&variant_id).cloned();
-                    let model_input = self.model_inputs.get(&variant_id).cloned();
-                    let model_error = self.model_errors.get(&variant_id).cloned();
                     let models = self
                         .models
                         .get(&variant_id)
@@ -1466,12 +1410,10 @@ impl Render for ProvidersPage {
                         &models,
                         hidden_count,
                         provider.variants.len() > 1,
-                        model_error.is_some(),
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
                     let save_id = variant_id.clone();
                     let remove_id = variant_id.clone();
-                    let add_model_id = variant_id.clone();
                     let model_count = models.ready().map(|models| models.len());
                     let danger = theme.danger;
                     let danger_muted = theme.danger_muted;
@@ -1556,34 +1498,7 @@ impl Render for ProvidersPage {
                                                 .into_any_element()
                                         })),
                                 )
-                                .child(model_list)
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .children(model_input.map(|input| {
-                                            bordered_input(&theme, input)
-                                                .flex_1()
-                                                .min_w_0()
-                                                .into_any_element()
-                                        }))
-                                        .child(
-                                            action_button(&theme)
-                                                .id(("add-provider-model", index))
-                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.add_model(add_model_id.clone(), cx)
-                                                }))
-                                                .child("Add model"),
-                                        ),
-                                )
-                                .children(model_error.map(|message| {
-                                    div()
-                                        .text_size(crate::typography::ui_rems(11.0))
-                                        .text_color(theme.danger_muted.opacity(0.9))
-                                        .child(SharedString::from(message))
-                                })),
+                                .child(model_list),
                         )
                         .children(hidden_list)
                         .child(record_section)
@@ -1810,7 +1725,6 @@ fn provider_controls_height(
     models: &Loadable<Vec<Model>>,
     hidden_count: usize,
     variants: bool,
-    hint: bool,
 ) -> f32 {
     let list_height = match models {
         Loadable::Idle | Loadable::Loading => 138.0,
@@ -1823,17 +1737,10 @@ fn provider_controls_height(
     } else {
         0.0
     };
-    // The hint adds one 11px text line plus the section's 8px flex gap; the
-    // key section is label + full-width input + its own Save/Remove row.
-    // The record expander row and the danger row are always mounted; the
-    // hidden block adds its own height when present.
-    224.0
-        + list_height
-        + hidden_height
-        + if variants { 34.0 } else { 0.0 }
-        + if hint { 24.0 } else { 0.0 }
-        + 44.0
-        + 44.0
+    // The key section is label + full-width input + its own Save/Remove
+    // row. The record expander row and the danger row are always mounted;
+    // the hidden block adds its own height when present.
+    180.0 + list_height + hidden_height + if variants { 34.0 } else { 0.0 } + 44.0 + 44.0
 }
 
 fn mark_provider_loading(providers: &mut Loadable<Vec<Provider>>) {
@@ -3533,9 +3440,9 @@ mod tests {
     #[test]
     fn panel_heights_account_for_the_new_sections() {
         let models = Loadable::Ready(Vec::<Model>::new());
-        let bare = provider_controls_height(&models, 0, false, false);
+        let bare = provider_controls_height(&models, 0, false);
         // Hidden rows and their absence move the panel's animated height.
-        let with_hidden = provider_controls_height(&models, 2, false, false);
+        let with_hidden = provider_controls_height(&models, 2, false);
         assert!(with_hidden > bare);
     }
 

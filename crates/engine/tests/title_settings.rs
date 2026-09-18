@@ -181,17 +181,19 @@ async fn a_corrupt_settings_file_loads_as_defaults() {
 async fn a_credential_warning_does_not_block_a_normal_turn() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("scripted reply text")]);
+    // A bare custom id arrives through a legacy provider-settings.json.
+    std::fs::write(
+        fixture.data_dir.path().join("provider-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "customModels": { "anthropic": ["claude-fake"] }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let engine = fixture.engine(&provider);
 
     // The title model resolves (a custom id on a real provider) but that
     // provider has no key — a warning, not an error.
-    engine
-        .handle(
-            methods::ADD_PROVIDER_MODEL,
-            serde_json::json!({ "providerId": "anthropic", "modelId": "claude-fake" }),
-        )
-        .await
-        .unwrap();
     let state = save_settings(
         &engine,
         serde_json::json!("anthropic/claude-fake"),
