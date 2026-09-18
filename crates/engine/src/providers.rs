@@ -3,7 +3,8 @@ use std::{collections::HashMap, collections::HashSet, sync::Arc};
 use holt_proto::{
     Model as HoltModel, Provider as HoltProvider, ProviderId, ProviderVariant, ReasoningLevel,
 };
-use pi_core::ai::types::{Model as CoreModel, ModelInput};
+use pi_core::ai::models::get_supported_thinking_levels;
+use pi_core::ai::types::{Model as CoreModel, ModelInput, ModelThinkingLevel};
 
 use crate::{
     credentials::HoltCredentialStore,
@@ -365,6 +366,16 @@ fn abbreviation(name: &str, id: &str) -> String {
         .collect()
 }
 
+/// The projected default tier — the same High → Medium → first preference
+/// the UI's `default_reasoning` applies when nothing else is picked, so the
+/// serialized default is always one of the offered levels.
+fn projected_default(levels: &[ReasoningLevel]) -> Option<ReasoningLevel> {
+    [ReasoningLevel::High, ReasoningLevel::Medium]
+        .into_iter()
+        .find(|level| levels.contains(level))
+        .or_else(|| levels.first().copied())
+}
+
 fn project_models(
     mut models: Vec<CoreModel>,
     opaque_ids: &HashSet<String>,
@@ -383,25 +394,29 @@ fn project_models(
             continue;
         }
         seen_ids.insert(canonical_id.to_string());
-        let reasoning_levels = if model.reasoning {
-            vec![
-                ReasoningLevel::Minimal,
-                ReasoningLevel::Low,
-                ReasoningLevel::Medium,
-                ReasoningLevel::High,
-                ReasoningLevel::XHigh,
-                ReasoningLevel::Max,
-            ]
-        } else {
-            Vec::new()
-        };
+        // The ladder must mirror the run loop's own clamp
+        // (`get_supported_thinking_levels`): a `thinkingLevelMap` `null`
+        // drops a level, X-High/Max ride only on an explicit mapping, and
+        // `off` has no UI tier. A ladder-less model stays non-reasoning.
+        let reasoning_levels = get_supported_thinking_levels(&model)
+            .into_iter()
+            .filter_map(|level| match level {
+                ModelThinkingLevel::Off => None,
+                ModelThinkingLevel::Minimal => Some(ReasoningLevel::Minimal),
+                ModelThinkingLevel::Low => Some(ReasoningLevel::Low),
+                ModelThinkingLevel::Medium => Some(ReasoningLevel::Medium),
+                ModelThinkingLevel::High => Some(ReasoningLevel::High),
+                ModelThinkingLevel::Xhigh => Some(ReasoningLevel::XHigh),
+                ModelThinkingLevel::Max => Some(ReasoningLevel::Max),
+            })
+            .collect::<Vec<_>>();
         let custom = custom_ids.contains(&model.id);
         projected.push(HoltModel {
             id: format!("{}/{}", model.provider, model.id),
             provider: ProviderId(model.provider.clone()),
             label: model.name,
             description: Some(model.provider),
-            default_reasoning: model.reasoning.then_some(ReasoningLevel::High),
+            default_reasoning: projected_default(&reasoning_levels),
             reasoning_levels,
             options: Vec::new(),
             custom,
@@ -651,6 +666,47 @@ mod tests {
             || id.contains("vertex")
             || id.contains("azure")
             || id.contains("cloudflare")));
+    }
+
+    #[test]
+    fn the_projected_ladder_honors_the_thinking_level_map() {
+        let mut mapped = record("acme", "acme-1", "https://acme.example/v1");
+        mapped.reasoning = true;
+        mapped.thinking_level_map = Some(
+            serde_json::from_value(serde_json::json!({
+                "minimal": null,
+                "low": "low",
+                "medium": null,
+                "high": "high",
+                "max": "max"
+            }))
+            .unwrap(),
+        );
+        let rows = project_models(vec![mapped], &HashSet::new(), &HashSet::new());
+        assert_eq!(
+            rows[0].reasoning_levels,
+            vec![
+                ReasoningLevel::Low,
+                ReasoningLevel::High,
+                ReasoningLevel::Max
+            ]
+        );
+        assert_eq!(rows[0].default_reasoning, Some(ReasoningLevel::High));
+
+        // No map: the base ladder only — X-High/Max need an explicit
+        // mapping, same rule the run loop clamps by.
+        let mut unmapped = record("acme", "acme-2", "https://acme.example/v1");
+        unmapped.reasoning = true;
+        let rows = project_models(vec![unmapped], &HashSet::new(), &HashSet::new());
+        assert_eq!(
+            rows[0].reasoning_levels,
+            vec![
+                ReasoningLevel::Minimal,
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High
+            ]
+        );
     }
 
     #[test]
