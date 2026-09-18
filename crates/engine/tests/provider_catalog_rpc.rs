@@ -233,6 +233,58 @@ async fn a_custom_provider_flows_from_definition_to_key_to_models() {
     assert_eq!(list_models(&engine, "acme").await.len(), 2);
 }
 
+/// A record without `baseUrl` inherits the provider's default endpoint —
+/// the custom definition's for user-defined providers, the catalog entry's
+/// (else its first model's) for built-ins. An explicit value still wins.
+#[tokio::test]
+async fn a_record_without_a_base_url_rides_the_provider_endpoint() {
+    let (_fixture, engine) = setup();
+    engine
+        .handle(
+            methods::SAVE_CUSTOM_PROVIDER,
+            serde_json::json!({
+                "id": "acme",
+                "name": "Acme Gateway",
+                "baseUrl": "https://acme.example/v1",
+                "defaultApi": "openai-completions",
+            }),
+        )
+        .await
+        .unwrap();
+
+    let mut acme_record = record("acme", "acme-1", "https://acme.example/v1");
+    acme_record.as_object_mut().unwrap().remove("baseUrl");
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            serde_json::json!({ "providerId": "acme", "record": acme_record }),
+        )
+        .await
+        .unwrap();
+    let mut openai_record = record("openai", "gpt-via-record", "");
+    openai_record.as_object_mut().unwrap().remove("baseUrl");
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            serde_json::json!({ "providerId": "openai", "record": openai_record }),
+        )
+        .await
+        .unwrap();
+
+    // Both records landed with the provider's endpoint filled in.
+    let stored =
+        std::fs::read_to_string(_fixture.data_dir.path().join("provider-settings.json")).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(
+        stored["modelRecords"]["acme"]["acme-1"]["baseUrl"],
+        "https://acme.example/v1"
+    );
+    assert_eq!(
+        stored["modelRecords"]["openai"]["gpt-via-record"]["baseUrl"],
+        "https://api.openai.com/v1"
+    );
+}
+
 #[tokio::test]
 async fn a_custom_provider_cannot_steal_a_builtin_id() {
     let (_fixture, engine) = setup();

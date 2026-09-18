@@ -46,8 +46,10 @@ pub mod methods {
     /// Live catalog writes (ADR-0028's top layer). `SaveCustomProvider`
     /// params are `{id, name, baseUrl, defaultApi, headers?}` (upsert);
     /// `SaveModelRecord` params are `{providerId, record}` with `record` a
-    /// complete `pi-core-rs` model record that replaces a same-id entry
-    /// outright; `SetHiddenModels` params are `{providerId, modelIds}` and
+    /// `pi-core-rs` model record that replaces a same-id entry outright;
+    /// a record without `baseUrl` inherits the provider's default endpoint
+    /// (custom definition, else catalog entry, else first model).
+    /// `SetHiddenModels` params are `{providerId, modelIds}` and
     /// replace the provider's hidden set wholesale.
     pub const SAVE_CUSTOM_PROVIDER: &str = "SaveCustomProvider";
     pub const REMOVE_CUSTOM_PROVIDER: &str = "RemoveCustomProvider";

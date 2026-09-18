@@ -46,11 +46,12 @@ const NEW_PROVIDER_FIELDS: [(&str, &str); 4] = [
 ];
 
 /// The model-record form's single-line fields, in render order:
-/// (key, label, placeholder). Laid out two per row; `baseUrl` spans.
-const RECORD_FIELDS: [(&str, &str, &str); 10] = [
+/// (key, label, placeholder). Laid out two per row. No `baseUrl` field —
+/// a record added under a provider rides that provider's endpoint; the
+/// engine fills the default, and Advanced JSON is the override hatch.
+const RECORD_FIELDS: [(&str, &str, &str); 9] = [
     ("id", "Model ID", "acme-1"),
     ("name", "Name", "Acme 1"),
-    ("baseUrl", "Base URL", "https://acme.example/v1"),
     ("api", "API dialect", "openai-completions"),
     ("contextWindow", "Context window", "200000"),
     ("maxTokens", "Max tokens", "8192"),
@@ -1460,17 +1461,12 @@ impl Render for ProvidersPage {
                         .cloned()
                         .unwrap_or(Loadable::Idle);
                     let hidden_count = hidden.ready().map(|rows| rows.len()).unwrap_or(0);
-                    let record_open = self
-                        .record_form
-                        .as_ref()
-                        .is_some_and(|form| form.provider == variant_id);
                     let revealed = self.revealed.contains(&variant_id);
                     let panel_height = provider_controls_height(
                         &models,
                         hidden_count,
                         provider.variants.len() > 1,
                         model_error.is_some(),
-                        record_open,
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
                     let save_id = variant_id.clone();
@@ -1482,14 +1478,7 @@ impl Render for ProvidersPage {
                     let model_list =
                         provider_model_list(index, &variant_id, models, &theme, cx.entity(), cx);
                     let hidden_list = hidden_rows(index, &variant_id, hidden, &theme, cx);
-                    let record_section = record_section(
-                        index,
-                        &variant_id,
-                        record_open,
-                        self.record_form.as_ref(),
-                        &theme,
-                        cx,
-                    );
+                    let record_section = record_section(index, &variant_id, &theme, cx);
                     let danger_row = panel_danger_row(
                         index,
                         &variant_id,
@@ -1727,6 +1716,17 @@ impl Render for ProvidersPage {
                 ))
                 .into_any_element();
         }
+        if self.record_form.is_some() {
+            let card = record_form_dialog(self, &theme, cx);
+            return div()
+                .child(page)
+                .child(popover::modal(
+                    "record-form-dialog",
+                    window.viewport_size(),
+                    card,
+                ))
+                .into_any_element();
+        }
         page.into_any_element()
     }
 }
@@ -1811,7 +1811,6 @@ fn provider_controls_height(
     hidden_count: usize,
     variants: bool,
     hint: bool,
-    record_open: bool,
 ) -> f32 {
     let list_height = match models {
         Loadable::Idle | Loadable::Loading => 138.0,
@@ -1827,21 +1826,15 @@ fn provider_controls_height(
     // The hint adds one 11px text line plus the section's 8px flex gap; the
     // key section is label + full-width input + its own Save/Remove row.
     // The record expander row and the danger row are always mounted; the
-    // form and the hidden block add their own heights when present.
+    // hidden block adds its own height when present.
     224.0
         + list_height
         + hidden_height
         + if variants { 34.0 } else { 0.0 }
         + if hint { 24.0 } else { 0.0 }
         + 44.0
-        + if record_open { RECORD_FORM_HEIGHT } else { 0.0 }
         + 44.0
 }
-
-/// The mounted record form's rendered height — the animated panel clips via
-/// overflow-hidden, so this must cover the tallest state (all rows, the
-/// advanced textarea, one error line, the action row).
-const RECORD_FORM_HEIGHT: f32 = 468.0;
 
 fn mark_provider_loading(providers: &mut Loadable<Vec<Provider>>) {
     if !matches!(providers, Loadable::Ready(_)) {
@@ -2042,43 +2035,43 @@ fn provider_model_list(
     }
 }
 
-/// The record-form expander row plus, when open, the form itself. Basic
-/// fields up front; `thinkingLevelMap`/`compat`/`headers` ride the advanced
-/// JSON textarea — a full structured editor is not worth the surface.
+/// The panel's "Add model record" expander row — the form itself lives in
+/// the page-level modal (`record_form_dialog`).
 fn record_section(
     index: usize,
     provider_id: &str,
-    open: bool,
-    form: Option<&RecordForm>,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
     let toggle_provider = provider_id.to_string();
-    let mut section = div().flex().flex_col().gap(px(8.0)).child(
-        action_button(theme)
-            .id(("toggle-record-form", index))
-            .w_auto()
-            .hover(|style| style.bg(crate::theme::ink(0.04)))
-            .on_click(cx.listener(move |page, _, _, cx| {
-                if page
-                    .record_form
-                    .as_ref()
-                    .is_some_and(|form| form.provider == toggle_provider)
-                {
-                    page.record_form = None;
-                    cx.notify();
-                } else {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(
+            action_button(theme)
+                .id(("toggle-record-form", index))
+                .w_auto()
+                .hover(|style| style.bg(crate::theme::ink(0.04)))
+                .on_click(cx.listener(move |page, _, _, cx| {
                     page.open_record_form(toggle_provider.clone(), cx);
-                }
-            }))
-            .child(if open {
-                "Close record form"
-            } else {
-                "Add model record"
-            }),
-    );
-    let Some(form) = form else {
-        return section.into_any_element();
+                }))
+                .child("Add model record"),
+        )
+        .into_any_element()
+}
+
+/// The Add-model-record dialog (`popover::modal` from the page) — the old
+/// inline panel form, moved into a card. Basic fields up front;
+/// `thinkingLevelMap`/`compat`/`headers` ride the advanced JSON textarea —
+/// a full structured editor is not worth the surface.
+fn record_form_dialog(
+    page: &mut ProvidersPage,
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let Some(form) = page.record_form.as_ref() else {
+        return div().into_any_element();
     };
     let field_input = |key: &str| form.inputs.get(key).cloned();
     let pair = |left: (&str, &str), right: Option<(&str, &str)>| {
@@ -2126,7 +2119,7 @@ fn record_section(
     };
     let flag_row = |key: &'static str, label: &str, on: bool| {
         div()
-            .id((SharedString::from(format!("record-flag-{key}")), index))
+            .id(SharedString::from(format!("record-flag-{key}")))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -2147,12 +2140,32 @@ fn record_section(
                     .child(label.to_string()),
             )
     };
-    let save_click = cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
-        page.save_record(cx);
-    });
-    section = section
+    let mut card = popover::dialog_card(theme)
+        .w(px(560.0))
+        .gap(px(14.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(popover::dialog_title(theme, "Add model record"))
+                .child(div().flex_1())
+                .child(
+                    widgets::ghost_action(theme)
+                        .id("record-form-close")
+                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.record_form = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOSE)
+                                .size(px(13.0))
+                                .text_color(theme.text_muted),
+                        ),
+                ),
+        );
+    card = card
         .child(pair(("id", "Model ID"), Some(("name", "Name"))))
-        .child(labelled("baseUrl", "Base URL"))
         .child(labelled("api", "API dialect"))
         .child(pair(
             ("contextWindow", "Context window"),
@@ -2182,7 +2195,7 @@ fn record_section(
                 .child(widgets::field_label(theme, "Advanced JSON"))
                 .children(field_input("advanced").map(|input| {
                     div()
-                        .id(("record-advanced", index))
+                        .id("record-advanced")
                         .h(px(80.0))
                         .px(px(12.0))
                         .py(px(6.0))
@@ -2210,14 +2223,16 @@ fn record_section(
                 .gap(px(8.0))
                 .child(
                     action_button(theme)
-                        .id(("save-record", index))
+                        .id("save-record")
                         .hover(|style| style.bg(crate::theme::ink(0.04)))
-                        .on_click(save_click)
+                        .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                            page.save_record(cx);
+                        }))
                         .child("Save record"),
                 )
                 .child(
                     widgets::ghost_action(theme)
-                        .id(("cancel-record", index))
+                        .id("cancel-record")
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
                             page.record_form = None;
@@ -2226,7 +2241,7 @@ fn record_section(
                         .child("Cancel"),
                 ),
         );
-    section.into_any_element()
+    card.into_any_element()
 }
 
 /// The panel's bottom row: reset to the catalog (two-step), and for custom
@@ -2275,10 +2290,9 @@ fn panel_danger_row(
         .into_any_element()
 }
 
-/// The page's top action row (design-v2): the Add Provider primary on the
-/// left, the global reset on the right — a compact ghost button that opens
-/// the confirm dialog (a spacer pushes it right; stretching the button
-/// itself would paint its hover wash across the whole row).
+/// The page's top action row: the Add Provider primary next to the global
+/// reset ghost button, both pushed right by a spacer; the reset opens the
+/// confirm dialog.
 fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
@@ -2288,6 +2302,7 @@ fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement 
         .items_center()
         .gap(px(8.0))
         .pb(px(6.0))
+        .child(div().flex_1())
         .child(
             action_button(theme)
                 .id("open-add-provider")
@@ -2309,7 +2324,6 @@ fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement 
                         .child("Add Provider"),
                 ),
         )
-        .child(div().flex_1())
         .child(
             widgets::ghost_action(theme)
                 .id("reset-all-providers")
@@ -3114,10 +3128,12 @@ fn new_provider_problem(id: &str, base_url: &str, default_api: &str) -> Option<S
     None
 }
 
-/// Builds the complete model record the engine expects from the form's
-/// texts: numbers parse, costs default to zero, and the advanced JSON (when
-/// present) must be an object whose keys ride along — except the form's own
-/// fields, which the advanced object can never override.
+/// Builds the model record the engine expects from the form's texts:
+/// numbers parse, costs default to zero, and the advanced JSON (when
+/// present) must be an object whose keys ride along — except the form's
+/// own fields, which the advanced object can never override. `baseUrl`
+/// is not a form field: empty means omitted, and the engine fills the
+/// provider's default endpoint (Advanced JSON may still set it).
 fn build_record_json(
     provider: &str,
     texts: &HashMap<String, String>,
@@ -3134,7 +3150,8 @@ fn build_record_json(
         if name.is_empty() { id.clone() } else { name }
     };
     let base_url = text("baseUrl");
-    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+    if !base_url.is_empty() && !base_url.starts_with("http://") && !base_url.starts_with("https://")
+    {
         return Err("Base URL must start with http:// or https://".into());
     }
     let api = text("api");
@@ -3168,7 +3185,6 @@ fn build_record_json(
         "name": name,
         "api": api,
         "provider": provider,
-        "baseUrl": base_url,
         "reasoning": reasoning,
         "input": input,
         "cost": {
@@ -3180,6 +3196,12 @@ fn build_record_json(
         "contextWindow": context_window,
         "maxTokens": max_tokens,
     });
+    // No baseUrl input in the form: omitted means the engine fills the
+    // provider's default endpoint; the advanced JSON below is the override
+    // hatch (per-model gateways keep working).
+    if !base_url.is_empty() {
+        record["baseUrl"] = serde_json::Value::String(base_url);
+    }
     let advanced = text("advanced");
     if !advanced.is_empty() {
         let parsed: serde_json::Value = serde_json::from_str(&advanced)
@@ -3190,13 +3212,13 @@ fn build_record_json(
         if let Some(target) = record.as_object_mut() {
             for (key, value) in object {
                 // The form's fields are authoritative — the advanced object
-                // carries only what the form does not own.
+                // carries only what the form does not own (baseUrl included:
+                // omitting it is the default-endpoint case).
                 if ![
                     "id",
                     "name",
                     "api",
                     "provider",
-                    "baseUrl",
                     "reasoning",
                     "input",
                     "cost",
@@ -3361,6 +3383,8 @@ mod tests {
         // A blank name falls back to the id; costs default to zero.
         assert_eq!(record["name"], "acme-1");
         assert_eq!(record["provider"], "acme");
+        // An explicit baseUrl (the endpoint-fix case) rides along.
+        assert_eq!(record["baseUrl"], "https://acme.example/v1");
         assert_eq!(record["input"], serde_json::json!(["text", "image"]));
         assert_eq!(record["cost"]["output"], 0.0);
         assert_eq!(record["cost"]["input"], 1.5);
@@ -3369,6 +3393,31 @@ mod tests {
             record["thinkingLevelMap"]["high"],
             serde_json::json!("high")
         );
+    }
+
+    #[test]
+    fn a_form_without_a_base_url_leaves_it_to_the_engine() {
+        // The form no longer asks for baseUrl: adding a model to a provider
+        // rides the provider's endpoint, so the record omits the field and
+        // the engine fills the default.
+        let texts = record_texts(&[
+            ("id", "acme-1"),
+            ("api", "openai-completions"),
+            ("contextWindow", "1000"),
+            ("maxTokens", "100"),
+        ]);
+        let record = build_record_json("acme", &texts, false, false).unwrap();
+        assert!(record.get("baseUrl").is_none());
+        // Advanced JSON remains the override hatch for per-model gateways.
+        let gateway = record_texts(&[
+            ("id", "acme-1"),
+            ("api", "openai-completions"),
+            ("contextWindow", "1000"),
+            ("maxTokens", "100"),
+            ("advanced", "{\"baseUrl\": \"https://gateway.example/v1\"}"),
+        ]);
+        let record = build_record_json("acme", &gateway, false, false).unwrap();
+        assert_eq!(record["baseUrl"], "https://gateway.example/v1");
     }
 
     #[test]
@@ -3395,6 +3444,8 @@ mod tests {
         assert!(
             build_record_json("acme", &good(&[("baseUrl", "ftp://nope")]), false, false).is_err()
         );
+        // No baseUrl is fine — the engine inherits the provider's endpoint.
+        assert!(build_record_json("acme", &good(&[("baseUrl", "")]), false, false).is_ok());
         assert!(build_record_json("acme", &good(&[("contextWindow", "0")]), false, false).is_err());
         assert!(
             build_record_json("acme", &good(&[("contextWindow", "lots")]), false, false)
@@ -3482,13 +3533,10 @@ mod tests {
     #[test]
     fn panel_heights_account_for_the_new_sections() {
         let models = Loadable::Ready(Vec::<Model>::new());
-        let bare = provider_controls_height(&models, 0, false, false, false);
-        // Hidden rows, the record form, and their absence all move the
-        // panel's animated height.
-        let with_hidden = provider_controls_height(&models, 2, false, false, false);
-        let with_form = provider_controls_height(&models, 0, false, false, true);
+        let bare = provider_controls_height(&models, 0, false, false);
+        // Hidden rows and their absence move the panel's animated height.
+        let with_hidden = provider_controls_height(&models, 2, false, false);
         assert!(with_hidden > bare);
-        assert!(with_form - bare >= RECORD_FORM_HEIGHT);
     }
 
     // ---- The AI tab's headless repro (issue 03: no conversation renders

@@ -2354,13 +2354,31 @@ impl RpcService for EngineService {
             }
             methods::SAVE_MODEL_RECORD => {
                 let provider = required_string(&params, "providerId")?;
-                let record: CoreModel = serde_json::from_value(
-                    params
-                        .get("record")
-                        .cloned()
-                        .ok_or_else(|| RpcError::BadParams("record is required".into()))?,
-                )
-                .map_err(|_| RpcError::BadParams("record must be a model record".into()))?;
+                let mut record = params
+                    .get("record")
+                    .cloned()
+                    .ok_or_else(|| RpcError::BadParams("record is required".into()))?;
+                // A record may omit `baseUrl`: adding a model to a provider
+                // means riding the provider's endpoint, so the default fills
+                // it in. An explicit value — the endpoint-fix case — wins.
+                let carries_base_url = record
+                    .get("baseUrl")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|url| !url.trim().is_empty());
+                if !carries_base_url {
+                    let base_url = self.providers.default_base_url(provider).ok_or_else(|| {
+                        RpcError::BadParams(
+                            "record needs a baseUrl: the provider declares no default \
+                                 endpoint"
+                                .into(),
+                        )
+                    })?;
+                    if let Some(slot) = record.as_object_mut() {
+                        slot.insert("baseUrl".to_string(), serde_json::Value::String(base_url));
+                    }
+                }
+                let record: CoreModel = serde_json::from_value(record)
+                    .map_err(|_| RpcError::BadParams("record must be a model record".into()))?;
                 self.providers
                     .validate_model_record(provider, &record)
                     .map_err(RpcError::BadParams)?;

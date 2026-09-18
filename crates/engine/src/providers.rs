@@ -157,6 +157,21 @@ impl ProviderAdapter {
         !self.core_models_for(provider_id).is_empty()
     }
 
+    /// The provider's default transport base URL — a custom definition's
+    /// `base_url`, else the boot-catalog entry's, else its first model's.
+    /// `SaveModelRecord` records that omit `baseUrl` inherit this, so the
+    /// Settings "add a model" flow never re-asks for the shared endpoint.
+    pub(crate) fn default_base_url(&self, provider_id: &str) -> Option<String> {
+        if let Some(provider) = self.settings.custom_provider(provider_id) {
+            return Some(provider.base_url);
+        }
+        let provider = self.catalog.get(provider_id)?;
+        provider
+            .base_url
+            .clone()
+            .or_else(|| provider.models.first().map(|model| model.base_url.clone()))
+    }
+
     /// Is `model_id` already in the provider's model list — the merged
     /// catalog, a live record, or a user-added custom id? Additions must be
     /// new ids.
