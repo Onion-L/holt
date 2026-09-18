@@ -106,6 +106,10 @@ _Avoid_: context usage, token usage (those are Usage records)
 _Avoid_: usage dashboard, token stats page
 - **Usage archive**: the device-level, grow-only stream that a deleted chat's Usage records are restamped into; per-chat ledger data dies with the chat, the archive survives it.
 - **Cache hit rate**: the share of prompt tokens served from cache — cache reads over input plus cache reads; cache writes are excluded.
+- **Metered round-trip**: one provider request together with the assistant message it produced — the unit of usage accounting; every LLM call a chat causes (Turn work, Subagents, Compaction, Auto-review, Titles) is one or more round-trips. Tool execution and idle time live between round-trips and belong to none of them.
+  _Avoid_: request (ambiguous), API call
+- **Output speed**: a chat's cumulative model output rate — output tokens summed over the chat's Metered round-trips divided by the sum of their generation durations (request sent → assistant message completed, first-token latency included). Tool execution and idle never enter the denominator; concurrent round-trips each contribute their own duration. Round-trips without a measured duration don't participate; when none participate, the speed is absent rather than zero.
+  _Avoid_: token rate, TPS, wall-clock speed
 _Avoid_: permission prompt, confirm dialog (for Approval)
 _Avoid_: auto-approve (Auto-review can reject)
 _Avoid_: grep tool, agent search

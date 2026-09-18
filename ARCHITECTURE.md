@@ -254,8 +254,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Token usage: `WatchChatUsage` (`ChatUsage` snapshots per chat, params
   `{chatId}`) reports the chat's whole-ledger gross token total, its
   per-kind breakdown (Turn work, Subagent, Compaction, Auto-review, Title
-  task), the record count, and the context occupancy of the request the
-  chat would run next. The occupancy numerator is the latest main-run
+  task), the record count, the Output speed sums (output tokens and
+  generation duration over just the records that carry a measured
+  duration — old ledger lines join neither sum), and the context occupancy
+  of the request the chat would run next. The occupancy numerator is the
+  latest main-run
   provider report — its request input plus both cache fields — and its
   denominator is the context window of the model the queue runs next (the
   executing item, else its pending head), the chat's current selection when

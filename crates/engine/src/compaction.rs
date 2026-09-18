@@ -29,7 +29,8 @@ use crate::history::CompactionRecord;
 /// The metering bypass (usage-ledger ticket 02): one call per summary
 /// response — aborted and failed ones included, so a compaction's model
 /// work is billed even when it produces no summary.
-pub(crate) type CompactionMeter<'a> = &'a (dyn Fn(&pi_core::ai::types::AssistantMessage) + Sync);
+pub(crate) type CompactionMeter<'a> =
+    &'a (dyn Fn(&pi_core::ai::types::AssistantMessage, Option<u64>) + Sync);
 
 // The summarization BODY templates are private upstream (only the system
 // prompt is exported); these mirror them verbatim — pinned by the
@@ -275,6 +276,7 @@ async fn complete_summary(
         })],
         tools: None,
     };
+    let started_at = chrono::Utc::now().timestamp_millis();
     let stream = stream_fn(model, &context, Some(&options))?;
     // A manual compaction is interruptible (ADR-0011): race the stream
     // against the token — the scripted seam's never-ending streams can
@@ -303,7 +305,10 @@ async fn complete_summary(
     let response = stream.result().await;
     // Book before the verdict: every completed summary response — aborted
     // and failed ones included — is a metered round-trip the chat caused.
-    meter(&response);
+    meter(
+        &response,
+        crate::usage::generation_duration(Some(started_at), response.timestamp),
+    );
     match response.stop_reason {
         StopReason::Aborted => Err(response
             .error_message

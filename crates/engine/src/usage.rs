@@ -131,6 +131,12 @@ pub(crate) struct UsageRecord {
     pub reasoning: Option<u64>,
     pub cost: UsageCost,
     pub timestamp: i64,
+    /// The measured generation duration, in milliseconds — request sent to
+    /// assistant message completed, first-token latency included. `None` on
+    /// ledger lines written before it was measured (and on stamps the clock
+    /// mangled): such a record joins no Output speed sum, on either side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_doc_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +169,7 @@ impl UsageRecord {
             reasoning: message.usage.reasoning,
             cost: message.usage.cost,
             timestamp,
+            duration_ms: None,
             subagent_doc_id: None,
             chat_id: None,
         }
@@ -217,6 +224,13 @@ pub(crate) struct UsageTotals {
     /// How many records these totals were summed from — the frame's record
     /// count, so building a frame never has to re-read the ledger file.
     pub records: u64,
+    /// Output speed's two sums, kept apart from the gross: the output tokens
+    /// and the summed generation durations of just the records that carry a
+    /// measured duration. A record without one joins neither, so the frame's
+    /// quotient stays a true average instead of mixing measured and guessed
+    /// time.
+    pub timed_output: u64,
+    pub generation_ms: u64,
 }
 
 impl UsageTotals {
@@ -234,6 +248,10 @@ impl UsageTotals {
         }
         self.records += 1;
         self.gross += record.gross();
+        if let Some(duration) = record.duration_ms {
+            self.timed_output += record.output;
+            self.generation_ms += duration;
+        }
     }
 }
 
@@ -405,6 +423,8 @@ pub(crate) fn watch_snapshot(chat: &ChatRuntime) -> holt_proto::ChatUsage {
         gross: totals.gross,
         by_kind,
         record_count: totals.records,
+        output_tokens: totals.timed_output,
+        generation_ms: totals.generation_ms,
         occupancy: holt_proto::ChatOccupancy {
             tokens,
             context_window,
@@ -620,20 +640,27 @@ pub(crate) fn quarantine(data_dir: &Path, chat_id: &str) {
 /// booked here: the delegation's billing vector owns them
 /// ([`capture_subagent_round_trip`]), so the child's buffer never becomes a
 /// phantom child ledger.
-fn book(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
+fn book(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage, duration_ms: Option<u64>) {
+    let mut record = UsageRecord::from_message(kind, message);
+    record.duration_ms = duration_ms;
     chat.usage_pending
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(UsageRecord::from_message(kind, message));
+        .push(record);
     publish(chat);
 }
 
 /// Book one main-chat round-trip — the child-run guard the callers share.
-fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
+fn capture(
+    chat: &ChatRuntime,
+    kind: UsageKind,
+    message: &AssistantMessage,
+    duration_ms: Option<u64>,
+) {
     if chat.child.is_some() {
         return;
     }
-    book(chat, kind, message);
+    book(chat, kind, message, duration_ms);
 }
 
 /// Buffer the Turn's own round-trip (the assistant response; a separately
@@ -641,15 +668,24 @@ fn capture(chat: &ChatRuntime, kind: UsageKind, message: &AssistantMessage) {
 /// report as the occupancy numerator. The numerator is set before the frame
 /// goes out, so the chat's first report flips the status line from the
 /// History estimate to the measured number in the same frame.
-pub(crate) fn capture_round_trip(chat: &ChatRuntime, message: &AssistantMessage) {
+pub(crate) fn capture_round_trip(
+    chat: &ChatRuntime,
+    message: &AssistantMessage,
+    dispatch: &DispatchTimes,
+) {
     if chat.child.is_some() {
         return;
     }
+    let started_at = {
+        let mut stamps = dispatch.lock().unwrap_or_else(|e| e.into_inner());
+        stamps.pop()
+    };
+    let duration_ms = generation_duration(started_at, message.timestamp);
     *chat
         .usage_last_report
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(LastReport::of(&message.usage));
-    book(chat, UsageKind::Turn, message);
+    book(chat, UsageKind::Turn, message, duration_ms);
 }
 
 /// Fold a tool result's usage into the round-trip it belongs to — the MOST
@@ -679,15 +715,23 @@ pub(crate) fn merge_tool_result(chat: &ChatRuntime, result: &ToolResultMessage) 
 
 /// Buffer one auto-review pass of the running Turn. A child run's reviews
 /// ride its delegation's billing vector instead (all `subagent` kind).
-pub(crate) fn capture_review(chat: &ChatRuntime, response: &AssistantMessage) {
-    capture(chat, UsageKind::AutoReview, response);
+pub(crate) fn capture_review(
+    chat: &ChatRuntime,
+    response: &AssistantMessage,
+    duration_ms: Option<u64>,
+) {
+    capture(chat, UsageKind::AutoReview, response, duration_ms);
 }
 
 /// Buffer one automatic (in-Turn) Compaction summary response — it settles
 /// with the Turn's batch. Child runs compact on the delegation's metered
 /// transport and never book here.
-pub(crate) fn capture_compaction(chat: &ChatRuntime, response: &AssistantMessage) {
-    capture(chat, UsageKind::Compaction, response);
+pub(crate) fn capture_compaction(
+    chat: &ChatRuntime,
+    response: &AssistantMessage,
+    duration_ms: Option<u64>,
+) {
+    capture(chat, UsageKind::Compaction, response, duration_ms);
 }
 
 /// Buffer one subagent round-trip into the PARENT chat's batch — the
@@ -698,9 +742,11 @@ pub(crate) fn capture_subagent_round_trip(
     parent: &ChatRuntime,
     child_doc_id: &str,
     message: &AssistantMessage,
+    duration_ms: Option<u64>,
 ) {
     let mut record = UsageRecord::from_message(UsageKind::Subagent, message);
     record.subagent_doc_id = Some(child_doc_id.to_string());
+    record.duration_ms = duration_ms;
     parent
         .usage_pending
         .lock()
@@ -713,18 +759,27 @@ pub(crate) fn capture_subagent_round_trip(
 
 /// Book a manual Compaction's summary response immediately — the queued
 /// `/compact` runs outside the Turn model, so it never waits for a batch.
-pub(crate) fn record_compaction(chat: &ChatRuntime, response: &AssistantMessage) {
-    record_immediate(
-        chat,
-        UsageRecord::from_message(UsageKind::Compaction, response),
-    );
+pub(crate) fn record_compaction(
+    chat: &ChatRuntime,
+    response: &AssistantMessage,
+    duration_ms: Option<u64>,
+) {
+    let mut record = UsageRecord::from_message(UsageKind::Compaction, response);
+    record.duration_ms = duration_ms;
+    record_immediate(chat, record);
 }
 
 /// Book the Title task's response immediately at completion — the task is
 /// outside the Turn lifecycle (ADR-0012), and its chat attribution stands
 /// even when the reply normalizes to no title at all.
-pub(crate) fn record_title(chat: &ChatRuntime, response: &AssistantMessage) {
-    record_immediate(chat, UsageRecord::from_message(UsageKind::Title, response));
+pub(crate) fn record_title(
+    chat: &ChatRuntime,
+    response: &AssistantMessage,
+    duration_ms: Option<u64>,
+) {
+    let mut record = UsageRecord::from_message(UsageKind::Title, response);
+    record.duration_ms = duration_ms;
+    record_immediate(chat, record);
 }
 
 /// Settle the finished Turn's usage: stamp the Turn's own records with its
@@ -791,12 +846,38 @@ fn record_immediate(chat: &ChatRuntime, record: UsageRecord) {
     publish(chat);
 }
 
+/// A run's request-dispatch stamps, epoch milliseconds: the run's wrapped
+/// transport pushes one when a request goes out, and the completed message's
+/// booking pops the last one. A run's model line is strictly sequential —
+/// one request in flight — so the last push is always the request whose
+/// message just completed; auxiliary requests that ride the same transport
+/// (Compaction, auto-review) book through their own stamps and leave theirs
+/// unconsumed. Dropped with the run.
+pub(crate) type DispatchTimes = Arc<Mutex<Vec<i64>>>;
+
+/// The generation duration a booking can claim, in milliseconds: dispatch
+/// stamp to the message's own completion stamp — first-token latency
+/// included, tool execution excluded (it runs between requests). `None`
+/// when either end is missing or the clock went backwards; such a record
+/// joins no Output speed sum, on either side.
+pub(crate) fn generation_duration(started_at: Option<i64>, completed_at: i64) -> Option<u64> {
+    let started_at = started_at?;
+    (completed_at > started_at).then(|| (completed_at - started_at) as u64)
+}
+
 /// The completed round-trips observed through a metered transport — one
-/// event stream per request, its result read (without consuming) once the
-/// round-trip finished. Streams that never finished (a cancelled or hung
-/// request the provider never reported on) stay pending and book nothing.
-pub(crate) type Billing =
-    Arc<Mutex<Vec<pi_core::ai::utils::event_stream::AssistantMessageEventStream>>>;
+/// event stream per request (with its dispatch stamp), its result read
+/// (without consuming) once the round-trip finished. Streams that never
+/// finished (a cancelled or hung request the provider never reported on)
+/// stay pending and book nothing.
+pub(crate) type Billing = Arc<
+    Mutex<
+        Vec<(
+            pi_core::ai::utils::event_stream::AssistantMessageEventStream,
+            i64,
+        )>,
+    >,
+>;
 
 /// Wrap a transport so every request it serves is observed: the stream is
 /// cloned into the billing vector before it flows back, results included —
@@ -806,11 +887,12 @@ pub(crate) fn metered_stream(source: StreamFn) -> (StreamFn, Billing) {
     let billing = Billing::default();
     let tasks = billing.clone();
     let stream: StreamFn = Arc::new(move |model, context, options| {
+        let started_at = chrono::Utc::now().timestamp_millis();
         let stream = source(model, context, options)?;
         tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(stream.clone());
+            .push((stream.clone(), started_at));
         Ok(stream)
     });
     (stream, billing)
@@ -880,6 +962,7 @@ mod tests {
                 ..Default::default()
             },
             timestamp: 1_700_000_000_000,
+            duration_ms: None,
             subagent_doc_id: None,
             chat_id: None,
         }
@@ -948,6 +1031,51 @@ mod tests {
         let review = serde_json::to_value(record(UsageKind::AutoReview, 5, 6)).unwrap();
         assert_eq!(review["kind"], "auto-review");
         assert!(review.get("turnOutcome").is_none());
+    }
+
+    /// A measured duration serializes; its absence (an old ledger line, or a
+    /// stamp the clock mangled) omits the key and still decodes, joining no
+    /// speed sum on either side.
+    #[test]
+    fn generation_durations_ride_the_record_and_the_speed_sums() {
+        let timed = UsageRecord {
+            duration_ms: Some(2_500),
+            ..record(UsageKind::Turn, 100, 40)
+        };
+        let line = serde_json::to_value(&timed).unwrap();
+        assert_eq!(line["durationMs"], 2_500);
+
+        let untimed = record(UsageKind::Turn, 10, 4);
+        assert!(
+            serde_json::to_value(&untimed)
+                .unwrap()
+                .get("durationMs")
+                .is_none()
+        );
+        // The old-line shape — no durationMs key — decodes to no duration.
+        let old: UsageRecord =
+            serde_json::from_value(serde_json::to_value(&untimed).unwrap()).unwrap();
+        assert_eq!(old.duration_ms, None);
+
+        let mut totals = UsageTotals::default();
+        totals.add_record(&timed);
+        totals.add_record(&untimed);
+        totals.add_record(&UsageRecord {
+            duration_ms: Some(500),
+            ..record(UsageKind::Title, 5, 2)
+        });
+        // Only the participating records' output and time: the untimed
+        // record's 4 output tokens must not dilute the quotient.
+        assert_eq!(totals.timed_output, 42);
+        assert_eq!(totals.generation_ms, 3_000);
+    }
+
+    #[test]
+    fn the_generation_duration_needs_both_ends_in_order() {
+        assert_eq!(generation_duration(None, 1_000), None);
+        assert_eq!(generation_duration(Some(1_000), 1_000), None);
+        assert_eq!(generation_duration(Some(1_000), 999), None);
+        assert_eq!(generation_duration(Some(1_000), 3_500), Some(2_500));
     }
 
     #[test]
