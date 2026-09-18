@@ -76,7 +76,8 @@ pub(crate) struct KindShare {
     pub(crate) kind: String,
     pub(crate) label: String,
     pub(crate) tokens: u64,
-    /// 0..=1 of the gross total; the rows and the stacked bar share it.
+    /// One source's share of the shown usage — the gross less the title
+    /// task's plumbing; the rows and the stacked bar share it.
     pub(crate) share: f32,
 }
 
@@ -125,25 +126,33 @@ pub(crate) struct CardModel {
 }
 
 /// Fold the frame into what the card prints. The share arithmetic is the only
-/// thing this module computes: the tokens themselves are the engine's.
+/// thing this module computes: the tokens themselves are the engine's. The
+/// title task's round-trips are excluded: they are plumbing the chat runs
+/// behind the user's back — usage, but not the chat's work — so the usage
+/// section never shows them, and its shares cover the shown kinds alone.
 pub(crate) fn card_model(usage: &ChatUsage) -> CardModel {
     let mut kinds: Vec<KindShare> = usage
         .by_kind
         .iter()
+        .filter(|(kind, _)| kind.as_str() != "title")
         .map(|(kind, sum)| {
             let tokens = sum.input + sum.output + sum.cache_read + sum.cache_write;
             KindShare {
                 kind: kind.clone(),
                 label: kind_label(kind),
                 tokens,
-                share: if usage.gross == 0 {
-                    0.0
-                } else {
-                    tokens as f32 / usage.gross as f32
-                },
+                share: 0.0,
             }
         })
         .collect();
+    let shown = kinds.iter().map(|share| share.tokens).sum::<u64>();
+    for share in &mut kinds {
+        share.share = if shown > 0 {
+            share.tokens as f32 / shown as f32
+        } else {
+            0.0
+        };
+    }
     // Descending by size, ties broken by name so the order is stable across
     // renders (BTreeMap order alone would put the smallest first).
     kinds.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.label.cmp(&b.label)));
@@ -174,7 +183,6 @@ fn kind_label(kind: &str) -> String {
         "subagent" => "Subagents".to_string(),
         "compaction" => "Compaction".to_string(),
         "auto-review" => "Auto review".to_string(),
-        "title" => "Titles".to_string(),
         other => other.to_string(),
     }
 }
@@ -609,34 +617,59 @@ mod tests {
     }
 
     #[test]
-    fn the_card_splits_the_gross_by_kind_largest_first() {
+    fn the_card_splits_the_shown_usage_by_kind_largest_first() {
         let model = card_model(&decode(json!({
             "gross": 1000,
             "byKind": {
-                "title": {"input": 100, "output": 100},
                 "turn": {"input": 400, "output": 100, "cacheRead": 300}
             },
             "recordCount": 3,
             "occupancy": {"tokens": 700, "contextWindow": 1000, "estimated": false}
         })));
 
-        // The four token fields per kind, summed and shared over the gross —
-        // the row's own count and the bar's segment width.
+        // The four token fields per kind, summed and shared over the shown
+        // usage — the row's own count and the bar's segment width.
         assert_eq!(row(&model, "turn").tokens, 800);
         assert_eq!(row(&model, "turn").label, "Turns");
-        assert!((row(&model, "turn").share - 0.8).abs() < 1e-6);
-        assert_eq!(row(&model, "title").tokens, 200);
-        assert_eq!(row(&model, "title").label, "Titles");
-        // Largest first, regardless of the frame's key order.
-        assert_eq!(model.kinds[0].kind, "turn");
-        assert_eq!(model.kinds[1].kind, "title");
+        assert!((row(&model, "turn").share - 1.0).abs() < 1e-6);
         // Prompt-side tokens: uncached input, reads, writes — the cache
         // section's three numbers and its rate.
-        assert_eq!(model.cache.input, 500);
+        assert_eq!(model.cache.input, 400);
         assert_eq!(model.cache.read, 300);
         assert_eq!(model.cache.written, 0);
         assert_eq!(model.records, 3);
         assert_eq!(occupancy_value(&model.occupancy), "700 / 1k · 70%");
+    }
+
+    /// The title task's tokens are usage the card never shows: no row, no
+    /// bar segment, and the remaining kinds' shares renormalized over what
+    /// is shown. The header keeps the ledger's own totals — a title-only
+    /// chat simply shows no usage section at all.
+    #[test]
+    fn the_title_tasks_tokens_stay_out_of_the_usage_section() {
+        let model = card_model(&decode(json!({
+            "gross": 1100,
+            "byKind": {
+                "turn": {"input": 700, "output": 100},
+                "subagent": {"input": 100, "output": 100},
+                "title": {"input": 90, "output": 10}
+            },
+            "recordCount": 9,
+            "occupancy": {"tokens": 1, "contextWindow": null, "estimated": true}
+        })));
+        assert!(model.kinds.iter().all(|share| share.kind != "title"));
+        assert!((row(&model, "turn").share - 0.8).abs() < 1e-6);
+        assert!((row(&model, "subagent").share - 0.2).abs() < 1e-6);
+        assert_eq!(model.gross, 1100);
+        assert_eq!(model.records, 9);
+
+        let only_titles = card_model(&decode(json!({
+            "gross": 100,
+            "byKind": {"title": {"input": 100}},
+            "recordCount": 1,
+            "occupancy": {"tokens": 0, "contextWindow": null, "estimated": true}
+        })));
+        assert!(only_titles.kinds.is_empty());
     }
 
     #[test]
@@ -776,9 +809,11 @@ mod tests {
     #[gpui::test]
     fn the_ring_and_its_card_paint_their_bars(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
-        // Turn 800, Titles 200 of a 1000 gross, against a 1M window holding
-        // 40k: a bar of 80% and one of 20%, and an occupancy fill of 4%.
-        // 200 of the prompt's 920 tokens came from cache: a 21.7% hit rate.
+        // Turn 800 of a 1000 gross — the other 200 are title plumbing the
+        // card never shows — against a 1M window holding 40k: the usage bar
+        // is all turn, and an occupancy fill of 4%. 200 of the prompt's 920
+        // tokens came from cache: a 21.7% hit rate (the cache section reads
+        // every kind, title included).
         let usage = decode(json!({
             "gross": 1000,
             "byKind": {
@@ -803,11 +838,11 @@ mod tests {
 
         let bar = visual.debug_bounds("usage-bar").unwrap();
         let turn = visual.debug_bounds("usage-segment-turn").unwrap();
-        let title = visual.debug_bounds("usage-segment-title").unwrap();
-        assert_close(turn.size.width / bar.size.width, 0.8, "turn segment");
-        // The last segment takes the remainder: 20% here, and never a sliver
-        // of bare track left over from float rounding.
-        assert_close(title.size.width / bar.size.width, 0.2, "title segment");
+        // The only shown kind is the last, so it takes the remainder: the
+        // whole track, never a sliver of bare track left over from float
+        // rounding.
+        assert_close(turn.size.width / bar.size.width, 1.0, "turn segment");
+        assert!(visual.debug_bounds("usage-segment-title").is_none());
 
         let cache_track = visual.debug_bounds("usage-cache-track").unwrap();
         let cache_fill = visual.debug_bounds("usage-cache-fill").unwrap();
@@ -818,7 +853,7 @@ mod tests {
         );
 
         assert!(visual.debug_bounds("usage-kind-turn").is_some());
-        assert!(visual.debug_bounds("usage-kind-title").is_some());
+        assert!(visual.debug_bounds("usage-kind-title").is_none());
     }
 
     /// A fraction of a measured width, within a pixel of layout rounding.
