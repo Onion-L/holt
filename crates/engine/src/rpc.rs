@@ -8,12 +8,13 @@ use holt_doc::{
     diff_transcript,
 };
 use holt_proto::{
-    AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, RunRequest, SessionStatus, Space,
-    TitleSettings, TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
-    WebSearchSettingsState,
+    AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, ProviderId, ReasoningLevel,
+    RunRequest, SessionStatus, Space, TitleSettings, TitleSettingsState, TitleSource,
+    TurnChangeSetReply, WebSearchBackendOption, WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
+use pi_core::ai::types::Model as CoreModel;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -240,6 +241,79 @@ impl EngineService {
         drop(spaces);
         self.spaces_tx.send_replace(value);
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Finds or creates the singleton hidden `model-setup` chat (model
+    /// setup v2). The dialog's model picker refreshes its config each call;
+    /// the row is archived so the sidebar never lists it.
+    fn ensure_model_setup_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let provider = ProviderId(required_string(&params, "provider")?.to_string());
+        let model = required_string(&params, "model")?.to_string();
+        let reasoning: Option<ReasoningLevel> = params
+            .get("reasoning")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        let mut chats = self
+            .runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let config = ChatConfig {
+            provider,
+            model,
+            reasoning,
+            model_options: Default::default(),
+            permission_mode: self.mode_default.get(),
+            scope: holt_proto::ChatScope::ModelSetup,
+        };
+        let existing = chats.iter_mut().find(|chat| {
+            chat.config
+                .as_ref()
+                .is_some_and(|config| config.scope == holt_proto::ChatScope::ModelSetup)
+        });
+        let chat_id = match existing {
+            Some(row) => {
+                row.config = Some(config);
+                row.archived = true;
+                row.id.clone()
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                chats.push(Chat {
+                    id: id.clone(),
+                    device_id: self.engine_info.device_id.clone(),
+                    title: Some("Provider setup".into()),
+                    title_source: TitleSource::UserManual,
+                    title_task_started: true,
+                    archived: true,
+                    pinned: false,
+                    cwd: None,
+                    branch: None,
+                    checkout_id: None,
+                    source_context: None,
+                    config: Some(config),
+                    last_message_preview: None,
+                    last_message_at: None,
+                    created_at: Utc::now(),
+                    space_id: None,
+                    last_seen_at: None,
+                    room_gen: None,
+                    compact_before_next_turn: false,
+                    plan_mode: None,
+                });
+                id
+            }
+        };
+        drop(chats);
+        persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.chat(&chat_id);
+        self.runtime.publish_chats();
+        RpcReply::value(&serde_json::json!({ "chatId": chat_id }))
     }
 
     fn create_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -839,6 +913,9 @@ impl EngineService {
         // makes this a planning Turn; a mid-Turn switch lands from the
         // next Turn exactly like the mode beside it.
         let mut planning = false;
+        // The Turn's setup-scope snapshot (model setup v2): the chat's
+        // stored scope, snapshotted at acceptance like the mode.
+        let mut setup_scope = false;
         {
             let mut chats = self
                 .runtime
@@ -852,6 +929,14 @@ impl EngineService {
                     row.source_context = Some(source);
                 }
                 planning = row.plan_mode.is_some();
+                // The setup scope persists with the row's config: the run
+                // request cannot move it, exactly like the permission mode.
+                let scope = row
+                    .config
+                    .as_ref()
+                    .map(|config| config.scope)
+                    .unwrap_or_default();
+                setup_scope = scope == holt_proto::ChatScope::ModelSetup;
                 // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -869,6 +954,7 @@ impl EngineService {
                     reasoning: request.reasoning,
                     model_options: request.model_options.clone(),
                     permission_mode: mode,
+                    scope,
                 });
                 row.last_message_preview = Some(preview.chars().take(120).collect());
                 row.last_message_at = Some(now);
@@ -951,10 +1037,12 @@ impl EngineService {
             invocation,
             permission_mode: mode,
             plan_mode: planning,
+            setup_scope,
             // The admission-time backend snapshot (ADR-0023): resolved
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.
             search_backend: self.search_backend(),
+            providers: Some(Arc::clone(&self.providers)),
             stream_fn: self.runtime.stream_fn.clone(),
         })
     }
@@ -995,6 +1083,22 @@ impl EngineService {
         // selection's window is what the next request is measured against.
         self.refresh_selected_model(chat_id);
         RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// Re-seed every open chat's occupancy windows after a catalog write:
+    /// the denominator map is seeded once per watch open, so a new or
+    /// changed record would otherwise serve a stale window until the watch
+    /// reopened.
+    fn refresh_catalog_windows(&self) {
+        for chat in self.runtime.open_chats() {
+            let chat_id = chat.chat_id.clone();
+            crate::usage::seed_occupancy(
+                &chat,
+                self.providers.context_windows().into_iter().collect(),
+                self.selected_wire_model(&chat_id),
+            );
+            crate::usage::publish(&chat);
+        }
     }
 
     /// The chat's selected model as the occupancy windows are keyed — the
@@ -2126,6 +2230,7 @@ impl RpcService for EngineService {
                     .settings
                     .add_custom_model(provider, model)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
                 RpcReply::value(&serde_json::json!({}))
             }
             methods::REMOVE_PROVIDER_MODEL => {
@@ -2144,11 +2249,190 @@ impl RpcService for EngineService {
                     .settings
                     .remove_custom_model(provider, model)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
                 RpcReply::value(&serde_json::json!({}))
             }
             methods::LIST_MODELS => {
                 let provider = required_string(&params, "providerId")?;
                 RpcReply::value(&self.providers.models_for(provider))
+            }
+            methods::LIST_HIDDEN_MODELS => {
+                let provider = required_string(&params, "providerId")?;
+                let rows: Vec<serde_json::Value> = self
+                    .providers
+                    .settings
+                    .hidden_models_for(provider)
+                    .iter()
+                    .map(|model_id| {
+                        let label = self
+                            .providers
+                            .resolve_model(provider, &format!("{provider}/{model_id}"))
+                            .ok()
+                            .map(|model| model.name);
+                        serde_json::json!({ "id": format!("{provider}/{model_id}"), "label": label })
+                    })
+                    .collect();
+                RpcReply::value(&rows)
+            }
+            // The Settings review panel (model setup v2): the write path the
+            // setup agent never holds. Revalidation rides the same
+            // `apply_changes` the old tool used; the button is the human
+            // approval.
+            methods::APPLY_MODEL_PROPOSAL => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let proposal_id = required_string(&params, "proposalId")?;
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                let applied =
+                    crate::tools::model_setup::apply_stored(&self.providers, &chat, proposal_id)
+                        .map_err(RpcError::Failed)?;
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({ "applied": applied }))
+            }
+            methods::LIST_MODEL_PROPOSALS => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                RpcReply::value(&crate::tools::model_setup::proposal_views(&chat))
+            }
+            methods::DISCARD_MODEL_PROPOSAL => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let proposal_id = required_string(&params, "proposalId")?;
+                let chat = self.runtime.chat(chat_id);
+                let discarded = crate::tools::model_setup::discard_stored(&chat, proposal_id);
+                RpcReply::value(&serde_json::json!({ "discarded": discarded }))
+            }
+            methods::ENSURE_MODEL_SETUP_CHAT => self.ensure_model_setup_chat(params),
+            methods::SAVE_CUSTOM_PROVIDER => {
+                let id = required_string(&params, "id")?.trim().to_string();
+                let name = required_string(&params, "name")?.trim().to_string();
+                let base_url = required_string(&params, "baseUrl")?.trim().to_string();
+                let default_api = required_string(&params, "defaultApi")?.trim().to_string();
+                let headers = match params.get("headers") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        Some(serde_json::from_value(value.clone()).map_err(|_| {
+                            RpcError::BadParams("headers must be a header map".into())
+                        })?)
+                    }
+                };
+                let provider = crate::provider_settings::CustomProvider {
+                    id,
+                    name,
+                    base_url,
+                    headers,
+                    default_api,
+                };
+                self.providers
+                    .validate_custom_provider(&provider)
+                    .map_err(RpcError::BadParams)?;
+                self.providers
+                    .settings
+                    .upsert_custom_provider(provider)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::REMOVE_CUSTOM_PROVIDER => {
+                let provider = required_string(&params, "providerId")?;
+                self.providers
+                    .settings
+                    .remove_custom_provider(provider)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::SAVE_MODEL_RECORD => {
+                let provider = required_string(&params, "providerId")?;
+                let record: CoreModel = serde_json::from_value(
+                    params
+                        .get("record")
+                        .cloned()
+                        .ok_or_else(|| RpcError::BadParams("record is required".into()))?,
+                )
+                .map_err(|_| RpcError::BadParams("record must be a model record".into()))?;
+                self.providers
+                    .validate_model_record(provider, &record)
+                    .map_err(RpcError::BadParams)?;
+                self.providers
+                    .settings
+                    .upsert_model_record(provider, record)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::REMOVE_MODEL_RECORD => {
+                let provider = required_string(&params, "providerId")?;
+                let submitted = required_string(&params, "modelId")?.trim();
+                let qualified_prefix = format!("{provider}/");
+                let model = submitted
+                    .strip_prefix(&qualified_prefix)
+                    .unwrap_or(submitted);
+                let removed_record = self
+                    .providers
+                    .settings
+                    .remove_model_record(provider, model)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                if !removed_record {
+                    self.providers
+                        .settings
+                        .remove_custom_model(provider, model)
+                        .map_err(|error| RpcError::Failed(error.to_string()))?;
+                }
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::SET_HIDDEN_MODELS => {
+                let provider = required_string(&params, "providerId")?;
+                let submitted = required_string_list(&params, "modelIds")?;
+                let qualified_prefix = format!("{provider}/");
+                let mut model_ids = std::collections::BTreeSet::new();
+                for id in submitted.iter().map(String::as_str) {
+                    let id = id.trim();
+                    let model = id.strip_prefix(&qualified_prefix).unwrap_or(id);
+                    if !self.providers.has_model(provider, model) {
+                        return Err(RpcError::BadParams(format!(
+                            "unknown model for {provider}: {model}"
+                        )));
+                    }
+                    model_ids.insert(model.to_string());
+                }
+                self.providers
+                    .settings
+                    .set_hidden_models(provider, model_ids)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::RESET_PROVIDER_CATALOG => {
+                match optional_string(&params, "providerId") {
+                    Some(provider) => {
+                        self.providers
+                            .settings
+                            .reset_provider(&provider)
+                            .map_err(|error| RpcError::Failed(error.to_string()))?;
+                    }
+                    // Global reset: back to the compiled catalog under the
+                    // hand-edited overlay for every provider (ADR-0028).
+                    None => {
+                        self.providers
+                            .settings
+                            .reset_all()
+                            .map_err(|error| RpcError::Failed(error.to_string()))?;
+                    }
+                }
+                self.refresh_catalog_windows();
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.title_settings_state().await),
             methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,

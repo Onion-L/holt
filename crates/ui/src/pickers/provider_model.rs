@@ -1072,6 +1072,7 @@ mod tests {
             abbreviation: id[..2.min(id.len())].to_ascii_uppercase(),
             configured,
             variants: Vec::new(),
+            custom: false,
         }
     }
 

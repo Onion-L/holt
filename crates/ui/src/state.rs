@@ -2342,6 +2342,7 @@ mod tests {
             reasoning: Some(holt_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             permission_mode: holt_proto::PermissionMode::default(),
+            scope: Default::default(),
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -2366,6 +2367,7 @@ mod tests {
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 permission_mode: holt_proto::PermissionMode::default(),
+                scope: Default::default(),
             },
         );
     }

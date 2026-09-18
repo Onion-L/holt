@@ -818,6 +818,7 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 permission_mode: PermissionMode::default(),
+                scope: Default::default(),
             }),
             compact_before_next_turn: false,
             plan_mode: None,
@@ -881,6 +882,7 @@ mod tests {
             reasoning: Some(holt_proto::ReasoningLevel::XHigh),
             model_options: options,
             permission_mode: PermissionMode::default(),
+            scope: Default::default(),
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");

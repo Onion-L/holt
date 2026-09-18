@@ -368,24 +368,8 @@ fn merge_models(
                 "dropping a provider-store model: {reason}"
             );
         };
-        if model.provider != provider_id {
-            drop("its provider field does not match its parent");
-            continue;
-        }
-        if model.context_window == 0 {
-            drop("its context window is zero");
-            continue;
-        }
-        if !cost_is_valid(&model.cost) {
-            drop("its cost rates are not finite and non-negative");
-            continue;
-        }
-        if !http_base_url(&model.base_url) {
-            drop("its baseUrl is not http(s)");
-            continue;
-        }
-        if compat::get_api_provider(&model.api).is_none() {
-            drop("its api dialect is not registered");
+        if let Some(reason) = model_record_problem(provider_id, &model) {
+            drop(reason);
             continue;
         }
         let id = model.id.clone();
@@ -405,9 +389,35 @@ fn merge_models(
     merged
 }
 
+/// The servability rules a complete model record must satisfy, shared by
+/// the provider-store merge and the live settings sections: a record that
+/// breaks one is dropped with this reason, never a boot failure. Returns
+/// `None` when the record is servable.
+pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Option<&'static str> {
+    if model.id.trim().is_empty() {
+        return Some("its id is blank");
+    }
+    if model.provider != provider_id {
+        return Some("its provider field does not match its parent");
+    }
+    if model.context_window == 0 {
+        return Some("its context window is zero");
+    }
+    if !cost_is_valid(&model.cost) {
+        return Some("its cost rates are not finite and non-negative");
+    }
+    if !http_base_url(&model.base_url) {
+        return Some("its baseUrl is not http(s)");
+    }
+    if compat::get_api_provider(&model.api).is_none() {
+        return Some("its api dialect is not registered");
+    }
+    None
+}
+
 /// `baseUrl` is concatenated into request URLs, so it must be a usable
 /// http(s) prefix, not just non-empty.
-fn http_base_url(url: &str) -> bool {
+pub(crate) fn http_base_url(url: &str) -> bool {
     url.strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
         .is_some_and(|rest| !rest.is_empty())

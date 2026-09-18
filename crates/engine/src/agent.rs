@@ -142,6 +142,11 @@ pub(crate) struct ChatRuntime {
     /// This chat's always-allow grants (ADR-0014): in-memory and
     /// session-scoped — a restart starts with none.
     pub(crate) grants: Arc<Mutex<crate::gate::GateGrants>>,
+    /// This chat's stored model-setup proposals (ADR-0029), newest last
+    /// and capped — in-memory only, so a restart drops them and the model
+    /// re-proposes.
+    pub(crate) proposals:
+        Arc<Mutex<std::collections::VecDeque<crate::tools::model_setup::StoredProposal>>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
     pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
     /// The running Turn's captured usage records (the usage ledger): they
@@ -197,6 +202,7 @@ impl ChatRuntime {
             chat_id: String::new(),
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
+            proposals: Arc::new(Mutex::new(Default::default())),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -388,6 +394,7 @@ impl ChatRuntime {
             chat_id: chat_id.to_string(),
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
+            proposals: Arc::new(Mutex::new(Default::default())),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -574,6 +581,18 @@ impl AgentRuntime {
             .unwrap_or_else(|error| error.into_inner())
             .get(chat_id)
             .cloned()
+    }
+
+    /// Every currently-open chat runtime — the chats whose live views a
+    /// catalog change should refresh (occupancy windows are seeded once per
+    /// watch open; a write makes them stale until re-seeded).
+    pub(crate) fn open_chats(&self) -> Vec<Arc<ChatRuntime>> {
+        self.chat_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Drop a chat's runtime slot and its persisted records. An in-flight
@@ -1266,10 +1285,18 @@ pub(crate) struct AgentRun {
     /// leaving Plan Mode mid-Turn cannot move it; it lands from the next
     /// Turn like the permission snapshot beside it.
     pub(crate) plan_mode: bool,
+    /// The Turn's setup-scope snapshot (model setup v2): a `model-setup`
+    /// chat runs the fixed provider-catalog workflow — a file-free toolset
+    /// and its own system prompt, no delegation, no apply tool. The write
+    /// path is the Settings review panel's RPC, never the agent.
+    pub(crate) setup_scope: bool,
     /// The Turn's web-search backend snapshot (ADR-0023), resolved once at
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
+    /// The provider adapter the model-setup tools write through. `None` on
+    /// subagent runs — the proposal/apply pair is parent-only (ADR-0029).
+    pub(crate) providers: Option<Arc<crate::providers::ProviderAdapter>>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -1312,7 +1339,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         invocation,
         permission_mode,
         plan_mode,
+        setup_scope,
         search_backend,
+        providers,
         stream_fn,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
@@ -1324,6 +1353,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         system_prompt =
             crate::subagents::system_prompt(&child.role, &cwd, &catalog, search_backend.is_some())
                 .await;
+    }
+    if setup_scope {
+        // The setup surface replaces the workspace prompt wholesale (model
+        // setup v2): no AGENTS.md, no skills — the fixed four-step workflow
+        // and nothing else.
+        system_prompt = crate::tools::model_setup::setup_system_prompt(search_backend.is_some());
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -1769,6 +1804,18 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     if let Some(child) = &chat.child {
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
+        }
+    } else if setup_scope {
+        // The fixed setup surface (model setup v2): web research plus the
+        // read-only proposal tool — no file access, no delegation, and no
+        // apply (the review panel's button applies). Normal chats mount
+        // neither model-setup tool: their catalog-write capability is nil.
+        tools.retain(|tool| matches!(tool.name.as_str(), "web_fetch" | "web_search"));
+        if let Some(model_providers) = &providers {
+            tools.push(crate::tools::create_model_proposal_tool(
+                model_providers.clone(),
+                chat.clone(),
+            ));
         }
     } else if !plan_mode {
         // A planning Turn delegates nothing (ADR-0025): the whitelist below

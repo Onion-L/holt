@@ -1,0 +1,1531 @@
+//! The model-setup tool pair (ADR-0029): `model_proposal` prepares and
+//! validates an exact provider-catalog change and stores it engine-side;
+//! `model_apply` executes a stored proposal by id behind an approval no
+//! permission mode exempts. The proposal tool never writes, the apply tool
+//! never accepts a change payload — only an id — so what the user saw in
+//! the transcript is bit-for-bit what executes, and an accidental apply
+//! with no stored proposal is a harmless error. API keys never enter this
+//! path: they live in the credential store and surface only as a probe's
+//! Authorization header.
+
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+    time::Duration,
+};
+
+use futures::future::BoxFuture;
+use pi_core::{
+    agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
+    ai::types::{BlockContent, Model as CoreModel, TextContent},
+};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
+
+use crate::{
+    agent::ChatRuntime,
+    provider_settings::{CustomProvider, ProviderSettingsSnapshot},
+    provider_store,
+    providers::ProviderAdapter,
+};
+
+/// Proposals kept per chat, newest last; older ones fall off.
+const PROPOSAL_CAP: usize = 5;
+/// The `/models` probe's whole-request budget.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Probe listings are research aids, not catalogs: cap what rides back.
+const PROBE_LISTING_CAP: usize = 200;
+
+const PROPOSAL_DESCRIPTION: &str = "Prepare a provider-catalog change (add or update a model \
+with full metadata, define a custom provider, hide dead models) WITHOUT writing anything. \
+Validates the change against the local catalog, reports exactly what would change (a no-op \
+says so), stores the result engine-side, and returns a proposalId for model_apply. Parameters: \
+`changes` (an array; omit it to only inspect a provider), `providerId` (required when \
+inspecting), `modelId` (when inspecting: dump that one model's complete record JSON — the \
+template to copy when replacing it), `probe` (optional: live GET {baseUrl}/models against \
+the provider using the stored key if one exists). Each change is an object with an `action` \
+of: upsert_model_record ({providerId, record — a complete model record: id, name, api, \
+provider, baseUrl, reasoning, input, cost, contextWindow, maxTokens, and optionally \
+thinkingLevelMap/compat}), upsert_custom_provider ({provider: {id, name, baseUrl, \
+defaultApi}}), remove_custom_provider ({providerId}), remove_model_record ({providerId, \
+modelId}), or set_hidden_models ({providerId, modelIds}). When replacing an existing id, \
+inspect it first and copy its api/compat/thinkingLevelMap, changing only what differs. Only \
+call this when the user explicitly asks to add, fix, or clean up models or providers — \
+research model facts first with web_fetch/web_search, then propose. After presenting the \
+resulting diff, call model_apply with the returned proposalId IN THE SAME TURN — never wait \
+for a chat reply first.";
+
+// ---------------------------------------------------------------------------
+// The change vocabulary
+// ---------------------------------------------------------------------------
+
+/// One exact catalog change. Stored verbatim in proposals and executed
+/// verbatim on apply — this is the "as stored" of ADR-0029.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CatalogChange {
+    UpsertModelRecord {
+        provider_id: String,
+        record: Box<CoreModel>,
+    },
+    UpsertCustomProvider {
+        provider: CustomProvider,
+    },
+    RemoveCustomProvider {
+        provider_id: String,
+    },
+    RemoveModelRecord {
+        provider_id: String,
+        model_id: String,
+    },
+    SetHiddenModels {
+        provider_id: String,
+        model_ids: BTreeSet<String>,
+    },
+}
+
+impl CatalogChange {
+    fn provider_id(&self) -> &str {
+        match self {
+            CatalogChange::UpsertModelRecord { provider_id, .. }
+            | CatalogChange::RemoveCustomProvider { provider_id }
+            | CatalogChange::RemoveModelRecord { provider_id, .. }
+            | CatalogChange::SetHiddenModels { provider_id, .. } => provider_id,
+            CatalogChange::UpsertCustomProvider { provider } => &provider.id,
+        }
+    }
+}
+
+fn input_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| format!("\"{key}\" is required"))
+}
+
+/// Parses one `changes` element. Everything the engine cannot serve is an
+/// error here, never a silent drop — the model must fix its proposal.
+pub(crate) fn parse_change(value: &serde_json::Value) -> Result<CatalogChange, String> {
+    let action = input_str(value, "action")?;
+    match action {
+        "upsert_model_record" => {
+            let provider_id = input_str(value, "providerId")?.to_string();
+            let record = value
+                .get("record")
+                .cloned()
+                .ok_or_else(|| "\"record\" is required".to_string())?;
+            let record: CoreModel = serde_json::from_value(record)
+                .map_err(|error| format!("\"record\" is not a complete model record: {error}"))?;
+            Ok(CatalogChange::UpsertModelRecord {
+                provider_id,
+                record: Box::new(record),
+            })
+        }
+        "upsert_custom_provider" => {
+            let provider = value
+                .get("provider")
+                .cloned()
+                .ok_or_else(|| "\"provider\" is required".to_string())?;
+            let provider: CustomProvider = serde_json::from_value(provider).map_err(|error| {
+                format!("\"provider\" is not a custom provider definition: {error}")
+            })?;
+            Ok(CatalogChange::UpsertCustomProvider { provider })
+        }
+        "remove_custom_provider" => Ok(CatalogChange::RemoveCustomProvider {
+            provider_id: input_str(value, "providerId")?.to_string(),
+        }),
+        "remove_model_record" => Ok(CatalogChange::RemoveModelRecord {
+            provider_id: input_str(value, "providerId")?.to_string(),
+            model_id: input_str(value, "modelId")?.to_string(),
+        }),
+        "set_hidden_models" => {
+            let provider_id = input_str(value, "providerId")?.to_string();
+            let ids = value
+                .get("modelIds")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "\"modelIds\" must be an array of strings".to_string())?;
+            let mut model_ids = BTreeSet::new();
+            for id in ids {
+                let id = id
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| "\"modelIds\" must contain non-empty strings".to_string())?;
+                model_ids.insert(id.to_string());
+            }
+            Ok(CatalogChange::SetHiddenModels {
+                provider_id,
+                model_ids,
+            })
+        }
+        other => Err(format!(
+            "unknown action {other:?}; valid actions: upsert_model_record, \
+             upsert_custom_provider, remove_custom_provider, remove_model_record, \
+             set_hidden_models"
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The stored proposal
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub(crate) struct StoredProposal {
+    pub(crate) id: String,
+    pub(crate) summary: String,
+    pub(crate) changes: Vec<CatalogChange>,
+    pub(crate) baseline: ProviderSettingsSnapshot,
+}
+
+/// Remembers a proposal on its chat (LRU of [`PROPOSAL_CAP`]) and returns
+/// its id. In-memory only: a restart drops them, and the model can simply
+/// re-propose.
+pub(crate) fn store_proposal(
+    chat: &ChatRuntime,
+    changes: Vec<CatalogChange>,
+    summary: String,
+    baseline: ProviderSettingsSnapshot,
+) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
+    proposals.push_back(StoredProposal {
+        id: id.clone(),
+        summary,
+        changes,
+        baseline,
+    });
+    while proposals.len() > PROPOSAL_CAP {
+        proposals.pop_front();
+    }
+    id
+}
+
+pub(crate) fn stored_proposal(chat: &ChatRuntime, id: &str) -> Option<StoredProposal> {
+    chat.proposals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .rev()
+        .find(|proposal| proposal.id == id)
+        .cloned()
+}
+
+/// The gate's pending-approval note: the stored proposal's summary, so the
+/// user approves against a sentence, not a raw id.
+pub(crate) fn approval_note(chat: &ChatRuntime, arguments: &serde_json::Value) -> Option<String> {
+    let id = arguments
+        .get("proposalId")
+        .and_then(serde_json::Value::as_str)?;
+    stored_proposal(chat, id).map(|proposal| proposal.summary)
+}
+
+// ---------------------------------------------------------------------------
+// Proposal building: validate + diff
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub(crate) enum ProposalOutcome {
+    /// Every change does something; `lines` is the human-readable diff.
+    Changes { lines: Vec<String>, summary: String },
+    /// Nothing would change; `lines` says why per change.
+    NoChanges { lines: Vec<String> },
+}
+
+/// The provider ids a batch itself defines, so a record for a provider the
+/// same proposal creates validates instead of tripping "unknown provider".
+fn planned_providers(changes: &[CatalogChange]) -> HashSet<&str> {
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            CatalogChange::UpsertCustomProvider { provider } => Some(provider.id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn json_field_diff(current: &serde_json::Value, proposed: &serde_json::Value) -> Vec<String> {
+    let (Some(current), Some(proposed)) = (current.as_object(), proposed.as_object()) else {
+        return vec![format!("record {} -> {}", current, proposed)];
+    };
+    let keys: BTreeSet<&str> = current
+        .keys()
+        .chain(proposed.keys())
+        .map(String::as_str)
+        .collect();
+    keys.into_iter()
+        .filter_map(|key| {
+            let before = current.get(key).unwrap_or(&serde_json::Value::Null);
+            let after = proposed.get(key).unwrap_or(&serde_json::Value::Null);
+            let changed = before != after;
+            let before = redact_json(before);
+            let after = redact_json(after);
+            changed.then(|| format!("{key} {before} -> {after}"))
+        })
+        .collect()
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "headers"
+        || key.contains("authorization")
+        || key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("token")
+        || key.contains("secret")
+}
+
+fn redact_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => serde_json::Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        if sensitive_key(key) {
+                            serde_json::Value::String("<redacted>".into())
+                        } else {
+                            redact_json(value)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(redact_json).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn host_of(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or(url)
+}
+
+/// One upsert's diff line(s): new, replacement (with the changed fields),
+/// or a no-op with the reason.
+fn record_diff(
+    providers: &ProviderAdapter,
+    provider_id: &str,
+    record: &CoreModel,
+) -> (
+    Vec<String>,
+    bool, /* no-op */
+    bool, /* key destination moves */
+) {
+    let qualified = format!("{provider_id}/{}", record.id);
+    let Some(current) = providers.resolve_model(provider_id, &qualified).ok() else {
+        return (
+            vec![format!(
+                "+ {qualified}: new complete record {}",
+                serde_json::to_string(&redact_json(
+                    &serde_json::to_value(record).unwrap_or_default()
+                ))
+                .unwrap_or_default()
+            )],
+            false,
+            false,
+        );
+    };
+    if &current == record {
+        return (
+            vec![format!("= {qualified}: already exactly as proposed")],
+            true,
+            false,
+        );
+    }
+    let current_json = serde_json::to_value(&current).unwrap_or_default();
+    let proposed_json = serde_json::to_value(record).unwrap_or_default();
+    let mut notes = json_field_diff(&current_json, &proposed_json);
+    let key_moves = current.base_url != record.base_url
+        && host_of(&current.base_url) != host_of(&record.base_url);
+    if key_moves {
+        notes.push("API key destination changes".to_string());
+    }
+    (
+        vec![format!("~ {qualified}: {}", notes.join("; "))],
+        false,
+        key_moves,
+    )
+}
+
+/// Validates the batch against the live catalog and produces its diff.
+/// Errors mean "do not propose this" — the model reads and fixes them.
+pub(crate) fn build_proposal(
+    providers: &ProviderAdapter,
+    changes: &[CatalogChange],
+) -> Result<ProposalOutcome, String> {
+    if changes.is_empty() {
+        return Err("no changes given".into());
+    }
+    let planned = planned_providers(changes);
+    let mut lines = Vec::new();
+    let mut providers_touched: BTreeSet<String> = BTreeSet::new();
+    let mut no_ops = 0usize;
+    let mut key_moves = false;
+    for change in changes {
+        let provider_id = change.provider_id();
+        let known = providers.provider_known(provider_id) || planned.contains(provider_id);
+        match change {
+            CatalogChange::UpsertModelRecord {
+                provider_id,
+                record,
+            } => {
+                if !known {
+                    return Err(format!(
+                        "unknown provider {provider_id:?} — define it with \
+                         upsert_custom_provider in the same proposal"
+                    ));
+                }
+                if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
+                    return Err(format!(
+                        "record {}/{} is not servable: {problem}",
+                        provider_id, record.id
+                    ));
+                }
+                let (mut diff, no_op, moves) = record_diff(providers, provider_id, record);
+                key_moves |= moves;
+                lines.append(&mut diff);
+                no_ops += no_op as usize;
+                providers_touched.insert(provider_id.clone());
+            }
+            CatalogChange::UpsertCustomProvider { provider } => {
+                if providers.provider_known(provider_id) {
+                    return Err(format!(
+                        "provider id {provider_id:?} already exists in the built-in catalog"
+                    ));
+                }
+                if crate::provider_settings::custom_provider_problem(provider).is_some() {
+                    let problem = crate::provider_settings::custom_provider_problem(provider)
+                        .unwrap_or_default();
+                    return Err(format!(
+                        "custom provider {:?} is not servable: {problem}",
+                        provider.id
+                    ));
+                }
+                let exists = providers.settings.custom_provider(&provider.id);
+                match exists.as_ref() {
+                    Some(current) if current == provider => {
+                        lines.push(format!(
+                            "= provider {}: already exactly as proposed",
+                            provider.id
+                        ));
+                        no_ops += 1;
+                    }
+                    Some(_) => {
+                        let current = exists.as_ref().expect("matched Some");
+                        let current_json = serde_json::to_value(current).unwrap_or_default();
+                        let proposed_json = serde_json::to_value(provider).unwrap_or_default();
+                        lines.push(format!(
+                            "~ provider {}: {}",
+                            provider.id,
+                            json_field_diff(&current_json, &proposed_json).join("; ")
+                        ));
+                    }
+                    None => lines.push(format!(
+                        "+ provider {}: new complete definition {}",
+                        provider.id,
+                        serde_json::to_string(&redact_json(
+                            &serde_json::to_value(provider).unwrap_or_default(),
+                        ))
+                        .unwrap_or_default()
+                    )),
+                }
+                providers_touched.insert(provider.id.clone());
+            }
+            CatalogChange::RemoveCustomProvider { provider_id } => {
+                if providers.settings.custom_provider(provider_id).is_none() {
+                    lines.push(format!("= provider {provider_id}: no definition to remove"));
+                    no_ops += 1;
+                } else {
+                    lines.push(format!("- provider {provider_id}"));
+                    providers_touched.insert(provider_id.clone());
+                }
+            }
+            CatalogChange::RemoveModelRecord {
+                provider_id,
+                model_id,
+            } => {
+                let known_record = providers
+                    .settings
+                    .model_records_for(provider_id)
+                    .iter()
+                    .any(|record| record.id == *model_id);
+                if !known_record {
+                    lines.push(format!(
+                        "= {provider_id}/{model_id}: no stored record to remove"
+                    ));
+                    no_ops += 1;
+                } else {
+                    lines.push(format!("- {provider_id}/{model_id} (record)"));
+                    providers_touched.insert(provider_id.clone());
+                }
+            }
+            CatalogChange::SetHiddenModels {
+                provider_id,
+                model_ids,
+            } => {
+                if !known {
+                    return Err(format!("unknown provider {provider_id:?}"));
+                }
+                for id in model_ids {
+                    let planned_record = changes.iter().any(|change| {
+                        matches!(
+                            change,
+                            CatalogChange::UpsertModelRecord {
+                                provider_id: planned_provider,
+                                record,
+                            } if planned_provider == provider_id && record.id == *id
+                        )
+                    });
+                    if !providers.has_model(provider_id, id) && !planned_record {
+                        return Err(format!(
+                            "unknown model for {provider_id}: {id} — hidden ids must exist"
+                        ));
+                    }
+                }
+                let current: BTreeSet<String> = providers
+                    .settings
+                    .hidden_models_for(provider_id)
+                    .into_iter()
+                    .collect();
+                if &current == model_ids {
+                    lines.push(format!("= hide {provider_id}: already exactly as proposed"));
+                    no_ops += 1;
+                } else {
+                    let added: Vec<&String> = model_ids.difference(&current).collect();
+                    let removed: Vec<&String> = current.difference(model_ids).collect();
+                    let mut note = String::new();
+                    if !added.is_empty() {
+                        note.push_str(&format!(
+                            "hide {}",
+                            added
+                                .iter()
+                                .map(|id| id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    if !removed.is_empty() {
+                        if !note.is_empty() {
+                            note.push_str("; ");
+                        }
+                        note.push_str(&format!(
+                            "unhide {}",
+                            removed
+                                .iter()
+                                .map(|id| id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    lines.push(format!("! {provider_id}: {note}"));
+                    providers_touched.insert(provider_id.clone());
+                }
+            }
+        }
+    }
+    if no_ops == changes.len() {
+        return Ok(ProposalOutcome::NoChanges { lines });
+    }
+    let mut summary = format!(
+        "Apply {} catalog change{} for {}",
+        changes.len() - no_ops,
+        if changes.len() - no_ops == 1 { "" } else { "s" },
+        providers_touched
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if key_moves {
+        summary.push_str(" — includes baseUrl host changes (API key destination)");
+    }
+    Ok(ProposalOutcome::Changes { lines, summary })
+}
+
+/// Executes a stored proposal exactly as stored, re-validating each change
+/// against the state at apply time. Returns one line per applied change.
+pub(crate) fn apply_changes(
+    providers: &ProviderAdapter,
+    baseline: &ProviderSettingsSnapshot,
+    changes: &[CatalogChange],
+) -> Result<Vec<String>, String> {
+    // The staleness gate (ADR-0029): the catalog must still accept the
+    // batch as a real change — anything else means state moved between the
+    // proposal and the approval, and the model must propose again.
+    match build_proposal(providers, changes)? {
+        ProposalOutcome::Changes { .. } => {}
+        ProposalOutcome::NoChanges { .. } => {
+            return Err(
+                "the catalog changed since this proposal (it is now a no-op); \
+                 run model_proposal again"
+                    .into(),
+            );
+        }
+    }
+    let mut next = baseline.clone();
+    let mut ordered = Vec::with_capacity(changes.len());
+    ordered.extend(
+        changes
+            .iter()
+            .filter(|change| matches!(change, CatalogChange::UpsertCustomProvider { .. })),
+    );
+    ordered.extend(
+        changes
+            .iter()
+            .filter(|change| matches!(change, CatalogChange::UpsertModelRecord { .. })),
+    );
+    ordered.extend(changes.iter().filter(|change| {
+        matches!(
+            change,
+            CatalogChange::RemoveCustomProvider { .. } | CatalogChange::RemoveModelRecord { .. }
+        )
+    }));
+    ordered.extend(
+        changes
+            .iter()
+            .filter(|change| matches!(change, CatalogChange::SetHiddenModels { .. })),
+    );
+    for change in ordered {
+        match change {
+            CatalogChange::UpsertModelRecord {
+                provider_id,
+                record,
+            } => {
+                if !providers.catalog_has_provider(provider_id)
+                    && !next.custom_providers.contains_key(provider_id)
+                {
+                    return Err(format!("unknown provider {provider_id}"));
+                }
+                if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
+                    return Err(format!("record {}/{}: {problem}", provider_id, record.id));
+                }
+                next.model_records
+                    .entry(provider_id.clone())
+                    .or_default()
+                    .insert(record.id.clone(), record.as_ref().clone());
+            }
+            CatalogChange::UpsertCustomProvider { provider } => {
+                providers
+                    .validate_custom_provider(provider)
+                    .map_err(|problem| format!("provider {}: {problem}", provider.id))?;
+                next.custom_providers
+                    .insert(provider.id.clone(), provider.clone());
+            }
+            CatalogChange::RemoveCustomProvider { provider_id } => {
+                next.custom_providers.remove(provider_id);
+            }
+            CatalogChange::RemoveModelRecord {
+                provider_id,
+                model_id,
+            } => {
+                if let Some(records) = next.model_records.get_mut(provider_id) {
+                    records.remove(model_id);
+                    if records.is_empty() {
+                        next.model_records.remove(provider_id);
+                    }
+                }
+                if let Some(hidden) = next.hidden_models.get_mut(provider_id) {
+                    hidden.remove(model_id);
+                    if hidden.is_empty() {
+                        next.hidden_models.remove(provider_id);
+                    }
+                }
+            }
+            CatalogChange::SetHiddenModels {
+                provider_id,
+                model_ids,
+            } => {
+                if !providers.catalog_has_provider(provider_id)
+                    && !next.custom_providers.contains_key(provider_id)
+                {
+                    return Err(format!("unknown provider {provider_id}"));
+                }
+                for model_id in model_ids {
+                    let exists = providers.catalog_has_model(provider_id, model_id)
+                        || next
+                            .model_records
+                            .get(provider_id)
+                            .is_some_and(|records| records.contains_key(model_id))
+                        || next
+                            .custom_models
+                            .get(provider_id)
+                            .is_some_and(|models| models.contains(model_id));
+                    if !exists {
+                        return Err(format!("unknown model for {provider_id}: {model_id}"));
+                    }
+                }
+                if model_ids.is_empty() {
+                    next.hidden_models.remove(provider_id);
+                } else {
+                    next.hidden_models
+                        .insert(provider_id.clone(), model_ids.clone());
+                }
+            }
+        }
+    }
+    let applied = changes
+        .iter()
+        .map(|change| match change {
+            CatalogChange::UpsertModelRecord {
+                provider_id,
+                record,
+            } => {
+                format!("{}/{}", provider_id, record.id)
+            }
+            CatalogChange::UpsertCustomProvider { provider } => format!("provider {}", provider.id),
+            CatalogChange::RemoveCustomProvider { provider_id } => {
+                format!("provider {provider_id}")
+            }
+            CatalogChange::RemoveModelRecord {
+                provider_id,
+                model_id,
+            } => {
+                format!("{provider_id}/{model_id}")
+            }
+            CatalogChange::SetHiddenModels { provider_id, .. } => {
+                format!("hidden set for {provider_id}")
+            }
+        })
+        .collect();
+    providers
+        .settings
+        .replace_if_unchanged(baseline, next)
+        .map_err(|error| error.to_string())?;
+    Ok(applied)
+}
+
+// ---------------------------------------------------------------------------
+// The /models probe (read-only, best-effort)
+// ---------------------------------------------------------------------------
+
+/// `GET {baseUrl}/models` — the freshest model list a provider offers. The
+/// key, when present, rides the Authorization header and never the output.
+async fn probe_models(
+    base_url: &str,
+    api_dialect: &str,
+    key: Option<&str>,
+    cancellation: Option<CancellationToken>,
+) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client.get(&url);
+    if let Some(key) = key {
+        if api_dialect.starts_with("anthropic") {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            request = request.bearer_auth(key);
+        }
+    }
+    let response = if let Some(cancellation) = cancellation.as_ref() {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err("cancelled".into()),
+            response = request.send() => response.map_err(|error| error.to_string())?,
+        }
+    } else {
+        request.send().await.map_err(|error| error.to_string())?
+    };
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    const PROBE_BODY_CAP: usize = 1_048_576;
+    if response
+        .content_length()
+        .is_some_and(|length| length > PROBE_BODY_CAP as u64)
+    {
+        return Err("response body is too large".into());
+    }
+    let body_bytes = if let Some(cancellation) = cancellation.as_ref() {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err("cancelled".into()),
+            bytes = response.bytes() => bytes.map_err(|error| error.to_string())?,
+        }
+    } else {
+        response.bytes().await.map_err(|error| error.to_string())?
+    };
+    if body_bytes.len() > PROBE_BODY_CAP {
+        return Err("response body is too large".into());
+    }
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes)
+        .map_err(|error| format!("body is not JSON: {error}"))?;
+    Ok(parse_model_listing(&body))
+}
+
+/// Tolerant listing parse: OpenAI's `{"data":[{"id":…}]}` shape first, then
+/// `{"models":[…]}`, a bare array of ids or objects, and string values.
+fn parse_model_listing(body: &serde_json::Value) -> Vec<String> {
+    let entries = body
+        .get("data")
+        .or_else(|| body.get("models"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .or_else(|| body.as_array().cloned())
+        .unwrap_or_default();
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            serde_json::Value::String(id) => Some(id.clone()),
+            serde_json::Value::Object(object) => object
+                .get("id")
+                .or_else(|| object.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        })
+        .collect();
+    ids.retain(|id| !id.trim().is_empty());
+    ids.dedup();
+    ids
+}
+
+/// A provider's probe target: its transport base URL and dialect, from the
+/// definition (custom) or the first resolvable model (built-in).
+fn probe_target(providers: &ProviderAdapter, provider_id: &str) -> Option<(String, String)> {
+    if let Some(provider) = providers.settings.custom_provider(provider_id) {
+        return Some((provider.base_url, provider.default_api));
+    }
+    let first = providers.models_for(provider_id).first()?.clone();
+    let model = providers.resolve_model(provider_id, &first.id).ok()?;
+    Some((model.base_url, model.api))
+}
+
+fn probe_section(
+    providers: Arc<ProviderAdapter>,
+    provider_id: &str,
+    override_target: Option<(String, String)>,
+    allow_key: bool,
+    cancellation: Option<CancellationToken>,
+) -> BoxFuture<'static, String> {
+    let provider_id = provider_id.to_string();
+    Box::pin(async move {
+        let Some((base_url, dialect)) =
+            override_target.or_else(|| probe_target(&providers, &provider_id))
+        else {
+            return format!("probe {provider_id}: no transport to probe");
+        };
+        let key = if allow_key {
+            providers.credentials.reveal_key(&provider_id).await
+        } else {
+            None
+        };
+        match probe_models(&base_url, &dialect, key.as_deref(), cancellation).await {
+            Ok(ids) if ids.is_empty() => {
+                format!("probe {provider_id}: endpoint returned an empty listing")
+            }
+            Ok(ids) => {
+                let total = ids.len();
+                let shown: Vec<&str> = ids
+                    .iter()
+                    .take(PROBE_LISTING_CAP)
+                    .map(String::as_str)
+                    .collect();
+                let suffix = if total > PROBE_LISTING_CAP {
+                    format!(" … ({} total)", total)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "probe {provider_id} ({}): {}{}",
+                    host_of(&base_url),
+                    shown.join(", "),
+                    suffix
+                )
+            }
+            Err(problem) => format!(
+                "probe {provider_id}: unavailable ({problem}) — the provider may require \
+                 a key or not expose /models; continuing without it"
+            ),
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The setup-chat surface (model setup v2)
+// ---------------------------------------------------------------------------
+
+/// The fixed four-step workflow a `model-setup` chat runs. The toolset
+/// beside it (web tools + the proposal tool, nothing else) makes the
+/// procedure physically bounded: no file access means no wandering, and no
+/// apply tool means the write path stays with the review panel.
+pub(crate) fn setup_system_prompt(web_search: bool) -> String {
+    let search = if web_search {
+        "`web_search` to find pages, "
+    } else {
+        ""
+    };
+    format!(
+        "You are Holt's provider-catalog setup assistant, running inside a Settings dialog. \
+         Your only job is preparing provider catalog changes — you have no file access and \
+         cannot write anything. Follow this fixed procedure every time:\n\
+         1. Research: use {search}`web_fetch` to read the provider's official docs — model \
+         IDs, context window, max output tokens, input modalities, reasoning levels, pricing.\n\
+         2. Compare: call `model_proposal` in inquiry mode (`providerId`, plus `modelId` to \
+         dump an existing record as the replacement template) to see the local catalog and \
+         detect no-ops.\n\
+         3. Propose: call `model_proposal` with `changes` — complete records; copy \
+         api/compat/thinkingLevelMap from the dump when replacing an id and change only what \
+         differs; use set_hidden_models for retired ids.\n\
+         4. Stop: present a short summary table and STOP. The user reviews the proposal in \
+         the dialog's review panel and writes it there — you never apply anything, and you \
+         do not ask them to approve in chat.\n\
+         If the docs lack a field you need, say exactly what is missing and ask — never guess \
+         a model ID or a price. API keys are never handled here; they are entered in Settings."
+    )
+}
+
+/// The review panel's view of one change.
+fn change_view(change: &CatalogChange) -> serde_json::Value {
+    match change {
+        CatalogChange::UpsertModelRecord {
+            provider_id,
+            record,
+        } => serde_json::json!({
+            "action": "upsert_model_record",
+            "providerId": provider_id,
+            "modelId": record.id,
+            "record": record,
+        }),
+        CatalogChange::UpsertCustomProvider { provider } => serde_json::json!({
+            "action": "upsert_custom_provider",
+            "providerId": provider.id,
+            "provider": provider,
+        }),
+        CatalogChange::RemoveCustomProvider { provider_id } => serde_json::json!({
+            "action": "remove_custom_provider",
+            "providerId": provider_id,
+        }),
+        CatalogChange::RemoveModelRecord {
+            provider_id,
+            model_id,
+        } => serde_json::json!({
+            "action": "remove_model_record",
+            "providerId": provider_id,
+            "modelId": model_id,
+        }),
+        CatalogChange::SetHiddenModels {
+            provider_id,
+            model_ids,
+        } => serde_json::json!({
+            "action": "set_hidden_models",
+            "providerId": provider_id,
+            "modelIds": model_ids,
+        }),
+    }
+}
+
+/// The chat's stored proposals, newest first, as the review panel renders
+/// them: id, one-line summary, and the structured changes.
+pub(crate) fn proposal_views(chat: &ChatRuntime) -> Vec<serde_json::Value> {
+    chat.proposals
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .rev()
+        .map(|proposal| {
+            serde_json::json!({
+                "id": proposal.id,
+                "summary": proposal.summary,
+                "changes": proposal
+                    .changes
+                    .iter()
+                    .map(change_view)
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+/// Drops one stored proposal (the review panel's discard). Returns
+/// `false` when the chat holds no proposal under that id.
+pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
+    let mut proposals = chat
+        .proposals
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let before = proposals.len();
+    proposals.retain(|proposal| proposal.id != proposal_id);
+    proposals.len() != before
+}
+
+/// The review panel's write button (model setup v2): executes a stored
+/// proposal under the same revalidation the tool path used. The human
+/// approval is the button itself — no agent is involved.
+pub(crate) fn apply_stored(
+    providers: &ProviderAdapter,
+    chat: &ChatRuntime,
+    proposal_id: &str,
+) -> Result<Vec<String>, String> {
+    let proposal = stored_proposal(chat, proposal_id).ok_or_else(|| {
+        format!(
+            "no stored proposal {proposal_id:?} on this chat — proposals do not survive \
+             a restart; ask the assistant to propose again"
+        )
+    })?;
+    apply_changes(providers, &proposal.baseline, &proposal.changes)
+}
+
+// ---------------------------------------------------------------------------
+// The tools
+// ---------------------------------------------------------------------------
+
+fn text_result(text: String, details: serde_json::Value) -> Result<AgentToolResult, String> {
+    Ok(AgentToolResult {
+        content: vec![BlockContent::Text(TextContent {
+            text,
+            ..Default::default()
+        })],
+        details,
+        ..Default::default()
+    })
+}
+
+fn proposal_parameters_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "changes": {
+                "type": "array",
+                "description": "The exact catalog changes to prepare; omit to only inspect a provider",
+                "items": { "type": "object" }
+            },
+            "providerId": {
+                "type": "string",
+                "description": "Provider to inspect or probe (required when changes is omitted)"
+            },
+            "modelId": {
+                "type": "string",
+                "description": "When inspecting: dump this one model's complete record JSON"
+            },
+            "probe": {
+                "type": "boolean",
+                "description": "Also GET {baseUrl}/models live against the provider (read-only)"
+            }
+        }
+    })
+}
+
+async fn run_proposal_tool(
+    providers: Arc<ProviderAdapter>,
+    chat: Arc<ChatRuntime>,
+    params: &serde_json::Value,
+    cancellation: Option<CancellationToken>,
+) -> Result<AgentToolResult, String> {
+    let probe = params.get("probe").and_then(serde_json::Value::as_bool) == Some(true);
+    let provider_id = params
+        .get("providerId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    let raw_changes = params.get("changes").and_then(|value| value.as_array());
+    let Some(raw_changes) = raw_changes else {
+        // Inquiry mode: one model's complete record (the replacement
+        // template), or the provider listing (the no-op detection the GLM
+        // rehearsal made the first step).
+        let Some(provider_id) = provider_id else {
+            return Err("providerId is required when changes is omitted".into());
+        };
+        if let Some(model_id) = params
+            .get("modelId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            let mut lines = record_dump(&providers, &provider_id, model_id)?;
+            if probe {
+                lines.push(String::new());
+                lines.push(
+                    probe_section(
+                        providers.clone(),
+                        &provider_id,
+                        None,
+                        true,
+                        cancellation.clone(),
+                    )
+                    .await,
+                );
+            }
+            return text_result(
+                lines.join("\n"),
+                json!({ "inquiry": provider_id, "modelId": model_id }),
+            );
+        }
+        let mut lines = local_listing(&providers, &provider_id);
+        if probe {
+            lines.push(String::new());
+            lines.push(
+                probe_section(
+                    providers.clone(),
+                    &provider_id,
+                    None,
+                    true,
+                    cancellation.clone(),
+                )
+                .await,
+            );
+        }
+        return text_result(lines.join("\n"), json!({ "inquiry": provider_id }));
+    };
+    let mut changes = Vec::new();
+    for value in raw_changes {
+        changes.push(
+            parse_change(value)
+                .map_err(|problem| format!("changes[{}]: {problem}", changes.len()))?,
+        );
+    }
+    let baseline = providers.settings.snapshot();
+    let outcome = build_proposal(&providers, &changes)?;
+    let mut lines = match &outcome {
+        ProposalOutcome::Changes { lines, .. } => lines.clone(),
+        ProposalOutcome::NoChanges { lines } => lines.clone(),
+    };
+    match outcome {
+        ProposalOutcome::Changes { summary, .. } => {
+            let probe_providers: BTreeSet<String> = changes
+                .iter()
+                .map(|change| change.provider_id().to_string())
+                .collect();
+            if probe {
+                // A provider this batch defines has no stored transport
+                // yet — probe the planned definition, not the (absent)
+                // stored one.
+                let planned: std::collections::HashMap<String, (String, String)> = changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        CatalogChange::UpsertCustomProvider { provider } => Some((
+                            provider.id.clone(),
+                            (provider.base_url.clone(), provider.default_api.clone()),
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                lines.push(String::new());
+                for provider_id in probe_providers {
+                    let target = planned.get(&provider_id).cloned();
+                    lines.push(
+                        probe_section(
+                            providers.clone(),
+                            &provider_id,
+                            target,
+                            false,
+                            cancellation.clone(),
+                        )
+                        .await,
+                    );
+                }
+            }
+            let id = store_proposal(&chat, changes, summary.clone(), baseline);
+            lines.push(String::new());
+            lines.push(format!("proposalId: {id}"));
+            lines.push(
+                "Proposal stored. Present the diff above to the user, then call \
+                 model_apply with this proposalId in the same turn — that call opens the \
+                 approval bar and waits for the user's verdict; nothing is written until \
+                 they allow it."
+                    .into(),
+            );
+            text_result(
+                lines.join("\n"),
+                json!({ "proposalId": id, "summary": summary }),
+            )
+        }
+        ProposalOutcome::NoChanges { .. } => text_result(
+            format!("No changes needed:\n{}", lines.join("\n")),
+            json!({ "no_op": true }),
+        ),
+    }
+}
+
+/// One model's complete record as JSON — the template a replacement
+/// proposal copies, so `compat`/`thinkingLevelMap` never have to be guessed
+/// (or excavated from vendored sources).
+fn record_dump(
+    providers: &ProviderAdapter,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<Vec<String>, String> {
+    let bare = model_id
+        .strip_prefix(&format!("{provider_id}/"))
+        .unwrap_or(model_id);
+    let qualified = format!("{provider_id}/{bare}");
+    let model = providers
+        .resolve_model(provider_id, &qualified)
+        .map_err(|_| format!("unknown model: {qualified}"))?;
+    let hidden = providers
+        .settings
+        .hidden_models_for(provider_id)
+        .iter()
+        .any(|id| id == bare);
+    let mut lines = vec![format!(
+        "{qualified} (hidden: {hidden}) — the complete record as the catalog serves it:"
+    )];
+    lines.push(
+        serde_json::to_string_pretty(&model)
+            .map_err(|error| format!("record does not serialize: {error}"))?,
+    );
+    Ok(lines)
+}
+
+/// The provider's live catalog view, as the model sees it.
+fn local_listing(providers: &ProviderAdapter, provider_id: &str) -> Vec<String> {
+    let hidden: HashSet<String> = providers
+        .settings
+        .hidden_models_for(provider_id)
+        .into_iter()
+        .collect();
+    let mut lines = vec![format!("{provider_id}:")];
+    let rows = providers.models_for(provider_id);
+    if rows.is_empty() {
+        lines.push("  (no models)".into());
+        return lines;
+    }
+    for row in rows {
+        let mut flags = Vec::new();
+        if row.custom {
+            flags.push("custom");
+        }
+        if hidden.contains(
+            row.id
+                .strip_prefix(&format!("{provider_id}/"))
+                .unwrap_or(&row.id),
+        ) {
+            flags.push("hidden");
+        }
+        let window = row
+            .context_window
+            .map(|window| window.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        lines.push(format!(
+            "  {} — ctx {}{}",
+            row.id,
+            window,
+            if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", flags.join(", "))
+            }
+        ));
+    }
+    lines
+}
+
+pub(crate) fn create_model_proposal_tool(
+    providers: Arc<ProviderAdapter>,
+    chat: Arc<ChatRuntime>,
+) -> AgentTool {
+    AgentTool {
+        name: "model_proposal".into(),
+        label: "Model Proposal".into(),
+        description: PROPOSAL_DESCRIPTION.into(),
+        parameters: proposal_parameters_schema(),
+        constrained_sampling: None,
+        prepare_arguments: None,
+        execution_mode: None,
+        execute: Arc::new(
+            move |_tool_call_id: &str,
+                  params: &serde_json::Value,
+                  signal: Option<&CancellationToken>,
+                  _on_update: Option<&AgentToolUpdateCallback>| {
+                if signal.is_some_and(CancellationToken::is_cancelled) {
+                    return Box::pin(futures::future::ready(Err(
+                        "model_proposal cancelled".to_string()
+                    )))
+                        as BoxFuture<'static, Result<AgentToolResult, String>>;
+                }
+                let providers = providers.clone();
+                let chat = chat.clone();
+                let params = params.clone();
+                let cancellation = signal.cloned();
+                Box::pin(
+                    async move { run_proposal_tool(providers, chat, &params, cancellation).await },
+                ) as BoxFuture<'static, Result<AgentToolResult, String>>
+            },
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter(data_dir: &std::path::Path) -> ProviderAdapter {
+        ProviderAdapter::new(
+            Arc::new(crate::credentials::HoltCredentialStore::load(data_dir).unwrap()),
+            Arc::new(crate::provider_settings::ProviderSettingsStore::load(data_dir).unwrap()),
+            crate::provider_store::load(data_dir),
+        )
+    }
+
+    fn record(provider: &str, id: &str, base_url: &str) -> CoreModel {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "api": "openai-completions",
+            "provider": provider,
+            "baseUrl": base_url,
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 1.0, "output": 2.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+            "contextWindow": 200_000,
+            "maxTokens": 8_192,
+        }))
+        .unwrap()
+    }
+
+    fn change(provider: &str, id: &str, base_url: &str) -> CatalogChange {
+        CatalogChange::UpsertModelRecord {
+            provider_id: provider.to_string(),
+            record: Box::new(record(provider, id, base_url)),
+        }
+    }
+
+    #[test]
+    fn changes_parse_from_tool_arguments() {
+        let parsed = parse_change(&serde_json::json!({
+            "action": "upsert_model_record",
+            "providerId": "openai",
+            "record": record("openai", "gpt-x", "https://api.openai.com/v1"),
+        }))
+        .unwrap();
+        assert!(matches!(parsed, CatalogChange::UpsertModelRecord { .. }));
+
+        let hidden = parse_change(&serde_json::json!({
+            "action": "set_hidden_models",
+            "providerId": "kimi",
+            "modelIds": ["k2", "k2.5"],
+        }))
+        .unwrap();
+        assert!(matches!(hidden, CatalogChange::SetHiddenModels { .. }));
+
+        assert!(parse_change(&serde_json::json!({ "action": "explode" })).is_err());
+        assert!(parse_change(&serde_json::json!({ "action": "upsert_model_record" })).is_err());
+    }
+
+    #[test]
+    fn a_new_record_proposes_and_a_repeat_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let changes = vec![change(
+            "openai",
+            "gpt-via-proposal",
+            "https://api.openai.com/v1",
+        )];
+        let ProposalOutcome::Changes { lines, summary } =
+            build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines[0].contains("+ openai/gpt-via-proposal"));
+        assert!(summary.contains("openai"));
+
+        // Applying it for real, then re-proposing the same thing: no-op.
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        let ProposalOutcome::NoChanges { lines } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a no-op");
+        };
+        assert!(lines[0].contains("already exactly as proposed"));
+        // And apply rejects the stale batch.
+        assert!(apply_changes(&providers, &providers.settings.snapshot(), &changes).is_err());
+    }
+
+    #[test]
+    fn an_approved_proposal_cannot_overwrite_a_newer_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let proposed = change("openai", "gpt-cas", "https://api.openai.com/v1");
+        let baseline = providers.settings.snapshot();
+        assert!(matches!(
+            build_proposal(&providers, std::slice::from_ref(&proposed)).unwrap(),
+            ProposalOutcome::Changes { .. }
+        ));
+
+        let mut newer = record("openai", "gpt-cas", "https://api.openai.com/v1");
+        newer.context_window = 300_000;
+        providers
+            .settings
+            .upsert_model_record("openai", newer.clone())
+            .unwrap();
+
+        let error = apply_changes(&providers, &baseline, &[proposed]).unwrap_err();
+        assert!(error.contains("changed since this proposal"));
+        assert_eq!(
+            providers
+                .resolve_model("openai", "openai/gpt-cas")
+                .unwrap()
+                .context_window,
+            newer.context_window
+        );
+    }
+
+    #[test]
+    fn a_base_url_host_change_is_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let first = providers.models_for("openai")[0].clone();
+        let bare = first.id.strip_prefix("openai/").unwrap().to_string();
+        let replacement = {
+            let mut record = record("openai", &bare, "https://evil.example/v1");
+            record.context_window = 1;
+            record
+        };
+        let changes = vec![CatalogChange::UpsertModelRecord {
+            provider_id: "openai".into(),
+            record: Box::new(replacement),
+        }];
+        let ProposalOutcome::Changes { lines, summary } =
+            build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines[0].contains("API key destination changes"));
+        assert!(summary.contains("baseUrl host changes"));
+    }
+
+    #[test]
+    fn a_record_for_an_undefined_provider_is_rejected_unless_the_batch_defines_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let changes = vec![change("ghost", "ghost-1", "https://ghost.example/v1")];
+        assert!(
+            build_proposal(&providers, &changes)
+                .unwrap_err()
+                .contains("unknown provider")
+        );
+
+        let provider = CustomProvider {
+            id: "ghost".to_string(),
+            name: "Ghost".to_string(),
+            base_url: "https://ghost.example/v1".to_string(),
+            headers: None,
+            default_api: "openai-completions".to_string(),
+        };
+        let changes = vec![
+            CatalogChange::UpsertCustomProvider {
+                provider: provider.clone(),
+            },
+            change("ghost", "ghost-1", "https://ghost.example/v1"),
+        ];
+        let ProposalOutcome::Changes { lines, .. } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines.iter().any(|line| line.contains("+ provider ghost")));
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        assert!(providers.is_eligible("ghost"));
+        assert!(providers.has_model("ghost", "ghost-1"));
+    }
+
+    #[test]
+    fn hidden_changes_diff_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let first = providers.models_for("openai")[0].clone();
+        let bare = first.id.strip_prefix("openai/").unwrap().to_string();
+
+        let mut ids = BTreeSet::new();
+        ids.insert(bare.clone());
+        let changes = vec![CatalogChange::SetHiddenModels {
+            provider_id: "openai".into(),
+            model_ids: ids.clone(),
+        }];
+        let ProposalOutcome::Changes { lines, .. } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines[0].contains("hide"));
+
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        assert!(
+            !providers
+                .models_for("openai")
+                .iter()
+                .any(|row| row.id == first.id)
+        );
+
+        // Re-proposing the same set: no-op. Unhiding (empty set) works.
+        let ProposalOutcome::NoChanges { .. } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a no-op");
+        };
+        let unhide = vec![CatalogChange::SetHiddenModels {
+            provider_id: "openai".into(),
+            model_ids: BTreeSet::new(),
+        }];
+        let ProposalOutcome::Changes { lines, .. } = build_proposal(&providers, &unhide).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines[0].contains("unhide"));
+        apply_changes(&providers, &providers.settings.snapshot(), &unhide).unwrap();
+        assert!(
+            providers
+                .models_for("openai")
+                .iter()
+                .any(|row| row.id == first.id)
+        );
+    }
+
+    #[test]
+    fn the_record_dump_is_the_replacement_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let first = providers.models_for("openai")[0].clone();
+        let bare = first.id.strip_prefix("openai/").unwrap().to_string();
+
+        // The dump round-trips: its JSON parses back into the record the
+        // catalog serves, qualified or bare id alike.
+        let dump_checks = [first.id.clone(), bare.clone()];
+        for id in dump_checks {
+            let lines = record_dump(&providers, "openai", &id).unwrap();
+            assert!(lines[0].contains("hidden: false"));
+            let dumped: CoreModel = serde_json::from_str(&lines[1]).unwrap();
+            assert_eq!(
+                dumped,
+                providers.resolve_model("openai", &first.id).unwrap()
+            );
+        }
+
+        // Hidden models still dump (they stay resolvable), unknown ids error.
+        let mut hidden = std::collections::BTreeSet::new();
+        hidden.insert(bare.clone());
+        providers
+            .settings
+            .set_hidden_models("openai", hidden)
+            .unwrap();
+        let lines = record_dump(&providers, "openai", &bare).unwrap();
+        assert!(lines[0].contains("hidden: true"));
+        assert!(record_dump(&providers, "openai", "gpt-nope").is_err());
+    }
+
+    #[test]
+    fn listing_parsers_stay_tolerant() {
+        assert_eq!(
+            parse_model_listing(&serde_json::json!({ "data": [{ "id": "a" }, { "id": "b" }] })),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            parse_model_listing(&serde_json::json!({ "models": ["x", "y"] })),
+            vec!["x", "y"]
+        );
+        assert_eq!(
+            parse_model_listing(&serde_json::json!([{ "name": "z" }])),
+            vec!["z"]
+        );
+        assert!(parse_model_listing(&serde_json::json!({ "error": true })).is_empty());
+    }
+}

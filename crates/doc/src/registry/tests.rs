@@ -267,6 +267,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
             reasoning: None,
             model_options: Default::default(),
             permission_mode: PermissionMode::default(),
+            scope: Default::default(),
         }),
         last_message_preview: None,
         last_message_at: None,

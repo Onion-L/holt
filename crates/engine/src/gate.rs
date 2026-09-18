@@ -26,6 +26,16 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
     matches!(name, "write" | "edit" | "bash")
 }
 
+/// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
+/// permission mode (ADR-0029): a catalog write steers where the API key is
+/// sent — full-access means "don't audit my files", not "don't audit my
+/// key's destination". Grants never exempt them (always-allow records
+/// nothing for these tools), and auto-review's model pass never substitutes
+/// for the human verdict.
+pub(crate) fn forces_approval(name: &str) -> bool {
+    name == "model_apply"
+}
+
 /// The denial reason when the user denies without a written note. A noted
 /// denial uses the note verbatim — it is addressed to the model.
 pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
@@ -331,18 +341,22 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
             Box::pin(async move {
-                if !is_mutating_tool(&ctx.tool_call.name) {
+                let forced = forces_approval(&ctx.tool_call.name);
+                if !is_mutating_tool(&ctx.tool_call.name) && !forced {
                     return None;
                 }
                 // Grants are checked BEFORE the gatekeeper (ADR-0014), so
                 // they hold across mode switches; only a mode with no
                 // gatekeeper (full-access) records no artifacts at all.
+                // Forced tools (ADR-0029) skip grants entirely — every
+                // apply asks the user, no session exemption exists.
                 let arguments = ctx
                     .args
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();
-                if mode != PermissionMode::FullAccess
+                if !forced
+                    && mode != PermissionMode::FullAccess
                     && chat
                         .grants
                         .lock()
@@ -363,7 +377,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                     );
                     return None;
                 }
-                if mode == PermissionMode::AutoReview {
+                if !forced && mode == PermissionMode::AutoReview {
                     // No human, no Approval: the chat's own model judges,
                     // and the chip settles straight to its verdict.
                     return match run_review_pass(
@@ -420,7 +434,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                         ReviewOutcome::Cancelled => None,
                     };
                 }
-                if mode != PermissionMode::ConfirmChanges {
+                if !forced && mode != PermissionMode::ConfirmChanges {
                     return None;
                 }
                 let approval_id = uuid::Uuid::new_v4().to_string();
@@ -436,7 +450,15 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                     ToolGate {
                         origin: None,
                         id: approval_id.clone(),
-                        state: ToolGateState::Pending { note: None },
+                        // A forced approval carries what the user is
+                        // judging — the stored proposal's summary (ADR-0029).
+                        state: ToolGateState::Pending {
+                            note: forced
+                                .then(|| {
+                                    crate::tools::model_setup::approval_note(&chat, &arguments)
+                                })
+                                .flatten(),
+                        },
                     },
                 );
                 // The wait: a verdict through the RPC, or the Turn's end —
@@ -470,7 +492,9 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                 match verdict {
                     ApprovalVerdict::Allow | ApprovalVerdict::AlwaysAllow => {
                         // An always-allow also records the session grant —
-                        // in-memory, chat-scoped, gone on restart.
+                        // in-memory, chat-scoped, gone on restart. Forced
+                        // tools record nothing: their next call asks again
+                        // (GateGrants only knows the write/edit/bash trio).
                         if matches!(verdict, ApprovalVerdict::AlwaysAllow) {
                             chat.grants
                                 .lock()
@@ -700,6 +724,23 @@ mod tests {
         assert!(!is_mutating_tool("Bash"));
         assert!(!is_mutating_tool("bash_safe"));
         assert!(!is_mutating_tool("writefile"));
+    }
+
+    #[test]
+    fn only_model_apply_forces_the_human_gatekeeper() {
+        // The read half of the pair is exactly that — read-only.
+        assert!(!forces_approval("model_proposal"));
+        assert!(!forces_approval("write"));
+        assert!(!forces_approval("bash"));
+        assert!(forces_approval("model_apply"));
+        assert!(!forces_approval("model_apply2"));
+        // Grants never pass a forced tool, whatever was recorded.
+        let grants = GateGrants::default();
+        assert!(!grants.passes(
+            "model_apply",
+            &serde_json::json!({ "proposalId": "p" }),
+            "/repo"
+        ));
     }
 
     #[test]

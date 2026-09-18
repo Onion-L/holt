@@ -72,6 +72,18 @@ impl Space {
     }
 }
 
+/// The chat's execution surface. A normal chat runs the full agent; a
+/// `model-setup` chat runs the fixed Settings-driven provider-catalog flow
+/// (model setup v2): a file-free toolset and a workflow prompt, with writes
+/// applied only through the review panel's RPC.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChatScope {
+    #[default]
+    Normal,
+    ModelSetup,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfig {
@@ -85,6 +97,10 @@ pub struct ChatConfig {
     /// readable — and a config without the field defaults to confirm-changes.
     #[serde(default, alias = "sandbox")]
     pub permission_mode: PermissionMode,
+    /// The chat's execution surface (model setup v2). Absent on every
+    /// stored config reads as `normal`.
+    #[serde(default)]
+    pub scope: ChatScope,
 }
 
 /// The sidebar title ceiling shared by the first-line fallback, manual

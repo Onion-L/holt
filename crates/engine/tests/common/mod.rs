@@ -211,6 +211,16 @@ impl ScriptedProvider {
     /// its Turn (the request's trailing user message — the loop replays the
     /// whole history, so the prompt routes every round of that Turn). Chats
     /// running at once must draw from their own sequences; the shared
+    /// Appends to the shared script — the two-Turn pattern where a later
+    /// round's arguments embed an id only the earlier round can produce
+    /// (model_proposal → model_apply).
+    pub fn push(&self, reply: ScriptedReply) {
+        self.script
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(reply);
+    }
+
     /// `script` stays the fallback for single-chat tests.
     pub fn with_chat_script(self, prompt: &str, replies: Vec<ScriptedReply>) -> Self {
         self.chats

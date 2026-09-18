@@ -1,0 +1,376 @@
+//! The model-setup surface at the RPC seam (design-v2): the fixed flow runs
+//! in a dedicated `model-setup` chat whose toolset touches no files —
+//! `model_proposal` is the only catalog capability, and the write path is
+//! the review panel's `ApplyModelProposal` RPC, never an agent tool.
+//! Normal chats mount neither tool; an apply is a harmless no-op error.
+
+mod common;
+
+use common::{Fixture, ScriptedProvider, ScriptedReply};
+use holt_rpc::{RpcReply, RpcService, methods};
+
+/// One complete, servable record — the fixture every scripted proposal
+/// carries.
+fn record_json(provider: &str, id: &str, base_url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": id,
+        "api": "openai-completions",
+        "provider": provider,
+        "baseUrl": base_url,
+        "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 1.0, "output": 2.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+        "contextWindow": 321_000,
+        "maxTokens": 16_384,
+    })
+}
+
+fn propose_call(call_id: &str, provider: &str, model: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        call_id,
+        "model_proposal",
+        serde_json::json!({
+            "changes": [{
+                "action": "upsert_model_record",
+                "providerId": provider,
+                "record": record_json(provider, model, "https://api.openai.com/v1"),
+            }],
+        }),
+    )
+}
+
+/// Creates the singleton setup chat the dialog drives.
+async fn ensure_setup_chat(
+    engine: &holt_engine::LocalEngine,
+    provider: &str,
+    model: &str,
+) -> String {
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::ENSURE_MODEL_SETUP_CHAT,
+            serde_json::json!({ "provider": provider, "model": model }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("EnsureModelSetupChat did not return a value");
+    };
+    reply["chatId"].as_str().unwrap().to_string()
+}
+
+fn collect_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text.clone()),
+        serde_json::Value::Array(items) => items.iter().for_each(|item| collect_strings(item, out)),
+        serde_json::Value::Object(map) => map.values().for_each(|item| collect_strings(item, out)),
+        _ => {}
+    }
+}
+
+fn extract_proposal_id(text: &str) -> Option<String> {
+    let tail = text.split("proposalId: ").nth(1)?;
+    let id: String = tail
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+        .collect();
+    (id.len() == 36).then_some(id)
+}
+
+/// Runs one propose Turn on the setup chat and lifts the stored proposal id.
+async fn propose_and_extract_id(
+    engine: &holt_engine::LocalEngine,
+    fixture: &Fixture,
+    chat_id: &str,
+) -> String {
+    let (_, mut sessions) = common::subscribe(engine, chat_id).await;
+    common::run_prompt(engine, chat_id, &fixture.cwd(), "add it").await;
+    common::wait_for_session_status(&mut sessions, chat_id, "idle").await;
+    let snapshot = common::transcript_snapshot(engine, chat_id).await;
+    let mut strings = Vec::new();
+    collect_strings(&snapshot, &mut strings);
+    strings
+        .iter()
+        .find_map(|text| extract_proposal_id(text))
+        .expect("the proposal tool output carries a proposalId")
+}
+
+async fn list_models(engine: &holt_engine::LocalEngine, provider: &str) -> Vec<serde_json::Value> {
+    let RpcReply::Value(models) = engine
+        .handle(
+            methods::LIST_MODELS,
+            serde_json::json!({ "providerId": provider }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListModels did not return a value");
+    };
+    models.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_setup_chat_proposes_and_the_review_rpc_applies() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        propose_call("call-1", "openai", "gpt-via-setup"),
+        ScriptedReply::text("proposed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
+
+    // The review panel's data: structured changes, newest first.
+    let RpcReply::Value(proposals) = engine
+        .handle(
+            methods::LIST_MODEL_PROPOSALS,
+            serde_json::json!({ "chatId": setup_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListModelProposals did not return a value");
+    };
+    let proposals = proposals.as_array().unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["id"], id.as_str());
+    assert!(proposals[0]["summary"].as_str().unwrap().contains("openai"));
+    assert_eq!(proposals[0]["changes"][0]["action"], "upsert_model_record");
+    assert_eq!(proposals[0]["changes"][0]["modelId"], "gpt-via-setup");
+
+    // Nothing applied yet: the proposal is stored, not written.
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .all(|row| row["id"] != "openai/gpt-via-setup")
+    );
+
+    // The write path is the button, and it lands live.
+    let RpcReply::Value(applied) = engine
+        .handle(
+            methods::APPLY_MODEL_PROPOSAL,
+            serde_json::json!({ "chatId": setup_id, "proposalId": id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ApplyModelProposal did not return a value");
+    };
+    assert!(
+        applied["applied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row == "openai/gpt-via-setup")
+    );
+    let row = list_models(&engine, "openai")
+        .await
+        .into_iter()
+        .find(|row| row["id"] == "openai/gpt-via-setup")
+        .expect("the applied record is live");
+    assert_eq!(row["contextWindow"], 321_000);
+}
+
+#[tokio::test]
+async fn a_stale_proposal_is_rejected_by_the_review_rpc() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        propose_call("call-1", "openai", "gpt-stale"),
+        ScriptedReply::text("proposed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
+
+    // The catalog moves under the proposal: the same record lands via RPC.
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            serde_json::json!({
+                "providerId": "openai",
+                "record": record_json("openai", "gpt-stale", "https://api.openai.com/v1"),
+            }),
+        )
+        .await
+        .unwrap();
+
+    let reply = engine
+        .handle(
+            methods::APPLY_MODEL_PROPOSAL,
+            serde_json::json!({ "chatId": setup_id, "proposalId": id }),
+        )
+        .await;
+    let Err(error) = reply else {
+        panic!("the stale apply must fail");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("catalog changed since this proposal"),
+        "the staleness rejection surfaced: {error}"
+    );
+    // The RPC-written record is intact — the stale apply changed nothing.
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .any(|row| row["id"] == "openai/gpt-stale")
+    );
+}
+
+#[tokio::test]
+async fn unknown_proposals_and_chats_are_rejected() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+
+    assert!(
+        engine
+            .handle(
+                methods::APPLY_MODEL_PROPOSAL,
+                serde_json::json!({ "chatId": setup_id, "proposalId": "not-a-proposal" }),
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .handle(
+                methods::LIST_MODEL_PROPOSALS,
+                serde_json::json!({ "chatId": "../escape" }),
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn the_setup_chat_is_a_singleton_that_tracks_the_picked_model() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    common::setup_chat(&engine, "chat-1").await;
+
+    let first = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    // A different picked model updates the same chat, not a second one.
+    let second = ensure_setup_chat(&engine, "zai-coding-cn", "zai-coding-cn/glm-5.3").await;
+    assert_eq!(first, second);
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::ENSURE_MODEL_SETUP_CHAT,
+            serde_json::json!({ "provider": "openai", "model": "openai/gpt-5.4" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("EnsureModelSetupChat did not return a value");
+    };
+    assert_eq!(reply["chatId"].as_str().unwrap(), first);
+}
+
+#[tokio::test]
+async fn a_discarded_proposal_cannot_be_applied() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        propose_call("call-1", "openai", "gpt-discarded"),
+        ScriptedReply::text("proposed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
+
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::DISCARD_MODEL_PROPOSAL,
+            serde_json::json!({ "chatId": setup_id, "proposalId": id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("DiscardModelProposal did not return a value");
+    };
+    assert_eq!(reply["discarded"], true);
+    // The list is empty and the write path refuses the ghost.
+    let RpcReply::Value(proposals) = engine
+        .handle(
+            methods::LIST_MODEL_PROPOSALS,
+            serde_json::json!({ "chatId": setup_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListModelProposals did not return a value");
+    };
+    assert!(proposals.as_array().unwrap().is_empty());
+    assert!(
+        engine
+            .handle(
+                methods::APPLY_MODEL_PROPOSAL,
+                serde_json::json!({ "chatId": setup_id, "proposalId": id }),
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .all(|row| row["id"] != "openai/gpt-discarded")
+    );
+}
+
+#[tokio::test]
+async fn normal_chats_reject_the_model_setup_tools() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "model_apply",
+            serde_json::json!({ "proposalId": "whatever" }),
+        ),
+        ScriptedReply::tool_call(
+            "call-2",
+            "model_proposal",
+            serde_json::json!({ "providerId": "openai" }),
+        ),
+        ScriptedReply::text("done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "set it up").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // Neither tool is mounted on a normal chat: the calls settle as error
+    // tool results (no gate, no proposal, no write), and the model reads
+    // the not-found errors.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    for call in ["call-1", "call-2"] {
+        let empty = Vec::new();
+        let part = snapshot["reset"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| entry["parts"].as_array().unwrap_or(&empty))
+            .find(|part| part["id"] == call)
+            .expect("the tool part exists");
+        assert_eq!(part["isError"], true, "{call} must settle as an error");
+    }
+    let requests = provider.requests();
+    assert!(requests.iter().any(|request| {
+        common::summarize(&request.messages)
+            .iter()
+            .any(|row| row.contains("Tool model_apply not found"))
+    }));
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .all(|row| row["id"] != "openai/gpt-via-setup")
+    );
+}

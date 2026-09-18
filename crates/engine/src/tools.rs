@@ -9,6 +9,7 @@
 
 mod grep;
 mod ls;
+pub(crate) mod model_setup;
 mod read_chat;
 #[cfg(test)]
 pub(crate) mod test_http;
@@ -685,6 +686,7 @@ pub(crate) fn execution_tools_for_model(
     tools
 }
 
+pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use read_chat::create_read_chat_tool;
 pub use web_search::{SearchBackend, SearchHit};
 
@@ -788,6 +790,8 @@ fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool 
                 create_read_tool(ReadToolOptions {
                     auto_resize_images: Some(true),
                     image_processor: Some(processor),
+                    max_lines: None,
+                    max_bytes: None,
                 }),
                 &context,
             );

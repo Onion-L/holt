@@ -270,9 +270,10 @@ impl LastReport {
 }
 
 /// The occupancy denominator's inputs. `by_model` is the engine's catalog —
-/// every model it can run, keyed by wire id — where a custom row maps to
-/// `None` by contract: its window is a cloned template's guess, and an
-/// unknown window must read as unknown rather than as a number. `selected`
+/// every model it can run, keyed by wire id — where a bare custom id maps
+/// to `None` by contract: its window is a cloned template's guess, and an
+/// unknown window must read as unknown rather than as a number (a live
+/// model record carries its own window). `selected`
 /// is the chat's own selection, which answers while its queue holds nothing
 /// next.
 #[derive(Clone, Debug, Default)]
@@ -284,7 +285,7 @@ pub(crate) struct OccupancyWindows {
 impl OccupancyWindows {
     /// The window of the model the chat runs NEXT: the queue's item when it
     /// has one, else the chat's selection. `None` is "unknown window" — a
-    /// custom row, or a model no catalog row covers — and the UI shows
+    /// bare custom id, or a model no catalog row covers — and the UI shows
     /// absolute tokens instead of a percentage.
     fn window_for(&self, queue_model: Option<&str>) -> Option<u64> {
         let wire = queue_model.or(self.selected.as_deref())?;
@@ -315,9 +316,10 @@ pub(crate) fn seed_occupancy(
 }
 
 /// Move the chat's selection — the denominator's answer while the queue
-/// holds nothing next. The catalog half needs no refresh: a builtin window
-/// never moves within a process, and a custom row is unknown by contract
-/// whether or not its settings entry is still there.
+/// holds nothing next. The catalog half refreshes when a usage watch
+/// (re)opens: a builtin window never moves within a process, a bare custom
+/// id is unknown whether or not its settings entry is still there, and a
+/// live record's window is whatever the seed captured.
 pub(crate) fn set_selected_model(chat: &ChatRuntime, selected: Option<String>) {
     let changed = {
         let mut windows = chat.usage_windows.lock().unwrap_or_else(|e| e.into_inner());

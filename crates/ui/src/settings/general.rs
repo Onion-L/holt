@@ -1841,6 +1841,7 @@ mod tests {
                     configured: false,
                 },
             ],
+            custom: false,
         }];
         let configured = configured_providers(&providers);
         assert_eq!(configured.len(), 1);
@@ -1891,6 +1892,7 @@ mod tests {
                 name: id.into(),
                 configured,
             }],
+            custom: false,
         }
     }
 

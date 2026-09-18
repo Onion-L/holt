@@ -397,7 +397,9 @@ async fn execute(
                 invocation: None,
                 permission_mode: d.permission_mode,
                 plan_mode: false,
+                setup_scope: false,
                 search_backend: d.search_backend,
+                providers: None,
                 stream_fn: Some(stream_fn),
             })
             .await,

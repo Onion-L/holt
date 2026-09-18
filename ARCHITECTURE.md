@@ -23,7 +23,7 @@ contract; another backend can slot in behind the same trait.
 | --- | --- |
 | `apps/holt` | The binary: logging setup + `holt_ui::run_app`. No CLI. |
 | `crates/ui` | The whole gpui viewport (~97k lines): shell, sidebar, transcript, composer, terminal/diff panes, settings, themes. Agent-agnostic — it renders `MessagePart`s from `holt-doc`, never raw agent events. |
-| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module and the device-level usage aggregate behind `UsageStats` in its `usage_stats` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
+| `crates/engine` | The backend adapter. `LocalEngine` serves the current in-memory chat/session/transcript runtime, discovers providers and models through `pi-core-rs` overlaid with the user's `provider-store.json` (one merged catalog built at boot) topped by the live settings layer in `provider-settings.json` (model records, custom providers, hidden ids — ADR-0028, read per call), owns credential persistence and the title-task settings record (ADR-0012) plus the one-shot Title task in its `title_task` module, runs `pi-core-rs::agent_loop`, and serves the git capability (branches, checkout diffs, history, fetch) on git2 — all git2 access confined to its `git` module — plus the skills catalog (ADR-0005/0006) in its `skills` module, workspace path search (`SearchFiles`) in its `path_search` module, the per-chat History record and Compaction (ADR-0010/0011) in its `history`/`compaction` modules, the per-chat usage ledger in its `usage` module and the device-level usage aggregate behind `UsageStats` in its `usage_stats` module, the Turn change-set baseline, frozen result, and durable per-Turn history (ADR-0024) in its `turn_changes`/`turn_change_watch`/`turn_change_store` modules, and a test-only scripted-provider seam (`EngineConfig::stream_fn`). Unsupported surfaces (worktrees, change requests, uploads, sync/account) still return empty watches, static stubs, or unknown-method replies. |
 | `crates/rpc` | The typed control plane: framing, `RpcClient` (call/subscribe), `RpcService` dispatch, memory transport. Method names live in `rpc::methods` — that module is the full UI↔backend contract. |
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, the per-chat usage frame (`ChatUsage`: ledger totals plus occupancy), and the device-level usage aggregate (`UsageStatsReply`). |
 | `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
@@ -45,7 +45,17 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Provider configuration: `ListProviders`, `SaveProviderKey`,
   `RevealProviderKey`, `RemoveProviderKey`, `AddProviderModel`,
   `RemoveProviderModel` (drops a user-added model; built-in catalog ids
-  no-op).
+  no-op), plus the live catalog writes (ADR-0028): `SaveModelRecord` /
+  `RemoveModelRecord` (a complete record replaces a same-id entry outright),
+  `SaveCustomProvider` / `RemoveCustomProvider` (user-defined providers),
+  `SetHiddenModels` (listings only — resolution keeps working),
+  `ListHiddenModels` (the greyed ids the Settings page unhides), and
+  `ResetProviderCatalog` (per-provider, or global when `providerId` is
+  absent). Every write takes effect without a restart. The model-setup
+  dialog's surface rides the same store: `EnsureModelSetupChat`
+  (finds/creates the singleton hidden setup chat), `ListModelProposals`,
+  `ApplyModelProposal` (the review panel's write button), and
+  `DiscardModelProposal` (its discard button).
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
@@ -100,7 +110,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   separately-configured reviewer): a pass executes, a rejection blocks
   with the reviewer's reason, an unclear or failed review rejects
   closed, and no Approval is created. Reads, grep, the web tools, and
-  full-access never gate. The gate rides the agent loop's
+  full-access never gate. One invariant carries from ADR-0029/0030: should
+  an apply-shaped tool ever be mounted again, `model_apply`'s name always
+  meets the human gatekeeper — full-access included, no session grant
+  passes it, and auto-review never substitutes — because a catalog write
+  steers where the API key is sent. The gate rides the agent loop's
   `before_tool_call` hook (no upstream changes); the Title task and
   Compaction mount no tools and never see it.
 - Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
@@ -132,9 +146,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   skill roots — project `.agents/skills` at the cwd, personal
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
   entries with source root, shadowed entries, and load diagnostics).
-  `ListModels` rows carry `contextWindow`: builtin rows report the provider
-  catalog's real window, custom rows null (the only window the engine holds
-  for them is the cloned template's guess), and clients degrade to absolute
+  `ListModels` rows carry `contextWindow`: builtin rows and live model
+  records report the catalog's real window, bare custom-id rows null (the
+  only window the engine holds for them is the cloned template's guess),
+  and clients degrade to absolute
   token counts when it is missing.
 - Path search: `SearchFiles` (`{query, chatId|spaceId}`) fuzzy-matches files
   and folders under the chat's cwd (or the space's path before a chat
@@ -399,9 +414,23 @@ and `SaveProviderKey` rejects them.
 `ListProviders` groups sibling built-ins that share a `pi-core-rs`
 `organization_id` (e.g. `minimax` + `minimax-cn`) into one row per
 organization; the row's `variants` carry the concrete provider ids that the
-key, model-list, and run RPCs address. Provider-scoped custom model IDs added
-from Settings live in `provider-settings.json`; they are merged into
-`ListModels` and resolved through the provider's existing API transport.
+key, model-list, and run RPCs address. User-defined providers stand alone —
+one row each after the built-ins, `custom`-flagged in the reply, api_key-
+shaped by definition, and with a reserved-id check against the boot catalog.
+
+The catalog answers from three layers (ADR-0028): the compiled base under
+the hand-edited `provider-store.json` overlay under live user entries in
+`provider-settings.json`. The live layer holds bare custom model IDs added
+from Settings (metadata borrowed from a template — window withheld, image
+capability unknown), complete model records (first-class metadata; a
+same-id record replaces the catalog entry outright, and its own `baseUrl`
+is how an endpoint fix rides the request path), custom provider definitions,
+and hidden model ids (excluded from listings; chats already configured with
+one keep resolving it). Everything in the live layer is read per call — a
+write is visible immediately — and per-entry validation drops a bad entry
+with a log line while an unparsable file still fails startup. The live
+layer is also what `ResetProviderCatalog` deletes: reset means the compiled
+catalog under the hand-edited overlay, and credentials survive it.
 
 Skills (ADR-0005/0006) ride the catalog above: every run whose catalog is
 non-empty appends a metadata-only `<available_skills>` block to the system
@@ -432,7 +461,22 @@ the toolset (not erroring) when none is configured. Neither enters the
 ADR-0014 gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
 Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
-planning Turns excepted, since they run the read-only toolset.
+planning Turns excepted, since they run the read-only toolset. The model
+setup surface (ADR-0030) lives in its own chat, not here: normal chats
+mount no catalog tool at all — their catalog-write capability is nil. A
+hidden `model-setup` chat (`ChatConfig.scope`, found/created by
+`EnsureModelSetupChat`) runs the fixed four-step workflow under a dedicated
+system prompt, with a toolset of exactly the web tools plus the read-only
+`model_proposal` (validates an exact catalog change against the local
+catalog — no-op detection, deterministic checks, an optional read-only
+`GET {baseUrl}/models` probe using the stored key, single-record dumps as
+replacement templates — then stores it engine-side and returns a proposal
+id). No file tools, no delegation, and no apply tool: the only write path
+is the Settings review panel's `ApplyModelProposal` RPC, which
+re-validates and transactionally applies a stored proposal — the button is
+the human approval (`ListModelProposals` feeds the panel). Proposals live
+per chat, in memory, capped; a restart drops them and the assistant
+re-proposes. Keys never enter the path — Settings is the only key entry.
 
 ## Data on disk
 

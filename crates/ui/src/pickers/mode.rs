@@ -397,6 +397,7 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 permission_mode: mode,
+                scope: Default::default(),
             }),
             last_message_preview: None,
             last_message_at: None,

@@ -57,6 +57,10 @@ pub struct Provider {
     /// True when any variant has a stored key.
     pub configured: bool,
     pub variants: Vec<ProviderVariant>,
+    /// True when the row is a user-defined provider — Settings-deletable,
+    /// never part of the compiled catalog. Builtin rows are not.
+    #[serde(default)]
+    pub custom: bool,
 }
 
 impl Provider {
@@ -72,6 +76,7 @@ impl Provider {
                 abbreviation: self.abbreviation.clone(),
                 configured: variant.configured,
                 variants: Vec::new(),
+                custom: self.custom,
             })
             .collect()
     }
@@ -189,16 +194,16 @@ pub struct Model {
     pub default_reasoning: Option<ReasoningLevel>,
     #[serde(default)]
     pub options: Vec<ModelOption>,
-    /// True when this row is a user-added custom model (settings-page
-    /// deletable); builtin catalog rows are not.
+    /// True when this row is user-owned — a live model record or a bare
+    /// custom id (settings-page deletable); builtin catalog rows are not.
     #[serde(default)]
     pub custom: bool,
     /// Provider-declared context window in tokens — the denominator a client
     /// divides the latest request's input by. `None` means "unknown window":
-    /// a custom row (the engine only knows a template guess, which must not be
-    /// presented as fact) or a host that predates the field. The key stays on
-    /// the wire so a custom row reads as an explicit null rather than an
-    /// ambiguous missing key.
+    /// a bare custom id (the engine only knows a template guess, which must
+    /// not be presented as fact) or a host that predates the field. The key
+    /// stays on the wire so such a row reads as an explicit null rather than
+    /// an ambiguous missing key.
     #[serde(default)]
     pub context_window: Option<u64>,
     #[serde(default)]

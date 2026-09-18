@@ -146,14 +146,33 @@ pub(crate) fn plan_prompt() -> ApprovalPrompt {
 /// mutually exclusive in practice (Plan Mode mounts read-only tools, so
 /// no mutating call gates while planning) — the order only breaks ties.
 pub(crate) enum PendingApproval {
-    Gate { call: ToolCall, id: String },
+    Gate {
+        call: ToolCall,
+        id: String,
+        /// The pending gate's note — a forced approval's stored-proposal
+        /// summary (ADR-0029); `None` on ordinary approvals.
+        note: Option<String>,
+    },
     Plan(String),
+}
+
+/// The model-setup apply tool (ADR-0029): the one gated call that is not
+/// the write/edit/bash trio.
+fn is_model_apply(call: &ToolCall) -> bool {
+    matches!(call, ToolCall::Unknown { name, .. } if name == "model_apply")
 }
 
 impl PendingApproval {
     pub(crate) fn from_transcript(transcript: &[SessionMessageEntry]) -> Option<Self> {
         pending_approval_tool(transcript)
-            .map(|(call, gate)| PendingApproval::Gate { call, id: gate.id })
+            .map(|(call, gate)| PendingApproval::Gate {
+                call,
+                id: gate.id,
+                note: match &gate.state {
+                    holt_doc::parts::ToolGateState::Pending { note } => note.clone(),
+                    _ => None,
+                },
+            })
             .or_else(|| pending_plan_approval(transcript).map(PendingApproval::Plan))
     }
 
@@ -166,7 +185,25 @@ impl PendingApproval {
 
     pub(crate) fn prompt(&self) -> ApprovalPrompt {
         match self {
-            PendingApproval::Gate { call, .. } => gate_prompt(call),
+            PendingApproval::Gate { call, note, .. } => {
+                let mut prompt = gate_prompt(call);
+                if is_model_apply(call) {
+                    // Every apply asks the user, whatever the mode — no
+                    // session exemption exists, so the always-allow row is
+                    // not offered, and the stored proposal's summary leads.
+                    prompt.options.retain(|option| {
+                        !matches!(
+                            option.verdict,
+                            BarVerdict::Gate(ApprovalVerdict::AlwaysAllow)
+                        )
+                    });
+                    prompt.title = "Apply these catalog changes?";
+                    if let Some(summary) = note {
+                        prompt.target = Some(summary.clone());
+                    }
+                }
+                prompt
+            }
             PendingApproval::Plan(_) => plan_prompt(),
         }
     }
@@ -230,6 +267,11 @@ impl Composer {
                     holt_doc::parts::ToolGateState::Pending { note } => note.clone(),
                     _ => None,
                 };
+                // A forced apply already leads with its summary as the
+                // target line; repeating it as the note row is noise.
+                if is_model_apply(&call) {
+                    prompt.note = None;
+                }
                 Some(prompt)
             }
             BarKind::Plan => Some(plan_prompt()),
@@ -535,6 +577,66 @@ impl Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forced_model_apply_prompt_titles_the_action_and_leads_with_the_summary() {
+        let entry = SessionMessageEntry {
+            id: "entry-1".into(),
+            role: holt_doc::MessageRole::Assistant,
+            parts: vec![holt_doc::MessagePart::Tool {
+                id: "call-1".into(),
+                call: ToolCall::Unknown {
+                    name: "model_apply".into(),
+                    input: Some(serde_json::json!({ "proposalId": "p1" })),
+                },
+                is_error: false,
+                resolved: false,
+                output: None,
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+                subagent_usage: None,
+                gate: Some(holt_doc::parts::ToolGate {
+                    origin: None,
+                    id: "approval-1".into(),
+                    state: holt_doc::parts::ToolGateState::Pending {
+                        note: Some("Apply 1 catalog change for openai".into()),
+                    },
+                }),
+            }],
+            created_at: 0,
+            device_id: "device".into(),
+            status: None,
+            continuation_of: None,
+        };
+        let pending = PendingApproval::from_transcript(&[entry]).expect("pending gate");
+        let prompt = pending.prompt();
+        assert_eq!(prompt.title, "Apply these catalog changes?");
+        assert_eq!(
+            prompt.target.as_deref(),
+            Some("Apply 1 catalog change for openai")
+        );
+        // Allow and deny only: always-allow records nothing for a forced
+        // tool, so the row is not offered at all.
+        assert_eq!(prompt.options.len(), 2);
+        assert!(!prompt.options.iter().any(|option| matches!(
+            option.verdict,
+            BarVerdict::Gate(ApprovalVerdict::AlwaysAllow)
+        )));
+
+        // An ordinary unknown tool keeps the generic shape.
+        let ordinary = ToolCall::Unknown {
+            name: "something_else".into(),
+            input: None,
+        };
+        assert_eq!(gate_prompt(&ordinary).title, "Allow this action?");
+        assert_eq!(gate_prompt(&ordinary).options.len(), 3);
+    }
 
     #[test]
     fn gate_prompt_titles_and_targets_follow_the_call_kind() {

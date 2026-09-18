@@ -80,6 +80,7 @@ impl ResolvedRunConfig {
             reasoning: self.reasoning,
             model_options: self.model_options.clone(),
             permission_mode: PermissionMode::default(),
+            scope: Default::default(),
         })
     }
 }
@@ -724,6 +725,7 @@ mod tests {
             abbreviation: id[..2].to_ascii_uppercase(),
             configured: variants.iter().any(|v| v.configured),
             variants,
+            custom: false,
         };
         let providers = vec![
             row("openai", vec![variant("openai", true)]),
@@ -753,6 +755,7 @@ mod tests {
             abbreviation: "MM".into(),
             configured: false,
             variants: vec![variant("minimax", false), variant("minimax-cn", false)],
+            custom: false,
         };
         assert!(offered_providers(&[org]).is_empty());
         // A standalone configured row flattens to itself.
@@ -762,6 +765,7 @@ mod tests {
             abbreviation: "OA".into(),
             configured: true,
             variants: vec![variant("openai", true)],
+            custom: false,
         };
         let offered = offered_providers(&[standalone]);
         assert_eq!(offered.len(), 1);

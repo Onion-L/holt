@@ -40,6 +40,38 @@ pub mod methods {
     /// catalog ids are not custom models — the engine no-ops on them.
     pub const REMOVE_PROVIDER_MODEL: &str = "RemoveProviderModel";
     pub const LIST_MODELS: &str = "ListModels";
+    /// The provider's hidden models — id and label rows the Settings page
+    /// greys out; the model picker's `ListModels` never includes them.
+    pub const LIST_HIDDEN_MODELS: &str = "ListHiddenModels";
+    /// Live catalog writes (ADR-0028's top layer). `SaveCustomProvider`
+    /// params are `{id, name, baseUrl, defaultApi, headers?}` (upsert);
+    /// `SaveModelRecord` params are `{providerId, record}` with `record` a
+    /// complete `pi-core-rs` model record that replaces a same-id entry
+    /// outright; `SetHiddenModels` params are `{providerId, modelIds}` and
+    /// replace the provider's hidden set wholesale.
+    pub const SAVE_CUSTOM_PROVIDER: &str = "SaveCustomProvider";
+    pub const REMOVE_CUSTOM_PROVIDER: &str = "RemoveCustomProvider";
+    pub const SAVE_MODEL_RECORD: &str = "SaveModelRecord";
+    pub const REMOVE_MODEL_RECORD: &str = "RemoveModelRecord";
+    pub const SET_HIDDEN_MODELS: &str = "SetHiddenModels";
+    /// Drops every user-written catalog entry for one provider — or for all
+    /// providers when `providerId` is absent.
+    pub const RESET_PROVIDER_CATALOG: &str = "ResetProviderCatalog";
+    /// The Settings review panel's write path (model setup v2): params
+    /// `{chatId, proposalId}` execute a proposal the setup chat stored —
+    /// re-validated against the current catalog. The agent never applies;
+    /// this button does.
+    pub const APPLY_MODEL_PROPOSAL: &str = "ApplyModelProposal";
+    /// The setup chat's stored proposals, newest first — the review
+    /// panel's data (`{chatId}` → `[{id, summary, changes}]`). In-memory
+    /// only; a restart empties it and the assistant re-proposes.
+    pub const LIST_MODEL_PROPOSALS: &str = "ListModelProposals";
+    /// Drops one stored proposal (the review panel's discard button):
+    /// params `{chatId, proposalId}`. Nothing is written.
+    pub const DISCARD_MODEL_PROPOSAL: &str = "DiscardModelProposal";
+    /// Finds or creates the singleton hidden `model-setup` chat (params
+    /// `{provider, model, reasoning?}` update its config) → `{chatId}`.
+    pub const ENSURE_MODEL_SETUP_CHAT: &str = "EnsureModelSetupChat";
     /// Engine-owned title-task settings (ADR-0012). Read takes no params;
     /// save params are `holt_proto::TitleSettings`; both reply with
     /// `holt_proto::TitleSettingsState` (settings + live validation warning).
