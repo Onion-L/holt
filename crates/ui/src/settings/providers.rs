@@ -8,7 +8,7 @@ use gpui::{
     Task, Window, div, prelude::*, px,
 };
 use holt_doc::{MessagePart, SessionMessageEntry};
-use holt_proto::{Model, Provider, ToolCall};
+use holt_proto::{Model, Provider, ProviderId, ToolCall};
 use holt_rpc::methods;
 use serde::Deserialize;
 
@@ -127,10 +127,30 @@ pub struct ProvidersPage {
     setup_models: Loadable<Vec<Model>>,
     setup_model_menu: Popup<()>,
     setup_selected_model: Option<String>,
+    /// The setup picker menu's provider rail selection. One provider's
+    /// models show at a time: a single configured aggregator (openrouter)
+    /// contributes hundreds of rows, so a flat catalog list is unusable.
+    setup_model_provider: Option<ProviderId>,
     setup_input: Option<Entity<ComposerInput>>,
     setup_input_events: Option<Subscription>,
     setup_state_observe: Option<Subscription>,
     setup_proposals: Vec<serde_json::Value>,
+    /// The setup chat's queue snapshot (`WatchMessageQueue`). The send RPC
+    /// returns before admission, so a turn that fails to start (missing
+    /// key, unresolvable model, storage fault) never writes a doc entry —
+    /// this frame is the only place its reason surfaces.
+    setup_queue: Option<holt_proto::MessageQueue>,
+    /// The setup tab's async work is slot-separated from the page's `task`:
+    /// every page action assigns `task`, and dropping a `Task` cancels it,
+    /// so sharing the slot let a panel refresh abort an in-flight send
+    /// (its prompt was already cleared — a silent message loss) or the
+    /// tab's own preparation. Preparation owns a slot; the queue watch
+    /// owns one (cancelled on dialog close); the send and the proposal
+    /// apply are `detach`ed instead — cancelling either loses the user's
+    /// action silently, so they must run to completion.
+    setup_task: Option<Task<()>>,
+    setup_panel_task: Option<Task<()>>,
+    setup_queue_task: Option<Task<()>>,
     task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
 }
@@ -167,10 +187,15 @@ impl ProvidersPage {
             setup_models: Loadable::Idle,
             setup_model_menu: Popup::default(),
             setup_selected_model: None,
+            setup_model_provider: None,
             setup_input: None,
             setup_input_events: None,
             setup_state_observe: None,
             setup_proposals: Vec::new(),
+            setup_queue: None,
+            setup_task: None,
+            setup_panel_task: None,
+            setup_queue_task: None,
             task: None,
             collapse_task: None,
         };
@@ -717,6 +742,8 @@ impl ProvidersPage {
         self.setup_transcript_view = None;
         self.setup_doc_empty = true;
         self.setup_proposal_signature = (0, 0);
+        self.setup_queue_task = None;
+        self.setup_queue = None;
         if let Some(chat_id) = self.setup_chat.clone() {
             self.state.update(cx, |state, _| {
                 state.unwatch_subagent_doc(&setup_view_key(&chat_id))
@@ -774,11 +801,20 @@ impl ProvidersPage {
             self.setup_models = Loadable::Loading;
         }
         let selected_default = self.default_setup_model(cx);
-        self.task = Some(cx.spawn(async move |this, cx| {
-            // Resolve the model: the selected chat's config, else the first
-            // configured provider's first model.
-            let (provider, model) = match selected_default {
-                Some(pair) => pair,
+        // The setup chat remembers the last pick (design-v2 decision 1):
+        // a carried-over selection outranks re-inheriting the selected
+        // chat's config — re-inheriting on every reopen made the user's
+        // pick look like it never stuck.
+        let remembered = self.setup_selected_model.clone();
+        self.setup_task = Some(cx.spawn(async move |this, cx| {
+            // Resolve the model: the last pick, else the selected chat's
+            // config, else the first configured provider's first model.
+            let candidate = remembered.or_else(|| selected_default.map(|(_, model)| model));
+            let (provider, model) = match candidate.map(|model| {
+                let provider = model.split_once('/').map(|(p, _)| p.to_string());
+                (provider, model)
+            }) {
+                Some((provider, model)) => (provider.unwrap_or_default(), model),
                 None => match first_configured_model(&engine).await {
                     Some(pair) => pair,
                     None => {
@@ -795,6 +831,33 @@ impl ProvidersPage {
                     }
                 },
             };
+            let models = configured_model_catalog(&engine).await;
+            // The inherited model can outlive the catalog entry it named —
+            // a global reset drops custom models while chat configs keep
+            // pointing at them. A model the catalog no longer knows cannot
+            // admit a turn, so keep it only when it resolves; otherwise
+            // take the catalog's first servable entry.
+            let model = if models.iter().any(|row| row.id == model) {
+                model
+            } else {
+                let Some(fallback) = models.first().map(|row| row.id.clone()) else {
+                    this.update(cx, |page, cx| {
+                        page.setup_models = Loadable::Error(
+                            "Configure a provider API key first — the AI tab needs a \
+                             working model."
+                                .into(),
+                        );
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                };
+                fallback
+            };
+            let provider = model
+                .split_once('/')
+                .map(|(prefix, _)| prefix.to_string())
+                .unwrap_or(provider);
             let chat_id = match engine
                 .client()
                 .call(
@@ -817,7 +880,6 @@ impl ProvidersPage {
                 .ok();
                 return;
             };
-            let models = configured_model_catalog(&engine).await;
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
             // The dialog session starts clean: only entries created after
             // this moment (plus live work) render. The doc keeps everything
@@ -828,11 +890,21 @@ impl ProvidersPage {
                 .map(|since| since.as_millis() as i64)
                 .unwrap_or(0);
             this.update(cx, |page, cx| {
+                // The dialog closed while preparation was in flight: State
+                // set here (view, queue watch) would be orphaned — nothing
+                // tears it down until the next open re-prepares from
+                // scratch.
+                if page.add_dialog.is_none() {
+                    return;
+                }
                 let view_key = setup_view_key(&chat_id);
                 page.setup_chat = Some(chat_id.clone());
                 // The qualified id is both the display value and the run
                 // identity — no re-prefixing.
                 page.setup_selected_model = Some(model.clone());
+                page.setup_model_provider = model
+                    .split_once('/')
+                    .map(|(provider, _)| ProviderId(provider.into()));
                 page.setup_models = Loadable::Ready(models);
                 page.setup_proposals = proposals;
                 // The chat surface is the real Transcript (full markdown,
@@ -846,9 +918,67 @@ impl ProvidersPage {
                     Some(cx.new(|cx| {
                         crate::transcript::Transcript::for_doc(state, view_key, true, cx)
                     }));
+                page.watch_setup_queue(cx);
                 cx.notify();
             })
             .ok();
+        }));
+    }
+
+    /// The setup chat's queue watch: the send RPC returns before admission,
+    /// so a turn the engine cannot start never reaches the doc — the queue
+    /// frame carries the failure instead. Resubscribes like every other
+    /// watch; dropped (cancelled) when the dialog closes.
+    fn watch_setup_queue(&mut self, cx: &mut Context<Self>) {
+        if self.setup_queue_task.is_some() {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(chat_id) = self.setup_chat.clone() else {
+            return;
+        };
+        self.setup_queue_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                if let Ok(mut rx) = engine
+                    .client()
+                    .subscribe(
+                        methods::WATCH_MESSAGE_QUEUE,
+                        serde_json::json!({ "chatId": chat_id }),
+                    )
+                    .await
+                {
+                    while let Some(value) = rx.recv().await {
+                        let Ok(queue) = crate::watch_coordinator::WatchCoordinator::decode::<
+                            holt_proto::MessageQueue,
+                        >(value) else {
+                            break;
+                        };
+                        if this
+                            .update(cx, |page, cx| {
+                                page.setup_queue = Some(queue);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                if this
+                    .update(cx, |page, cx| {
+                        page.setup_queue = None;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(crate::watch_coordinator::WatchCoordinator::RETRY_DELAY)
+                    .await;
+            }
         }));
     }
 
@@ -862,7 +992,10 @@ impl ProvidersPage {
             return;
         };
         self.setup_selected_model = Some(qualified.clone());
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.setup_model_provider = qualified
+            .split_once('/')
+            .map(|(provider, _)| ProviderId(provider.into()));
+        self.setup_panel_task = Some(cx.spawn(async move |this, cx| {
             let _ = engine
                 .client()
                 .call(
@@ -928,7 +1061,40 @@ impl ProvidersPage {
                 .map(|since| since.as_millis())
                 .unwrap_or(0)
         );
-        self.task = Some(cx.spawn(async move |this, cx| {
+        // The queue snapshot may hold a previous turn's admission failure;
+        // a fresh attended send re-admits past the pause, so drop the stale
+        // reason — if this send fails too, the next frame brings it back.
+        // An errored head parks forever (the pause protects it) — the retry
+        // the strip promises must delete those items BEFORE re-enqueueing,
+        // or the queue stays blocked and the failure strip never leaves.
+        // Read the snapshot first: the clearing below must not erase the
+        // very list the deletes are derived from.
+        let errored: Vec<String> = self
+            .setup_queue
+            .as_ref()
+            .map(|queue| {
+                queue
+                    .pending
+                    .iter()
+                    .filter(|item| item.error.is_some())
+                    .map(|item| item.message_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.setup_queue = None;
+        // Detached, not slotted: a second send (or any panel action) must
+        // not cancel this one mid-flight — the prompt is already cleared,
+        // so a cancelled send is a silently lost message.
+        cx.spawn(async move |this, cx| {
+            for message_id in errored {
+                let _ = engine
+                    .client()
+                    .call(
+                        methods::DELETE_QUEUED_MESSAGE,
+                        serde_json::json!({ "chatId": chat_id, "messageId": message_id }),
+                    )
+                    .await;
+            }
             let result = engine
                 .client()
                 .call(
@@ -955,7 +1121,8 @@ impl ProvidersPage {
                 this.update(cx, |page, cx| page.fail(error.to_string(), cx))
                     .ok();
             }
-        }));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -968,7 +1135,10 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
+        // Detached: a proposal-signature refresh (or any panel action) must
+        // not cancel a Write in flight — the user's click would be lost
+        // silently.
+        cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
                 .call(
@@ -985,7 +1155,8 @@ impl ProvidersPage {
                 Err(error) => page.fail(error.to_string(), cx),
             })
             .ok();
-        }));
+        })
+        .detach();
     }
 
     fn discard_setup_proposal(&mut self, proposal_id: String, cx: &mut Context<Self>) {
@@ -995,7 +1166,7 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.setup_panel_task = Some(cx.spawn(async move |this, cx| {
             let _ = engine
                 .client()
                 .call(
@@ -1015,7 +1186,7 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.setup_panel_task = Some(cx.spawn(async move |this, cx| {
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
             this.update(cx, |page, cx| {
                 page.setup_proposals = proposals;
@@ -2120,6 +2291,7 @@ fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement 
         .child(
             action_button(theme)
                 .id("open-add-provider")
+                .debug_selector(|| "open-add-provider".into())
                 .hover(move |style| widgets::ghost_hover(&hover_theme, style))
                 .on_click(
                     cx.listener(|page, _, _, cx| page.open_add_dialog(AddProviderTab::Manual, cx)),
@@ -2141,6 +2313,7 @@ fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement 
         .child(
             widgets::ghost_action(theme)
                 .id("reset-all-providers")
+                .debug_selector(|| "reset-all-providers".into())
                 .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
                 .on_click(cx.listener(|page, _, _, cx| {
                     page.confirm_reset_all = true;
@@ -2180,6 +2353,7 @@ fn reset_all_dialog(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElemen
                 .child(
                     popover::btn_danger(theme, "Reset all")
                         .id("reset-all-confirm")
+                        .debug_selector(|| "reset-all-confirm".into())
                         .on_click(cx.listener(|page, _, _, cx| {
                             page.confirm_reset_all = false;
                             page.reset_all(cx);
@@ -2216,6 +2390,7 @@ fn add_provider_dialog(
                 .child(
                     widgets::ghost_action(theme)
                         .id("add-provider-close")
+                        .debug_selector(|| "add-provider-close".into())
                         .hover(move |style| widgets::ghost_hover(theme, style))
                         .on_click(cx.listener(|page, _, _, cx| page.close_add_dialog(cx)))
                         .child(
@@ -2251,6 +2426,10 @@ fn tab_row(tab: AddProviderTab, theme: &Theme, cx: &mut Context<ProvidersPage>) 
             .id(match candidate {
                 AddProviderTab::Manual => "add-provider-tab-manual",
                 AddProviderTab::Ai => "add-provider-tab-ai",
+            })
+            .debug_selector(move || match candidate {
+                AddProviderTab::Manual => "add-provider-tab-manual".into(),
+                AddProviderTab::Ai => "add-provider-tab-ai".into(),
             })
             .cursor_pointer()
             .px(px(10.0))
@@ -2385,6 +2564,8 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
                 .into_any_element()
         } else {
             div()
+                .id("setup-empty-state")
+                .debug_selector(|| "setup-empty-state".into())
                 .flex_1()
                 .min_h(px(200.0))
                 .flex()
@@ -2409,6 +2590,20 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
         // of the run — and stays out of the way otherwise.
         if !proposals.is_empty() {
             column = column.child(setup_review_panel(&proposals, theme, cx));
+        }
+        // A turn the engine could not admit never writes a doc entry —
+        // without this strip the send reads as dead silence (issue 03).
+        if let Some(reason) = page
+            .setup_queue
+            .as_ref()
+            .and_then(setup_queue_error)
+            .map(|reason| format!("{reason} Send again to retry."))
+        {
+            column = column.child(
+                widgets::error_strip(theme, reason)
+                    .id("setup-queue-error")
+                    .debug_selector(|| "setup-queue-error".into()),
+            );
         }
         if let Some(input) = input {
             column = column.child(setup_composer(page, theme, input, cx));
@@ -2478,6 +2673,59 @@ fn setup_view_key(chat_id: &str) -> String {
     format!("setup-view:{chat_id}")
 }
 
+/// The setup picker's catalog, grouped by provider in catalog order — the
+/// rail the menu walks. The catalog is built per configured provider
+/// ([`configured_model_catalog`]), so every group here has a stored key.
+struct ModelGroup {
+    id: ProviderId,
+    models: Vec<Model>,
+}
+
+fn setup_model_groups(models: &[Model]) -> Vec<ModelGroup> {
+    let mut groups: Vec<ModelGroup> = Vec::new();
+    for model in models {
+        match groups.iter_mut().find(|group| group.id == model.provider) {
+            Some(group) => group.models.push(model.clone()),
+            None => groups.push(ModelGroup {
+                id: model.provider.clone(),
+                models: vec![model.clone()],
+            }),
+        }
+    }
+    groups
+}
+
+/// A rail tab's label: the provider row's display name when the page's own
+/// list carries it, else the raw id.
+fn provider_label(id: &ProviderId, providers: Option<&Vec<Provider>>) -> String {
+    providers
+        .and_then(|rows| {
+            rows.iter()
+                .flat_map(|row| row.variants.iter())
+                .find(|variant| variant.id == *id)
+                .map(|variant| variant.name.clone())
+        })
+        .or_else(|| {
+            providers.and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.id == *id)
+                    .map(|row| row.name.clone())
+            })
+        })
+        .unwrap_or_else(|| id.0.clone())
+}
+
+/// The failure a queue frame surfaces: the queue-level error (storage /
+/// checkpoint faults) or the first errored pending item (a turn that could
+/// not be admitted — missing key, unresolvable model). `None` while the
+/// queue is healthy.
+fn setup_queue_error(queue: &holt_proto::MessageQueue) -> Option<String> {
+    queue
+        .error
+        .clone()
+        .or_else(|| queue.pending.iter().find_map(|item| item.error.clone()))
+}
+
 /// The composer card's model chip (the new-chat canvas' pattern): quiet
 /// text + chevron, the menu opening ABOVE — the composer sits at the
 /// dialog's bottom.
@@ -2492,13 +2740,37 @@ fn setup_model_picker(
         .map(|models| models.to_vec())
         .unwrap_or_default();
     let selected_id = page.setup_selected_model.clone();
+    let groups = setup_model_groups(&catalog);
+    // The rail's active provider: the last rail pick, else the current
+    // selection's provider, else the first group. A one-provider catalog
+    // (the tests' and most fresh installs') renders no rail at all.
+    let active_provider = page
+        .setup_model_provider
+        .clone()
+        .filter(|id| groups.iter().any(|group| &group.id == id))
+        .or_else(|| {
+            selected_id
+                .as_deref()
+                .and_then(|id| id.split_once('/'))
+                .map(|(provider, _)| ProviderId(provider.into()))
+                .filter(|id| groups.iter().any(|group| &group.id == id))
+        })
+        .or_else(|| groups.first().map(|group| group.id.clone()));
     let mut rows = Vec::new();
-    for (index, model) in catalog.iter().enumerate() {
+    for (index, model) in groups
+        .iter()
+        .find(|group| Some(&group.id) == active_provider.as_ref())
+        .map(|group| group.models.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+    {
         let qualified = model.id.clone();
         let selected = selected_id.as_deref() == Some(model.id.as_str());
         rows.push(
             popover::menu_row(theme, selected, format!("setup-model-option-{index}"))
                 .id(SharedString::from(format!("setup-model-option-{index}")))
+                .debug_selector(move || format!("setup-model-option-{index}"))
                 .on_click(
                     cx.listener(move |page, _, _, cx| page.pick_setup_model(qualified.clone(), cx)),
                 )
@@ -2516,7 +2788,13 @@ fn setup_model_picker(
                         .font_family(theme.font_mono.clone())
                         .text_size(crate::typography::ui_rems(10.5))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(model.id.clone())),
+                        .child(SharedString::from(
+                            model
+                                .id
+                                .split_once('/')
+                                .map(|(_, tail)| tail.to_string())
+                                .unwrap_or_else(|| model.id.clone()),
+                        )),
                 )
                 .when(selected, |row| {
                     row.child(
@@ -2528,17 +2806,70 @@ fn setup_model_picker(
                 .into_any_element(),
         );
     }
-    let menu = popover::popover_card(theme)
+    let list = div()
         .id("setup-model-scroll")
-        .w(px(420.0))
+        .flex_1()
+        .min_w_0()
         .max_h(px(280.0))
         .overflow_y_scroll()
         .occlude()
-        .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_setup_model_menu(cx)))
         .flex()
         .flex_col()
         .gap(px(2.0))
         .children(rows)
+        .into_any_element();
+    // One provider configured: the rail would be a single dead tab — the
+    // flat list is the whole menu.
+    let menu: AnyElement = if groups.len() > 1 {
+        let mut rail = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .pr(px(6.0))
+            .mr(px(6.0))
+            .border_r_1()
+            .border_color(theme.border);
+        for (index, group) in groups.iter().enumerate() {
+            let id = group.id.clone();
+            let active = Some(&group.id) == active_provider.as_ref();
+            let label = provider_label(&group.id, page.providers.ready());
+            rail = rail.child(
+                div()
+                    .id(SharedString::from(format!("setup-model-rail-{index}")))
+                    .debug_selector(move || format!("setup-model-rail-{index}"))
+                    .w_full()
+                    .px(px(6.0))
+                    .py(px(5.0))
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .when(active, |tab| tab.bg(crate::theme::ink(0.06)))
+                    .when(!active, |tab| {
+                        tab.hover(|style| style.bg(crate::theme::ink(0.03)))
+                    })
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(if active { theme.text } else { theme.text_muted })
+                    .child(SharedString::from(label))
+                    .on_click(cx.listener(move |page, _, _, cx| {
+                        page.setup_model_provider = Some(id.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        div()
+            .flex()
+            .flex_row()
+            .child(rail)
+            .child(list)
+            .into_any_element()
+    } else {
+        list
+    };
+    let menu = popover::popover_card(theme)
+        .w(px(460.0))
+        .occlude()
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_setup_model_menu(cx)))
+        .child(menu)
         .into_any_element();
     let selected_label = SharedString::from(
         catalog
@@ -2557,6 +2888,7 @@ fn setup_model_picker(
     );
     div()
         .id("setup-model-dropdown")
+        .debug_selector(|| "setup-model-dropdown".into())
         .relative()
         .px(px(8.0))
         .py(px(4.0))
@@ -2585,10 +2917,11 @@ fn setup_model_picker(
                 .text_color(theme.text_muted),
         )
         .when_some(page.setup_model_menu.get(), |trigger, _| {
-            trigger.child(popover::anchored_menu_above_end(
+            trigger.child(popover::anchored_menu_above_end_with_priority(
                 "setup-model-menu",
                 menu,
                 page.setup_model_menu.closing_since(),
+                popover::ABOVE_MODAL_PRIORITY,
             ))
         })
         .into_any_element()
@@ -3156,5 +3489,692 @@ mod tests {
         let with_form = provider_controls_height(&models, 0, false, false, true);
         assert!(with_hidden > bare);
         assert!(with_form - bare >= RECORD_FORM_HEIGHT);
+    }
+
+    // ---- The AI tab's headless repro (issue 03: no conversation renders
+    // after send) -----------------------------------------------
+
+    fn entry_json(
+        id: &str,
+        role: &str,
+        text: &str,
+        created_at: i64,
+        status: Option<&str>,
+    ) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "id": id,
+            "role": role,
+            "parts": [{"kind": "text", "id": "p0", "text": text}],
+            "createdAt": created_at,
+            "deviceId": "local",
+        });
+        if let Some(status) = status {
+            entry["status"] = serde_json::json!(status);
+        }
+        entry
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// The fake engine behind the dialog repro: the providers/models reads,
+    /// the setup-chat singleton, and a `WatchDocMessages` stream that
+    /// advances when `QueueCommand` lands — the engine's admission shape
+    /// (the user entry stamped at now, the assistant streaming). History
+    /// from a previous dialog session rides the doc to exercise the cutoff.
+    struct FakeSetupEngine {
+        doc: tokio::sync::watch::Sender<serde_json::Value>,
+        queue: tokio::sync::watch::Sender<serde_json::Value>,
+        /// The picker's catalog — the second entry is the user's custom
+        /// model, dropped when `ResetProviderCatalog` lands.
+        catalog: std::sync::Mutex<Vec<serde_json::Value>>,
+        resets: std::sync::Mutex<Vec<serde_json::Value>>,
+        queued: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// True = the NEXT turn never admits (the engine's post-QueueCommand
+        /// failure shape: no doc entry, the queue frame carries the reason);
+        /// consumed by the first send, so a retry succeeds.
+        fail_first_admission: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl holt_rpc::RpcService for FakeSetupEngine {
+        async fn handle(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+            use futures::StreamExt as _;
+            use holt_rpc::{RpcError, RpcReply};
+            match method {
+                methods::LIST_PROVIDERS => RpcReply::value(&serde_json::json!([
+                    {
+                        "id": "acme",
+                        "name": "Acme",
+                        "abbreviation": "A",
+                        "configured": true,
+                        "variants": [{
+                            "id": "acme",
+                            "name": "Acme",
+                            "configured": true,
+                        }],
+                        "custom": false,
+                    },
+                    {
+                        "id": "beta",
+                        "name": "Beta Labs",
+                        "abbreviation": "B",
+                        "configured": true,
+                        "variants": [{
+                            "id": "beta",
+                            "name": "Beta Labs",
+                            "configured": true,
+                        }],
+                        "custom": false,
+                    },
+                ])),
+                methods::LIST_MODELS => {
+                    let provider = params["providerId"].as_str().unwrap_or_default();
+                    let rows: Vec<serde_json::Value> = self
+                        .catalog
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|row| row["provider"] == serde_json::json!(provider))
+                        .cloned()
+                        .collect();
+                    RpcReply::value(&serde_json::Value::Array(rows))
+                }
+                methods::RESET_PROVIDER_CATALOG => {
+                    self.resets.lock().unwrap().push(params.clone());
+                    self.catalog
+                        .lock()
+                        .unwrap()
+                        .retain(|row| row["id"] != "acme/acme-custom");
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::ENSURE_MODEL_SETUP_CHAT => {
+                    RpcReply::value(&serde_json::json!({ "chatId": "setup-chat" }))
+                }
+                methods::LIST_MODEL_PROPOSALS => RpcReply::value(&serde_json::json!([])),
+                methods::DELETE_QUEUED_MESSAGE => {
+                    let message_id = params["messageId"].as_str().unwrap_or_default();
+                    let mut entries = self.queue.subscribe().borrow_and_update().clone();
+                    if let Some(pending) = entries["pending"].as_array_mut() {
+                        pending.retain(|item| item["messageId"] != serde_json::json!(message_id));
+                    }
+                    if entries["pending"].as_array().is_some_and(|p| p.is_empty()) {
+                        entries["paused"] = serde_json::json!(false);
+                    }
+                    self.queue.send_replace(entries);
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::QUEUE_COMMAND => {
+                    self.queued.lock().unwrap().push(params.clone());
+                    let prompt = params["command"]["request"]["prompt"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let turn_user_id = params["command"]["messageId"]
+                        .as_str()
+                        .unwrap_or("setup-turn")
+                        .to_string();
+                    if self
+                        .fail_first_admission
+                        .swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        // The driver's settle: the head keeps its error, the
+                        // queue pauses — nothing reaches the doc.
+                        self.queue.send_replace(serde_json::json!({
+                            "pending": [{
+                                "messageId": turn_user_id,
+                                "request": params["command"]["request"],
+                                "kind": "ordinary",
+                                "submittedAt": 0,
+                                "error": "provider deepseek is not configured",
+                            }],
+                            "paused": true,
+                            "activeMessageId": null,
+                            "error": null,
+                        }));
+                        return RpcReply::value(&serde_json::json!({}));
+                    }
+                    let mut entries = self
+                        .doc
+                        .subscribe()
+                        .borrow_and_update()
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    entries.push(entry_json(&turn_user_id, "user", &prompt, now_ms(), None));
+                    entries.push(entry_json(
+                        "setup-turn-assistant",
+                        "assistant",
+                        "Researching the catalog…",
+                        now_ms(),
+                        Some("streaming"),
+                    ));
+                    self.doc.send_replace(serde_json::json!(entries));
+                    // The queue state is re-published untouched: whatever
+                    // the sender left parked (an undeleted errored head)
+                    // must re-surface on the strip, or the retry test
+                    // cannot tell a real delete from a hidden one.
+                    let queue = self.queue.subscribe().borrow_and_update().clone();
+                    self.queue.send_replace(queue);
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::WATCH_MESSAGE_QUEUE => {
+                    let rx = self.queue.subscribe();
+                    let stream =
+                        futures::stream::unfold((rx, true), |(mut rx, first)| async move {
+                            if !first && rx.changed().await.is_err() {
+                                return None;
+                            }
+                            let frame = rx.borrow_and_update().clone();
+                            Some((frame, (rx, false)))
+                        });
+                    Ok(RpcReply::Stream(stream.boxed()))
+                }
+                methods::WATCH_DOC_MESSAGES => {
+                    let rx = self.doc.subscribe();
+                    let stream =
+                        futures::stream::unfold((rx, true), |(mut rx, first)| async move {
+                            if !first && rx.changed().await.is_err() {
+                                return None;
+                            }
+                            let entries = rx.borrow_and_update().clone();
+                            Some((serde_json::json!({ "reset": entries }), (rx, false)))
+                        });
+                    Ok(RpcReply::Stream(stream.boxed()))
+                }
+                _ => Err(RpcError::UnknownMethod(method.to_string())),
+            }
+        }
+    }
+
+    struct SetupHarness<'a> {
+        page: Entity<ProvidersPage>,
+        state: Entity<AppState>,
+        visual: &'a mut gpui::VisualTestContext,
+        engine: std::sync::Arc<FakeSetupEngine>,
+        runtime: tokio::runtime::Runtime,
+        _dir: tempfile::TempDir,
+    }
+
+    impl SetupHarness<'_> {
+        fn pump(&self) {
+            for _ in 0..8 {
+                self.runtime
+                    .block_on(async { tokio::task::yield_now().await });
+                self.visual.run_until_parked();
+            }
+        }
+
+        fn click(&mut self, selector: &'static str) {
+            let bounds = self
+                .visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} renders"));
+            self.visual
+                .simulate_click(bounds.center(), Default::default());
+            self.pump();
+        }
+    }
+
+    fn setup_dialog_harness<'a>(cx: &'a mut gpui::TestAppContext) -> SetupHarness<'a> {
+        setup_dialog_harness_with(cx, false)
+    }
+
+    fn setup_dialog_harness_with<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        fail_first_admission: bool,
+    ) -> SetupHarness<'a> {
+        // The singleton chat carries one entry from a PREVIOUS dialog
+        // session: pre-cutoff history the view must hide.
+        let (doc, _doc_rx) = tokio::sync::watch::channel(serde_json::json!([entry_json(
+            "setup-history",
+            "user",
+            "earlier session",
+            1,
+            None
+        ),]));
+        let (queue, _queue_rx) = tokio::sync::watch::channel(serde_json::json!({
+            "pending": [],
+            "paused": false,
+            "activeMessageId": null,
+            "error": null,
+        }));
+        let engine = std::sync::Arc::new(FakeSetupEngine {
+            doc,
+            queue,
+            catalog: std::sync::Mutex::new(vec![
+                serde_json::json!({
+                    "id": "acme/acme-1",
+                    "provider": "acme",
+                    "label": "Acme 1",
+                }),
+                serde_json::json!({
+                    "id": "acme/acme-custom",
+                    "provider": "acme",
+                    "label": "Acme custom",
+                    "custom": true,
+                }),
+                serde_json::json!({
+                    "id": "beta/beta-1",
+                    "provider": "beta",
+                    "label": "Beta 1",
+                }),
+            ]),
+            resets: std::sync::Mutex::new(Vec::new()),
+            queued: std::sync::Mutex::new(Vec::new()),
+            fail_first_admission: std::sync::atomic::AtomicBool::new(fail_first_admission),
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let app_state = cx.new(|_| AppState::new());
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        app_state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (page, visual) =
+            cx.add_window_view(|_window, cx| ProvidersPage::new(app_state.clone(), cx));
+        let harness = SetupHarness {
+            page,
+            state: app_state,
+            visual,
+            engine,
+            runtime,
+            _dir: dir,
+        };
+        harness.pump();
+        harness
+    }
+
+    /// Issue 03's repro: open the AI tab, send, and the placeholder must
+    /// flip to the real transcript — the sent turn visible, history hidden.
+    #[gpui::test]
+    fn the_setup_dialog_renders_the_sent_turn(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let chat_id = harness.page.update(&mut *harness.visual, |page, _| {
+            assert!(page.setup_transcript_view.is_some(), "the view mounts");
+            page.setup_chat.clone().expect("the setup chat resolved")
+        });
+        // A fresh dialog session: history stays hidden behind the cutoff.
+        assert!(harness.visual.debug_bounds("setup-empty-state").is_some());
+        assert!(harness.visual.debug_bounds("setup-history").is_none());
+        assert!(
+            harness.visual.debug_bounds("setup-queue-error").is_none(),
+            "a healthy queue renders no failure strip"
+        );
+
+        // Send like the composer does: draft + submit.
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let input = page.setup_input.clone().expect("the composer input");
+            input.update(cx, |input, cx| input.set_text("add acme-2", cx));
+            page.send_setup_message(cx);
+        });
+        harness.pump();
+
+        // The turn reached the engine addressed to the setup chat.
+        let queued = harness.engine.queued.lock().unwrap().clone();
+        assert_eq!(queued.len(), 1, "one QueueCommand");
+        assert_eq!(queued[0]["chatId"], chat_id);
+        let turn_user_id = queued[0]["command"]["messageId"]
+            .as_str()
+            .expect("the message id")
+            .to_string();
+
+        // The session view holds exactly the fresh turn (history filtered).
+        let rows = harness.visual.read(|cx| {
+            harness
+                .state
+                .read(cx)
+                .sub_transcript(&setup_view_key(&chat_id))
+                .to_vec()
+        });
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec![turn_user_id.as_str(), "setup-turn-assistant"],
+            "the pump published the fresh turn"
+        );
+
+        // The placeholder unmounted and the view holds real rows.
+        assert!(harness.visual.debug_bounds("setup-empty-state").is_none());
+        let view_rows = harness.page.update(&mut *harness.visual, |page, cx| {
+            page.setup_transcript_view
+                .as_ref()
+                .expect("the view")
+                .read(cx)
+                .rows()
+                .to_vec()
+        });
+        assert!(
+            view_rows
+                .iter()
+                .any(|row| row.id.as_ref().starts_with("setup-turn-assistant#p0")),
+            "the turn renders as transcript rows: {:?}",
+            view_rows
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The silent-failure hole (issue 03's persistence mechanism): the send
+    /// RPC replies Ok, but the turn never admits — no doc entry, so the
+    /// placeholder would sit forever. The queue frame's reason must render,
+    /// and the retry the strip promises must actually clear the failure:
+    /// the errored head is deleted before the re-send, or it would park the
+    /// queue (and the strip) forever.
+    #[gpui::test]
+    fn a_failed_admission_surfaces_and_the_retry_clears_it(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness_with(cx, true);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let send = |harness: &mut SetupHarness, prompt: &str| {
+            harness.page.update(&mut *harness.visual, |page, cx| {
+                let input = page.setup_input.clone().expect("the composer input");
+                input.update(cx, |input, cx| input.set_text(prompt, cx));
+                page.send_setup_message(cx);
+            });
+            harness.pump();
+        };
+
+        // First send: the turn never admits — the placeholder is honest,
+        // but the failure is no longer silent.
+        send(&mut harness, "add deepseek-flash");
+        assert!(harness.visual.debug_bounds("setup-empty-state").is_some());
+        assert!(
+            harness.visual.debug_bounds("setup-queue-error").is_some(),
+            "the admission failure renders a strip"
+        );
+        let reason = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_queue
+                .as_ref()
+                .and_then(setup_queue_error)
+                .unwrap_or_default()
+        });
+        assert_eq!(reason, "provider deepseek is not configured");
+
+        // The retry: the errored head is deleted, the turn admits, the
+        // strip is gone and the conversation renders.
+        send(&mut harness, "add deepseek-flash");
+        assert!(
+            harness.visual.debug_bounds("setup-queue-error").is_none(),
+            "the retry cleared the failure strip"
+        );
+        assert!(harness.visual.debug_bounds("setup-empty-state").is_none());
+        let chat_id = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.setup_chat.clone());
+        let rows = harness.visual.read(|cx| {
+            harness
+                .state
+                .read(cx)
+                .sub_transcript(&setup_view_key(chat_id.as_deref().expect("the setup chat")))
+                .to_vec()
+        });
+        assert!(!rows.is_empty(), "the retried turn landed in the doc");
+    }
+
+    /// The picker's menu must clear the modal's scrim: deferred layers sort
+    /// by priority, and the modal occludes at priority 2 — a priority-1
+    /// dropdown paints under the scrim and its rows never receive clicks.
+    #[gpui::test]
+    fn the_model_menu_picks_from_above_the_modal(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        harness.click("setup-model-dropdown");
+        let row = harness
+            .visual
+            .debug_bounds("setup-model-option-1")
+            .expect("the menu row renders");
+        harness
+            .visual
+            .simulate_click(row.center(), Default::default());
+        harness.pump();
+
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(picked.as_deref(), Some("acme/acme-custom"));
+        // Picking starts the menu's exit (the row unmounts when the close
+        // animation's reap timer lands — animation timing, not this test's
+        // subject).
+        let closing = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_model_menu.closing_since().is_some()
+        });
+        assert!(closing, "the pick closed the menu");
+    }
+
+    /// The picker groups the catalog by provider (the composer picker's
+    /// rail): one configured aggregator contributes hundreds of models, and
+    /// a flat list of them is unusable. The rail switches which provider's
+    /// models the menu lists; picking sets the selection from that rail.
+    #[gpui::test]
+    fn the_model_menu_scopes_to_the_rail_provider(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        harness.click("setup-model-dropdown");
+        // Two configured providers → two rail tabs; the list opens on the
+        // selection's provider (acme) with only acme's models.
+        assert!(harness.visual.debug_bounds("setup-model-rail-0").is_some());
+        assert!(harness.visual.debug_bounds("setup-model-rail-1").is_some());
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-model-option-1")
+                .is_some()
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-model-option-2")
+                .is_none(),
+            "beta's model is not listed under acme"
+        );
+
+        // Switch the rail: beta's models replace acme's in the same menu.
+        harness.click("setup-model-rail-1");
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-model-option-0")
+                .is_some()
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-model-option-1")
+                .is_none(),
+            "acme's second model left the list"
+        );
+        let row = harness
+            .visual
+            .debug_bounds("setup-model-option-0")
+            .expect("the beta row renders");
+        harness
+            .visual
+            .simulate_click(row.center(), Default::default());
+        harness.pump();
+
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(picked.as_deref(), Some("beta/beta-1"));
+    }
+
+    fn chat_with_config(id: &str, model: &str) -> holt_proto::Chat {
+        let provider = model.split('/').next().unwrap_or("acme").to_string();
+        holt_proto::Chat {
+            id: id.into(),
+            device_id: "dev".into(),
+            title: None,
+            title_source: Default::default(),
+            title_task_started: false,
+            archived: false,
+            pinned: false,
+            cwd: Some("/project".into()),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: Some(holt_proto::ChatConfig {
+                provider: holt_proto::ProviderId(provider.into()),
+                model: model.into(),
+                reasoning: None,
+                model_options: Default::default(),
+                permission_mode: Default::default(),
+                scope: Default::default(),
+            }),
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            space_id: Some("space".into()),
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+            plan_mode: None,
+        }
+    }
+
+    /// A global reset drops custom models while the selected chat's config
+    /// keeps naming one — the dialog must not inherit a model the catalog
+    /// no longer knows (the chip would show a ghost and every send would
+    /// fail admission).
+    #[gpui::test]
+    fn a_ghost_default_falls_back_to_the_catalog(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.state.update(&mut *harness.visual, |state, _| {
+            state
+                .chats
+                .push(chat_with_config("chat-1", "acme/acme-ghost"));
+            state.selected_chat = Some("chat-1".into());
+        });
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(
+            picked.as_deref(),
+            Some("acme/acme-1"),
+            "the ghost default falls back to a servable catalog entry"
+        );
+    }
+
+    /// The last pick must survive a dialog reopen (design-v2 decision 1):
+    /// re-inheriting the selected chat's config every open made the pick
+    /// look like it never stuck.
+    #[gpui::test]
+    fn the_last_pick_survives_a_dialog_reopen(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.state.update(&mut *harness.visual, |state, _| {
+            state
+                .chats
+                .push(chat_with_config("chat-1", "acme/acme-custom"));
+            state.selected_chat = Some("chat-1".into());
+        });
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+        // The first open inherits the selected chat's model.
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(picked.as_deref(), Some("acme/acme-custom"));
+
+        // Pick the OTHER catalog entry, close, reopen.
+        harness.click("setup-model-dropdown");
+        let row = harness
+            .visual
+            .debug_bounds("setup-model-option-0")
+            .expect("the menu row renders");
+        harness
+            .visual
+            .simulate_click(row.center(), Default::default());
+        harness.pump();
+        harness.click("add-provider-close");
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(
+            picked.as_deref(),
+            Some("acme/acme-1"),
+            "the reopen keeps the pick instead of re-inheriting the chat config"
+        );
+    }
+
+    /// The full story the user hit (2026-09-18): the selected chat runs a
+    /// custom model, the dialog inherits it, a global reset drops the
+    /// custom entry — the reopened dialog must fall back to a servable
+    /// model instead of pinning the ghost.
+    #[gpui::test]
+    fn a_reset_custom_model_does_not_ghost_the_reopened_dialog(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness.state.update(&mut *harness.visual, |state, _| {
+            state
+                .chats
+                .push(chat_with_config("chat-1", "acme/acme-custom"));
+            state.selected_chat = Some("chat-1".into());
+        });
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+        // Pre-reset the inherited custom model is a legitimate pick.
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(picked.as_deref(), Some("acme/acme-custom"));
+
+        // Close, reset globally (the page's two-step confirm), reopen.
+        harness.click("add-provider-close");
+        harness.click("reset-all-providers");
+        harness.click("reset-all-confirm");
+        assert_eq!(
+            harness.engine.resets.lock().unwrap().len(),
+            1,
+            "the confirm fires the reset RPC"
+        );
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let picked = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_selected_model.clone()
+        });
+        assert_eq!(
+            picked.as_deref(),
+            Some("acme/acme-1"),
+            "the reset custom model no longer pins the chip"
+        );
     }
 }

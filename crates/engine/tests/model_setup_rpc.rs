@@ -7,6 +7,7 @@
 mod common;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
+use futures::StreamExt as _;
 use holt_rpc::{RpcReply, RpcService, methods};
 
 /// One complete, servable record — the fixture every scripted proposal
@@ -171,6 +172,21 @@ async fn a_setup_chat_proposes_and_the_review_rpc_applies() {
         .find(|row| row["id"] == "openai/gpt-via-setup")
         .expect("the applied record is live");
     assert_eq!(row["contextWindow"], 321_000);
+
+    // The apply consumed the proposal: the review panel must not keep
+    // offering Write on an already-written change (a second Write is
+    // rejected as a staleness no-op).
+    let RpcReply::Value(proposals) = engine
+        .handle(
+            methods::LIST_MODEL_PROPOSALS,
+            serde_json::json!({ "chatId": setup_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListModelProposals did not return a value");
+    };
+    assert!(proposals.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -321,6 +337,31 @@ async fn a_discarded_proposal_cannot_be_applied() {
             .iter()
             .all(|row| row["id"] != "openai/gpt-discarded")
     );
+}
+
+/// The setup dialog's exact RPC sequence (issue 03): the doc watch is
+/// subscribed BEFORE the send (the UI's `watch_doc_view`), and the send
+/// rides `QueueCommand` with the picker's provider-qualified model. The
+/// turn must land in the doc stream — the user entry first, then the
+/// reply — or the dialog stays on its placeholder forever.
+#[tokio::test]
+async fn the_setup_dialogs_doc_watch_streams_the_sent_turn() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("researched")]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+
+    // The dialog's feed opens first, exactly as `watch_doc_view` does —
+    // the opening reset is drained, everything after is the live turn.
+    let (mut transcript, mut sessions) = common::subscribe(&engine, &setup_id).await;
+
+    // The dialog's send: the composer's `run` payload shape.
+    common::run_prompt(&engine, &setup_id, &fixture.cwd(), "add it").await;
+
+    common::wait_for_transcript_text(&mut transcript, "add it").await;
+    common::wait_for_transcript_text(&mut transcript, "researched").await;
+    common::wait_for_session_status(&mut sessions, &setup_id, "idle").await;
 }
 
 #[tokio::test]

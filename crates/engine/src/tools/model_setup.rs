@@ -963,7 +963,10 @@ pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
 
 /// The review panel's write button (model setup v2): executes a stored
 /// proposal under the same revalidation the tool path used. The human
-/// approval is the button itself — no agent is involved.
+/// approval is the button itself — no agent is involved. A successful
+/// apply CONSUMES the proposal (same path as discard): an already-written
+/// change left listed would invite a second Write, which the staleness
+/// gate can only reject as a no-op.
 pub(crate) fn apply_stored(
     providers: &ProviderAdapter,
     chat: &ChatRuntime,
@@ -975,7 +978,9 @@ pub(crate) fn apply_stored(
              a restart; ask the assistant to propose again"
         )
     })?;
-    apply_changes(providers, &proposal.baseline, &proposal.changes)
+    let applied = apply_changes(providers, &proposal.baseline, &proposal.changes)?;
+    discard_stored(chat, proposal_id);
+    Ok(applied)
 }
 
 // ---------------------------------------------------------------------------

@@ -568,6 +568,24 @@ pub fn anchored_menu_above_end(
     content: AnyElement,
     closing: Option<std::time::Instant>,
 ) -> AnyElement {
+    anchored_menu_above_end_with_priority(id, content, closing, 1)
+}
+
+/// Priority for a menu that lives INSIDE a [`modal`]: deferred paints sort
+/// globally by priority, so the modal (2) would paint its card — scrim and
+/// all — over a default-priority menu nested in its subtree, hiding the
+/// open menu entirely (hitboxes still registered, so it clicked blindly).
+/// Above the modal and the [`top_alert`] (3).
+pub const ABOVE_MODAL_PRIORITY: usize = 4;
+
+/// [`anchored_menu_above_end`] at an explicit deferred priority — the
+/// in-modal variant rides [`ABOVE_MODAL_PRIORITY`].
+pub fn anchored_menu_above_end_with_priority(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+    priority: usize,
+) -> AnyElement {
     let exit = closing.map(exit_progress);
     let content = frosted_menu(exit, content);
     div()
@@ -586,7 +604,7 @@ pub fn anchored_menu_above_end(
                         div().occlude().pb(px(6.0)).child(content),
                     )),
             )
-            .priority(1)
+            .priority(priority)
             .into_any_element(),
         )
         .into_any_element()
