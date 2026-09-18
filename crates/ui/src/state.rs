@@ -241,6 +241,10 @@ pub struct AppState {
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
     pub transcript_replayed: bool,
+    /// Identifies the active primary transcript subscription. The selected
+    /// chat id alone cannot distinguish an old A watcher from a new A watcher
+    /// after an A -> B -> A switch.
+    transcript_watch_generation: u64,
     pub message_queue: Option<holt_proto::MessageQueue>,
     message_queue_task: Option<Task<()>>,
     pub(crate) chat_usage: Option<holt_proto::ChatUsage>,
@@ -306,6 +310,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             transcript_replayed: false,
+            transcript_watch_generation: 0,
             message_queue: None,
             message_queue_task: None,
             chat_usage: None,
@@ -1019,6 +1024,7 @@ impl AppState {
         self.spaces_synced = false;
         self.transcript.clear();
         self.transcript_replayed = false;
+        self.transcript_watch_generation = self.transcript_watch_generation.wrapping_add(1);
         self.echoes.clear();
         self.pending_sends.clear();
         self.upload_progress = None;
@@ -1123,7 +1129,9 @@ impl AppState {
                 handle.clone(),
                 chat_id.clone(),
             ));
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+            self.transcript_watch_generation = self.transcript_watch_generation.wrapping_add(1);
+            let generation = self.transcript_watch_generation;
+            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id, generation));
         }
         cx.notify();
     }
@@ -1245,6 +1253,7 @@ impl AppState {
         self.auto_selected = true;
         self.transcript.clear();
         self.transcript_replayed = false;
+        self.transcript_watch_generation = self.transcript_watch_generation.wrapping_add(1);
         self.transcript_task = None;
         self.chat_usage = None;
         self.chat_usage_task = None;
@@ -1284,7 +1293,8 @@ impl AppState {
                 handle.clone(),
                 chat_id.clone(),
             ));
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+            let generation = self.transcript_watch_generation;
+            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id, generation));
         }
         cx.notify();
     }
@@ -1664,6 +1674,7 @@ fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
     chat_id: String,
+    generation: u64,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
         // Outer loop: a delta desync (missed frame) resubscribes immediately
@@ -1710,9 +1721,13 @@ fn spawn_transcript_watch(
                 };
                 let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
                 let mut desync = false;
+                let mut stale = false;
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
-                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                    // A chat id match is insufficient after A -> B -> A.
+                    if state.transcript_watch_generation != generation {
+                        stale = true;
+                    } else if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
                         if let Err(err) = state.apply_transcript_frame(frame) {
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
@@ -1726,6 +1741,9 @@ fn spawn_transcript_watch(
                     }
                 });
                 if alive.is_err() {
+                    return;
+                }
+                if stale {
                     return;
                 }
                 if desync {

@@ -40,8 +40,9 @@ const PROPOSAL_DESCRIPTION: &str = "Prepare a provider-catalog change (add or up
 with full metadata, define a custom provider, hide dead models) WITHOUT writing anything. \
 Validates the change against the local catalog, reports exactly what would change (a no-op \
 says so), stores the result engine-side, and returns a proposalId for model_apply. Parameters: \
-`changes` (an array; omit it to only inspect a provider), `providerId` (required when \
-inspecting), `modelId` (when inspecting: dump that one model's complete record JSON — the \
+`changes` (an array; omit it to only inspect a provider), `providerId` (when \
+inspecting: a concrete provider id; OMIT it entirely to list the organizations \
+and their providers — resolve the user's words to one before proposing), `modelId` (when inspecting: dump that one model's complete record JSON — the \
 template to copy when replacing it), `probe` (optional: live GET {baseUrl}/models against \
 the provider using the stored key if one exists). Each change is an object with an `action` \
 of: upsert_model_record ({providerId, record — a complete model record: id, name, api, \
@@ -873,7 +874,11 @@ pub(crate) fn setup_system_prompt(web_search: bool) -> String {
          cannot write anything. Follow this fixed procedure every time:\n\
          1. Research: use {search}`web_fetch` to read the provider's official docs — model \
          IDs, context window, max output tokens, input modalities, reasoning levels, pricing.\n\
-         2. Compare: call `model_proposal` in inquiry mode (`providerId`, plus `modelId` to \
+         2. Resolve: call `model_proposal` with no `providerId` to list every organization \
+         and its providers. Match the user's words to ONE concrete provider id — a request \
+         like \"update Xiaomi\" names an organization that may carry several providers \
+         (regions, token plans); when several match, show them and ASK which one before \
+         going further. Then call `model_proposal` in inquiry mode (`providerId`, plus `modelId` to \
          dump an existing record as the replacement template) to see the local catalog and \
          detect no-ops.\n\
          3. Propose: call `model_proposal` with `changes` — complete records; copy \
@@ -1009,7 +1014,8 @@ fn proposal_parameters_schema() -> serde_json::Value {
             },
             "providerId": {
                 "type": "string",
-                "description": "Provider to inspect or probe (required when changes is omitted)"
+                "description": "Provider to inspect or probe; omit it entirely to list the \
+    organizations and their providers"
             },
             "modelId": {
                 "type": "string",
@@ -1039,10 +1045,12 @@ async fn run_proposal_tool(
     let raw_changes = params.get("changes").and_then(|value| value.as_array());
     let Some(raw_changes) = raw_changes else {
         // Inquiry mode: one model's complete record (the replacement
-        // template), or the provider listing (the no-op detection the GLM
-        // rehearsal made the first step).
+        // template), the provider listing (the no-op detection the GLM
+        // rehearsal made the first step), or — with no providerId — the
+        // organization-level listing the disambiguation step runs on.
         let Some(provider_id) = provider_id else {
-            return Err("providerId is required when changes is omitted".into());
+            let lines = org_listing(&providers).await;
+            return text_result(lines.join("\n"), json!({ "inquiry": "providers" }));
         };
         if let Some(model_id) = params
             .get("modelId")
@@ -1186,6 +1194,45 @@ fn record_dump(
 }
 
 /// The provider's live catalog view, as the model sees it.
+/// The organization-grouped provider listing behind `model_proposal`'s
+/// providerless inquiry mode — the disambiguation step's data. A request
+/// like "update Xiaomi" names an organization; the variants under it are
+/// the concrete, RPC-addressable providers, and only the user can pick
+/// between them.
+async fn org_listing(providers: &ProviderAdapter) -> Vec<String> {
+    let mut lines = vec![
+        "Providers by organization (one organization often carries several \
+         providers; resolve the request to ONE provider id):"
+            .to_string(),
+    ];
+    for row in providers.providers().await {
+        if row.variants.len() == 1 {
+            let variant = &row.variants[0];
+            lines.push(format!(
+                "{} — {}{}",
+                variant.id.0,
+                variant.name,
+                configured_note(variant.configured)
+            ));
+        } else {
+            lines.push(format!("{} — {}:", row.id, row.name));
+            for variant in &row.variants {
+                lines.push(format!(
+                    "  {} — {}{}",
+                    variant.id.0,
+                    variant.name,
+                    configured_note(variant.configured)
+                ));
+            }
+        }
+    }
+    lines
+}
+
+fn configured_note(configured: bool) -> &'static str {
+    if configured { " [configured]" } else { "" }
+}
+
 fn local_listing(providers: &ProviderAdapter, provider_id: &str) -> Vec<String> {
     let hidden: HashSet<String> = providers
         .settings
@@ -1295,6 +1342,36 @@ mod tests {
         CatalogChange::UpsertModelRecord {
             provider_id: provider.to_string(),
             record: Box::new(record(provider, id, base_url)),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_providerless_inquiry_lists_organizations_and_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let listing = org_listing(&providers).await;
+        // Every addressable provider appears; an organization carrying
+        // several providers indents its variants under the org row — the
+        // shape the disambiguation step asks the user to pick from.
+        let multi = providers
+            .providers()
+            .await
+            .into_iter()
+            .find(|row| row.variants.len() > 1)
+            .expect("the catalog carries a multi-provider organization");
+        let org_line = listing
+            .iter()
+            .position(|line| line.starts_with(&format!("{} — ", multi.id.0)))
+            .expect("org row present");
+        for variant in &multi.variants {
+            assert!(
+                listing[org_line..]
+                    .iter()
+                    .any(|line| line.starts_with("  ") && line.contains(variant.id.0.as_str())),
+                "variant {} not indented under {}",
+                variant.id.0,
+                multi.id.0
+            );
         }
     }
 
