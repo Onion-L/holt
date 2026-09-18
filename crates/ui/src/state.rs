@@ -26,7 +26,7 @@ use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
 use crate::comments::DiffComment;
-use holt_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
+use holt_doc::{MessageStatus, SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, EngineInfo,
@@ -635,6 +635,30 @@ impl AppState {
     pub fn unwatch_subagent_doc(&mut self, doc_id: &str) {
         self.sub_watch_tasks.remove(doc_id);
         self.sub_transcripts.remove(doc_id);
+    }
+
+    /// Watch a doc through a session cutoff (the model-setup dialog):
+    /// `sub_transcripts[view_key]` carries only entries created at/after
+    /// `cutoff_ms` plus whatever streams right now, so the dialog reopens
+    /// clean while the doc — and the model's context — keeps everything.
+    /// Lifecycle is the subagent watch's: [`Self::unwatch_subagent_doc`] on
+    /// `view_key` stops it.
+    pub fn watch_doc_view(
+        &mut self,
+        source: String,
+        view_key: String,
+        cutoff_ms: i64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sub_watch_tasks.contains_key(&view_key) {
+            return;
+        }
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        self.sub_transcripts.entry(view_key.clone()).or_default();
+        let task = spawn_doc_view_watch(cx, handle, source, view_key.clone(), cutoff_ms);
+        self.sub_watch_tasks.insert(view_key, task);
     }
 
     /// Frozen-blob path: the finished subagent's uploaded transcript, no
@@ -1721,6 +1745,93 @@ fn spawn_transcript_watch(
     })
 }
 
+/// The view's visible slice: in-session entries plus whatever is streaming
+/// (a live turn survives a dialog reopen regardless of when it started).
+fn doc_view_visible(full: &[SessionMessageEntry], cutoff_ms: i64) -> Vec<SessionMessageEntry> {
+    full.iter()
+        .filter(|entry| {
+            entry.created_at >= cutoff_ms || entry.status == Some(MessageStatus::Streaming)
+        })
+        .cloned()
+        .collect()
+}
+
+/// [`spawn_subagent_watch`]'s session-filtered sibling: maintains the full
+/// transcript inside the pump and publishes `doc_view_visible`'s slice
+/// under `view`. The apply/resubscribe discipline is identical — a desync
+/// resubscribes and the fresh stream's opening reset heals the copy.
+fn spawn_doc_view_watch(
+    cx: &mut Context<AppState>,
+    handle: EngineHandle,
+    source: String,
+    view: String,
+    cutoff_ms: i64,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let mut full: Vec<SessionMessageEntry> = Vec::new();
+        'resubscribe: loop {
+            let params = serde_json::json!({ "chatId": source });
+            let mut rx = match handle
+                .client()
+                .subscribe(methods::WATCH_DOC_MESSAGES, params)
+                .await
+            {
+                Ok(rx) => rx,
+                Err(err) => {
+                    tracing::warn!(%source, error = %err, "doc view watch failed; retrying");
+                    if this.update(cx, |_, _| {}).is_err() {
+                        return;
+                    }
+                    cx.background_executor()
+                        .timer(WatchCoordinator::RETRY_DELAY)
+                        .await;
+                    continue 'resubscribe;
+                }
+            };
+            while let Some(value) = rx.recv().await {
+                let frame: TranscriptFrame = match WatchCoordinator::decode(value) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "malformed doc view frame; resubscribing");
+                        cx.background_executor()
+                            .timer(WatchCoordinator::RETRY_DELAY)
+                            .await;
+                        continue 'resubscribe;
+                    }
+                };
+                let mut desync = false;
+                let alive = this.update(cx, |state, cx| {
+                    // A stale pump racing an unwatch finds no key.
+                    if !state.sub_watch_tasks.contains_key(&view) {
+                        return false;
+                    }
+                    if let Err(err) = holt_doc::apply_transcript_frame(&mut full, frame) {
+                        tracing::warn!(%view, error = %err, "resubscribing doc view watch");
+                        desync = true;
+                    }
+                    state
+                        .sub_transcripts
+                        .insert(view.clone(), doc_view_visible(&full, cutoff_ms));
+                    cx.notify();
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    return;
+                }
+                if desync {
+                    continue 'resubscribe;
+                }
+            }
+            if this.update(cx, |_, _| {}).is_err() {
+                return;
+            }
+            cx.background_executor()
+                .timer(WatchCoordinator::RETRY_DELAY)
+                .await;
+        }
+    })
+}
+
 /// [`spawn_transcript_watch`]'s shape, writing into `sub_transcripts[doc_id]`
 /// instead of the selected chat's transcript. The apply guard is PER KEY:
 /// the map still holding the key (unwatch/snapshot both remove it), never
@@ -2478,6 +2589,27 @@ mod tests {
             },
         );
         assert!(state.pending_echoes().is_empty());
+    }
+
+    #[test]
+    fn doc_view_shows_the_session_plus_live_work() {
+        let entry = |id: &str, created_at: i64, streaming: bool| SessionMessageEntry {
+            id: id.into(),
+            role: holt_doc::MessageRole::Assistant,
+            parts: vec![],
+            created_at,
+            device_id: "local".into(),
+            status: streaming.then_some(MessageStatus::Streaming),
+            continuation_of: None,
+        };
+        let full = vec![
+            entry("old", 10, false),
+            entry("live", 10, true), // started before the cutoff but streaming
+            entry("new", 200, false),
+        ];
+        let visible = doc_view_visible(&full, 100);
+        let ids: Vec<&str> = visible.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, ["live", "new"]);
     }
 
     #[test]

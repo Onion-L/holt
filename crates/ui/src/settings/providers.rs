@@ -4,10 +4,11 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Task, Window,
-    div, prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Subscription,
+    Task, Window, div, prelude::*, px,
 };
-use holt_proto::{Model, Provider};
+use holt_doc::{MessagePart, SessionMessageEntry};
+use holt_proto::{Model, Provider, ToolCall};
 use holt_rpc::methods;
 use serde::Deserialize;
 
@@ -106,28 +107,39 @@ pub struct ProvidersPage {
     record_form: Option<RecordForm>,
     /// Hidden rows per variant, loaded beside the model list.
     hidden: HashMap<String, Loadable<Vec<HiddenModel>>>,
-    /// Two-step reset confirmations: the first click arms, the second
-    /// executes. Per provider (variant id) and global.
+    /// Two-step per-provider reset confirmation: the first click arms, the
+    /// second executes. The GLOBAL reset rides a confirm dialog instead
+    /// (`confirm_reset_all`) — the armed-button copy never fit the row.
     armed_reset: Option<String>,
-    armed_reset_all: bool,
+    /// The global reset's confirm dialog is open.
+    confirm_reset_all: bool,
     /// The AI tab (V2c): the hidden setup chat's id (kept across dialog
-    /// opens), its transcript rows, the picker's catalog and popup, the
-    /// composer input, the review panel's proposals, and the watch task
-    /// keeping transcript and proposals current while the dialog lives.
+    /// opens), the real Transcript view pinned to it (fed by AppState's
+    /// doc watch), the picker's catalog and popup, the composer input, and
+    /// the review panel's proposals. The panel refreshes when the setup
+    /// transcript's proposal-tool signature moves (observed off AppState).
     setup_chat: Option<String>,
-    setup_transcript: Vec<serde_json::Value>,
+    setup_transcript_view: Option<Entity<crate::transcript::Transcript>>,
+    /// The session view's last-rendered emptiness — the observe hook's
+    /// placeholder ↔ transcript flip detector.
+    setup_doc_empty: bool,
+    setup_proposal_signature: (usize, usize),
     setup_models: Loadable<Vec<Model>>,
     setup_model_menu: Popup<()>,
     setup_selected_model: Option<String>,
     setup_input: Option<Entity<ComposerInput>>,
+    setup_input_events: Option<Subscription>,
+    setup_state_observe: Option<Subscription>,
     setup_proposals: Vec<serde_json::Value>,
-    setup_task: Option<Task<()>>,
     task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
 }
 
 impl ProvidersPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let setup_observe = cx.observe(&state, |page: &mut Self, state, cx| {
+            page.on_setup_state_changed(state, cx);
+        });
         let mut page = Self {
             state,
             providers: Loadable::Idle,
@@ -147,20 +159,52 @@ impl ProvidersPage {
             record_form: None,
             hidden: HashMap::new(),
             armed_reset: None,
-            armed_reset_all: false,
+            confirm_reset_all: false,
             setup_chat: None,
-            setup_transcript: Vec::new(),
+            setup_transcript_view: None,
+            setup_doc_empty: true,
+            setup_proposal_signature: (0, 0),
             setup_models: Loadable::Idle,
             setup_model_menu: Popup::default(),
             setup_selected_model: None,
             setup_input: None,
+            setup_input_events: None,
+            setup_state_observe: None,
             setup_proposals: Vec::new(),
-            setup_task: None,
             task: None,
             collapse_task: None,
         };
+        // The setup chat's transcript lives in AppState's sub_transcripts;
+        // its proposal-tool signature moving is the review panel's refresh
+        // signal.
+        page.setup_state_observe = Some(setup_observe);
         page.load(cx);
         page
+    }
+
+    /// AppState changed: the page re-renders when the session view's
+    /// emptiness flips (the placeholder ↔ transcript mount decision lives
+    /// here — a mounted Transcript re-renders itself), and the review panel
+    /// re-reads when the proposal-tool signature moves.
+    fn on_setup_state_changed(&mut self, state: Entity<AppState>, cx: &mut Context<Self>) {
+        let Some(chat_id) = self.setup_chat.clone() else {
+            return;
+        };
+        if self.setup_transcript_view.is_none() {
+            return;
+        }
+        let (empty, signature) = {
+            let doc = state.read(cx).sub_transcript(&setup_view_key(&chat_id));
+            (doc.is_empty(), proposal_signature(doc))
+        };
+        if empty != self.setup_doc_empty {
+            self.setup_doc_empty = empty;
+            cx.notify();
+        }
+        if signature != self.setup_proposal_signature {
+            self.setup_proposal_signature = signature;
+            self.refresh_setup_proposals(cx);
+        }
     }
 
     /// Re-mask every key input and forget which were unmasked — called when
@@ -668,33 +712,59 @@ impl ProvidersPage {
     fn close_add_dialog(&mut self, cx: &mut Context<Self>) {
         self.add_dialog = None;
         self.new_provider_error = None;
+        // Dropping the view + the doc watch stops all background work; the
+        // next open re-prepares from a fresh subscription.
+        self.setup_transcript_view = None;
+        self.setup_doc_empty = true;
+        self.setup_proposal_signature = (0, 0);
+        if let Some(chat_id) = self.setup_chat.clone() {
+            self.state.update(cx, |state, _| {
+                state.unwatch_subagent_doc(&setup_view_key(&chat_id))
+            });
+        }
         cx.notify();
     }
 
     // -- The AI tab (V2c) --------------------------------------------------
 
-    /// The default setup model: the selected chat's config. The async
-    /// preparation falls back to the first configured provider when no
-    /// chat carries a config.
+    /// The default setup model: the selected chat's config, normalized to
+    /// the provider-qualified id (older stored configs may hold a bare id —
+    /// the engine's `wire_model_id` rule). The async preparation falls back
+    /// to the first configured provider when no chat carries a config.
     fn default_setup_model(&self, cx: &Context<Self>) -> Option<(String, String)> {
         let config = self
             .state
             .read(cx)
             .selected_chat_row()
             .and_then(|chat| chat.config.clone())?;
-        Some((config.provider.0.clone(), config.model.clone()))
+        let provider = config.provider.0.clone();
+        let model = format!(
+            "{provider}/{}",
+            config.model.rsplit('/').next().unwrap_or(&config.model)
+        );
+        Some((provider, model))
     }
 
     /// Prepares the AI tab: ensures the singleton setup chat, loads the
-    /// picker catalog, and starts the transcript watch. Idempotent — an
-    /// already-prepared tab only re-subscribes.
+    /// picker catalog, and pins a real Transcript view to the chat (fed by
+    /// AppState's doc watch). Idempotent — an already-prepared tab returns.
     fn prepare_setup(&mut self, cx: &mut Context<Self>) {
         if self.setup_input.is_none() {
-            self.setup_input = Some(
-                cx.new(|cx| ComposerInput::new("Which provider or model should be set up?", cx)),
-            );
+            let input =
+                cx.new(|cx| ComposerInput::new("Which provider or model should be set up?", cx));
+            // Enter sends, like every other single-shot field; edits
+            // repaint so the send circle dims/lights with the content.
+            self.setup_input_events = Some(cx.subscribe(
+                &input,
+                |page: &mut Self, _, event, cx| match event {
+                    crate::composer::ComposerInputEvent::Submitted => page.send_setup_message(cx),
+                    crate::composer::ComposerInputEvent::Edited => cx.notify(),
+                    _ => {}
+                },
+            ));
+            self.setup_input = Some(input);
         }
-        if self.setup_chat.is_some() && self.setup_task.is_some() {
+        if self.setup_transcript_view.is_some() {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -748,85 +818,56 @@ impl ProvidersPage {
                 return;
             };
             let models = configured_model_catalog(&engine).await;
-            let mut rx = engine
-                .client()
-                .subscribe(
-                    methods::WATCH_DOC_MESSAGES,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await
-                .ok();
-            let first = match rx.as_mut() {
-                Some(rx) => rx.recv().await,
-                None => None,
-            };
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
-            let watch_engine = engine.clone();
-            let watch_chat_id = chat_id.clone();
+            // The dialog session starts clean: only entries created after
+            // this moment (plus live work) render. The doc keeps everything
+            // — the model's context is the singleton chat's point — the
+            // VIEW is what's history-free.
+            let cutoff_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis() as i64)
+                .unwrap_or(0);
             this.update(cx, |page, cx| {
-                page.setup_chat = Some(chat_id);
-                page.setup_selected_model = Some(format!("{provider}/{model}"));
+                let view_key = setup_view_key(&chat_id);
+                page.setup_chat = Some(chat_id.clone());
+                // The qualified id is both the display value and the run
+                // identity — no re-prefixing.
+                page.setup_selected_model = Some(model.clone());
                 page.setup_models = Loadable::Ready(models);
-                page.setup_transcript = transcript_reset_rows(first.as_ref());
                 page.setup_proposals = proposals;
-                if let Some(rx) = rx {
-                    page.start_setup_watch(rx, watch_engine, watch_chat_id, cx);
-                }
+                // The chat surface is the real Transcript (full markdown,
+                // thinking, tool chips, the working trailer) over the
+                // session-filtered doc view.
+                page.state.update(cx, |state, cx| {
+                    state.watch_doc_view(chat_id, view_key.clone(), cutoff_ms, cx);
+                });
+                let state = page.state.clone();
+                page.setup_transcript_view =
+                    Some(cx.new(|cx| {
+                        crate::transcript::Transcript::for_doc(state, view_key, true, cx)
+                    }));
                 cx.notify();
             })
             .ok();
         }));
     }
 
-    /// The watch loop: every transcript frame refreshes the mini chat and
-    /// the review panel's proposals.
-    fn start_setup_watch(
-        &mut self,
-        mut rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
-        engine: crate::state::EngineHandle,
-        chat_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.setup_task = Some(cx.spawn(async move |this, cx| {
-            while let Some(frame) = rx.recv().await {
-                let proposals = setup_proposal_rows(&engine, &chat_id).await;
-                let rows = transcript_reset_rows(Some(&frame));
-                let alive = this
-                    .update(cx, |page, cx| {
-                        if page.setup_chat.as_deref() != Some(chat_id.as_str()) {
-                            return false;
-                        }
-                        page.setup_transcript = rows;
-                        page.setup_proposals = proposals;
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-                if !alive {
-                    break;
-                }
-            }
-        }));
-    }
-
     fn pick_setup_model(&mut self, qualified: String, cx: &mut Context<Self>) {
         self.close_setup_model_menu(cx);
-        let Some((provider, model)) = qualified
-            .split_once('/')
-            .map(|(provider, model)| (provider.to_string(), model.to_string()))
-        else {
+        let Some((provider, _)) = qualified.split_once('/') else {
             return;
         };
+        let provider = provider.to_string();
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.setup_selected_model = Some(qualified);
+        self.setup_selected_model = Some(qualified.clone());
         self.task = Some(cx.spawn(async move |this, cx| {
             let _ = engine
                 .client()
                 .call(
                     methods::ENSURE_MODEL_SETUP_CHAT,
-                    serde_json::json!({ "provider": provider, "model": model }),
+                    serde_json::json!({ "provider": provider, "model": qualified }),
                 )
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
@@ -864,12 +905,12 @@ impl ProvidersPage {
         let Some(selected) = self.setup_selected_model.clone() else {
             return;
         };
-        let Some((provider, model)) = selected
-            .split_once('/')
-            .map(|(provider, model)| (provider.to_string(), model.to_string()))
-        else {
+        // `RunRequest.model` is the provider-qualified id (the composer's
+        // convention); the provider half alone addresses the credential.
+        let Some((provider, _)) = selected.split_once('/') else {
             return;
         };
+        let provider = provider.to_string();
         let cwd = self
             .state
             .read(cx)
@@ -900,7 +941,7 @@ impl ProvidersPage {
                             "request": {
                                 "prompt": prompt,
                                 "provider": provider,
-                                "model": model,
+                                "model": selected,
                                 "reasoning": null,
                                 "modelOptions": {},
                                 "cwd": cwd,
@@ -1074,7 +1115,6 @@ impl ProvidersPage {
             self.reset_provider(provider, cx);
         } else {
             self.armed_reset = Some(provider);
-            self.armed_reset_all = false;
             cx.notify();
         }
     }
@@ -1106,18 +1146,6 @@ impl ProvidersPage {
             })
             .ok();
         }));
-    }
-
-    /// Two-step global reset: first click arms, second executes.
-    fn arm_or_reset_all(&mut self, cx: &mut Context<Self>) {
-        if self.armed_reset_all {
-            self.armed_reset_all = false;
-            self.reset_all(cx);
-        } else {
-            self.armed_reset_all = true;
-            self.armed_reset = None;
-            cx.notify();
-        }
     }
 
     fn reset_all(&mut self, cx: &mut Context<Self>) {
@@ -1485,7 +1513,7 @@ impl Render for ProvidersPage {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .child(top_action_row(self.armed_reset_all, &theme, cx))
+                    .child(top_action_row(&theme, cx))
                     .children(rows)
                     .into_any_element()
             }
@@ -1504,9 +1532,19 @@ impl Render for ProvidersPage {
                     ))
                     .child(body),
             );
-        // The Add Provider dialog rides a deferred layer, so the page can
-        // host it directly (the appearance library's review dialog does the
-        // same).
+        // The page hosts its own deferred-layer modals (the appearance
+        // library's review dialog does the same).
+        if self.confirm_reset_all {
+            let card = reset_all_dialog(&theme, cx);
+            return div()
+                .child(page)
+                .child(popover::modal(
+                    "reset-all-providers-dialog",
+                    window.viewport_size(),
+                    card,
+                ))
+                .into_any_element();
+        }
         if self.add_dialog.is_some() {
             let card = add_provider_dialog(self, &theme, cx);
             return div()
@@ -2067,30 +2105,13 @@ fn panel_danger_row(
 }
 
 /// The page's top action row (design-v2): the Add Provider primary on the
-/// left, the global reset (two-step) on the right. The reset stays a compact
-/// button — a spacer pushes it right; stretching the button itself would
-/// paint its hover/armed wash across the whole row.
-fn top_action_row(armed: bool, theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
+/// left, the global reset on the right — a compact ghost button that opens
+/// the confirm dialog (a spacer pushes it right; stretching the button
+/// itself would paint its hover wash across the whole row).
+fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
     let hover_theme = theme.clone();
-    let mut reset = widgets::ghost_action(theme)
-        .id("reset-all-providers")
-        .on_click(cx.listener(move |page, _, _, cx| page.arm_or_reset_all(cx)))
-        .child(if armed {
-            "Confirm reset ALL providers — keeps keys, drops every user-written entry"
-        } else {
-            "Reset all providers"
-        });
-    reset = if armed {
-        // The armed state reads without hovering: a persistent danger tint.
-        reset
-            .bg(danger.opacity(0.10))
-            .text_color(danger_muted)
-            .hover(move |style| style.bg(danger.opacity(0.16)).text_color(danger_muted))
-    } else {
-        reset.hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-    };
     div()
         .flex()
         .items_center()
@@ -2117,7 +2138,54 @@ fn top_action_row(armed: bool, theme: &Theme, cx: &mut Context<ProvidersPage>) -
                 ),
         )
         .child(div().flex_1())
-        .child(reset)
+        .child(
+            widgets::ghost_action(theme)
+                .id("reset-all-providers")
+                .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
+                .on_click(cx.listener(|page, _, _, cx| {
+                    page.confirm_reset_all = true;
+                    cx.notify();
+                }))
+                .child("Reset all providers"),
+        )
+        .into_any_element()
+}
+
+/// The global reset's confirm dialog (the archived page's clear-all
+/// pattern): destructive, counted-out, explicit.
+fn reset_all_dialog(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
+    popover::dialog_card(theme)
+        .child(popover::dialog_title(theme, "Reset all providers?"))
+        .child(div().mt(px(6.0)).child(popover::dialog_body(
+            theme,
+            "Custom models, model records, hidden lists, and endpoint overrides return to \
+                 the compiled catalog for every provider. API keys are kept. This can\u{2019}t \
+                 be undone.",
+        )))
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(theme, "Cancel", "reset-all-cancel")
+                        .id("reset-all-cancel")
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.confirm_reset_all = false;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    popover::btn_danger(theme, "Reset all")
+                        .id("reset-all-confirm")
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.confirm_reset_all = false;
+                            page.reset_all(cx);
+                        })),
+                ),
+        )
         .into_any_element()
 }
 
@@ -2129,12 +2197,15 @@ fn add_provider_dialog(
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
     let tab = page.add_dialog.unwrap_or(AddProviderTab::Manual);
+    // The AI tab is a chat surface: near-window size so the transcript has
+    // room; the Manual tab keeps the compact form card.
     let mut card = popover::dialog_card(theme)
         .w(if tab == AddProviderTab::Ai {
-            px(620.0)
+            px(760.0)
         } else {
             px(560.0)
         })
+        .when(tab == AddProviderTab::Ai, |card| card.h(px(640.0)))
         .gap(px(14.0))
         .child(
             div()
@@ -2283,48 +2354,133 @@ fn manual_tab(
 /// proposal cards are the whole surface.
 fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let input = page.setup_input.clone();
-    let transcript = page.setup_transcript.clone();
     let proposals = page.setup_proposals.clone();
     let models_ready = matches!(page.setup_models, Loadable::Ready(_));
-    let column = div().flex().flex_col().gap(px(10.0));
-    // The model row: picker (or why it is unavailable).
-    let model_row = match &page.setup_models {
-        Loadable::Error(reason) => div()
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.danger_muted.opacity(0.9))
-            .child(SharedString::from(reason.clone()))
-            .into_any_element(),
-        _ => setup_model_picker(page, theme, cx),
-    };
-    let mut column = column.child(model_row);
+    let view = page.setup_transcript_view.clone();
+    let doc_empty = page
+        .setup_chat
+        .as_deref()
+        .map(|id| {
+            page.state
+                .read(cx)
+                .sub_transcript(&setup_view_key(id))
+                .is_empty()
+        })
+        .unwrap_or(true);
+    let mut column = div().flex().flex_col().gap(px(10.0)).flex_1().min_h_0();
+    if let Loadable::Error(reason) = &page.setup_models {
+        return column
+            .child(widgets::error_strip(theme, reason.clone()))
+            .into_any_element();
+    }
     if models_ready || page.setup_chat.is_some() {
-        column = column
-            .child(setup_transcript(&transcript, theme))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .children(input.map(|input| {
-                        bordered_input(theme, input)
-                            .flex_1()
-                            .min_w_0()
-                            .into_any_element()
-                    }))
-                    .child(
-                        action_button(theme)
-                            .id("setup-send")
-                            .hover(|style| style.bg(crate::theme::ink(0.04)))
-                            .on_click(cx.listener(|page, _, _, cx| page.send_setup_message(cx)))
-                            .child("Send"),
-                    ),
-            )
-            .child(setup_review_panel(&proposals, theme, cx));
+        // The chat surface fills the dialog like the new-chat canvas: the
+        // transcript grows, the composer card stays pinned at the bottom.
+        let surface: AnyElement = if let Some(view) = view.filter(|_| !doc_empty) {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(view)
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h(px(200.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .max_w(px(420.0))
+                        .text_align(gpui::TextAlign::Center)
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted.opacity(0.8))
+                        .child(
+                            "Tell the assistant which provider or model to set up — it \
+                             researches the official docs, compares the local catalog, and \
+                             prepares a proposal you can review here.",
+                        ),
+                )
+                .into_any_element()
+        };
+        column = column.child(surface);
+        // The review panel pops in when a proposal lands — the whole point
+        // of the run — and stays out of the way otherwise.
+        if !proposals.is_empty() {
+            column = column.child(setup_review_panel(&proposals, theme, cx));
+        }
+        if let Some(input) = input {
+            column = column.child(setup_composer(page, theme, input, cx));
+        }
     }
     column.into_any_element()
 }
 
-/// The compact model dropdown (the title-settings picker's pattern).
+/// The canvas-style composer card: the multiline input on top, the model
+/// chip and the send circle in the toolbar row — the new-chat canvas in
+/// miniature.
+fn setup_composer(
+    page: &mut ProvidersPage,
+    theme: &Theme,
+    input: Entity<ComposerInput>,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let empty = input.read(cx).text().trim().is_empty();
+    div()
+        .rounded(px(16.0))
+        .bg(theme.input_glass_bg())
+        .border_1()
+        .border_color(theme.border)
+        .px(px(12.0))
+        .pt(px(10.0))
+        .pb(px(8.0))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(input)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(div().flex_1())
+                .child(setup_model_picker(page, theme, cx))
+                .child(
+                    div()
+                        .id("setup-send")
+                        .size(px(28.0))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(theme.text)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(empty, |el| el.opacity(0.35))
+                        .when(!empty, |el| {
+                            el.cursor_pointer()
+                                .hover(|style| style.opacity(0.85))
+                                .on_click(cx.listener(|page, _, _, cx| page.send_setup_message(cx)))
+                        })
+                        .child(
+                            crate::icons::icon(crate::icons::ARROW_UP)
+                                .size(px(14.0))
+                                .text_color(theme.bg),
+                        ),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The session-filtered doc view's key in AppState (local feed plumbing,
+/// never sent to the engine).
+fn setup_view_key(chat_id: &str) -> String {
+    format!("setup-view:{chat_id}")
+}
+
+/// The composer card's model chip (the new-chat canvas' pattern): quiet
+/// text + chevron, the menu opening ABOVE — the composer sits at the
+/// dialog's bottom.
 fn setup_model_picker(
     page: &mut ProvidersPage,
     theme: &Theme,
@@ -2385,30 +2541,32 @@ fn setup_model_picker(
         .children(rows)
         .into_any_element();
     let selected_label = SharedString::from(
-        selected_id
-            .clone()
+        catalog
+            .iter()
+            .find(|model| Some(model.id.as_str()) == selected_id.as_deref())
+            .map(|model| model.label.clone())
+            // A stored default from another variant won't match this
+            // catalog — fall back to the bare model id, not the qualified.
+            .or_else(|| {
+                selected_id
+                    .as_deref()
+                    .and_then(|id| id.rsplit('/').next())
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "Select a model".into()),
     );
-    let border = if page.setup_model_menu.is_open() {
-        theme.border_strong
-    } else {
-        theme.border
-    };
     div()
         .id("setup-model-dropdown")
         .relative()
-        .w(px(300.0))
-        .h(px(30.0))
-        .px(px(10.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(border)
-        .bg(theme.input_glass_bg())
+        .px(px(8.0))
+        .py(px(4.0))
+        .rounded(px(6.0))
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(8.0))
+        .gap(px(4.0))
         .cursor_pointer()
+        .hover(|style| style.bg(crate::theme::ink(0.05)))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(|page, _, _, _| page.setup_model_menu.note_trigger_press()),
@@ -2416,21 +2574,18 @@ fn setup_model_picker(
         .on_click(cx.listener(|page, _, _, cx| page.toggle_setup_model_menu(cx)))
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .font_family(theme.font_mono.clone())
-                .text_size(crate::typography::ui_rems(11.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text)
                 .child(selected_label),
         )
         .child(
             crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                .size(px(14.0))
+                .size(px(12.0))
                 .flex_none()
                 .text_color(theme.text_muted),
         )
         .when_some(page.setup_model_menu.get(), |trigger, _| {
-            trigger.child(popover::anchored_menu_below(
+            trigger.child(popover::anchored_menu_above_end(
                 "setup-model-menu",
                 menu,
                 page.setup_model_menu.closing_since(),
@@ -2439,110 +2594,27 @@ fn setup_model_picker(
         .into_any_element()
 }
 
-/// The mini transcript: text rows and tool chips only (the fixed flow's
-/// three row kinds — design-v2's "简洁" contract).
-fn setup_transcript(entries: &[serde_json::Value], theme: &Theme) -> AnyElement {
-    let mut rows: Vec<AnyElement> = Vec::new();
-    for entry in entries {
-        let role = entry["role"].as_str().unwrap_or_default();
-        for part in entry["parts"].as_array().unwrap_or(&Vec::new()) {
-            if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
-                let user = role == "user";
-                rows.push(
-                    div()
-                        .id(("setup-row-text", rows.len()))
-                        .max_w(px(480.0))
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .rounded(px(8.0))
-                        .when(user, |row| row.bg(crate::theme::ink(0.05)))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(if user { theme.text } else { theme.text_muted })
-                        .child(SharedString::from(text.to_string()))
-                        .into_any_element(),
-                );
-            } else if part["call"].is_object() {
-                let error = part["isError"].as_bool() == Some(true);
-                rows.push(
-                    div()
-                        .id(("setup-row-tool", rows.len()))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(10.0))
-                        .py(px(3.0))
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(if error {
-                            theme.danger_muted.opacity(0.5)
-                        } else {
-                            theme.border
-                        })
-                        .font_family(theme.font_mono.clone())
-                        .text_size(crate::typography::ui_rems(10.5))
-                        .text_color(if error {
-                            theme.danger_muted
-                        } else {
-                            theme.text_muted
-                        })
-                        .child(format!("{}()", tool_display_name(&part["call"])))
-                        .into_any_element(),
-                );
-            } else if let Some(notice) = part["message"].as_str() {
-                rows.push(
-                    div()
-                        .id(("setup-row-notice", rows.len()))
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.text_muted.opacity(0.7))
-                        .child(SharedString::from(notice.to_string()))
-                        .into_any_element(),
-                );
+/// The review panel's refresh signal: (total, resolved) `model_proposal`
+/// tool parts in the setup transcript. The panel re-reads only when this
+/// moves — text/tool ticks alone never trigger the RPC.
+fn proposal_signature(transcript: &[SessionMessageEntry]) -> (usize, usize) {
+    let mut total = 0;
+    let mut resolved = 0;
+    for entry in transcript {
+        for part in &entry.parts {
+            if let MessagePart::Tool {
+                call,
+                resolved: done,
+                ..
+            } = part
+                && matches!(call, ToolCall::Unknown { name, .. } if name == "model_proposal")
+            {
+                total += 1;
+                resolved += *done as usize;
             }
         }
     }
-    let list = if rows.is_empty() {
-        div()
-            .py(px(10.0))
-            .text_size(crate::typography::ui_rems(11.5))
-            .text_color(theme.text_muted.opacity(0.8))
-            .child(
-                "Nothing yet — tell the assistant which provider or model to set up. \
-                 It researches the official docs, compares the local catalog, and \
-                 prepares a proposal for the review panel below.",
-            )
-            .into_any_element()
-    } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .children(rows)
-            .into_any_element()
-    };
-    div()
-        .id("setup-transcript")
-        .h(px(240.0))
-        .p(px(4.0))
-        .overflow_y_scroll()
-        // ADR-0013: the page scrolls too — occlude or one wheel moves both.
-        .occlude()
-        .child(list)
-        .into_any_element()
-}
-
-/// A tool chip's name: the engine's decode keeps known shapes as `kind`
-/// (`webFetch`) and unknown ones as `name`; the agent-facing spelling wins.
-fn tool_display_name(call: &serde_json::Value) -> String {
-    let raw = call
-        .get("name")
-        .or_else(|| call.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("tool");
-    match raw {
-        "webFetch" => "web_fetch".to_string(),
-        "webSearch" => "web_search".to_string(),
-        other => other.to_string(),
-    }
+    (total, resolved)
 }
 
 /// The review panel: one row per stored proposal — summary, write, discard.
@@ -2670,20 +2742,8 @@ async fn first_configured_model(engine: &crate::state::EngineHandle) -> Option<(
         .ok()?;
     let models = serde_json::from_value::<Vec<Model>>(value).ok()?;
     let first = models.first()?;
-    let bare = first
-        .id
-        .strip_prefix(&format!("{}/", provider.id.0))
-        .unwrap_or(&first.id);
-    Some((provider.id.0.clone(), bare.to_string()))
-}
-
-/// A transcript frame's reset rows.
-fn transcript_reset_rows(frame: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
-    frame
-        .and_then(|frame| frame.get("reset"))
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default()
+    // Catalog ids are already provider-qualified.
+    Some((provider.id.0.clone(), first.id.clone()))
 }
 
 /// The review panel's current proposals.
@@ -3035,25 +3095,55 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tool_chips_show_agent_facing_names() {
-        assert_eq!(
-            tool_display_name(&serde_json::json!({ "kind": "webFetch", "url": "x" })),
-            "web_fetch"
-        );
-        assert_eq!(
-            tool_display_name(&serde_json::json!({ "kind": "unknown", "name": "model_proposal" })),
-            "model_proposal"
-        );
-        assert_eq!(tool_display_name(&serde_json::json!({})), "tool");
+    fn proposal_part(resolved: bool) -> MessagePart {
+        MessagePart::Tool {
+            id: "t".into(),
+            call: ToolCall::Unknown {
+                name: "model_proposal".into(),
+                input: None,
+            },
+            is_error: false,
+            resolved,
+            output: None,
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+            subagent_usage: None,
+            gate: None,
+        }
+    }
+
+    fn entry_with(id: &str, parts: Vec<MessagePart>) -> SessionMessageEntry {
+        SessionMessageEntry {
+            id: id.into(),
+            role: holt_doc::MessageRole::Assistant,
+            parts,
+            created_at: 0,
+            device_id: "local".into(),
+            status: None,
+            continuation_of: None,
+        }
     }
 
     #[test]
-    fn transcript_reset_rows_read_the_reset_array() {
-        let frame = serde_json::json!({ "reset": [{ "role": "user" }] });
-        assert_eq!(transcript_reset_rows(Some(&frame)).len(), 1);
-        assert!(transcript_reset_rows(Some(&serde_json::json!({ "delta": 1 }))).is_empty());
-        assert!(transcript_reset_rows(None).is_empty());
+    fn proposal_signature_counts_only_proposal_parts() {
+        assert_eq!(proposal_signature(&[]), (0, 0));
+        let transcript = vec![
+            entry_with("m1", vec![proposal_part(false)]),
+            entry_with("m2", vec![proposal_part(true), proposal_part(true)]),
+        ];
+        assert_eq!(proposal_signature(&transcript), (3, 2));
+        // Other tools never move the signature (no panel refresh storm).
+        let mut other = proposal_part(true);
+        if let MessagePart::Tool { call, .. } = &mut other {
+            *call = ToolCall::WebSearch { query: "x".into() };
+        }
+        assert_eq!(proposal_signature(&[entry_with("m3", vec![other])]), (0, 0));
     }
 
     #[test]
