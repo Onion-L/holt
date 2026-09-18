@@ -2527,8 +2527,11 @@ impl RpcService for EngineService {
                 params.check_selector()?;
                 let path = params.require_path()?;
                 let root = self.search_files_root(&params.as_search_root())?;
+                // Skill roots ride along: a personal/holt `SKILL.md` opens
+                // in a sidebar file tab via its absolute catalog path.
+                let skill_roots = self.skills.out_of_workspace_roots();
                 let read = tokio::task::spawn_blocking(move || {
-                    crate::files::read_file(std::path::Path::new(&root), &path)
+                    crate::files::read_file(std::path::Path::new(&root), &path, &skill_roots)
                 })
                 .await
                 .map_err(|error| RpcError::Failed(format!("read task failed: {error}")))?

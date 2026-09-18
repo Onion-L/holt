@@ -361,6 +361,11 @@ pub enum TranscriptEvent {
     /// workspace file tab — the path is the change set's repo-relative one.
     /// Deleted files never emit this (the file is gone).
     OpenTurnFile { path: String },
+    /// A skill chip / "Open SKILL.md" affordance: the source `SKILL.md` in
+    /// the workspace file tab. The path is the absolute catalog location the
+    /// engine advertised — it may live outside the workspace (a personal
+    /// skill); the engine's read fence admits the skill roots.
+    OpenSkillFile { path: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
@@ -2329,6 +2334,67 @@ mod tests {
                 events.borrow().last(),
                 Some(TranscriptEvent::ReviewTurnChanges { chat_id, message_id, path })
                     if chat_id == "chat-1" && message_id == "m-1" && path.is_none()
+            ),
+            "{:?}",
+            events.borrow()
+        );
+    }
+
+    /// A skill invocation's "Open SKILL.md" affordance emits the
+    /// shell-facing open event with the file's absolute catalog path —
+    /// never an external `open_url` (user request: the file opens in the
+    /// right pane's file tab).
+    #[gpui::test]
+    fn skill_open_affordance_emits_the_skill_file_open(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+
+        use gpui::AppContext as _;
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![holt_doc::SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::Assistant,
+                parts: vec![holt_doc::MessagePart::Skill {
+                    id: "s0".into(),
+                    name: "research".into(),
+                    file: "/home/u/.agents/skills/research/SKILL.md".into(),
+                    content: Some("<skill name=\"research\">body</skill>".into()),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: Some(holt_doc::MessageStatus::Complete),
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        // The affordance lives in the folded-open body: expand first.
+        let toggle = cx.debug_bounds("skill-toggle").expect("skill toggle drawn");
+        cx.simulate_click(toggle.center(), Default::default());
+        cx.run_until_parked();
+
+        let link = cx
+            .debug_bounds("skill-open-file")
+            .expect("Open SKILL.md drawn");
+        cx.simulate_click(link.center(), Default::default());
+        assert!(
+            matches!(
+                events.borrow().last(),
+                Some(TranscriptEvent::OpenSkillFile { path })
+                    if path == "/home/u/.agents/skills/research/SKILL.md"
             ),
             "{:?}",
             events.borrow()

@@ -563,6 +563,13 @@ impl Shell {
             TranscriptEvent::OpenTurnFile { path } => {
                 self.open_file(path.clone(), None, true, cx);
             }
+            // A skill chip / "Open SKILL.md" affordance: the source file in
+            // the workspace file tab — same open path, pinned. The path may
+            // point outside the workspace (a personal skill); the engine's
+            // read fence admits the skill roots.
+            TranscriptEvent::OpenSkillFile { path } => {
+                self.open_file(path.clone(), None, true, cx);
+            }
         }
     }
 

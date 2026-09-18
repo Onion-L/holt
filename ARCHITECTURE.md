@@ -202,7 +202,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   These methods serve the far-right file tree and its contents tabs. Root
   containment, `.git` exclusion, and symlink fences are enforced engine-side
   in `engine::files` on every request; the UI never touches the workspace
-  filesystem itself.
+  filesystem itself. The one fence exception is `ReadWorkspaceFile`: a read
+  may also land inside one of the engine's skill roots (personal
+  `~/.agents/skills`, holt `<data_dir>/skills`; project skills already sit
+  under the cwd) so the transcript's skill chips open a `SKILL.md` in a
+  sidebar file tab wherever the skill lives — a read must reach a directory
+  under the root (the loader's skill shape), and saves and every other verb
+  keep the plain workspace fence.
 - Local images: `StageImage` (`{data}` base64) validates and durably saves
   pasted pixels under `<data_dir>/images/<uuid>.<ext>`, returning a stable
   `ManagedImage` path. `ReadImage` (`{path}`) returns validated local image

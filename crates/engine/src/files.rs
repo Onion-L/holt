@@ -103,6 +103,39 @@ pub(crate) fn resolve_inside_root(root: &Path, requested: &str) -> Result<PathBu
     Ok(canonical)
 }
 
+/// `resolve_inside_root`, plus the file READ's one exception: a request the
+/// workspace fence refuses gets a second chance against each skill root —
+/// the same resolve, containment, and `.git` rules judged against that
+/// skill directory instead. Symlinks still refuse when they land outside
+/// every allowed root: the original `OutsideRoot` fault survives.
+fn resolve_for_read(
+    root: &Path,
+    requested: &str,
+    skill_roots: &[PathBuf],
+) -> Result<PathBuf, FilesFault> {
+    match resolve_inside_root(root, requested) {
+        Ok(canonical) => Ok(canonical),
+        Err(fault @ FilesFault::OutsideRoot(_)) => {
+            for skill_root in skill_roots {
+                let expanded = crate::local_fs::expand_tilde(&skill_root.to_string_lossy());
+                // A missing skill root is ordinary (fresh machine) — skip,
+                // never fail the request on it.
+                if let Ok(skill_root) = Path::new(&expanded).canonicalize()
+                    && let Ok(canonical) = resolve_inside_root(&skill_root, requested)
+                    // Skills are DIRECTORIES under the root (the loader's
+                    // shape): a loose file at the root itself is not skill
+                    // content and stays fenced.
+                    && canonical.parent() != Some(skill_root.as_path())
+                {
+                    return Ok(canonical);
+                }
+            }
+            Err(fault)
+        }
+        Err(fault) => Err(fault),
+    }
+}
+
 /// `.git` never appears in the tree, in any form — directory or the
 /// gitdir-pointer file a linked worktree carries at its root.
 fn exclude_git(canonical: &Path, canonical_root: &Path) -> Result<(), FilesFault> {
@@ -280,9 +313,17 @@ fn version_token(metadata: &std::fs::Metadata) -> String {
 }
 
 /// Read a text file for the editor: bounded, UTF-8-strict, with the source
-/// facts (BOM, line endings, version token) a save must reproduce.
-pub(crate) fn read_file(root: &Path, requested: &str) -> Result<WorkspaceFileRead, FilesFault> {
-    let canonical = resolve_inside_root(root, requested)?;
+/// facts (BOM, line endings, version token) a save must reproduce. Beyond
+/// the workspace root, a read may land inside one of `skill_roots` — the
+/// personal/holt skill directories, whose `SKILL.md` files the sidebar
+/// opens in a file tab wherever they live (the UI's skill chips point at
+/// those absolute paths). Everything else stays root-fenced.
+pub(crate) fn read_file(
+    root: &Path,
+    requested: &str,
+    skill_roots: &[PathBuf],
+) -> Result<WorkspaceFileRead, FilesFault> {
+    let canonical = resolve_for_read(root, requested, skill_roots)?;
     let metadata = std::fs::symlink_metadata(&canonical).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => FilesFault::NotFound(canonical.display().to_string()),
         _ => FilesFault::Io(canonical.display().to_string(), error.to_string()),
@@ -891,11 +932,56 @@ mod tests {
         // Escape through a symlinked directory.
         let fault = list_directory(root, "elsewhere").unwrap_err();
         assert!(matches!(fault, FilesFault::OutsideRoot(_)));
-        let fault = read_file(root, "elsewhere/secret.txt").unwrap_err();
+        let fault = read_file(root, "elsewhere/secret.txt", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::OutsideRoot(_)));
         // Dot-dot traversal canonicalizes away: the parent of the root is
         // outside it.
         let fault = list_directory(root, "..").unwrap_err();
+        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+    }
+
+    #[test]
+    fn reads_reach_skill_roots_but_the_fence_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skills = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(skills.path().join("research")).unwrap();
+        write(&skills.path().join("research/SKILL.md"), b"# research\n");
+        let skill_roots = [skills.path().to_path_buf()];
+
+        // The skill's SKILL.md reads through its absolute location.
+        let requested = skills.path().join("research/SKILL.md");
+        let read = read_file(root, &requested.display().to_string(), &skill_roots).unwrap();
+        assert_eq!(read.text.as_deref(), Some("# research\n"));
+
+        // A symlink inside the skill root landing OUTSIDE still refuses —
+        // the fence judges where the path lands, not the spelling.
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("secret.txt"), b"x");
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            skills.path().join("escape.md"),
+        )
+        .unwrap();
+        let requested = skills.path().join("escape.md");
+        let fault = read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
+        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+
+        // Outside every allowed root stays fenced.
+        write(&outside.path().join("plain.txt"), b"x");
+        let requested = outside.path().join("plain.txt");
+        let fault = read_file(root, &requested.display().to_string(), &skill_roots).unwrap_err();
+        assert!(matches!(fault, FilesFault::OutsideRoot(_)));
+
+        // A loose file at the skill root itself is not skill content (the
+        // loader only treats directories as skills) — fenced too.
+        write(&skills.path().join("loose.md"), b"x");
+        let fault = read_file(
+            root,
+            &skills.path().join("loose.md").display().to_string(),
+            &skill_roots,
+        )
+        .unwrap_err();
         assert!(matches!(fault, FilesFault::OutsideRoot(_)));
     }
 
@@ -907,17 +993,17 @@ mod tests {
             &root.join("bom.txt"),
             "\u{FEFF}hello\r\nworld\r\n".as_bytes(),
         );
-        let read = read_file(root, "bom.txt").unwrap();
+        let read = read_file(root, "bom.txt", &[]).unwrap();
         assert_eq!(read.text.as_deref(), Some("hello\r\nworld\r\n"));
         assert!(read.bom);
         assert_eq!(read.line_endings, WorkspaceLineEndings::Crlf);
 
         write(&root.join("mixed.txt"), b"a\nb\r\nc\n");
-        let read = read_file(root, "mixed.txt").unwrap();
+        let read = read_file(root, "mixed.txt", &[]).unwrap();
         assert_eq!(read.line_endings, WorkspaceLineEndings::Mixed);
 
         write(&root.join("none.txt"), b"single line");
-        let read = read_file(root, "none.txt").unwrap();
+        let read = read_file(root, "none.txt", &[]).unwrap();
         assert_eq!(read.line_endings, WorkspaceLineEndings::None);
     }
 
@@ -926,7 +1012,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(&root.join("image.bin"), b"\x89PNG\r\n\x1a\n\x00\x00\x00");
-        let read = read_file(root, "image.bin").unwrap();
+        let read = read_file(root, "image.bin", &[]).unwrap();
         assert_eq!(read.text, None);
         assert!(
             read.unsupported_reason
@@ -936,7 +1022,7 @@ mod tests {
         );
 
         write(&root.join("latin1.txt"), b"caf\xe9");
-        let read = read_file(root, "latin1.txt").unwrap();
+        let read = read_file(root, "latin1.txt", &[]).unwrap();
         assert_eq!(read.text, None);
         assert!(
             read.unsupported_reason
@@ -947,7 +1033,7 @@ mod tests {
 
         let huge: Vec<u8> = vec![b'x'; (MAX_TEXT_BYTES + 1) as usize];
         write(&root.join("huge.txt"), &huge);
-        let read = read_file(root, "huge.txt").unwrap();
+        let read = read_file(root, "huge.txt", &[]).unwrap();
         assert_eq!(read.text, None);
         assert!(
             read.unsupported_reason
@@ -963,7 +1049,7 @@ mod tests {
         let root = dir.path();
         write(&root.join("real/notes.md"), b"# hi\n");
         std::os::unix::fs::symlink(root.join("real/notes.md"), root.join("alias.md")).unwrap();
-        let read = read_file(root, "alias.md").unwrap();
+        let read = read_file(root, "alias.md", &[]).unwrap();
         assert_eq!(read.text.as_deref(), Some("# hi\n"));
         assert_eq!(
             read.path,
@@ -980,9 +1066,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        let fault = read_file(root, "sub").unwrap_err();
+        let fault = read_file(root, "sub", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::IsDirectory(_)));
-        let fault = read_file(root, "nope.txt").unwrap_err();
+        let fault = read_file(root, "nope.txt", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::NotFound(_)));
         let fault = list_directory(root, "nope").unwrap_err();
         assert!(matches!(fault, FilesFault::NotFound(_)));
@@ -1002,7 +1088,7 @@ mod tests {
         }
         // Reading through the chain fails closed (ELOOP surfaces as an io
         // fault, never as content).
-        let fault = read_file(root, "a").unwrap_err();
+        let fault = read_file(root, "a", &[]).unwrap_err();
         assert!(matches!(fault, FilesFault::Io(_, _)));
     }
 

@@ -170,6 +170,15 @@ impl Skills {
         }
     }
 
+    /// The skill directories that live OUTSIDE any workspace root — personal
+    /// and holt (the project root sits under the chat's cwd, already inside
+    /// the workspace fence). The sidebar's file READ allows these so a
+    /// skill's `SKILL.md` opens in the file tab wherever the skill lives;
+    /// saves and every other workspace verb stay workspace-fenced.
+    pub(crate) fn out_of_workspace_roots(&self) -> Vec<PathBuf> {
+        vec![self.personal.clone(), self.holt.clone()]
+    }
+
     /// The roots for one chat, nearest first (ADR-0005 precedence).
     fn roots(&self, cwd: Option<&str>) -> Vec<(SkillRoot, PathBuf)> {
         let mut roots = Vec::new();

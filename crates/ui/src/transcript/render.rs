@@ -291,6 +291,8 @@ impl Transcript {
         let header =
             div()
                 .id(SharedString::from(format!("{row_id}#skill-toggle")))
+                // Test seam (the turn-card pattern): bounds lookup by name.
+                .debug_selector(|| "skill-toggle".to_string())
                 .h(px(CHIP_HEIGHT))
                 .w_full()
                 .flex_none()
@@ -350,7 +352,7 @@ impl Transcript {
 
         let mut column = div().w_full().flex().flex_col().child(header);
         if open || closing {
-            let url = format!("file://{}", file.trim_start_matches("file://"));
+            let open_path = file.trim_start_matches("file://").to_string();
             let scroll = self.nested_scroll_handle(row_id);
             let body = div()
                 .flex()
@@ -385,15 +387,18 @@ impl Transcript {
                 .child(
                     div()
                         .id(SharedString::from(format!("{row_id}#skill-file")))
+                        .debug_selector(|| "skill-open-file".to_string())
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(4.0))
                         .cursor_pointer()
                         .hover(|el| el.opacity(0.75))
-                        .on_click(move |_, _, cx| {
-                            cx.open_url(&url);
-                        })
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(super::TranscriptEvent::OpenSkillFile {
+                                path: open_path.clone(),
+                            });
+                        }))
                         .child(
                             crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
                                 .size(px(11.0))
@@ -1374,7 +1379,15 @@ impl Transcript {
                     self.render_skill_invocation(&row.id, name, file, content, *pending, &theme, cx)
                 }
                 // A read collapse: the compact pointer chip.
-                None => skill_chip(name.clone(), file.clone(), *pending, &theme),
+                None => {
+                    let open = (!file.is_empty()).then(|| {
+                        let path = file.trim_start_matches("file://").to_string();
+                        cx.listener(move |_, _, _, cx| {
+                            cx.emit(super::TranscriptEvent::OpenSkillFile { path: path.clone() });
+                        })
+                    });
+                    skill_chip(name.clone(), file.clone(), *pending, open, &theme)
+                }
             },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
@@ -2530,11 +2543,18 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
 
 /// A collapsed skill invocation / skill-file read (ADR-0006): the skill's
 /// name in the accent colour with a cube glyph — clicking opens the source
-/// `SKILL.md` so the user can inspect exactly what the agent was told to
-/// follow. Right-aligned like the user bubble it replaces.
-fn skill_chip(name: SharedString, file: SharedString, pending: bool, theme: &Theme) -> AnyElement {
-    let open_url =
-        (!file.is_empty()).then(|| format!("file://{}", file.trim_start_matches("file://")));
+/// `SKILL.md` in the workspace file tab (right pane) so the user can
+/// inspect exactly what the agent was told to follow. Right-aligned like
+/// the user bubble it replaces. `on_open` carries the click (a listener
+/// emitting [`TranscriptEvent::OpenSkillFile`], the shell's file-open
+/// path); `None` leaves the chip inert.
+fn skill_chip(
+    name: SharedString,
+    file: SharedString,
+    pending: bool,
+    on_open: Option<impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>,
+    theme: &Theme,
+) -> AnyElement {
     let clickable_id = (!file.is_empty()).then(|| name.clone());
     let chip = div().py(px(4.0)).w_full().flex().justify_end().child(
         div()
@@ -2561,14 +2581,12 @@ fn skill_chip(name: SharedString, file: SharedString, pending: bool, theme: &The
                     .child(name),
             ),
     );
-    match (clickable_id, open_url) {
-        (Some(id), Some(url)) => chip
+    match (clickable_id, on_open) {
+        (Some(id), Some(on_open)) => chip
             .id(id)
             .cursor_pointer()
             .hover(|el| el.opacity(0.8))
-            .on_click(move |_, _, cx| {
-                cx.open_url(&url);
-            })
+            .on_click(on_open)
             .into_any_element(),
         _ => chip.into_any_element(),
     }
