@@ -38,11 +38,12 @@ struct HiddenModel {
 }
 
 /// The custom-provider creation form's fields: (key, placeholder).
-const NEW_PROVIDER_FIELDS: [(&str, &str); 4] = [
+const NEW_PROVIDER_FIELDS: [(&str, &str); 5] = [
     ("id", "Provider id (e.g. acme)"),
     ("name", "Display name"),
     ("baseUrl", "https://acme.example/v1"),
     ("defaultApi", "openai-completions"),
+    ("apiKey", "API key (optional)"),
 ];
 
 /// The model-record form's single-line fields, in render order:
@@ -95,6 +96,11 @@ pub struct ProvidersPage {
     inputs: HashMap<String, Entity<ComposerInput>>,
     models: HashMap<String, Loadable<Vec<Model>>>,
     model_tasks: HashMap<String, Task<()>>,
+    /// Per-variant reveal tasks: the panel expansion fires the reveal and
+    /// the hidden-models fetch together, and both used to share the page
+    /// task slot — the second spawn cancelled the first, so a stored key
+    /// never filled its input on a first expansion.
+    key_tasks: HashMap<String, Task<()>>,
     /// Variants whose API-key input is currently unmasked; everything starts
     /// masked on every expansion and re-masks when the panel collapses or the
     /// page is left.
@@ -181,9 +187,9 @@ pub struct ProvidersPage {
     /// so sharing the slot let a panel refresh abort an in-flight send
     /// (its prompt was already cleared — a silent message loss) or the
     /// tab's own preparation. Preparation owns a slot; the queue watch
-    /// owns one (cancelled on dialog close); the send and the proposal
-    /// apply are `detach`ed instead — cancelling either loses the user's
-    /// action silently, so they must run to completion.
+    /// owns one (cancelled on dialog close); the send, the proposal
+    /// apply, and the key settle are `detach`ed instead — cancelling any
+    /// loses the user's action silently, so they must run to completion.
     setup_task: Option<Task<()>>,
     setup_panel_task: Option<Task<()>>,
     setup_queue_task: Option<Task<()>>,
@@ -206,6 +212,7 @@ impl ProvidersPage {
             inputs: HashMap::new(),
             models: HashMap::new(),
             model_tasks: HashMap::new(),
+            key_tasks: HashMap::new(),
             revealed: HashSet::new(),
             add_dialog: None,
             new_provider_inputs: HashMap::new(),
@@ -356,7 +363,7 @@ impl ProvidersPage {
             return;
         };
         let variant = variant_id.to_string();
-        self.task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
                 .call(
@@ -383,7 +390,8 @@ impl ProvidersPage {
                 cx.notify();
             })
             .ok();
-        }));
+        });
+        self.key_tasks.insert(variant_id.to_string(), task);
     }
 
     /// The eye button: flip one variant's input between bullets and plain
@@ -793,9 +801,18 @@ impl ProvidersPage {
         }
         self.add_dialog = Some(tab);
         for (key, placeholder) in NEW_PROVIDER_FIELDS {
-            self.new_provider_inputs
-                .entry(key)
-                .or_insert_with(|| cx.new(|cx| ComposerInput::new(placeholder, cx)));
+            // The key field is masked like every other key entry — the
+            // manual form collects a credential, not chat text.
+            let secret = key == "apiKey";
+            self.new_provider_inputs.entry(key).or_insert_with(|| {
+                cx.new(|cx| {
+                    if secret {
+                        ComposerInput::new_secret(placeholder, cx)
+                    } else {
+                        ComposerInput::new(placeholder, cx)
+                    }
+                })
+            });
         }
         cx.notify();
     }
@@ -1402,9 +1419,9 @@ impl ProvidersPage {
         self.setup_key_settling = true;
         self.setup_key_error = None;
         cx.notify();
-        // Detached: the click must survive any later panel refresh, or a
-        // settle in flight would be cancelled with the key already gone
-        // from the input.
+        // Detached: a later panel action must not cancel the settle
+        // mid-flight — the click would be silently lost and the card
+        // stays until a re-request.
         cx.spawn(async move |this, cx| {
             let mut params = serde_json::json!({ "chatId": chat_id });
             if save {
@@ -1452,6 +1469,10 @@ impl ProvidersPage {
         };
         let base_url = field(self, "baseUrl", cx);
         let default_api = field(self, "defaultApi", cx);
+        // The optional key: non-empty rides the same credential path as
+        // every other key entry right after the definition; empty means
+        // "leave any stored key untouched" — never a clearing write.
+        let api_key = field(self, "apiKey", cx);
         if let Some(problem) = new_provider_problem(&id, &base_url, &default_api) {
             self.new_provider_error = Some(problem);
             cx.notify();
@@ -1470,6 +1491,20 @@ impl ProvidersPage {
                     }),
                 )
                 .await;
+            let key_result = match (&result, api_key.is_empty()) {
+                // The definition landed and a key was typed: write it
+                // through the credential path before closing.
+                (Ok(_), false) => Some(
+                    engine
+                        .client()
+                        .call(
+                            methods::SAVE_PROVIDER_KEY,
+                            serde_json::json!({ "providerId": id, "key": api_key }),
+                        )
+                        .await,
+                ),
+                _ => None,
+            };
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
@@ -1479,6 +1514,12 @@ impl ProvidersPage {
                         }
                         crate::pickers::bump_provider_catalog(cx);
                         page.load(cx);
+                        // The definition is saved and the dialog closed; a
+                        // failed key write is a storage fault, not a form
+                        // error — surface it at the window top for a retry.
+                        if let Some(Err(error)) = key_result {
+                            page.fail(error.to_string(), cx);
+                        }
                     }
                     Err(error) => page.new_provider_error = Some(error.to_string()),
                 }
@@ -2839,6 +2880,7 @@ fn manual_tab(
         )
         .child(field("baseUrl", "Base URL"))
         .child(field("defaultApi", "Default API dialect"))
+        .child(field("apiKey", "API key (optional)"))
         .children(error.map(|message| {
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -3414,9 +3456,6 @@ fn setup_model_picker(
         .into_any_element()
 }
 
-/// The review panel's refresh signal: (total, resolved) `model_proposal`
-/// tool parts in the setup transcript. The panel re-reads only when this
-/// moves — text/tool ticks alone never trigger the RPC.
 /// What the panel refresh keys on: the proposal-tool chips and the
 /// key-request chips the doc holds. Any change (a new chip, one resolving)
 /// re-reads the panel's engine-side state.
@@ -4370,6 +4409,12 @@ mod tests {
         key_request: std::sync::Mutex<Option<serde_json::Value>>,
         /// SettleProviderKeyRequest params, in call order.
         settles: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// SaveCustomProvider params, in call order.
+        custom_saves: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// SaveProviderKey params, in call order.
+        saved_keys: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// The store RevealProviderKey reads (provider → key).
+        keys: std::sync::Mutex<std::collections::HashMap<String, String>>,
     }
 
     #[async_trait::async_trait]
@@ -4459,6 +4504,31 @@ mod tests {
                     }
                     RpcReply::value(&serde_json::json!({}))
                 }
+                methods::SAVE_CUSTOM_PROVIDER => {
+                    self.custom_saves.lock().unwrap().push(params.clone());
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::SAVE_PROVIDER_KEY => {
+                    self.saved_keys.lock().unwrap().push(params.clone());
+                    if let Some(key) = params["key"].as_str() {
+                        self.keys.lock().unwrap().insert(
+                            params["providerId"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                            key.to_string(),
+                        );
+                    }
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::REVEAL_PROVIDER_KEY => RpcReply::value(&serde_json::json!({
+                    "key": self
+                        .keys
+                        .lock()
+                        .unwrap()
+                        .get(params["providerId"].as_str().unwrap_or_default())
+                        .cloned(),
+                })),
                 methods::GET_PROVIDER_KEY_REQUEST => RpcReply::value(
                     &self
                         .key_request
@@ -4675,6 +4745,9 @@ mod tests {
             records: std::sync::Mutex::new(Vec::new()),
             key_request: std::sync::Mutex::new(None),
             settles: std::sync::Mutex::new(Vec::new()),
+            custom_saves: std::sync::Mutex::new(Vec::new()),
+            saved_keys: std::sync::Mutex::new(Vec::new()),
+            keys: std::sync::Mutex::new(Default::default()),
         });
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -5438,6 +5511,112 @@ mod tests {
             tab,
             Some(AddProviderTab::Manual),
             "the escape hatch switches to the manual tab"
+        );
+    }
+    /// Fills the manual form and saves. Returns the fake's recorded calls.
+    fn fill_and_save_manual(harness: &mut SetupHarness<'_>, key: &str) -> Vec<serde_json::Value> {
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-manual");
+        harness.pump();
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            for (field, text) in [
+                ("id", "acme"),
+                ("name", "Acme Labs"),
+                ("baseUrl", "https://acme.example/v1"),
+                ("defaultApi", "openai-completions"),
+                ("apiKey", key),
+            ] {
+                let input = page
+                    .new_provider_inputs
+                    .get(field)
+                    .unwrap_or_else(|| panic!("the {field} field exists"))
+                    .clone();
+                input.update(cx, |input, cx| input.set_text(text, cx));
+            }
+            page.save_custom_provider(cx);
+        });
+        harness.pump();
+        harness.engine.custom_saves.lock().unwrap().clone()
+    }
+
+    /// The manual form's optional key field (issue 03): a non-empty value
+    /// rides the same credential path as every other key entry — the
+    /// provider save and the key save land together, no model involved.
+    #[gpui::test]
+    fn the_manual_tab_key_field_writes_the_credential_path(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        let saves = fill_and_save_manual(&mut harness, "sk-manual-secret");
+        assert_eq!(saves.len(), 1, "the provider definition saved");
+        let keys = harness.engine.saved_keys.lock().unwrap().clone();
+        assert_eq!(
+            keys.len(),
+            1,
+            "the typed key went through SaveProviderKey: {keys:?}"
+        );
+        assert_eq!(keys[0]["providerId"], "acme");
+        assert_eq!(keys[0]["key"], "sk-manual-secret");
+        assert_eq!(
+            harness
+                .engine
+                .keys
+                .lock()
+                .unwrap()
+                .get("acme")
+                .map(String::as_str),
+            Some("sk-manual-secret"),
+            "the store holds the key the reveal path reads"
+        );
+        let open = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.add_dialog.is_some());
+        assert!(!open, "the dialog closed on success");
+
+        // The panel behind the dialog shows the stored state: expanding
+        // acme's panel fills its masked key input through the reveal path.
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.pump();
+        let stored = harness.page.update(&mut *harness.visual, |page, cx| {
+            page.inputs
+                .get("acme")
+                .map(|input| input.read(cx).text().to_string())
+        });
+        assert_eq!(
+            stored.as_deref(),
+            Some("sk-manual-secret"),
+            "the panel's masked input carries the stored key"
+        );
+    }
+
+    /// An empty key field never writes — re-saving a definition over an
+    /// existing provider leaves its stored key exactly as it was.
+    #[gpui::test]
+    fn an_empty_manual_key_field_leaves_the_stored_key_untouched(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness
+            .engine
+            .keys
+            .lock()
+            .unwrap()
+            .insert("acme".to_string(), "sk-original".to_string());
+        let saves = fill_and_save_manual(&mut harness, "");
+        assert_eq!(saves.len(), 1, "the definition still saves");
+        assert!(
+            harness.engine.saved_keys.lock().unwrap().is_empty(),
+            "an empty field makes no key call"
+        );
+        assert_eq!(
+            harness
+                .engine
+                .keys
+                .lock()
+                .unwrap()
+                .get("acme")
+                .map(String::as_str),
+            Some("sk-original"),
+            "the stored key survived the re-save"
         );
     }
 }
