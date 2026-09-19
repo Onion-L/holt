@@ -3369,7 +3369,8 @@ fn setup_review_panel(
             .p(px(8.0))
             .rounded(px(8.0))
             .border_1()
-            .border_color(theme.border)
+            .bg(theme.accent.opacity(0.07))
+            .border_color(theme.accent.opacity(0.45))
             .child(
                 div()
                     .flex()
@@ -3388,10 +3389,14 @@ fn setup_review_panel(
                             .id(("setup-proposal-apply", index))
                             .debug_selector(move || format!("setup-proposal-apply-{index}"))
                             .when(busy, |button| button.opacity(0.4))
-                            .hover(|style| style.bg(crate::theme::ink(0.04)))
+                            .hover(|style| style.bg(theme.accent_strong))
                             .on_click(cx.listener(move |page, _, _, cx| {
                                 page.apply_setup_proposal(apply_id.clone(), cx)
                             }))
+                            .bg(theme.accent)
+                            .text_color(theme.on_accent)
+                            .border_color(theme.accent)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .child("Write"),
                     )
                     .child(
@@ -3427,7 +3432,7 @@ fn setup_review_panel(
                     .gap(px(1.0))
                     .pl(px(8.0))
                     .border_l_2()
-                    .border_color(theme.border.opacity(0.6))
+                    .border_color(theme.accent.opacity(0.5))
                     .child(
                         div()
                             .font_family(theme.font_mono.clone())
