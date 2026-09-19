@@ -15,6 +15,28 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString, Styled as _, Svg, svg};
 
+/// Bundled fallback fonts gpui's svg renderer loads by path
+/// (`svg_renderer::load_bundled_fonts`): they anchor generic font families
+/// (`sans-serif`/`monospace`) when rasterizing SVG text — mermaid diagrams —
+/// without depending on what the host system has installed.
+const FONT_ASSET_PATHS: &[(&str, &[u8])] = &[
+    (
+        "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf",
+        include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"),
+    ),
+    (
+        "fonts/lilex/Lilex-Regular.ttf",
+        include_bytes!("../assets/fonts/lilex/Lilex-Regular.ttf"),
+    ),
+];
+
+fn load_font_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+    FONT_ASSET_PATHS
+        .iter()
+        .find(|(asset_path, _)| *asset_path == path)
+        .map(|(_, bytes)| Cow::Borrowed(*bytes))
+}
+
 macro_rules! provider_assets {
     ($(($const_name:ident, $path:literal)),+ $(,)?) => {
         $(pub const $const_name: &str = concat!("providers/", $path, ".svg");)+
@@ -117,7 +139,9 @@ macro_rules! icon_assets {
                     $(concat!("icons/", $path, ".svg") => Some(Cow::Borrowed(
                         include_bytes!(concat!("../assets/icons/", $path, ".svg")).as_slice(),
                     )),)+
-                    _ => load_provider_asset(path).or_else(|| load_app_asset(path)),
+                    _ => load_font_asset(path)
+                        .or_else(|| load_provider_asset(path))
+                        .or_else(|| load_app_asset(path)),
                 })
             }
 
@@ -126,6 +150,7 @@ macro_rules! icon_assets {
                 Ok(all
                     .iter()
                     .copied()
+                    .chain(FONT_ASSET_PATHS.iter().map(|(asset_path, _)| *asset_path))
                     .chain(PROVIDER_ASSET_PATHS.iter().copied())
                     .chain(APP_ASSET_PATHS.iter().copied())
                     .filter(|p| p.starts_with(path))
@@ -301,6 +326,11 @@ mod tests {
                 assert!(bytes.starts_with(b"\x89PNG"), "{path} is not a png");
                 continue;
             }
+            if path.ends_with(".ttf") {
+                // TrueType magic: 0x00 0x01 0x00 0x00.
+                assert!(bytes.starts_with(&[0, 1, 0, 0]), "{path} is not a ttf");
+                continue;
+            }
             let text = std::str::from_utf8(&bytes).expect("icon svg is utf-8");
             assert!(text.contains("<svg"), "{path} is not an svg");
             assert!(text.contains("viewBox"), "{path} lacks a viewBox");
@@ -317,6 +347,6 @@ mod tests {
         assert!(!Assets.list("icons/").unwrap().is_empty());
         assert_eq!(Assets.list("providers/").unwrap().len(), 31);
         assert_eq!(Assets.list("apps/").unwrap().len(), 9);
-        assert!(Assets.list("fonts/").unwrap().is_empty());
+        assert_eq!(Assets.list("fonts/").unwrap().len(), 2);
     }
 }

@@ -11,8 +11,10 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() -> anyhow::Result<()> {
     // A headed app launched from Finder has no visible stdout — mirror logging
     // to {data_dir}/logs. One file per launch, previous launch kept as `.old`.
+    // `usvg::text` logs a WARN per text chunk per rasterization when a mermaid
+    // diagram's font falls back — pure noise once the text renders.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,loro_internal=warn,loro=warn".into());
+        .unwrap_or_else(|_| "info,loro_internal=warn,loro=warn,usvg::text=off".into());
     let log_file = open_log_file("headed");
     {
         use tracing_subscriber::layer::SubscriberExt;
