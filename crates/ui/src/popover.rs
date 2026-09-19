@@ -436,6 +436,18 @@ pub fn anchored_menu_below_end(
     content: AnyElement,
     closing: Option<std::time::Instant>,
 ) -> AnyElement {
+    anchored_menu_below_end_with_priority(id, content, closing, 1)
+}
+
+/// [`anchored_menu_below_end`] at an explicit deferred priority — the
+/// in-modal variant rides [`ABOVE_MODAL_PRIORITY`] (a dropdown inside a
+/// dialog would otherwise paint under the modal's own layer).
+pub fn anchored_menu_below_end_with_priority(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+    priority: usize,
+) -> AnyElement {
     let exit = closing.map(exit_progress);
     let content = frosted_menu(exit, content);
     div()
@@ -454,7 +466,7 @@ pub fn anchored_menu_below_end(
                         div().occlude().pt(px(6.0)).child(content),
                     )),
             )
-            .priority(1)
+            .priority(priority)
             .into_any_element(),
         )
         .into_any_element()

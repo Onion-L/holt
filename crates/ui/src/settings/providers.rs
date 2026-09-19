@@ -49,10 +49,11 @@ const NEW_PROVIDER_FIELDS: [(&str, &str); 4] = [
 /// (key, label, placeholder). Laid out two per row. No `baseUrl` field —
 /// a record added under a provider rides that provider's endpoint; the
 /// engine fills the default, and Advanced JSON is the override hatch.
-const RECORD_FIELDS: [(&str, &str, &str); 9] = [
+/// `api` is not a text field: the dialect set is closed (the engine's
+/// registered list), so it rides a dropdown.
+const RECORD_FIELDS: [(&str, &str, &str); 8] = [
     ("id", "Model ID", "acme-1"),
     ("name", "Name", "Acme 1"),
-    ("api", "API dialect", "openai-completions"),
     ("contextWindow", "Context window", "200000"),
     ("maxTokens", "Max tokens", "8192"),
     ("inputCost", "Input cost /M", "0.0"),
@@ -74,6 +75,9 @@ enum AddProviderTab {
 struct RecordForm {
     provider: String,
     inputs: HashMap<String, Entity<ComposerInput>>,
+    /// The picked API dialect (the dropdown's selection; the set comes
+    /// from the engine's `ListApiDialects`).
+    api: String,
     reasoning: bool,
     image: bool,
     error: Option<String>,
@@ -102,8 +106,17 @@ pub struct ProvidersPage {
     /// The mounted model-record form, targeting the expanded panel's active
     /// variant (ADR-0029's manual half of the write path).
     record_form: Option<RecordForm>,
+    /// The record form's dialect dropdown; page-level because the form is
+    /// an Option the popup accessor can't borrow through.
+    record_api_menu: Popup<()>,
+    /// The engine's registered API dialects (the dropdown's options),
+    /// loaded once per page.
+    api_dialects: Loadable<Vec<String>>,
     /// Hidden rows per variant, loaded beside the model list.
     hidden: HashMap<String, Loadable<Vec<HiddenModel>>>,
+    /// Variants whose Hidden block is expanded; it starts collapsed on
+    /// every panel expansion (like the masked key).
+    hidden_expanded: HashSet<String>,
     /// Two-step per-provider reset confirmation: the first click arms, the
     /// second executes. The GLOBAL reset rides a confirm dialog instead
     /// (`confirm_reset_all`) — the armed-button copy never fit the row.
@@ -113,8 +126,9 @@ pub struct ProvidersPage {
     armed_remove: Option<String>,
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
-    /// The AI tab (V2c): the hidden setup chat's id (kept across dialog
-    /// opens), the real Transcript view pinned to it (fed by AppState's
+    /// The AI tab (V2c): the session's setup chat id (a fresh chat per
+    /// dialog open, deleted on close — no conversation memory persists),
+    /// the real Transcript view pinned to it (fed by AppState's
     /// doc watch), the picker's catalog and popup, the composer input, and
     /// the review panel's proposals. The panel refreshes when the setup
     /// transcript's proposal-tool signature moves (observed off AppState).
@@ -135,10 +149,6 @@ pub struct ProvidersPage {
     setup_input_events: Option<Subscription>,
     setup_state_observe: Option<Subscription>,
     setup_proposals: Vec<serde_json::Value>,
-    /// The dialog session's cutoff (unix ms): proposals stored before it
-    /// belong to earlier sessions and never render as actionable — an old
-    /// proposal's Write always fails the apply-time staleness gate.
-    setup_cutoff_ms: i64,
     /// Proposals written this session, kept past the engine's consume so
     /// the panel can render the "written" terminal card instead of
     /// silently vanishing the user's action.
@@ -189,7 +199,10 @@ impl ProvidersPage {
             new_provider_inputs: HashMap::new(),
             new_provider_error: None,
             record_form: None,
+            record_api_menu: Popup::default(),
+            api_dialects: Loadable::Idle,
             hidden: HashMap::new(),
+            hidden_expanded: HashSet::new(),
             armed_reset: None,
             armed_remove: None,
             confirm_reset_all: false,
@@ -205,7 +218,6 @@ impl ProvidersPage {
             setup_input_events: None,
             setup_state_observe: None,
             setup_proposals: Vec::new(),
-            setup_cutoff_ms: 0,
             setup_applied: Vec::new(),
             setup_apply_errors: HashMap::new(),
             setup_applying: None,
@@ -236,7 +248,7 @@ impl ProvidersPage {
             return;
         }
         let (empty, signature) = {
-            let doc = state.read(cx).sub_transcript(&setup_view_key(&chat_id));
+            let doc = state.read(cx).sub_transcript(&chat_id);
             (doc.is_empty(), proposal_signature(doc))
         };
         if empty != self.setup_doc_empty {
@@ -422,6 +434,15 @@ impl ProvidersPage {
         self.record_form = None;
         self.armed_reset = None;
         self.armed_remove = None;
+        self.hidden_expanded.clear();
+    }
+
+    /// The Hidden block's collapse state flips per variant.
+    fn toggle_hidden(&mut self, variant_id: String, cx: &mut Context<Self>) {
+        if !self.hidden_expanded.insert(variant_id.clone()) {
+            self.hidden_expanded.remove(&variant_id);
+        }
+        cx.notify();
     }
 
     fn begin_collapse(&mut self, provider: String, cx: &mut Context<Self>) {
@@ -616,13 +637,71 @@ impl ProvidersPage {
                 )
             }),
         );
+        // A stale menu from a previous form must not carry over.
+        self.record_api_menu = Popup::default();
+        self.load_api_dialects(cx);
         self.record_form = Some(RecordForm {
             provider,
             inputs,
+            api: "openai-completions".into(),
             reasoning: false,
             image: false,
             error: None,
         });
+        cx.notify();
+    }
+
+    /// The dialect dropdown's options: the engine's registered api
+    /// dialects (pi-core's registry), loaded once per page. Detached — a
+    /// cancelled load would wedge the list in Loading forever.
+    fn load_api_dialects(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.api_dialects, Loadable::Ready(_) | Loadable::Loading) {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.api_dialects = Loadable::Loading;
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::LIST_API_DIALECTS, serde_json::json!({}))
+                .await;
+            this.update(cx, |page, cx| {
+                page.api_dialects = match result {
+                    Ok(value) => serde_json::from_value(value)
+                        .map(Loadable::Ready)
+                        .unwrap_or_else(|error| Loadable::Error(error.to_string())),
+                    Err(error) => Loadable::Error(error.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn toggle_record_api_menu(&mut self, cx: &mut Context<Self>) {
+        if self.record_api_menu.take_press_was_open() || self.record_api_menu.is_open() {
+            self.close_record_api_menu(cx);
+        } else {
+            self.record_api_menu.open(());
+        }
+        cx.notify();
+    }
+
+    fn close_record_api_menu(&mut self, cx: &mut Context<Self>) {
+        if self.record_api_menu.begin_close() {
+            popover::reap_popup(cx, |page: &mut ProvidersPage| &mut page.record_api_menu);
+            cx.notify();
+        }
+    }
+
+    fn pick_record_api(&mut self, dialect: String, cx: &mut Context<Self>) {
+        if let Some(form) = self.record_form.as_mut() {
+            form.api = dialect;
+        }
+        self.close_record_api_menu(cx);
         cx.notify();
     }
 
@@ -650,6 +729,7 @@ impl ProvidersPage {
             texts.insert(key.clone(), input.read(cx).text().trim().to_string());
         }
         let provider = form.provider.clone();
+        texts.insert("api".to_string(), form.api.clone());
         let record = match build_record_json(&provider, &texts, form.reasoning, form.image) {
             Ok(record) => record,
             Err(problem) => {
@@ -719,10 +799,24 @@ impl ProvidersPage {
         self.setup_applied.clear();
         self.setup_apply_errors.clear();
         self.setup_applying = None;
-        if let Some(chat_id) = self.setup_chat.clone() {
-            self.state.update(cx, |state, _| {
-                state.unwatch_subagent_doc(&setup_view_key(&chat_id))
-            });
+        // The setup chat is session-scoped: closing the dialog ends it.
+        // The delete cancels any in-flight turn and drops the transcript
+        // and its stored proposals — nothing carries into the next open.
+        if let Some(chat_id) = self.setup_chat.take() {
+            self.state
+                .update(cx, |state, _| state.unwatch_subagent_doc(&chat_id));
+            if let Some(engine) = self.state.read(cx).engine().cloned() {
+                cx.spawn(async move |_, _| {
+                    let _ = engine
+                        .client()
+                        .call(
+                            methods::MUTATE,
+                            serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
+                        )
+                        .await;
+                })
+                .detach();
+            }
         }
         cx.notify();
     }
@@ -747,7 +841,7 @@ impl ProvidersPage {
         Some((provider, model))
     }
 
-    /// Prepares the AI tab: ensures the singleton setup chat, loads the
+    /// Prepares the AI tab: starts the session's setup chat, loads the
     /// picker catalog, and pins a real Transcript view to the chat (fed by
     /// AppState's doc watch). Idempotent — an already-prepared tab returns.
     fn prepare_setup(&mut self, cx: &mut Context<Self>) {
@@ -836,7 +930,7 @@ impl ProvidersPage {
             let chat_id = match engine
                 .client()
                 .call(
-                    methods::ENSURE_MODEL_SETUP_CHAT,
+                    methods::START_MODEL_SETUP_CHAT,
                     serde_json::json!({ "provider": provider, "model": model }),
                 )
                 .await
@@ -856,25 +950,28 @@ impl ProvidersPage {
                 return;
             };
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
-            // The dialog session starts clean: only entries created after
-            // this moment (plus live work) render. The doc keeps everything
-            // — the model's context is the singleton chat's point — the
-            // VIEW is what's history-free.
-            let cutoff_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| since.as_millis() as i64)
-                .unwrap_or(0);
             this.update(cx, |page, cx| {
-                // The dialog closed while preparation was in flight: State
-                // set here (view, queue watch) would be orphaned — nothing
-                // tears it down until the next open re-prepares from
-                // scratch.
+                // The dialog closed while preparation was in flight: the
+                // fresh chat has no owner — delete it so it never becomes
+                // a leftover, and set nothing the next open would inherit.
                 if page.add_dialog.is_none() {
+                    let engine = page.state.read(cx).engine().cloned();
+                    if let Some(engine) = engine {
+                        let chat_id = chat_id.clone();
+                        cx.spawn(async move |_, _| {
+                            let _ = engine
+                                .client()
+                                .call(
+                                    methods::MUTATE,
+                                    serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
+                                )
+                                .await;
+                        })
+                        .detach();
+                    }
                     return;
                 }
-                let view_key = setup_view_key(&chat_id);
                 page.setup_chat = Some(chat_id.clone());
-                page.setup_cutoff_ms = cutoff_ms;
                 // The qualified id is both the display value and the run
                 // identity — no re-prefixing.
                 page.setup_selected_model = Some(model.clone());
@@ -884,15 +981,16 @@ impl ProvidersPage {
                 page.setup_models = Loadable::Ready(models);
                 page.setup_proposals = proposals;
                 // The chat surface is the real Transcript (full markdown,
-                // thinking, tool chips, the working trailer) over the
-                // session-filtered doc view.
+                // thinking, tool chips, the working trailer). The chat is
+                // fresh per session, so its doc holds only this session —
+                // no filtering.
                 page.state.update(cx, |state, cx| {
-                    state.watch_doc_view(chat_id, view_key.clone(), cutoff_ms, cx);
+                    state.watch_subagent_doc(chat_id.clone(), cx);
                 });
                 let state = page.state.clone();
                 page.setup_transcript_view =
                     Some(cx.new(|cx| {
-                        crate::transcript::Transcript::for_doc(state, view_key, true, cx)
+                        crate::transcript::Transcript::for_doc(state, chat_id, true, cx)
                     }));
                 page.watch_setup_queue(cx);
                 cx.notify();
@@ -971,12 +1069,28 @@ impl ProvidersPage {
         self.setup_model_provider = qualified
             .split_once('/')
             .map(|(provider, _)| ProviderId(provider.into()));
+        // The chat is session-scoped, so a mid-session pick rewrites the
+        // current chat's config (scope preserved) — it must NOT start a
+        // fresh chat, or the running conversation would be orphaned.
+        let Some(chat_id) = self.setup_chat.clone() else {
+            return;
+        };
         self.setup_panel_task = Some(cx.spawn(async move |this, cx| {
             let _ = engine
                 .client()
                 .call(
-                    methods::ENSURE_MODEL_SETUP_CHAT,
-                    serde_json::json!({ "provider": provider, "model": qualified }),
+                    methods::MUTATE,
+                    serde_json::json!({
+                        "op": "setChatConfig",
+                        "chatId": chat_id,
+                        "config": {
+                            "provider": provider,
+                            "model": qualified,
+                            "reasoning": null,
+                            "modelOptions": {},
+                            "scope": "model-setup",
+                        },
+                    }),
                 )
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
@@ -1149,6 +1263,14 @@ impl ProvidersPage {
                         crate::pickers::bump_provider_catalog(cx);
                         page.load(cx);
                         page.refresh_setup_proposals(cx);
+                        // The write lands outside the panel's own actions, so
+                        // the cached models/hidden rows are stale — refresh
+                        // every visited variant (the cache only holds those).
+                        let refresh: Vec<String> = page.models.keys().cloned().collect();
+                        for provider in refresh {
+                            page.load_models(&provider, true, cx);
+                            page.load_hidden(&provider, true, cx);
+                        }
                     }
                     Err(error) => {
                         page.setup_apply_errors
@@ -1237,8 +1359,7 @@ impl ProvidersPage {
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
-                        page.add_dialog = None;
-                        page.new_provider_error = None;
+                        page.close_add_dialog(cx);
                         for input in page.new_provider_inputs.values() {
                             input.update(cx, |input, cx| input.set_text("", cx));
                         }
@@ -1471,10 +1592,12 @@ impl Render for ProvidersPage {
                         .cloned()
                         .unwrap_or(Loadable::Idle);
                     let hidden_count = hidden.ready().map(|rows| rows.len()).unwrap_or(0);
+                    let hidden_expanded = self.hidden_expanded.contains(&variant_id);
                     let revealed = self.revealed.contains(&variant_id);
                     let panel_height = provider_controls_height(
                         &models,
                         hidden_count,
+                        hidden_expanded,
                         provider.variants.len() > 1,
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
@@ -1485,8 +1608,9 @@ impl Render for ProvidersPage {
                     let danger_muted = theme.danger_muted;
                     let model_list =
                         provider_model_list(index, &variant_id, models, &theme, cx.entity(), cx);
-                    let hidden_list = hidden_rows(index, &variant_id, hidden, &theme, cx);
-                    let record_section = record_section(index, &variant_id, &theme, cx);
+                    let hidden_list =
+                        hidden_rows(index, &variant_id, hidden, hidden_expanded, &theme, cx);
+                    let add_record_id = variant_id.clone();
                     let danger_row = panel_danger_row(
                         index,
                         &variant_id,
@@ -1554,7 +1678,7 @@ impl Render for ProvidersPage {
                                 .child(
                                     div()
                                         .flex()
-                                        .items_baseline()
+                                        .items_center()
                                         .gap(px(8.0))
                                         .child(widgets::field_label(&theme, "Models"))
                                         .children(model_count.map(|count| {
@@ -1563,12 +1687,30 @@ impl Render for ProvidersPage {
                                                 .text_color(theme.text_muted.opacity(0.7))
                                                 .child(SharedString::from(format!("{count}")))
                                                 .into_any_element()
-                                        })),
+                                        }))
+                                        .child(div().flex_1())
+                                        .child(
+                                            widgets::ghost_action(&theme)
+                                                .id(("toggle-record-form", index))
+                                                .debug_selector(|| "toggle-record-form".into())
+                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                                .on_click(cx.listener(move |page, _, _, cx| {
+                                                    page.open_record_form(
+                                                        add_record_id.clone(),
+                                                        cx,
+                                                    );
+                                                }))
+                                                .child(
+                                                    crate::icons::icon(crate::icons::PLUS)
+                                                        .size(px(12.0))
+                                                        .text_color(theme.text_muted),
+                                                )
+                                                .child("Add model"),
+                                        ),
                                 )
                                 .child(model_list),
                         )
                         .children(hidden_list)
-                        .child(record_section)
                         .child(danger_row);
                     let panel = div().w_full().overflow_hidden().child(content);
                     if collapsing {
@@ -1618,6 +1760,17 @@ impl Render for ProvidersPage {
                         .child(widgets::row_title(&theme, provider.name))
                         .child(widgets::row_description(&theme, status))
                         .into_any_element(),
+                    // The row's affordance: the whole row toggles, so the
+                    // chevron carries the expanded/collapsing state.
+                    crate::icons::icon(if panel_mounted {
+                        crate::icons::ALT_ARROW_DOWN
+                    } else {
+                        crate::icons::ALT_ARROW_RIGHT
+                    })
+                    .size(px(13.0))
+                    .flex_none()
+                    .text_color(theme.text_muted)
+                    .into_any_element(),
                 ];
                 div()
                     .flex()
@@ -1625,6 +1778,7 @@ impl Render for ProvidersPage {
                     .child(
                         widgets::flat_row()
                             .id(("provider-row", index))
+                            .debug_selector(move || format!("provider-row-{index}").into())
                             .cursor_pointer()
                             .px(px(8.0))
                             .rounded(px(8.0))
@@ -1772,6 +1926,103 @@ fn bordered_input(theme: &Theme, input: Entity<ComposerInput>) -> gpui::Div {
         .child(input)
 }
 
+/// The record form's API-dialect dropdown: a closed set (the engine's
+/// registered dialects), so a picker instead of a typo-prone text field.
+/// The trigger mirrors [`bordered_input`]'s shape to sit flush in the
+/// form's grid; the menu opens downward at [`popover::ABOVE_MODAL_PRIORITY`]
+/// because the dialog itself is a modal.
+fn record_api_dropdown(
+    page: &ProvidersPage,
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let selected = page
+        .record_form
+        .as_ref()
+        .map(|form| form.api.clone())
+        .unwrap_or_default();
+    let rows: Vec<AnyElement> = page
+        .api_dialects
+        .ready()
+        .map(|dialects| {
+            dialects
+                .iter()
+                .map(|dialect| {
+                    let picked = dialect.clone();
+                    let selector = format!("record-api-option-{dialect}");
+                    popover::menu_row(
+                        theme,
+                        *dialect == selected,
+                        format!("record-api-row-{dialect}"),
+                    )
+                    .id(SharedString::from(format!("record-api-{dialect}")))
+                    .debug_selector(move || selector.clone().into())
+                    .on_click(
+                        cx.listener(move |page, _, _, cx| page.pick_record_api(picked.clone(), cx)),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme.font_mono.clone())
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .child(SharedString::from(dialect.clone())),
+                    )
+                    .into_any_element()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let menu = popover::popover_card(theme)
+        .w(px(260.0))
+        .occlude()
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_record_api_menu(cx)))
+        .children(rows)
+        .into_any_element();
+    div()
+        .id("record-api-dropdown")
+        .debug_selector(|| "record-api-dropdown".into())
+        .relative()
+        .h(px(36.0))
+        .px(px(12.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(Theme::CONTROL_RADIUS))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.input_glass_bg())
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|page, _, _, _| page.record_api_menu.note_trigger_press()),
+        )
+        .on_click(cx.listener(|page, _, _, cx| page.toggle_record_api_menu(cx)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(theme.font_mono.clone())
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text)
+                .child(SharedString::from(selected)),
+        )
+        .child(
+            crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                .size(px(12.0))
+                .flex_none()
+                .text_color(theme.text_muted),
+        )
+        .when_some(page.record_api_menu.get(), |trigger, _| {
+            trigger.child(popover::anchored_menu_below_end_with_priority(
+                "record-api-menu",
+                menu,
+                page.record_api_menu.closing_since(),
+                popover::ABOVE_MODAL_PRIORITY,
+            ))
+        })
+        .into_any_element()
+}
+
 /// A bordered button matching [`bordered_input`]'s 36px height, so the two sit
 /// flush on the same row. Caller adds id + hover + click.
 fn action_button(theme: &Theme) -> gpui::Div {
@@ -1791,6 +2042,7 @@ fn action_button(theme: &Theme) -> gpui::Div {
 fn provider_controls_height(
     models: &Loadable<Vec<Model>>,
     hidden_count: usize,
+    hidden_expanded: bool,
     variants: bool,
 ) -> f32 {
     let list_height = match models {
@@ -1799,15 +2051,20 @@ fn provider_controls_height(
         Loadable::Ready(models) if models.is_empty() => 32.0,
         Loadable::Ready(models) => (models.len() as f32 * 32.0).min(192.0),
     };
+    // The Hidden block's header always shows; its rows only when expanded.
     let hidden_height = if hidden_count > 0 {
-        30.0 + (hidden_count as f32 * 32.0).min(96.0)
+        30.0 + if hidden_expanded {
+            (hidden_count as f32 * 32.0).min(96.0)
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
     // The key section is label + full-width input + its own Save/Remove
-    // row. The record expander row and the danger row are always mounted;
-    // the hidden block adds its own height when present.
-    180.0 + list_height + hidden_height + if variants { 34.0 } else { 0.0 } + 44.0 + 44.0
+    // row. The danger row is always mounted; the hidden block adds its own
+    // height when present. The Add-model action rides the Models header.
+    180.0 + list_height + hidden_height + if variants { 34.0 } else { 0.0 } + 44.0
 }
 
 fn mark_provider_loading(providers: &mut Loadable<Vec<Provider>>) {
@@ -2009,34 +2266,8 @@ fn provider_model_list(
     }
 }
 
-/// The panel's "Add model record" expander row — the form itself lives in
-/// the page-level modal (`record_form_dialog`).
-fn record_section(
-    index: usize,
-    provider_id: &str,
-    theme: &Theme,
-    cx: &mut Context<ProvidersPage>,
-) -> AnyElement {
-    let toggle_provider = provider_id.to_string();
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(
-            action_button(theme)
-                .id(("toggle-record-form", index))
-                .w_auto()
-                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                .on_click(cx.listener(move |page, _, _, cx| {
-                    page.open_record_form(toggle_provider.clone(), cx);
-                }))
-                .child("Add model record"),
-        )
-        .into_any_element()
-}
-
-/// The Add-model-record dialog (`popover::modal` from the page) — the old
-/// inline panel form, moved into a card. Basic fields up front;
+/// The Add-model-record dialog (`popover::modal` from the page), opened
+/// from the Models header's "+ Add model" action. Basic fields up front;
 /// `thinkingLevelMap`/`compat`/`headers` ride the advanced JSON textarea —
 /// a full structured editor is not worth the surface.
 fn record_form_dialog(
@@ -2048,6 +2279,10 @@ fn record_form_dialog(
         return div().into_any_element();
     };
     let field_input = |key: &str| form.inputs.get(key).cloned();
+    // Built ahead of the closures below: they hold `cx` for their
+    // listeners, so the dropdown (which registers its own) must borrow
+    // `cx` first.
+    let api_dropdown = record_api_dropdown(page, theme, cx);
     let pair = |left: (&str, &str), right: Option<(&str, &str)>| {
         div()
             .flex()
@@ -2079,17 +2314,6 @@ fn record_form_dialog(
                     )
                     .into_any_element()
             }))
-    };
-    let labelled = |key: &str, label: &str| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(widgets::field_label(theme, label))
-            .children(
-                field_input(key)
-                    .map(|input| bordered_input(theme, input).w_full().into_any_element()),
-            )
     };
     let flag_row = |key: &'static str, label: &str, on: bool| {
         div()
@@ -2140,7 +2364,14 @@ fn record_form_dialog(
         );
     card = card
         .child(pair(("id", "Model ID"), Some(("name", "Name"))))
-        .child(labelled("api", "API dialect"))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(widgets::field_label(theme, "API dialect"))
+                .child(api_dropdown),
+        )
         .child(pair(
             ("contextWindow", "Context window"),
             Some(("maxTokens", "Max tokens")),
@@ -2198,6 +2429,7 @@ fn record_form_dialog(
                 .child(
                     action_button(theme)
                         .id("save-record")
+                        .debug_selector(|| "save-record".into())
                         .hover(|style| style.bg(crate::theme::ink(0.04)))
                         .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
                             page.save_record(cx);
@@ -2532,12 +2764,7 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
     let doc_empty = page
         .setup_chat
         .as_deref()
-        .map(|id| {
-            page.state
-                .read(cx)
-                .sub_transcript(&setup_view_key(id))
-                .is_empty()
-        })
+        .map(|id| page.state.read(cx).sub_transcript(id).is_empty())
         .unwrap_or(true);
     let mut column = div().flex().flex_col().gap(px(10.0)).flex_1().min_h_0();
     if let Loadable::Error(reason) = page.setup_models.clone() {
@@ -2697,12 +2924,6 @@ fn setup_composer(
                 ),
         )
         .into_any_element()
-}
-
-/// The session-filtered doc view's key in AppState (local feed plumbing,
-/// never sent to the engine).
-fn setup_view_key(chat_id: &str) -> String {
-    format!("setup-view:{chat_id}")
 }
 
 /// The setup picker's catalog, grouped by provider in catalog order — the
@@ -3076,8 +3297,8 @@ fn change_subject(change: &serde_json::Value) -> (String, Option<String>) {
 /// summary, one structured row per change (the fields that decide whether
 /// writing is safe), and Write/Discard on the card. Failures land inline
 /// on the card they belong to; a written proposal keeps a terminal card
-/// instead of vanishing. Proposals stored before this dialog session
-/// opened never render — their Write could only fail the staleness gate.
+/// instead of vanishing. Proposals live on the session-scoped chat and die
+/// with it, so every stored proposal belongs to this session.
 fn setup_review_panel(
     page: &mut ProvidersPage,
     theme: &Theme,
@@ -3086,14 +3307,8 @@ fn setup_review_panel(
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
     let accent = theme.accent;
-    let cutoff = page.setup_cutoff_ms;
     let applying = page.setup_applying.clone();
-    let pending: Vec<serde_json::Value> = page
-        .setup_proposals
-        .iter()
-        .filter(|proposal| proposal["createdAt"].as_i64().unwrap_or(0) >= cutoff)
-        .cloned()
-        .collect();
+    let pending: Vec<serde_json::Value> = page.setup_proposals.clone();
     let applied = page.setup_applied.clone();
     let mut panel = div()
         .flex()
@@ -3478,12 +3693,14 @@ fn build_record_json(
 // custom-provider form, and the global reset (ADR-0028's manual half).
 // ---------------------------------------------------------------------------
 
-/// The hidden block: one greyed row per hidden model with an unhide action.
+/// The hidden block: a collapsible header (chevron + count, collapsed by
+/// default) over one greyed row per hidden model with an unhide action.
 /// `None` when the provider hides nothing.
 fn hidden_rows(
     index: usize,
     provider_id: &str,
     hidden: Loadable<Vec<HiddenModel>>,
+    expanded: bool,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> Option<AnyElement> {
@@ -3492,6 +3709,41 @@ fn hidden_rows(
         return None;
     }
     let count = rows.len();
+    let toggle_id = provider_id.to_string();
+    let chevron = if expanded {
+        crate::icons::ALT_ARROW_DOWN
+    } else {
+        crate::icons::ALT_ARROW_RIGHT
+    };
+    let header = div()
+        .id(("hidden-header", index))
+        .cursor_pointer()
+        .w_auto()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .on_click(cx.listener(move |page, _, _, cx| page.toggle_hidden(toggle_id.clone(), cx)))
+        .child(
+            crate::icons::icon(chevron)
+                .size(px(11.0))
+                .text_color(theme.text_muted),
+        )
+        .child(widgets::field_label(theme, "Hidden"))
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child(SharedString::from(format!("{count}"))),
+        );
+    let block = div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(6.0))
+        .child(header);
+    if !expanded {
+        return Some(block.into_any_element());
+    }
     let height = (count as f32 * 32.0).min(96.0);
     let provider_prefix = format!("{provider_id}/");
     let provider = provider_id.to_string();
@@ -3568,15 +3820,7 @@ fn hidden_rows(
     .w_full()
     .occlude()
     .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
-    Some(
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(widgets::field_label(theme, "Hidden"))
-            .child(list)
-            .into_any_element(),
-    )
+    Some(block.child(list).into_any_element())
 }
 
 impl Drop for ProvidersPage {
@@ -3771,10 +4015,13 @@ mod tests {
     #[test]
     fn panel_heights_account_for_the_new_sections() {
         let models = Loadable::Ready(Vec::<Model>::new());
-        let bare = provider_controls_height(&models, 0, false);
-        // Hidden rows and their absence move the panel's animated height.
-        let with_hidden = provider_controls_height(&models, 2, false);
-        assert!(with_hidden > bare);
+        let bare = provider_controls_height(&models, 0, false, false);
+        // Hidden rows and their absence move the panel's animated height;
+        // the collapsed Hidden block adds only its header.
+        let collapsed = provider_controls_height(&models, 2, false, false);
+        let expanded = provider_controls_height(&models, 2, true, false);
+        assert!(collapsed > bare);
+        assert!(expanded > collapsed);
     }
 
     // ---- The AI tab's headless repro (issue 03: no conversation renders
@@ -3808,10 +4055,10 @@ mod tests {
     }
 
     /// The fake engine behind the dialog repro: the providers/models reads,
-    /// the setup-chat singleton, and a `WatchDocMessages` stream that
+    /// a fresh setup chat per `StartModelSetupChat` (incrementing ids,
+    /// `deleteChat` ops recorded), and a `WatchDocMessages` stream that
     /// advances when `QueueCommand` lands — the engine's admission shape
-    /// (the user entry stamped at now, the assistant streaming). History
-    /// from a previous dialog session rides the doc to exercise the cutoff.
+    /// (the user entry stamped at now, the assistant streaming).
     struct FakeSetupEngine {
         doc: tokio::sync::watch::Sender<serde_json::Value>,
         queue: tokio::sync::watch::Sender<serde_json::Value>,
@@ -3828,6 +4075,12 @@ mod tests {
         /// ListModelProposals (the engine's consume-on-apply included).
         proposals: std::sync::Mutex<Vec<serde_json::Value>>,
         applies: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// chatIds the page deleted (the dialog close's deleteChat op).
+        deleted_chats: std::sync::Mutex<Vec<String>>,
+        /// StartModelSetupChat's fresh id sequence.
+        chat_seq: std::sync::atomic::AtomicUsize,
+        /// SaveModelRecord params, in call order.
+        records: std::sync::Mutex<Vec<serde_json::Value>>,
         /// True = ApplyModelProposal fails with the staleness error instead
         /// of applying.
         fail_applies: std::sync::atomic::AtomicBool,
@@ -3896,8 +4149,32 @@ mod tests {
                         .retain(|row| row["id"] != "acme/acme-custom");
                     RpcReply::value(&serde_json::json!({}))
                 }
-                methods::ENSURE_MODEL_SETUP_CHAT => {
-                    RpcReply::value(&serde_json::json!({ "chatId": "setup-chat" }))
+                methods::START_MODEL_SETUP_CHAT => {
+                    let seq = self
+                        .chat_seq
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    RpcReply::value(&serde_json::json!({ "chatId": format!("setup-chat-{seq}") }))
+                }
+                methods::LIST_API_DIALECTS => RpcReply::value(&serde_json::json!([
+                    "anthropic-messages",
+                    "openai-completions",
+                    "openai-responses"
+                ])),
+                methods::SAVE_MODEL_RECORD => {
+                    self.records.lock().unwrap().push(params.clone());
+                    RpcReply::value(&serde_json::json!({}))
+                }
+                methods::LIST_HIDDEN_MODELS => {
+                    RpcReply::value(&serde_json::Value::Array(Vec::new()))
+                }
+                methods::MUTATE => {
+                    if params["op"].as_str() == Some("deleteChat") {
+                        self.deleted_chats
+                            .lock()
+                            .unwrap()
+                            .push(params["chatId"].as_str().unwrap_or_default().to_string());
+                    }
+                    RpcReply::value(&serde_json::json!({}))
                 }
                 methods::LIST_MODEL_PROPOSALS => RpcReply::value(&serde_json::Value::Array(
                     self.proposals.lock().unwrap().clone(),
@@ -4058,15 +4335,7 @@ mod tests {
         cx: &'a mut gpui::TestAppContext,
         fail_first_admission: bool,
     ) -> SetupHarness<'a> {
-        // The singleton chat carries one entry from a PREVIOUS dialog
-        // session: pre-cutoff history the view must hide.
-        let (doc, _doc_rx) = tokio::sync::watch::channel(serde_json::json!([entry_json(
-            "setup-history",
-            "user",
-            "earlier session",
-            1,
-            None
-        ),]));
+        let (doc, _doc_rx) = tokio::sync::watch::channel(serde_json::json!([]));
         let (queue, _queue_rx) = tokio::sync::watch::channel(serde_json::json!({
             "pending": [],
             "paused": false,
@@ -4101,6 +4370,9 @@ mod tests {
             applies: std::sync::Mutex::new(Vec::new()),
             fail_applies: std::sync::atomic::AtomicBool::new(false),
             unconfigured: std::sync::atomic::AtomicBool::new(false),
+            deleted_chats: std::sync::Mutex::new(Vec::new()),
+            chat_seq: std::sync::atomic::AtomicUsize::new(0),
+            records: std::sync::Mutex::new(Vec::new()),
         });
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4132,7 +4404,7 @@ mod tests {
     }
 
     /// Issue 03's repro: open the AI tab, send, and the placeholder must
-    /// flip to the real transcript — the sent turn visible, history hidden.
+    /// flip to the real transcript with the sent turn visible.
     #[gpui::test]
     fn the_setup_dialog_renders_the_sent_turn(cx: &mut gpui::TestAppContext) {
         let mut harness = setup_dialog_harness(cx);
@@ -4144,9 +4416,8 @@ mod tests {
             assert!(page.setup_transcript_view.is_some(), "the view mounts");
             page.setup_chat.clone().expect("the setup chat resolved")
         });
-        // A fresh dialog session: history stays hidden behind the cutoff.
+        // A fresh session: the doc starts empty, the placeholder shows.
         assert!(harness.visual.debug_bounds("setup-empty-state").is_some());
-        assert!(harness.visual.debug_bounds("setup-history").is_none());
         assert!(
             harness.visual.debug_bounds("setup-queue-error").is_none(),
             "a healthy queue renders no failure strip"
@@ -4169,14 +4440,10 @@ mod tests {
             .expect("the message id")
             .to_string();
 
-        // The session view holds exactly the fresh turn (history filtered).
-        let rows = harness.visual.read(|cx| {
-            harness
-                .state
-                .read(cx)
-                .sub_transcript(&setup_view_key(&chat_id))
-                .to_vec()
-        });
+        // The session view holds exactly the fresh turn.
+        let rows = harness
+            .visual
+            .read(|cx| harness.state.read(cx).sub_transcript(&chat_id).to_vec());
         assert_eq!(
             rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
             vec![turn_user_id.as_str(), "setup-turn-assistant"],
@@ -4258,7 +4525,7 @@ mod tests {
             harness
                 .state
                 .read(cx)
-                .sub_transcript(&setup_view_key(chat_id.as_deref().expect("the setup chat")))
+                .sub_transcript(chat_id.as_deref().expect("the setup chat"))
                 .to_vec()
         });
         assert!(!rows.is_empty(), "the retried turn landed in the doc");
@@ -4623,30 +4890,82 @@ mod tests {
         );
     }
 
-    /// Proposals stored before this dialog session opened belong to earlier
-    /// sessions: their Write could only fail the apply-time staleness
-    /// gate, so they never render as actionable.
+    /// The setup chat is session-scoped: closing the dialog deletes it
+    /// (turn cancelled, transcript and proposals dropped with it), and the
+    /// next open starts a fresh chat — no conversation memory persists.
     #[gpui::test]
-    fn stale_proposals_from_earlier_sessions_stay_hidden(cx: &mut gpui::TestAppContext) {
+    fn closing_the_dialog_deletes_the_setup_chat(cx: &mut gpui::TestAppContext) {
         let mut harness = setup_dialog_harness(cx);
-        harness
-            .engine
-            .proposals
-            .lock()
-            .unwrap()
-            .push(proposal_json("prop-old", 1));
         harness.click("open-add-provider");
         harness.click("add-provider-tab-ai");
         harness.pump();
+        let first = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.setup_chat.clone())
+            .expect("the setup chat resolved");
 
-        assert!(
-            harness
-                .visual
-                .debug_bounds("setup-proposal-card-0")
-                .is_none(),
-            "a pre-session proposal renders no card"
+        harness.click("add-provider-close");
+        assert_eq!(
+            harness.engine.deleted_chats.lock().unwrap().as_slice(),
+            &[first.clone()],
+            "closing the dialog deletes the session's chat"
         );
-        assert!(harness.engine.applies.lock().unwrap().is_empty());
+
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+        let second = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.setup_chat.clone())
+            .expect("the setup chat resolved");
+        assert_ne!(first, second, "the reopen starts a fresh chat");
+    }
+
+    /// The record form's API dialect is a dropdown over the engine's
+    /// registered dialects, not a free-text field: the pick lands in the
+    /// saved record.
+    #[gpui::test]
+    fn the_record_form_picks_the_api_dialect_from_a_dropdown(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        // The panel clips its content behind the expand animation's height
+        // (wall-clock driven — a parked test clock never finishes it), so
+        // the rows' hitboxes stay clipped away. Reduce motion: animations
+        // complete on the first layout.
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("toggle-record-form");
+
+        // The dropdown defaults to openai-completions.
+        let api = harness.page.update(&mut *harness.visual, |page, _| {
+            page.record_form.as_ref().map(|form| form.api.clone())
+        });
+        assert_eq!(api.as_deref(), Some("openai-completions"));
+
+        harness.click("record-api-dropdown");
+        harness.click("record-api-option-anthropic-messages");
+        let api = harness.page.update(&mut *harness.visual, |page, _| {
+            page.record_form.as_ref().map(|form| form.api.clone())
+        });
+        assert_eq!(api.as_deref(), Some("anthropic-messages"));
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let form = page.record_form.as_ref().expect("the record form");
+            for (key, value) in [
+                ("id", "acme-9"),
+                ("contextWindow", "200000"),
+                ("maxTokens", "8192"),
+            ] {
+                form.inputs[key].update(cx, |input, cx| input.set_text(value, cx));
+            }
+        });
+        harness.click("save-record");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord");
+        assert_eq!(records[0]["record"]["api"], "anthropic-messages");
     }
 
     /// The fresh-install dead end: no provider configured means the setup

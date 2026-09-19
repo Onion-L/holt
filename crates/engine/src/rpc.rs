@@ -243,10 +243,13 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
-    /// Finds or creates the singleton hidden `model-setup` chat (model
-    /// setup v2). The dialog's model picker refreshes its config each call;
-    /// the row is archived so the sidebar never lists it.
-    fn ensure_model_setup_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+    /// Starts a fresh hidden `model-setup` chat (model setup v2). The
+    /// dialog session IS the chat's whole lifetime — the UI deletes it on
+    /// close — so nothing carries across opens: no transcript memory for
+    /// the model, no stale proposals. Any earlier setup chat still on
+    /// record (a dialog killed mid-session, a crashed run) is deleted here
+    /// outright. The row is archived so the sidebar never lists it.
+    fn start_model_setup_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let provider = ProviderId(required_string(&params, "provider")?.to_string());
         let model = required_string(&params, "model")?.to_string();
         let reasoning: Option<ReasoningLevel> = params
@@ -254,11 +257,6 @@ impl EngineService {
             .filter(|value| !value.is_null())
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok());
-        let mut chats = self
-            .runtime
-            .chats
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
         let config = ChatConfig {
             provider,
             model,
@@ -267,50 +265,53 @@ impl EngineService {
             permission_mode: self.mode_default.get(),
             scope: holt_proto::ChatScope::ModelSetup,
         };
-        let existing = chats.iter_mut().find(|chat| {
-            chat.config
-                .as_ref()
-                .is_some_and(|config| config.scope == holt_proto::ChatScope::ModelSetup)
-        });
-        let chat_id = match existing {
-            Some(row) => {
-                row.config = Some(config);
-                row.archived = true;
-                row.id.clone()
-            }
-            None => {
-                let id = uuid::Uuid::new_v4().to_string();
-                chats.push(Chat {
-                    id: id.clone(),
-                    device_id: self.engine_info.device_id.clone(),
-                    title: Some("Provider setup".into()),
-                    title_source: TitleSource::UserManual,
-                    title_task_started: true,
-                    archived: true,
-                    pinned: false,
-                    cwd: None,
-                    branch: None,
-                    checkout_id: None,
-                    source_context: None,
-                    config: Some(config),
-                    last_message_preview: None,
-                    last_message_at: None,
-                    created_at: Utc::now(),
-                    space_id: None,
-                    last_seen_at: None,
-                    room_gen: None,
-                    compact_before_next_turn: false,
-                    plan_mode: None,
-                });
-                id
-            }
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        let stale = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let stale: Vec<String> = chats
+                .iter()
+                .filter(|chat| {
+                    chat.config
+                        .as_ref()
+                        .is_some_and(|config| config.scope == holt_proto::ChatScope::ModelSetup)
+                })
+                .map(|chat| chat.id.clone())
+                .collect();
+            chats.retain(|chat| !stale.contains(&chat.id));
+            chats.push(Chat {
+                id: chat_id.clone(),
+                device_id: self.engine_info.device_id.clone(),
+                title: Some("Provider setup".into()),
+                title_source: TitleSource::UserManual,
+                title_task_started: true,
+                archived: true,
+                pinned: false,
+                cwd: None,
+                branch: None,
+                checkout_id: None,
+                source_context: None,
+                config: Some(config),
+                last_message_preview: None,
+                last_message_at: None,
+                created_at: Utc::now(),
+                space_id: None,
+                last_seen_at: None,
+                room_gen: None,
+                compact_before_next_turn: false,
+                plan_mode: None,
+            });
+            persist_chats(&self.data_dir, &chats)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            stale
         };
-        drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        for stale_id in &stale {
+            self.runtime.remove_chat(stale_id);
+            self.terminals.close_chat(stale_id);
+        }
         self.runtime.chat(&chat_id);
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({ "chatId": chat_id }))
@@ -2264,7 +2265,14 @@ impl RpcService for EngineService {
                 let discarded = crate::tools::model_setup::discard_stored(&chat, proposal_id);
                 RpcReply::value(&serde_json::json!({ "discarded": discarded }))
             }
-            methods::ENSURE_MODEL_SETUP_CHAT => self.ensure_model_setup_chat(params),
+            methods::START_MODEL_SETUP_CHAT => self.start_model_setup_chat(params),
+            methods::LIST_API_DIALECTS => {
+                let ids: Vec<String> = pi_core::ai::compat::get_api_providers()
+                    .iter()
+                    .map(|provider| provider.api.clone())
+                    .collect();
+                RpcReply::value(&serde_json::json!(ids))
+            }
             methods::SAVE_CUSTOM_PROVIDER => {
                 let id = required_string(&params, "id")?.trim().to_string();
                 let name = required_string(&params, "name")?.trim().to_string();

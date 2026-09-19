@@ -50,9 +50,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `SetHiddenModels` (listings only — resolution keeps working),
   `ListHiddenModels` (the greyed ids the Settings page unhides), and
   `ResetProviderCatalog` (per-provider, or global when `providerId` is
-  absent). Every write takes effect without a restart. The model-setup
-  dialog's surface rides the same store: `EnsureModelSetupChat`
-  (finds/creates the singleton hidden setup chat), `ListModelProposals`,
+  absent). `ListApiDialects` serves the record form's dialect dropdown
+  (pi-core's compat registry). Every write takes effect without a restart. The model-setup
+  dialog's surface rides the same store: `StartModelSetupChat`
+  (starts a fresh session-scoped hidden setup chat, deleting any earlier
+  one), `ListModelProposals`,
   `ApplyModelProposal` (the review panel's write button), and
   `DiscardModelProposal` (its discard button).
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
@@ -472,8 +474,10 @@ Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
 planning Turns excepted, since they run the read-only toolset. The model
 setup surface (ADR-0030) lives in its own chat, not here: normal chats
 mount no catalog tool at all — their catalog-write capability is nil. A
-hidden `model-setup` chat (`ChatConfig.scope`, found/created by
-`EnsureModelSetupChat`) runs the fixed four-step workflow under a dedicated
+hidden `model-setup` chat (`ChatConfig.scope`, started fresh per dialog
+session by `StartModelSetupChat` and deleted when the dialog closes — no
+conversation memory carries across opens) runs the fixed four-step
+workflow under a dedicated
 system prompt, with a toolset of exactly the web tools plus the read-only
 `model_proposal` (validates an exact catalog change against the local
 catalog — no-op detection, deterministic checks, an optional read-only

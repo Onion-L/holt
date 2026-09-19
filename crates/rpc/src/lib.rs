@@ -67,9 +67,15 @@ pub mod methods {
     /// Drops one stored proposal (the review panel's discard button):
     /// params `{chatId, proposalId}`. Nothing is written.
     pub const DISCARD_MODEL_PROPOSAL: &str = "DiscardModelProposal";
-    /// Finds or creates the singleton hidden `model-setup` chat (params
-    /// `{provider, model, reasoning?}` update its config) → `{chatId}`.
-    pub const ENSURE_MODEL_SETUP_CHAT: &str = "EnsureModelSetupChat";
+    /// Starts a fresh hidden `model-setup` chat (params `{provider, model,
+    /// reasoning?}`) → `{chatId}`. Session-scoped: earlier setup chats are
+    /// deleted outright, and the dialog deletes this one on close — no
+    /// conversation memory carries across opens.
+    pub const START_MODEL_SETUP_CHAT: &str = "StartModelSetupChat";
+    /// The registered API dialect ids (pi-core's compat registry) →
+    /// `[String]`. The record form's dialect dropdown reads it — the set
+    /// is the engine's, never the UI's.
+    pub const LIST_API_DIALECTS: &str = "ListApiDialects";
     /// Engine-owned title-task settings (ADR-0012). Read takes no params;
     /// save params are `holt_proto::TitleSettings`; both reply with
     /// `holt_proto::TitleSettingsState` (settings + live validation warning).

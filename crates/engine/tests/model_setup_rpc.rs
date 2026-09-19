@@ -41,21 +41,21 @@ fn propose_call(call_id: &str, provider: &str, model: &str) -> ScriptedReply {
     )
 }
 
-/// Creates the singleton setup chat the dialog drives.
-async fn ensure_setup_chat(
+/// Starts the session-scoped setup chat the dialog drives.
+async fn start_setup_chat(
     engine: &holt_engine::LocalEngine,
     provider: &str,
     model: &str,
 ) -> String {
     let RpcReply::Value(reply) = engine
         .handle(
-            methods::ENSURE_MODEL_SETUP_CHAT,
+            methods::START_MODEL_SETUP_CHAT,
             serde_json::json!({ "provider": provider, "model": model }),
         )
         .await
         .unwrap()
     else {
-        panic!("EnsureModelSetupChat did not return a value");
+        panic!("StartModelSetupChat did not return a value");
     };
     reply["chatId"].as_str().unwrap().to_string()
 }
@@ -119,7 +119,7 @@ async fn a_setup_chat_proposes_and_the_review_rpc_applies() {
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
     let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
 
     // The review panel's data: structured changes, newest first.
@@ -205,7 +205,7 @@ async fn a_stale_proposal_is_rejected_by_the_review_rpc() {
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
     let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
 
     // The catalog moves under the proposal: the same record lands via RPC.
@@ -249,7 +249,7 @@ async fn unknown_proposals_and_chats_are_rejected() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
     common::setup_chat(&engine, "chat-1").await;
-    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
 
     assert!(
         engine
@@ -272,26 +272,37 @@ async fn unknown_proposals_and_chats_are_rejected() {
 }
 
 #[tokio::test]
-async fn the_setup_chat_is_a_singleton_that_tracks_the_picked_model() {
+async fn each_setup_session_gets_a_fresh_chat_and_the_previous_one_is_deleted() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
     common::setup_chat(&engine, "chat-1").await;
 
-    let first = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
-    // A different picked model updates the same chat, not a second one.
-    let second = ensure_setup_chat(&engine, "zai-coding-cn", "zai-coding-cn/glm-5.3").await;
-    assert_eq!(first, second);
-    let RpcReply::Value(reply) = engine
-        .handle(
-            methods::ENSURE_MODEL_SETUP_CHAT,
-            serde_json::json!({ "provider": "openai", "model": "openai/gpt-5.4" }),
-        )
+    let first = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    // The next dialog session starts a NEW chat — no conversation memory
+    // carries across opens — and the previous one is deleted outright.
+    let second = start_setup_chat(&engine, "zai-coding-cn", "zai-coding-cn/glm-5.3").await;
+    assert_ne!(first, second);
+
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
         .await
         .unwrap()
     else {
-        panic!("EnsureModelSetupChat did not return a value");
+        panic!("WatchChats did not return a stream");
     };
-    assert_eq!(reply["chatId"].as_str().unwrap(), first);
+    let frame = common::next_frame(&mut chats).await;
+    let rows = frame.as_array().unwrap();
+    assert!(
+        !rows.iter().any(|row| row["id"] == first),
+        "the previous session's setup chat is deleted"
+    );
+    let current = rows
+        .iter()
+        .find(|row| row["id"] == second)
+        .expect("the fresh setup chat is listed");
+    assert_eq!(current["archived"], true);
+    assert_eq!(current["config"]["scope"], "model-setup");
+    assert_eq!(current["config"]["model"], "zai-coding-cn/glm-5.3");
 }
 
 #[tokio::test]
@@ -303,7 +314,7 @@ async fn a_discarded_proposal_cannot_be_applied() {
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
     let id = propose_and_extract_id(&engine, &fixture, &setup_id).await;
 
     let RpcReply::Value(reply) = engine
@@ -347,7 +358,7 @@ async fn a_discarded_proposal_cannot_be_applied() {
 }
 
 /// The setup dialog's exact RPC sequence (issue 03): the doc watch is
-/// subscribed BEFORE the send (the UI's `watch_doc_view`), and the send
+/// subscribed BEFORE the send (the UI's `watch_subagent_doc`), and the send
 /// rides `QueueCommand` with the picker's provider-qualified model. The
 /// turn must land in the doc stream — the user entry first, then the
 /// reply — or the dialog stays on its placeholder forever.
@@ -357,9 +368,9 @@ async fn the_setup_dialogs_doc_watch_streams_the_sent_turn() {
     let provider = ScriptedProvider::new(vec![ScriptedReply::text("researched")]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let setup_id = ensure_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
 
-    // The dialog's feed opens first, exactly as `watch_doc_view` does —
+    // The dialog's feed opens first, exactly as `watch_subagent_doc` does —
     // the opening reset is drained, everything after is the live turn.
     let (mut transcript, mut sessions) = common::subscribe(&engine, &setup_id).await;
 
