@@ -2270,19 +2270,10 @@ impl RpcService for EngineService {
                 let name = required_string(&params, "name")?.trim().to_string();
                 let base_url = required_string(&params, "baseUrl")?.trim().to_string();
                 let default_api = required_string(&params, "defaultApi")?.trim().to_string();
-                let headers = match params.get("headers") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        Some(serde_json::from_value(value.clone()).map_err(|_| {
-                            RpcError::BadParams("headers must be a header map".into())
-                        })?)
-                    }
-                };
                 let provider = crate::provider_settings::CustomProvider {
                     id,
                     name,
                     base_url,
-                    headers,
                     default_api,
                 };
                 self.providers

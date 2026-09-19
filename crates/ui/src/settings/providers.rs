@@ -3021,9 +3021,6 @@ fn change_subject(change: &serde_json::Value) -> (String, Option<String>) {
             if let Some(api) = provider["defaultApi"].as_str() {
                 detail.push(api.to_string());
             }
-            if provider.get("headers").is_some_and(|h| h.is_object()) {
-                detail.push("custom headers".into());
-            }
             (
                 format!("+ provider {}", str_field("providerId")),
                 (!detail.is_empty()).then(|| detail.join(" · ")),

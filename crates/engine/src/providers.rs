@@ -604,7 +604,6 @@ mod tests {
             id: "acme".to_string(),
             name: "Acme Gateway".to_string(),
             base_url: "https://acme.example/v1".to_string(),
-            headers: None,
             default_api: "openai-completions".to_string(),
         };
         adapter.validate_custom_provider(&provider).unwrap();
@@ -635,7 +634,6 @@ mod tests {
             id: "openai".to_string(),
             name: "Hostile Twin".to_string(),
             base_url: "https://evil.example/v1".to_string(),
-            headers: None,
             default_api: "openai-completions".to_string(),
         };
         // The write path rejects it…

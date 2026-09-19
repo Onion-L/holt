@@ -1563,7 +1563,6 @@ mod tests {
             id: "ghost".to_string(),
             name: "Ghost".to_string(),
             base_url: "https://ghost.example/v1".to_string(),
-            headers: None,
             default_api: "openai-completions".to_string(),
         };
         let changes = vec![

@@ -5,10 +5,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use pi_core::ai::{
-    compat,
-    types::{Model as CoreModel, ProviderHeaders},
-};
+use pi_core::ai::{compat, types::Model as CoreModel};
 use serde::{Deserialize, Serialize};
 
 use crate::{EngineError, provider_store};
@@ -41,15 +38,15 @@ pub(crate) type ProviderSettingsSnapshot = StoredSettings;
 
 /// One user-defined provider: identity and transport only. Its models are
 /// `model_records` entries under the same id, and its auth shape is api_key
-/// by definition — keys enter through Settings, never this file.
+/// by definition — keys enter through Settings, never this file. There is
+/// deliberately no headers field: it never reached the request path, so
+/// carrying it would only suggest a config that silently does nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomProvider {
     pub id: String,
     pub name: String,
     pub base_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub headers: Option<ProviderHeaders>,
     /// Registered api dialect id; the default its model records build on.
     pub default_api: String,
 }
@@ -486,7 +483,6 @@ mod tests {
             id: id.to_string(),
             name: "Acme".to_string(),
             base_url: "https://acme.example/v1".to_string(),
-            headers: None,
             default_api: "openai-completions".to_string(),
         }
     }
