@@ -254,7 +254,6 @@ async fn run_review_pass(
         )],
         tools: None,
     };
-    let started_at = chrono::Utc::now().timestamp_millis();
     let stream = match (review.stream_fn)(&review.model, &context, Some(&options)) {
         Ok(stream) => stream,
         Err(error) => {
@@ -279,11 +278,7 @@ async fn run_review_pass(
     // reviews are all metered round-trips the chat caused (a child run's
     // reviews ride its delegation's billing vector instead — the capture is
     // a no-op there).
-    crate::usage::capture_review(
-        chat,
-        &response,
-        crate::usage::generation_duration(Some(started_at), response.timestamp),
-    );
+    crate::usage::capture_review(chat, &response);
     match response.stop_reason {
         // Aborted with the token live is the cancellation path (no verdict,
         // no stamp). An abort the gate did not ask for is a garbled

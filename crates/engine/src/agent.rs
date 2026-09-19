@@ -1386,8 +1386,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let sink_cwd = cwd.clone();
     let sink_skill_files: Arc<HashMap<String, String>> = Arc::new(skill_files);
     let sink_cancel = cancel.clone();
-    let sink_dispatch: crate::usage::DispatchTimes = Arc::default();
-    let emit_dispatch = sink_dispatch.clone();
     let emit: AgentEventSink = Arc::new(move |event| {
         let chat = sink_chat.clone();
         let base_parts = sink_base.clone();
@@ -1397,7 +1395,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         let cwd = sink_cwd.clone();
         let skill_files = sink_skill_files.clone();
         let cancel = sink_cancel.clone();
-        let dispatch = emit_dispatch.clone();
         Box::pin(async move {
             // Debug trace of the event cadence: answers "did the reply
             // stream?" without a debugger — deltas arriving bunched here are
@@ -1501,7 +1498,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     // decides what persists, so failed and aborted answers
                     // stay billed. The batch lands at settlement.
                     if let AgentMessage::Assistant(assistant) = &*message {
-                        crate::usage::capture_round_trip(&chat, assistant, &dispatch);
+                        crate::usage::capture_round_trip(&chat, assistant);
                     }
                     // The completed assistant message joins the persisted
                     // History as it ends (ADR-0010), in its History version:
@@ -1580,18 +1577,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
 
     let stream_fn = stream_fn.unwrap_or_else(default_stream_fn);
     let stream_cancel = cancel.clone();
-    let dispatch_stamps = sink_dispatch;
     let stream_fn: pi_core::agent::types::StreamFn = Arc::new(move |model, context, options| {
         if stream_cancel.is_cancelled() {
             return Err("Turn interrupted".into());
         }
-        let started_at = Utc::now().timestamp_millis();
-        let stream = stream_fn(model, context, options)?;
-        dispatch_stamps
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(started_at);
-        Ok(stream)
+        stream_fn(model, context, options)
     });
     let mut history = chat
         .history
@@ -1611,9 +1601,8 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // The summary responses bill into the Turn's usage batch (a child run's
     // compaction books nothing here — its delegation's metered transport
     // sees the request).
-    let compaction_meter = |response: &pi_core::ai::types::AssistantMessage,
-                            duration_ms: Option<u64>| {
-        crate::usage::capture_compaction(&chat, response, duration_ms)
+    let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+        crate::usage::capture_compaction(&chat, response)
     };
     let turn_start_compaction = if overflow_recovery {
         crate::compaction::compact_now(
@@ -1729,10 +1718,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 }
                 // Mid-Turn summaries bill into the batch like the Turn-start
                 // ones (a child run books nothing — see there).
-                let compaction_meter =
-                    |response: &pi_core::ai::types::AssistantMessage, duration_ms: Option<u64>| {
-                        crate::usage::capture_compaction(&chat, response, duration_ms)
-                    };
+                let compaction_meter = |response: &pi_core::ai::types::AssistantMessage| {
+                    crate::usage::capture_compaction(&chat, response)
+                };
                 let outcome = match crate::compaction::compact(
                     &last_turn.context.messages,
                     &model,

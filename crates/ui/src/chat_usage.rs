@@ -1,8 +1,7 @@
 //! The chat's token numbers, as composer chrome: a radial ring beside the
 //! branch chip whose arc is the window occupancy, and the card its hover
 //! opens — context occupancy on top, cumulative usage below, each drawn as a
-//! bar instead of a line of text, and the chat's Output speed between them
-//! when any record carried a measured duration.
+//! bar instead of a line of text.
 //!
 //! The engine's `ChatUsage` frame is the only input: the totals, the
 //! per-source split, and the occupancy all arrive decided, so this module
@@ -118,11 +117,6 @@ pub(crate) struct CardModel {
     /// chat. A subset of `gross` (which also carries output), never a segment
     /// of the usage bar.
     pub(crate) cache: CacheStats,
-    /// Output speed over the records that carry a measured generation
-    /// duration — output tokens per second. `None` when no record does (a
-    /// ledger from before the measurement, or no records at all): an
-    /// average with nothing participating is absent, not zero.
-    pub(crate) speed: Option<f64>,
 }
 
 /// Fold the frame into what the card prints. The share arithmetic is the only
@@ -169,8 +163,6 @@ pub(crate) fn card_model(usage: &ChatUsage) -> CardModel {
             read: usage.by_kind.values().map(|sum| sum.cache_read).sum(),
             written: usage.by_kind.values().map(|sum| sum.cache_write).sum(),
         },
-        speed: (usage.generation_ms > 0)
-            .then(|| usage.output_tokens as f64 / usage.generation_ms as f64 * 1000.0),
         kinds,
     }
 }
@@ -219,17 +211,6 @@ fn usage_value(model: &CardModel) -> String {
             "records"
         }
     )
-}
-
-/// Output speed as the card prints it: one decimal below 10 tokens/s (slow
-/// models, test doubles), rounded above — the same least-precision idea as
-/// [`percent`]'s dropped `.0`.
-fn speed_value(tokens_per_s: f64) -> String {
-    if tokens_per_s < 10.0 {
-        format!("{tokens_per_s:.1} tokens/s")
-    } else {
-        format!("{tokens_per_s:.0} tokens/s")
-    }
 }
 
 /// A fraction as a percentage with one decimal, a trailing `.0` dropped —
@@ -366,13 +347,6 @@ impl Render for UsageCard {
                         .enumerate()
                         .map(|(rank, share)| kind_row(rank, share, &theme)),
                 );
-        }
-        if let Some(speed) = model.speed {
-            card = card.child(div().h(px(2.0))).child(section_header(
-                "Speed",
-                speed_value(speed),
-                &theme,
-            ));
         }
         if let Some(hit_rate) = model.cache.hit_rate() {
             card = card
@@ -758,29 +732,7 @@ mod tests {
         assert_eq!(model.gross, 0);
         assert!(model.kinds.is_empty());
         assert_eq!(model.cache, CacheStats::default());
-        assert_eq!(model.speed, None);
         assert_eq!(occupancy_value(&model.occupancy), "0 · window unknown");
-    }
-
-    /// Output speed folds from the frame's two sums and prints rounded —
-    /// and a frame with no participating records carries no speed at all,
-    /// never a zero.
-    #[test]
-    fn output_speed_folds_from_the_frame_and_prints_two_ways() {
-        let model = card_model(&decode(json!({
-            "gross": 1000,
-            "outputTokens": 420,
-            "generationMs": 10_000,
-        })));
-        assert_eq!(model.speed, Some(42.0));
-        assert_eq!(speed_value(42.0), "42 tokens/s");
-        assert_eq!(speed_value(8.24), "8.2 tokens/s");
-        assert_eq!(speed_value(8.26), "8.3 tokens/s");
-
-        assert_eq!(
-            card_model(&decode(json!({"gross": 5, "outputTokens": 100}))).speed,
-            None
-        );
     }
 
     #[test]

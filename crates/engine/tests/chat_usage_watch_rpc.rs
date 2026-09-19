@@ -11,7 +11,6 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{
     Fixture, ScriptedProvider, ScriptedReply, next_frame, run_prompt, setup_chat,
@@ -272,40 +271,6 @@ async fn a_custom_model_has_no_denominator() {
     let mut usage = usage_watch(&engine).await;
     let frame = next_frame(&mut usage).await;
     assert_eq!(frame["occupancy"]["contextWindow"], json!(null), "{frame}");
-}
-
-#[tokio::test]
-async fn the_frame_carries_the_output_speed_sums() {
-    let fixture = Fixture::new();
-    let gate = Arc::new(Notify::new());
-    let provider = ScriptedProvider::new(vec![ScriptedReply::gated(gate.clone(), "done")])
-        .with_usage(Usage {
-            input: 700,
-            output: 70,
-            cache_read: 7,
-            cache_write: 3,
-            total_tokens: 780,
-            ..Default::default()
-        });
-    let engine = fixture.engine(&provider);
-    setup_chat(&engine, "chat-1").await;
-    let mut usage = usage_watch(&engine).await;
-
-    run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
-    wait_for_requests(&provider, 1).await;
-    // Hold the reply past the dispatch stamp's millisecond: the scripted
-    // transport is otherwise so fast that completion lands on the dispatch
-    // millisecond itself, which measures as no duration at all.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    gate.notify_one();
-    let frame = frame_until(&mut usage, |frame| frame["gross"] == json!(780)).await;
-    // The one record's duration was measured by the run's own transport:
-    // its output joins the speed sums with real (positive) time behind them.
-    assert_eq!(frame["outputTokens"], json!(70), "{frame}");
-    let generation_ms = frame["generationMs"]
-        .as_u64()
-        .expect("the round-trip's duration was measured");
-    assert!(generation_ms >= 5, "{frame}");
 }
 
 #[tokio::test]

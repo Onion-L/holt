@@ -330,18 +330,6 @@ pub struct ChatUsage {
     /// How many records the totals were summed from.
     #[serde(default)]
     pub record_count: u64,
-    /// Output tokens summed over the records that carry a measured
-    /// generation duration — the numerator of the chat's Output speed,
-    /// with `generationMs` as its denominator. Ledgers written before
-    /// durations were measured join neither sum, so the quotient stays a
-    /// true average.
-    #[serde(default)]
-    pub output_tokens: u64,
-    /// Those same records' generation durations summed, in milliseconds —
-    /// request sent to assistant message completed, first-token latency
-    /// included.
-    #[serde(default)]
-    pub generation_ms: u64,
     #[serde(default)]
     pub occupancy: ChatOccupancy,
 }
@@ -898,8 +886,6 @@ mod tests {
                 },
             )]),
             record_count: 2,
-            output_tokens: 70,
-            generation_ms: 1_400,
             occupancy: ChatOccupancy {
                 tokens: 710,
                 context_window: Some(272_000),
@@ -909,8 +895,6 @@ mod tests {
         let value = serde_json::to_value(&frame).unwrap();
         assert_eq!(value["gross"], 780);
         assert_eq!(value["recordCount"], 2);
-        assert_eq!(value["outputTokens"], 70);
-        assert_eq!(value["generationMs"], 1_400);
         assert_eq!(value["byKind"]["auto-review"]["cacheRead"], 7);
         assert_eq!(value["occupancy"]["contextWindow"], 272_000);
         assert_eq!(value["occupancy"]["estimated"], false);
@@ -922,7 +906,6 @@ mod tests {
         assert_eq!(older.gross, 42);
         assert!(older.by_kind.is_empty());
         assert_eq!(older.record_count, 0);
-        assert_eq!((older.output_tokens, older.generation_ms), (0, 0));
         assert_eq!(older.occupancy, ChatOccupancy::default());
 
         // A source kind this host has never heard of is data, not an error.

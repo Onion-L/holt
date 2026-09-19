@@ -141,7 +141,6 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
         .stream_fn
         .clone()
         .unwrap_or_else(crate::agent::default_stream_fn);
-    let started_at = Utc::now().timestamp_millis();
     let stream = stream_fn(&spec.model, &context, Some(&options)).ok()?;
     // Race the consume against the token — the scripted seam's never-ending
     // streams can only be cancelled this way, and a real transport sees the
@@ -163,11 +162,7 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
     let response = stream.result().await;
     // Bill before judging the reply: a title attempt is a metered round-trip
     // even when it normalizes to no title at all (kind `title`, immediate).
-    crate::usage::record_title(
-        &spec.chat,
-        &response,
-        crate::usage::generation_duration(Some(started_at), response.timestamp),
-    );
+    crate::usage::record_title(&spec.chat, &response);
     match response.stop_reason {
         StopReason::Aborted | StopReason::Error => None,
         _ => normalize_title(&pi_core::ai::utils::text::content_text(

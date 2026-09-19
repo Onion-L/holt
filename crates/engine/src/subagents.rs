@@ -413,15 +413,10 @@ async fn execute(
     // then (the spawn chip's aggregate below rides the same vector).
     let bills = std::mem::take(&mut *billing.lock().unwrap_or_else(|e| e.into_inner()));
     let mut usage = Usage::default();
-    for (bill, started_at) in bills {
+    for bill in bills {
         if let Some(message) = bill.result().now_or_never() {
             add_usage(&mut usage, &message.usage);
-            crate::usage::capture_subagent_round_trip(
-                &d.parent,
-                &id,
-                &message,
-                crate::usage::generation_duration(Some(started_at), message.timestamp),
-            );
+            crate::usage::capture_subagent_round_trip(&d.parent, &id, &message);
         }
     }
     *child.usage.lock().unwrap_or_else(|e| e.into_inner()) = usage.clone();
