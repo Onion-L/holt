@@ -5,7 +5,9 @@
 //! proposal by id under the same revalidation — the agent never holds an
 //! apply tool, so what the user saw in the transcript is bit-for-bit what
 //! executes. API keys never enter this path: they live in the credential
-//! store and surface only as a probe's Authorization header.
+//! store and surface only as a probe's Authorization header. Record header
+//! values are the same kind of secret: the dump omits them and proposals can
+//! neither read nor write them — a replacement keeps the stored headers.
 
 use std::{
     collections::{BTreeSet, HashSet},
@@ -118,6 +120,14 @@ pub(crate) fn parse_change(value: &serde_json::Value) -> Result<CatalogChange, S
                 .ok_or_else(|| "\"record\" is required".to_string())?;
             let record: CoreModel = serde_json::from_value(record)
                 .map_err(|error| format!("\"record\" is not a complete model record: {error}"))?;
+            if record.headers.is_some() {
+                return Err(
+                    "\"record\" must not set headers — header values are secret and \
+                     never ride the chat; a replacement keeps the stored record's \
+                     headers as they are"
+                        .into(),
+                );
+            }
             Ok(CatalogChange::UpsertModelRecord {
                 provider_id,
                 record: Box::new(record),
@@ -361,6 +371,17 @@ fn record_diff(
     )
 }
 
+/// A replacement record never carries headers (`parse_change` rejects
+/// them, the dump omits them), so it inherits the stored record's — an
+/// update proposal cannot silently drop the user's secret headers.
+fn inherit_headers(record: &CoreModel, existing: Option<&CoreModel>) -> CoreModel {
+    let mut effective = record.clone();
+    if effective.headers.is_none() {
+        effective.headers = existing.and_then(|existing| existing.headers.clone());
+    }
+    effective
+}
+
 /// Validates the batch against the live catalog and produces its diff.
 /// Errors mean "do not propose this" — the model reads and fixes them.
 pub(crate) fn build_proposal(
@@ -395,7 +416,13 @@ pub(crate) fn build_proposal(
                         provider_id, record.id
                     ));
                 }
-                let (mut diff, no_op, moves) = record_diff(providers, provider_id, record);
+                let existing = providers
+                    .settings
+                    .model_records_for(provider_id)
+                    .into_iter()
+                    .find(|stored| stored.id == record.id);
+                let effective = inherit_headers(record, existing.as_ref());
+                let (mut diff, no_op, moves) = record_diff(providers, provider_id, &effective);
                 key_moves |= moves;
                 lines.append(&mut diff);
                 no_ops += no_op as usize;
@@ -613,10 +640,15 @@ pub(crate) fn apply_changes(
                 if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
                     return Err(format!("record {}/{}: {problem}", provider_id, record.id));
                 }
+                let existing = next
+                    .model_records
+                    .get(provider_id)
+                    .and_then(|records| records.get(&record.id));
+                let effective = inherit_headers(record, existing);
                 next.model_records
                     .entry(provider_id.clone())
                     .or_default()
-                    .insert(record.id.clone(), record.as_ref().clone());
+                    .insert(effective.id.clone(), effective);
             }
             CatalogChange::UpsertCustomProvider { provider } => {
                 providers
@@ -1170,7 +1202,8 @@ async fn run_proposal_tool(
 
 /// One model's complete record as JSON — the template a replacement
 /// proposal copies, so `compat`/`thinkingLevelMap` never have to be guessed
-/// (or excavated from vendored sources).
+/// (or excavated from vendored sources). Header values are secret: the dump
+/// omits the field and a replacement proposal keeps the stored headers.
 fn record_dump(
     providers: &ProviderAdapter,
     provider_id: &str,
@@ -1191,8 +1224,24 @@ fn record_dump(
     let mut lines = vec![format!(
         "{qualified} (hidden: {hidden}) — the complete record as the catalog serves it:"
     )];
+    let mut json = serde_json::to_value(&model)
+        .map_err(|error| format!("record does not serialize: {error}"))?;
+    // The field is dropped whole, not redacted in place, so a copied
+    // template still deserializes into a valid proposal record.
+    if json
+        .get("headers")
+        .is_some_and(|headers| !headers.is_null())
+    {
+        json.as_object_mut().map(|object| object.remove("headers"));
+        lines.push(
+            "(this record carries custom headers — omitted here because header \
+             values are secret; a replacement keeps them as stored, and they are \
+             managed in Settings)"
+                .into(),
+        );
+    }
     lines.push(
-        serde_json::to_string_pretty(&model)
+        serde_json::to_string_pretty(&json)
             .map_err(|error| format!("record does not serialize: {error}"))?,
     );
     Ok(lines)
@@ -1403,6 +1452,22 @@ mod tests {
     }
 
     #[test]
+    fn a_proposed_record_cannot_carry_headers() {
+        let mut with_headers = record("openai", "gpt-x", "https://api.openai.com/v1");
+        with_headers.headers = Some(std::collections::BTreeMap::from([(
+            "X-Api-Key".to_string(),
+            "secret-value".to_string(),
+        )]));
+        let problem = parse_change(&serde_json::json!({
+            "action": "upsert_model_record",
+            "providerId": "openai",
+            "record": with_headers,
+        }))
+        .unwrap_err();
+        assert!(problem.contains("headers"));
+    }
+
+    #[test]
     fn a_new_record_proposes_and_a_repeat_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
         let providers = adapter(dir.path());
@@ -1597,6 +1662,78 @@ mod tests {
         let lines = record_dump(&providers, "openai", &bare).unwrap();
         assert!(lines[0].contains("hidden: true"));
         assert!(record_dump(&providers, "openai", "gpt-nope").is_err());
+    }
+
+    #[test]
+    fn a_record_with_headers_dumps_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let mut headed = record("openai", "gpt-headed", "https://api.openai.com/v1");
+        headed.headers = Some(std::collections::BTreeMap::from([(
+            "X-Api-Key".to_string(),
+            "secret-value".to_string(),
+        )]));
+        providers
+            .settings
+            .upsert_model_record("openai", headed)
+            .unwrap();
+
+        let lines = record_dump(&providers, "openai", "gpt-headed").unwrap();
+        assert!(!lines.join("\n").contains("secret-value"));
+        let json_index = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with('{'))
+            .expect("the dump still carries the record JSON");
+        let dumped: CoreModel = serde_json::from_str(&lines[json_index]).unwrap();
+        assert!(dumped.headers.is_none());
+    }
+
+    #[test]
+    fn a_replacement_proposal_keeps_the_stored_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let mut headed = record("openai", "gpt-headed", "https://api.openai.com/v1");
+        headed.headers = Some(std::collections::BTreeMap::from([(
+            "X-Api-Key".to_string(),
+            "secret-value".to_string(),
+        )]));
+        providers
+            .settings
+            .upsert_model_record("openai", headed)
+            .unwrap();
+
+        // A bare replacement (parse_change rejects headers, so proposals
+        // can never carry them) differs only in its context window.
+        let mut replacement = record("openai", "gpt-headed", "https://api.openai.com/v1");
+        replacement.context_window = 111_222;
+        let changes = vec![CatalogChange::UpsertModelRecord {
+            provider_id: "openai".to_string(),
+            record: Box::new(replacement),
+        }];
+
+        let ProposalOutcome::Changes { lines, .. } = build_proposal(&providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(lines[0].contains("contextWindow"));
+        assert!(!lines.join("\n").contains("headers"));
+
+        apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
+        let applied = providers
+            .settings
+            .model_records_for("openai")
+            .into_iter()
+            .find(|stored| stored.id == "gpt-headed")
+            .unwrap();
+        assert_eq!(applied.context_window, 111_222);
+        assert_eq!(
+            applied
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("X-Api-Key"))
+                .map(String::as_str),
+            Some("secret-value")
+        );
     }
 
     #[test]
