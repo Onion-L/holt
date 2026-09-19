@@ -12,12 +12,16 @@
 //! workspace-fenced `ReadWorkspaceImage`, never the general image RPC.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{AnyElement, Context, Render, SharedString, Task, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, Render, RenderImage, SharedString, Task, Window, div, prelude::*, px,
+};
 
-use crate::markdown::parser::{BlockTree, parse_full};
+use crate::markdown::mermaid::{MermaidHost, MermaidStore, is_mermaid, supported_diagram};
+use crate::markdown::parser::{Block, BlockTree, parse_full};
 use crate::markdown::render::{RenderCache, RenderOptions};
 use crate::theme::Theme;
 
@@ -47,6 +51,7 @@ pub struct MarkdownPreview {
     /// The transcript's flatten cache pattern: settled blocks reuse their
     /// flat text + runs across frames.
     render_cache: Rc<RefCell<RenderCache>>,
+    mermaids: MermaidStore,
     row_key: SharedString,
 }
 
@@ -57,6 +62,7 @@ impl MarkdownPreview {
             generation: 0,
             parse_task: None,
             render_cache: Rc::new(RefCell::new(RenderCache::default())),
+            mermaids: MermaidStore::default(),
             row_key,
         };
         preview.set_text(String::new(), cx);
@@ -112,13 +118,20 @@ impl MarkdownPreview {
         }
     }
 
-    fn render_tree(&self, tree: &Arc<BlockTree>, theme: &Theme, window: &Window) -> AnyElement {
+    fn render_tree(
+        &self,
+        tree: &Arc<BlockTree>,
+        theme: &Theme,
+        window: &Window,
+        mermaid: &HashMap<usize, Option<Arc<RenderImage>>>,
+    ) -> AnyElement {
         let opts = RenderOptions {
             row_key: self.row_key.clone(),
             veil: None,
             cache: Some(self.render_cache.clone()),
             now: std::time::Instant::now(),
             copy: None,
+            mermaid_ui: None,
         };
         div()
             .flex()
@@ -126,16 +139,63 @@ impl MarkdownPreview {
             .gap(px(crate::markdown::render::MD_BLOCK_GAP))
             .children(tree.blocks.iter().enumerate().map(|(ix, top)| {
                 crate::markdown::render::render_block(
-                    &top.block, ix, ix, &opts, theme, window, None,
+                    &top.block,
+                    ix,
+                    ix,
+                    &opts,
+                    theme,
+                    window,
+                    None,
+                    mermaid.get(&ix).cloned().flatten().as_ref(),
                 )
             }))
             .into_any_element()
+    }
+
+    /// Kick diagram renders for the tree's mermaid blocks; returns the
+    /// currently-ready images (`None` → code block until a render lands).
+    fn request_mermaids(
+        &mut self,
+        tree: &Arc<BlockTree>,
+        cx: &mut Context<Self>,
+    ) -> HashMap<usize, Option<Arc<RenderImage>>> {
+        let mut out = HashMap::new();
+        for (ix, top) in tree.blocks.iter().enumerate() {
+            if let Block::CodeBlock {
+                language,
+                code,
+                closed: true,
+            } = &top.block
+                && is_mermaid(language.as_deref())
+                && supported_diagram(code)
+            {
+                out.insert(
+                    ix,
+                    self.mermaids.request(self.row_key.clone(), ix, code, cx),
+                );
+            }
+        }
+        out
+    }
+}
+
+impl MermaidHost for MarkdownPreview {
+    fn mermaid_store(&mut self) -> &mut MermaidStore {
+        &mut self.mermaids
     }
 }
 
 impl Render for MarkdownPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        let ready_tree = match &self.state {
+            PreviewState::Ready(tree) => Some(tree.clone()),
+            _ => None,
+        };
+        let mermaid = match &ready_tree {
+            Some(tree) => self.request_mermaids(tree, cx),
+            None => HashMap::new(),
+        };
         let body: AnyElement = match &self.state {
             PreviewState::Empty => div()
                 .py(px(48.0))
@@ -160,7 +220,7 @@ impl Render for MarkdownPreview {
                     cx,
                 ))
                 .into_any_element(),
-            PreviewState::Ready(tree) => self.render_tree(tree, &theme, window),
+            PreviewState::Ready(tree) => self.render_tree(tree, &theme, window, &mermaid),
         };
         div()
             .id("file-md-preview")

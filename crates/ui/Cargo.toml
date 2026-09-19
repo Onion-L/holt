@@ -22,6 +22,11 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
+merman.workspace = true
+# Not imported directly: pin the transitive merman-* family so merman
+# 0.8.0-alpha.5 compiles (see the note in the root Cargo.toml).
+merman-core.workspace = true
+merman-render.workspace = true
 alacritty_terminal.workspace = true
 base64 = "0.22"
 smallvec = "1"

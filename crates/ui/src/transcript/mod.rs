@@ -51,6 +51,7 @@ use gpui::{
 
 use holt_doc::{MessageStatus, SessionMessageEntry};
 
+use crate::markdown::mermaid::{MermaidHost, MermaidStore};
 use crate::markdown::parser::{BlockTree, IncrementalParser};
 use crate::markdown::render::{RenderCache, update_drag_at};
 use crate::markdown::veil::RowVeil;
@@ -250,6 +251,7 @@ pub struct Transcript {
     /// identity, so the virtual list must explicitly discard cached heights.
     typography_generation: u32,
     highlights: HighlightStore,
+    mermaids: MermaidStore,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
     /// tick) — restick and escape are direction-aware
@@ -370,6 +372,12 @@ pub enum TranscriptEvent {
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
 
+impl MermaidHost for Transcript {
+    fn mermaid_store(&mut self) -> &mut MermaidStore {
+        &mut self.mermaids
+    }
+}
+
 impl Transcript {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         crate::images::observe(cx);
@@ -458,6 +466,7 @@ impl Transcript {
             render_cache: Rc::new(RefCell::new(RenderCache::default())),
             typography_generation: crate::typography::generation(cx),
             highlights: HighlightStore::default(),
+            mermaids: MermaidStore::default(),
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,

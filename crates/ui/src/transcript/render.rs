@@ -1283,8 +1283,10 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    mermaid_ui: Some(self.mermaid_ui_for(&row.id, tree, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
+                let mermaid = self.mermaid_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
                     return gpui::Empty.into_any_element();
                 };
@@ -1299,6 +1301,7 @@ impl Transcript {
                         .get(block_ix)
                         .and_then(|o| o.as_deref())
                         .map(|document| document.lines.as_slice()),
+                    mermaid.get(block_ix).cloned().flatten().as_ref(),
                 )
             }
             RowKind::LiveMarkdown { tree, block_ix } => {
@@ -1325,8 +1328,10 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    mermaid_ui: Some(self.mermaid_ui_for(&row.id, tree, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
+                let mermaid = self.mermaid_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
                     return gpui::Empty.into_any_element();
                 };
@@ -1342,6 +1347,7 @@ impl Transcript {
                         .get(block_ix)
                         .and_then(|o| o.as_deref())
                         .map(|document| document.lines.as_slice()),
+                    mermaid.get(block_ix).cloned().flatten().as_ref(),
                 );
                 if let Some(start) = timer {
                     record_live_frame_us(start.elapsed().as_micros() as u64);
@@ -1576,7 +1582,7 @@ impl Transcript {
             if only.is_some_and(|o| o != ix) {
                 continue;
             }
-            if let Block::CodeBlock { language, code } = &top.block
+            if let Block::CodeBlock { language, code, .. } = &top.block
                 && let Some(lang) = language
                     .as_deref()
                     .and_then(holt_syntax::language_for_alias)
@@ -1588,6 +1594,77 @@ impl Transcript {
             }
         }
         out
+    }
+
+    /// Request diagram images for the mermaid code blocks of a tree (same
+    /// shape as [`Self::code_highlight_for`]); `None` until the background
+    /// render lands — those blocks display the code until then.
+    fn mermaid_for(
+        &mut self,
+        row_id: &SharedString,
+        tree: &Arc<BlockTree>,
+        only: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> HashMap<usize, Option<Arc<gpui::RenderImage>>> {
+        let mut out = HashMap::new();
+        for (ix, top) in tree.blocks.iter().enumerate() {
+            if only.is_some_and(|o| o != ix) {
+                continue;
+            }
+            if let Block::CodeBlock {
+                language,
+                code,
+                closed: true,
+            } = &top.block
+                && crate::markdown::mermaid::is_mermaid(language.as_deref())
+                && crate::markdown::mermaid::supported_diagram(code)
+            {
+                out.insert(ix, self.mermaids.request(row_id.clone(), ix, code, cx));
+            }
+        }
+        out
+    }
+
+    /// Wheel-zoom wiring for one row's diagrams ([`render::MermaidUi`]):
+    /// zooms are baked per frame (render-time read), wheel steps route back
+    /// to this entity's [`MermaidStore`](crate::markdown::mermaid::MermaidStore).
+    fn mermaid_ui_for(
+        &self,
+        row_id: &SharedString,
+        tree: &Arc<BlockTree>,
+        cx: &mut Context<Self>,
+    ) -> render::MermaidUi {
+        let row_key = row_id.clone();
+        let zooms: HashMap<usize, f32> = (0..tree.blocks.len())
+            .map(|ix| (ix, self.mermaids.zoom_for(&row_key, ix)))
+            .collect();
+        let entity = cx.weak_entity();
+        let reset_entity = entity.clone();
+        let step_row = row_key.clone();
+        let handler = Rc::new(
+            move |ix: usize, factor: f32, _window: &mut Window, cx: &mut gpui::App| {
+                let row_key = step_row.clone();
+                entity
+                    .update(cx, |this, cx| {
+                        this.mermaids.zoom_step(row_key, ix, factor, cx);
+                    })
+                    .ok();
+            },
+        );
+        let reset_row = row_key.clone();
+        let reset = Rc::new(move |ix: usize, _window: &mut Window, cx: &mut gpui::App| {
+            let row_key = reset_row.clone();
+            reset_entity
+                .update(cx, |this, cx| {
+                    this.mermaids.zoom_reset(row_key, ix, cx);
+                })
+                .ok();
+        });
+        render::MermaidUi {
+            zoom: Rc::new(move |ix| zooms.get(&ix).copied().unwrap_or(1.0)),
+            handler,
+            reset,
+        }
     }
 
     fn tool_diff_highlight_for(

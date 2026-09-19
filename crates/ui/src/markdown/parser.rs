@@ -50,6 +50,10 @@ pub enum Block {
     CodeBlock {
         language: Option<String>,
         code: String,
+        /// Fenced blocks only: the closing fence is present in the source.
+        /// Streaming tails read `false` until the closing fence streams in;
+        /// reparses of settled text read `true`. Indented code is `true`.
+        closed: bool,
     },
     BlockQuote {
         children: Vec<Block>,
@@ -108,6 +112,16 @@ fn options() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
 }
 
+/// Whether a fenced block's source slice ends in its closing fence: the
+/// last line is backticks only (CommonMark closing fences carry no info
+/// string, so ` ```mermaid ` inside the slice is content, never the close).
+fn fence_closed(slice: &str) -> bool {
+    slice.lines().next_back().is_some_and(|line| {
+        let trimmed = line.trim();
+        trimmed.len() >= 3 && trimmed.bytes().all(|b| b == b'`')
+    })
+}
+
 /// Parse a whole source into a [`BlockTree`].
 pub fn parse_full(source: &str) -> BlockTree {
     let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
@@ -130,6 +144,18 @@ pub fn parse_full(source: &str) -> BlockTree {
             }
             Event::Start(_) => {
                 for block in parse_started_block(&mut cur) {
+                    let block = match block {
+                        Block::CodeBlock { language, code, .. } => Block::CodeBlock {
+                            language,
+                            code,
+                            // The Start event range spans the whole block —
+                            // including the closing fence when present, and
+                            // stopping at EOF when not — so a trailing
+                            // backtick-only line is the closed-fence test.
+                            closed: fence_closed(&source[range.clone()]),
+                        },
+                        other => other,
+                    };
                     blocks.push(TopBlock {
                         range: range.clone(),
                         block,
@@ -225,7 +251,14 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
             if code.ends_with('\n') {
                 code.pop();
             }
-            vec![Block::CodeBlock { language, code }]
+            // `closed` is decided at top level in `parse_full`, where the
+            // block's source slice is at hand; nested blocks stay `true`
+            // (only a live top-level tail can be unclosed).
+            vec![Block::CodeBlock {
+                language,
+                code,
+                closed: true,
+            }]
         }
         Tag::BlockQuote(_) => vec![Block::BlockQuote {
             children: parse_block_sequence(cur),
@@ -867,12 +900,36 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match &tree.blocks[2].block {
-            Block::CodeBlock { language, code } => {
+            Block::CodeBlock { language, code, .. } => {
                 assert_eq!(language.as_deref(), Some("ts"));
                 assert_eq!(code, "let x = 1;");
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn fenced_blocks_track_closing_fence_presence() {
+        let tree = parse_full("```mermaid\nA --> B\n```\n\nafter");
+        let Block::CodeBlock { closed, .. } = &tree.blocks[0].block else {
+            panic!("expected code block");
+        };
+        assert!(*closed);
+
+        // Streaming tail: no closing fence yet.
+        let tree = parse_full("```mermaid\nA --> B");
+        let Block::CodeBlock { closed, .. } = &tree.blocks[0].block else {
+            panic!("expected code block");
+        };
+        assert!(!*closed);
+
+        // Mid-document fences settle closed; the fence info line is never
+        // mistaken for a closer.
+        let tree = parse_full("```mermaid\nA\n```\n\ntail");
+        assert!(matches!(
+            &tree.blocks[0].block,
+            Block::CodeBlock { closed: true, .. }
+        ));
     }
 
     #[test]

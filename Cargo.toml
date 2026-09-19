@@ -78,6 +78,17 @@ git2 = "0.21"
 portable-pty = "0.8"
 alacritty_terminal = "0.26"
 pulldown-cmark = "0.12"
+# In-process mermaid rendering (pure Rust parse/layout/SVG). Alpha — locked;
+# ELK layout (EPL-2.0) deliberately not enabled.
+# The merman-* crates share caret reqs (`^0.8.0-alpha.5`), which cargo
+# resolves to alpha.6 for the siblings — and those pairings don't compile.
+# Pin the whole family to alpha.5, the set Zed's lockfile uses.
+merman = { version = "=0.8.0-alpha.5", default-features = false, features = [
+    "svg",
+    "layout-cytoscape",
+] }
+merman-core = "=0.8.0-alpha.5"
+merman-render = "=0.8.0-alpha.5"
 unicode-segmentation = "1"
 fontdb = "0.23"
 ttf-parser = "0.25.1"

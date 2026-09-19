@@ -320,6 +320,17 @@ When the user supplies an error, reproduce or inspect it before proposing a
 cause. When the user supplies a design preference, follow it unless it
 conflicts with a higher-priority project or safety rule.
 
+## Diagrams in replies
+
+Fenced ```` ```mermaid ```` blocks in your reply render as diagrams in the
+transcript. Emit a diagram as a top-level ```` ```mermaid ```` fence — never
+wrap one inside another fenced block (for example ```` ```markdown ````),
+which displays it as source text instead. Rendered families: flowchart,
+graph, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt,
+pie, gitGraph, mindmap, timeline, quadrantChart, xychart-beta, journey.
+Anything else stays a code block; when a diagram is not essential, prefer
+plain text.
+
 ## Handling uncertainty and blockers
 
 Make reasonable low-risk assumptions and proceed. State an assumption when it

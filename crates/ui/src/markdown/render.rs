@@ -16,13 +16,14 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, BorderStyle, Bounds, CursorStyle, FontStyle, FontWeight, Hsla, InteractiveText,
-    Pixels, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point,
-    prelude::*, px, quad, size,
+    Pixels, RenderImage, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div,
+    font, img, point, prelude::*, px, quad, size,
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
 use crate::theme::Theme;
 
+use super::mermaid;
 use super::parser::{Block, BlockTree, InlineRun, TableAlign};
 use super::veil::{RowVeil, apply_veil, slice_spans};
 
@@ -79,6 +80,9 @@ pub struct RenderOptions {
     /// Code-block copy-button plumbing (round 9): `None` renders no button
     /// (previews outside the transcript).
     pub copy: Option<CopyUi>,
+    /// Mermaid wheel-zoom plumbing: `None` renders diagrams at natural fit
+    /// with no zoom control (previews outside the transcript).
+    pub mermaid_ui: Option<MermaidUi>,
 }
 
 /// Copy-button click handler for one row's code blocks.
@@ -93,6 +97,27 @@ pub struct CopyUi {
     pub copied_ix: Option<usize>,
 }
 
+/// Wheel-zoom handler for one row's diagrams: multiply block ix's zoom by
+/// `factor` (one wheel step).
+pub type MermaidZoomHandler = dyn Fn(usize, f32, &mut Window, &mut gpui::App);
+
+/// Reset handler: return block ix's zoom to natural fit (1.0).
+pub type MermaidResetHandler = dyn Fn(usize, &mut Window, &mut gpui::App);
+
+/// Wheel-zoom wiring for one row's diagrams — the mermaid sibling of
+/// [`CopyUi`]: zooms are read per block at render time (baked by the owner),
+/// and ctrl/cmd+wheel steps or the +/−/Fit buttons route back to the owning
+/// entity's [`MermaidStore`](super::mermaid::MermaidStore).
+#[derive(Clone)]
+pub struct MermaidUi {
+    /// Current zoom for a top-level block index (1.0 = natural size).
+    pub zoom: Rc<dyn Fn(usize) -> f32>,
+    /// Multiply a block's zoom by `factor` (one wheel step).
+    pub handler: Rc<MermaidZoomHandler>,
+    /// Return a block's zoom to natural fit.
+    pub reset: Rc<MermaidResetHandler>,
+}
+
 impl RenderOptions {
     /// Options for a completed (non-streaming) row — no veil, no cache.
     pub fn settled(row_key: SharedString) -> Self {
@@ -102,6 +127,7 @@ impl RenderOptions {
             cache: None,
             now: Instant::now(),
             copy: None,
+            mermaid_ui: None,
         }
     }
 }
@@ -170,13 +196,15 @@ impl RenderCache {
 pub type CodeHighlight<'a> = Option<&'a [Vec<HighlightSpan>]>;
 
 /// Render a whole tree stacked with the md block gap. `highlight` resolves
-/// tokens for a top-level block index (code blocks only).
+/// tokens for a top-level block index (code blocks only); `mermaid` resolves
+/// a rendered diagram for a mermaid code block, when one is ready.
 pub fn render_tree(
     tree: &BlockTree,
     opts: &RenderOptions,
     theme: &Theme,
     window: &Window,
     highlight: &dyn Fn(usize) -> Option<std::sync::Arc<HighlightedDocument>>,
+    mermaid: &dyn Fn(usize, &str) -> Option<std::sync::Arc<RenderImage>>,
 ) -> AnyElement {
     div()
         .flex()
@@ -184,6 +212,18 @@ pub fn render_tree(
         .gap(px(MD_BLOCK_GAP))
         .children(tree.blocks.iter().enumerate().map(|(ix, top)| {
             let document = highlight(ix);
+            let mermaid_image = match &top.block {
+                Block::CodeBlock {
+                    language,
+                    code,
+                    closed: true,
+                } if mermaid::is_mermaid(language.as_deref()) => {
+                    // Unclosed streaming fences stay code until the closing
+                    // fence lands — one text→image transition, no flicker.
+                    mermaid(ix, code)
+                }
+                _ => None,
+            };
             render_block(
                 &top.block,
                 ix,
@@ -194,6 +234,7 @@ pub fn render_tree(
                 document
                     .as_deref()
                     .map(|document| document.lines.as_slice()),
+                mermaid_image.as_ref(),
             )
         }))
         .into_any_element()
@@ -201,6 +242,8 @@ pub fn render_tree(
 
 /// Render one block (top-level or nested). `top_ix` is the enclosing top-level
 /// block index (cache invalidation scope); `ix` the per-element discriminator.
+/// `mermaid` carries the resolved diagram image for a mermaid code block (the
+/// caller's store decides readiness; `None` renders the code block).
 #[allow(clippy::too_many_arguments)]
 pub fn render_block(
     block: &Block,
@@ -210,6 +253,7 @@ pub fn render_block(
     theme: &Theme,
     window: &Window,
     highlight: CodeHighlight,
+    mermaid: Option<&std::sync::Arc<RenderImage>>,
 ) -> AnyElement {
     match block {
         Block::Paragraph { runs } => text_element(
@@ -226,16 +270,28 @@ pub fn render_block(
             let (size, line) = heading_metrics(*level);
             text_element(runs, size, line, true, top_ix, ix, opts, theme)
         }
-        Block::CodeBlock { language, code } => render_code_block(
-            language.as_deref(),
+        Block::CodeBlock {
+            language,
             code,
-            top_ix,
-            ix,
-            opts,
-            theme,
-            window,
-            highlight,
-        ),
+            closed,
+        } => {
+            if *closed
+                && mermaid::is_mermaid(language.as_deref())
+                && let Some(image) = mermaid
+            {
+                return render_mermaid_image(image, ix, opts, theme);
+            }
+            render_code_block(
+                language.as_deref(),
+                code,
+                top_ix,
+                ix,
+                opts,
+                theme,
+                window,
+                highlight,
+            )
+        }
         Block::BlockQuote { children } => div()
             // Accent-tinted quote: indigo rail + a whisper of the same hue
             // behind it (the inline-code treatment, dialed down).
@@ -252,7 +308,16 @@ pub fn render_block(
             .gap(px(8.0))
             .text_color(theme.text_muted)
             .children(children.iter().enumerate().map(|(ci, child)| {
-                render_block(child, top_ix, ix * 100 + ci, opts, theme, window, None)
+                render_block(
+                    child,
+                    top_ix,
+                    ix * 100 + ci,
+                    opts,
+                    theme,
+                    window,
+                    None,
+                    None,
+                )
             }))
             .into_any_element(),
         Block::List {
@@ -307,6 +372,7 @@ pub fn render_block(
                                 opts,
                                 theme,
                                 window,
+                                None,
                                 None,
                             )
                         })),
@@ -1217,6 +1283,160 @@ fn render_code_block(
         .into_any_element()
 }
 
+fn render_mermaid_image(
+    image: &std::sync::Arc<RenderImage>,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> AnyElement {
+    let zoom = opts
+        .mermaid_ui
+        .as_ref()
+        .map(|ui| (ui.zoom)(ix))
+        .unwrap_or(1.0);
+    // RenderImage is 2× supersampled; logical size is device pixels / 2.
+    let natural = image.size(0);
+    let natural_w = natural.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR;
+    let natural_h = natural.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR;
+
+    // cmd/ctrl+wheel zooms (stop-propagated — the transcript must not scroll
+    // alongside); plain wheel does nothing here and keeps scrolling the row.
+    let wheel = opts.mermaid_ui.as_ref().map(|ui| {
+        let handler = ui.handler.clone();
+        move |event: &gpui::ScrollWheelEvent, window: &mut Window, cx: &mut gpui::App| {
+            if !(event.modifiers.control || event.modifiers.platform) {
+                return;
+            }
+            let lines: f32 = match event.delta {
+                gpui::ScrollDelta::Lines(lines) => lines.y,
+                gpui::ScrollDelta::Pixels(pixels) => f32::from(pixels.y) / 18.0,
+            };
+            let factor = (1.0 + lines * 0.15).clamp(0.5, 2.0);
+            handler(ix, factor, window, cx);
+            cx.stop_propagation();
+        }
+    });
+
+    // Overlay controls (top-right, same ghost-button family as the code
+    // block's copy button): − / zoom% / + / Fit. The percentage label is a
+    // readout, the rest route through the owner's store.
+    let controls = opts.mermaid_ui.as_ref().map(|ui| {
+        let step = ui.handler.clone();
+        let reset = ui.reset.clone();
+        let row_key = opts.row_key.clone();
+        let step_button = |key: String, label: &'static str, factor: f32| {
+            let step = step.clone();
+            div()
+                .id(SharedString::from(key.clone()))
+                .h(px(20.0))
+                .min_w(px(20.0))
+                .px(px(4.0))
+                .rounded(px(5.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .bg(crate::motion::hover_blend(
+                    &key,
+                    crate::theme::ink(0.10),
+                    crate::theme::ink(0.20),
+                ))
+                .on_hover(crate::motion::hover_listener(key))
+                .text_size(px(12.0))
+                .text_color(theme.text_muted)
+                .child(SharedString::from(label))
+                .on_click(move |_, window, cx| step(ix, factor, window, cx))
+        };
+        let fit_key = format!("{row_key}-mm-fit{ix}");
+        div()
+            .absolute()
+            .top(px(5.0))
+            .right(px(5.0))
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(step_button(
+                format!("{row_key}-mm-minus{ix}"),
+                "−",
+                1.0 / crate::image_viewer::ZOOM_STEP,
+            ))
+            .child(
+                div()
+                    .h(px(20.0))
+                    .px(px(6.0))
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .bg(crate::theme::ink(0.10))
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(10.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(format!("{:.0}%", zoom * 100.0))),
+            )
+            .child(step_button(
+                format!("{row_key}-mm-plus{ix}"),
+                "+",
+                crate::image_viewer::ZOOM_STEP,
+            ))
+            .child(
+                div()
+                    .id(SharedString::from(fit_key.clone()))
+                    .h(px(20.0))
+                    .px(px(6.0))
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .bg(crate::motion::hover_blend(
+                        &fit_key,
+                        crate::theme::ink(0.10),
+                        crate::theme::ink(0.20),
+                    ))
+                    .on_hover(crate::motion::hover_listener(fit_key))
+                    .text_size(px(10.5))
+                    .text_color(theme.text_muted)
+                    .child("Fit")
+                    .on_click(move |_, window, cx| reset(ix, window, cx)),
+            )
+    });
+
+    // At natural size the image caps to the card width (fit). Zoomed, it
+    // keeps its scaled size and pans in its own x-scroller — vertical wheel
+    // stays with the transcript (same axis restriction as code blocks).
+    let body: AnyElement = if zoom != 1.0 {
+        div()
+            .id(SharedString::from(format!("{}-mermaid{ix}", opts.row_key)))
+            .overflow_x_scroll()
+            .max_w_full()
+            .child(
+                img(image.clone())
+                    .w(px(natural_w * zoom))
+                    .h(px(natural_h * zoom))
+                    .object_fit(gpui::ObjectFit::Fill),
+            )
+            .into_any_element()
+    } else {
+        img(image.clone()).max_w_full().into_any_element()
+    };
+
+    // Rendered diagram card — the code block's visual family (ink wash card,
+    // hairline border) with the image centered.
+    div()
+        .relative()
+        .rounded(px(10.0))
+        .bg(crate::theme::ink(0.035))
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
+        .p(px(6.0))
+        .flex()
+        .justify_center()
+        .when_some(wheel, |el, wheel| el.on_scroll_wheel(wheel))
+        .child(body)
+        .children(controls)
+        .into_any_element()
+}
+
 /// Paint color for a token class — the soft syntax palette (round 9: the
 /// original's mdTheme code blocks are monochrome `#e7e7e7`, but the user
 /// asked for color; these are the diff pane's hues, now shared by both).
@@ -1552,6 +1772,7 @@ mod tests {
                 cache: Some(cache.clone()),
                 now: Instant::now(),
                 copy: None,
+                mermaid_ui: None,
             };
             let key = || -> (SharedString, usize, usize) { ("row".into(), 0, 0) };
 
