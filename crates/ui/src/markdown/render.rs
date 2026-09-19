@@ -1320,8 +1320,16 @@ fn render_mermaid_image(
     });
 
     // Overlay controls (top-right, same ghost-button family as the code
-    // block's copy button): − / zoom% / + / Fit. The percentage label is a
-    // readout, the rest route through the owner's store.
+    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width —
+    // the real display scale against natural size depends on the row width —
+    // so the readout says "Fit" there instead of a misleading "100%", and
+    // percentages only appear once the user has zoomed relative to fit.
+    // Overlay controls (top-right, same ghost-button family as the code
+    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width —
+    // the real display scale against natural size depends on the row width —
+    // so the readout says "Fit" there instead of a misleading "100%", and
+    // percentages only appear once the user has zoomed relative to fit.
+    let fit = zoom == 1.0;
     let controls = opts.mermaid_ui.as_ref().map(|ui| {
         let step = ui.handler.clone();
         let reset = ui.reset.clone();
@@ -1349,7 +1357,6 @@ fn render_mermaid_image(
                 .child(SharedString::from(label))
                 .on_click(move |_, window, cx| step(ix, factor, window, cx))
         };
-        let fit_key = format!("{row_key}-mm-fit{ix}");
         div()
             .absolute()
             .top(px(5.0))
@@ -1373,33 +1380,41 @@ fn render_mermaid_image(
                     .font_family(theme.font_mono.clone())
                     .text_size(px(10.0))
                     .text_color(theme.text_muted)
-                    .child(SharedString::from(format!("{:.0}%", zoom * 100.0))),
+                    .child(SharedString::from(if fit {
+                        "Fit".to_string()
+                    } else {
+                        format!("{:.0}%", zoom * 100.0)
+                    })),
             )
             .child(step_button(
                 format!("{row_key}-mm-plus{ix}"),
                 "+",
                 MERMAID_BUTTON_ZOOM_STEP,
             ))
-            .child(
-                div()
-                    .id(SharedString::from(fit_key.clone()))
-                    .h(px(20.0))
-                    .px(px(6.0))
-                    .rounded(px(5.0))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .bg(crate::motion::hover_blend(
-                        &fit_key,
-                        crate::theme::ink(0.10),
-                        crate::theme::ink(0.20),
-                    ))
-                    .on_hover(crate::motion::hover_listener(fit_key))
-                    .text_size(px(10.5))
-                    .text_color(theme.text_muted)
-                    .child("Fit")
-                    .on_click(move |_, window, cx| reset(ix, window, cx)),
-            )
+            .when(!fit, |el| {
+                let reset = reset.clone();
+                let fit_key = format!("{row_key}-mm-fit{ix}");
+                el.child(
+                    div()
+                        .id(SharedString::from(fit_key.clone()))
+                        .h(px(20.0))
+                        .px(px(6.0))
+                        .rounded(px(5.0))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .bg(crate::motion::hover_blend(
+                            &fit_key,
+                            crate::theme::ink(0.10),
+                            crate::theme::ink(0.20),
+                        ))
+                        .on_hover(crate::motion::hover_listener(fit_key))
+                        .text_size(px(10.5))
+                        .text_color(theme.text_muted)
+                        .child("Fit")
+                        .on_click(move |_, window, cx| reset(ix, window, cx)),
+                )
+            })
     });
 
     // At natural size the image caps to the card width (fit). Zoomed, it
