@@ -841,6 +841,77 @@ fn probe_target(providers: &ProviderAdapter, provider_id: &str) -> Option<(Strin
     Some((model.base_url, model.api))
 }
 
+/// Is this address reachable from the public internet only — i.e. not
+/// loopback, private, link-local (the cloud metadata endpoints live
+/// there), CGNAT, multicast, or otherwise non-routable space?
+fn ip_is_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !(ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_documentation()
+                || octets[0] == 0
+                || (octets[0] == 100 && (octets[1] & 0xC0) == 64))
+        }
+        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(v4) => ip_is_public(std::net::IpAddr::V4(v4)),
+            None => {
+                !(ip.is_loopback()
+                    || ip.is_unicast_link_local()
+                    || ip.is_unique_local()
+                    || ip.is_multicast()
+                    || ip.is_unspecified())
+            }
+        },
+    }
+}
+
+/// The SSRF gate for a probe target the setup model chose but the user has
+/// not applied: a planned baseUrl may only reach public hosts. Literal
+/// addresses are classified directly; hostnames must resolve, and every
+/// resolved address must be public (a private answer refuses the probe).
+/// The gap between this check and the request's own resolution stays open
+/// to DNS rebinding — accepted for a GET whose readback is a filtered model
+/// listing, not raw bodies.
+async fn planned_probe_problem(base_url: &str) -> Option<String> {
+    let url = match reqwest::Url::parse(base_url) {
+        Ok(url) => url,
+        Err(error) => return Some(format!("the baseUrl does not parse: {error}")),
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return Some("the baseUrl is not http(s)".into());
+    }
+    let Some(host) = url
+        .host_str()
+        .map(|host| host.trim_matches(|c| c == '[' || c == ']'))
+        .map(str::to_string)
+    else {
+        return Some("the baseUrl has no host".into());
+    };
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return (!ip_is_public(ip)).then(|| format!("{host} is not a public address"));
+    }
+    let port = url.port_or_known_default().unwrap_or(0);
+    match tokio::net::lookup_host((host.as_str(), port)).await {
+        Ok(addrs) => {
+            let resolved: Vec<std::net::SocketAddr> = addrs.collect();
+            if resolved.is_empty() {
+                Some(format!("{host} does not resolve"))
+            } else if resolved.iter().any(|addr| !ip_is_public(addr.ip())) {
+                Some(format!("{host} resolves to a non-public address"))
+            } else {
+                None
+            }
+        }
+        Err(_) => Some(format!("{host} does not resolve")),
+    }
+}
+
 fn probe_section(
     providers: Arc<ProviderAdapter>,
     provider_id: &str,
@@ -850,10 +921,26 @@ fn probe_section(
 ) -> BoxFuture<'static, String> {
     let provider_id = provider_id.to_string();
     Box::pin(async move {
-        let Some((base_url, dialect)) =
-            override_target.or_else(|| probe_target(&providers, &provider_id))
-        else {
-            return format!("probe {provider_id}: no transport to probe");
+        let (base_url, dialect) = match override_target {
+            // A planned target is setup-model input nobody has approved
+            // yet: it must pass the SSRF filter before any request.
+            Some((base_url, dialect)) => {
+                if let Some(problem) = planned_probe_problem(&base_url).await {
+                    return format!(
+                        "probe {provider_id}: refused ({problem}) — a planned baseUrl \
+                         becomes probeable once the proposal is applied"
+                    );
+                }
+                (base_url, dialect)
+            }
+            // A stored target is the user's own endpoint choice — probing it
+            // goes exactly where a normal request would, loopback included.
+            None => {
+                let Some((base_url, dialect)) = probe_target(&providers, &provider_id) else {
+                    return format!("probe {provider_id}: no transport to probe");
+                };
+                (base_url, dialect)
+            }
         };
         let key = if allow_key {
             providers.credentials.reveal_key(&provider_id).await
@@ -1750,5 +1837,39 @@ mod tests {
             vec!["z"]
         );
         assert!(parse_model_listing(&serde_json::json!({ "error": true })).is_empty());
+    }
+
+    #[tokio::test]
+    async fn planned_probe_targets_must_be_public() {
+        // Public hosts pass — IP literals classify directly; the hostname
+        // path is exercised by "localhost" below through /etc/hosts, so no
+        // test here needs the network.
+        for url in ["http://8.8.8.8/v1", "https://93.184.216.34/v1"] {
+            assert!(
+                planned_probe_problem(url).await.is_none(),
+                "{url} should be probeable"
+            );
+        }
+        // Everything a local or internal probe could reach is refused,
+        // cloud metadata included (it lives in link-local space).
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+            "http://10.0.0.5/v1",
+            "http://172.16.0.1/v1",
+            "http://192.168.1.10/v1",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/v1",
+            "http://0.0.0.0/v1",
+            "http://[fe80::1]/v1",
+        ] {
+            assert!(
+                planned_probe_problem(url).await.is_some(),
+                "{url} should be refused"
+            );
+        }
+        assert!(planned_probe_problem("ftp://example.com").await.is_some());
     }
 }
