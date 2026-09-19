@@ -57,6 +57,8 @@ pub const TABLE_MIN_COLUMN_CONTENT: f32 = 48.0;
 /// `table.minColumnWidth`). Naturally narrower columns keep their content
 /// width; wider ones wrap down to this floor, then the table scrolls.
 pub const TABLE_MIN_COLUMN_WIDTH: f32 = 96.0;
+/// Per-click step for the mermaid −/+ buttons (the wheel zooms continuously).
+const MERMAID_BUTTON_ZOOM_STEP: f32 = 1.05;
 /// Hairline tone (holt md theme `table.borderColor`: rgba(255,255,255,0.1)).
 pub fn table_hairline() -> Hsla {
     crate::theme::hairline(0.10)
@@ -1358,7 +1360,7 @@ fn render_mermaid_image(
             .child(step_button(
                 format!("{row_key}-mm-minus{ix}"),
                 "−",
-                1.0 / crate::image_viewer::ZOOM_STEP,
+                1.0 / MERMAID_BUTTON_ZOOM_STEP,
             ))
             .child(
                 div()
@@ -1376,7 +1378,7 @@ fn render_mermaid_image(
             .child(step_button(
                 format!("{row_key}-mm-plus{ix}"),
                 "+",
-                crate::image_viewer::ZOOM_STEP,
+                MERMAID_BUTTON_ZOOM_STEP,
             ))
             .child(
                 div()
