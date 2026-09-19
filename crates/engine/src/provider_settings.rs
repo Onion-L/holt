@@ -81,6 +81,12 @@ pub struct ProviderSettingsStore {
 impl ProviderSettingsStore {
     pub fn load(data_dir: &Path) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
+        // The file can carry model-record header values, so an existing
+        // broader mode is tightened like the credential store's (a failed
+        // tightening is logged, not fatal).
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            ensure_private_permissions(&path, &metadata);
+        }
         let settings = match std::fs::read(&path) {
             // A 0-byte file reads as "nothing ever written" (no in-repo path
             // produces one, but external tooling can truncate) — not as
@@ -368,13 +374,23 @@ impl ProviderSettingsStore {
         })?;
         let temp = parent.join(format!(".{FILE_NAME}.{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| -> std::io::Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
-            std::fs::rename(&temp, &self.path)
+            std::fs::rename(&temp, &self.path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(())
         })();
         if result.is_err() {
             let _ = std::fs::remove_file(&temp);
@@ -382,6 +398,27 @@ impl ProviderSettingsStore {
         result.map_err(EngineError::Io)
     }
 }
+
+/// On Unix the settings file carries the credential file's mode: it can
+/// hold model-record header values, and it decides which host requests
+/// (with the key) are sent to.
+#[cfg(unix)]
+fn ensure_private_permissions(path: &Path, metadata: &std::fs::Metadata) {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o077 == 0 {
+        return;
+    }
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(
+            target: "holt::engine",
+            %error,
+            "could not tighten the provider settings file's permissions to 0600"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_private_permissions(_path: &Path, _metadata: &std::fs::Metadata) {}
 
 /// Applies the provider store's per-entry policy to the live sections: a
 /// hand-edited entry that fails its checks is dropped with a log line while
@@ -726,5 +763,29 @@ mod tests {
             .unwrap();
         assert!(settings.remove_model_record("acme", "acme-1").unwrap());
         assert!(settings.hidden_models_for("acme").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_file_is_private_and_a_broader_mode_is_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        settings
+            .upsert_model_record("acme", record("acme", "acme-1", "https://acme.example/v1"))
+            .unwrap();
+        let path = dir.path().join(FILE_NAME);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(settings);
+        ProviderSettingsStore::load(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
