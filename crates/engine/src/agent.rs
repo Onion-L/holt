@@ -151,6 +151,11 @@ pub(crate) struct ChatRuntime {
     /// chat's `request_provider_key` tool, settled by the dialog's card.
     /// In-memory only — it dies with the chat, like stored proposals.
     pub(crate) key_request: Arc<Mutex<Option<crate::tools::model_setup::PendingKeyRequest>>>,
+    /// The destinations a settled Key request approved this session
+    /// (ADR-0031): (provider, baseUrl) pairs. A planned-target probe may
+    /// carry the stored key only against an exact pair. In-memory only —
+    /// it dies with the chat.
+    pub(crate) approved_key_destinations: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
     pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
     /// The running Turn's captured usage records (the usage ledger): they
@@ -208,6 +213,7 @@ impl ChatRuntime {
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(Default::default())),
             key_request: Arc::new(Mutex::new(None)),
+            approved_key_destinations: Arc::new(Mutex::new(Default::default())),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -401,6 +407,7 @@ impl ChatRuntime {
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(Default::default())),
             key_request: Arc::new(Mutex::new(None)),
+            approved_key_destinations: Arc::new(Mutex::new(Default::default())),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),

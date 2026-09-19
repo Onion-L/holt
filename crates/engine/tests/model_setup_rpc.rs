@@ -490,6 +490,163 @@ async fn a_key_request_settles_saves_the_key_and_notifies_the_chat() {
     }
 }
 
+/// The Key request's whole point on the wire (issue 02's seam 2): a key
+/// settled through the card rides the next probe as the Authorization
+/// header — captured at the loopback server, asserted on the wire, and
+/// never present in anything the model saw.
+#[tokio::test]
+async fn a_settled_key_reaches_the_wire_on_a_stored_probe() {
+    let fixture = Fixture::new();
+    let (server, heads) =
+        common::serve_loopback_with_capture("application/json", br#"{"data":[{"id":"acme-1"}]}"#)
+            .await;
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "acme-custom" }),
+        ),
+        ScriptedReply::text("asked"),
+        ScriptedReply::tool_call(
+            "call-2",
+            "model_proposal",
+            serde_json::json!({ "providerId": "acme-custom", "probe": true }),
+        ),
+        ScriptedReply::text("probed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    engine
+        .handle(
+            methods::SAVE_CUSTOM_PROVIDER,
+            serde_json::json!({
+                "id": "acme-custom",
+                "name": "Acme custom",
+                "baseUrl": server.base,
+                "defaultApi": "openai-completions",
+            }),
+        )
+        .await
+        .unwrap();
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let (mut transcript, _) = common::subscribe(&engine, &setup_id).await;
+
+    request_key(&engine, &fixture, &setup_id).await;
+    let RpcReply::Value(settled) = engine
+        .handle(
+            methods::SETTLE_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": setup_id, "key": "sk-wire-secret" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SettleProviderKeyRequest did not return a value");
+    };
+    assert_eq!(settled["settled"], "saved");
+
+    // The notice turn's inquiry probe: the stored provider's own endpoint,
+    // the settled key on the Authorization header, the listing back — and
+    // the probe line says the key rode.
+    common::wait_for_transcript_text(&mut transcript, "acme-1").await;
+    common::wait_for_requests(&provider, 4).await;
+    let snapshot = common::transcript_snapshot(&engine, &setup_id)
+        .await
+        .to_string();
+    assert!(
+        snapshot.contains("key attached"),
+        "the probe line marks the key rode"
+    );
+    let heads = heads.lock().unwrap().clone();
+    assert!(
+        heads.iter().any(|head| {
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-wire-secret")
+        }),
+        "the settled key rode the probe as the Authorization header"
+    );
+    for request in provider.requests() {
+        let summary = serde_json::to_string(&request.messages).unwrap_or_default();
+        assert!(
+            !summary.contains("sk-wire-secret"),
+            "the key leaked to the model"
+        );
+    }
+}
+
+/// The approval a settle records can never soften the SSRF gate: a planned
+/// (unapplied) loopback baseUrl stays refused, key or no key (issue 02).
+#[tokio::test]
+async fn a_planned_loopback_target_stays_refused_key_or_not() {
+    let fixture = Fixture::new();
+    let server = common::serve_loopback("application/json", br#"{"data":[]}"#).await;
+    let propose = |probe: bool| {
+        ScriptedReply::tool_call(
+            "call-probe",
+            "model_proposal",
+            serde_json::json!({
+                "changes": [{
+                    "action": "upsert_custom_provider",
+                    "provider": {
+                        "id": "acme-planned",
+                        "name": "Acme planned",
+                        "baseUrl": server.base,
+                        "defaultApi": "openai-completions",
+                    },
+                }],
+                "probe": probe,
+            }),
+        )
+    };
+    let key_call = || {
+        ScriptedReply::tool_call(
+            "call-key",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "acme-planned" }),
+        )
+    };
+    let provider = ScriptedProvider::new(vec![
+        propose(true),
+        ScriptedReply::text("proposed"),
+        key_call(),
+        ScriptedReply::text("asked"),
+        ScriptedReply::text("continuing"),
+        propose(true),
+        ScriptedReply::text("probed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, &setup_id).await;
+
+    // Keyless planned probe: refused by the public-host gate.
+    common::run_prompt(&engine, &setup_id, &fixture.cwd(), "add it").await;
+    common::wait_for_transcript_text(&mut transcript, "refused").await;
+    common::wait_for_session_status(&mut sessions, &setup_id, "idle").await;
+
+    // A settled key approves the destination for probes — never for the
+    // SSRF gate: the same planned loopback target is still refused.
+    request_key(&engine, &fixture, &setup_id).await;
+    let RpcReply::Value(_) = engine
+        .handle(
+            methods::SETTLE_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": setup_id, "key": "sk-planned" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("settle did not return a value");
+    };
+    common::run_prompt(&engine, &setup_id, &fixture.cwd(), "probe again").await;
+    common::wait_for_transcript_text(&mut transcript, "is not a public address").await;
+    common::wait_for_session_status(&mut sessions, &setup_id, "idle").await;
+    let snapshot = common::transcript_snapshot(&engine, &setup_id).await;
+    assert_eq!(
+        snapshot.to_string().matches("refused").count(),
+        2,
+        "both planned probes were refused, key or not"
+    );
+}
+
 #[tokio::test]
 async fn a_dismissed_key_request_notifies_without_saving() {
     let fixture = Fixture::new();

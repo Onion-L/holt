@@ -2329,6 +2329,13 @@ impl RpcService for EngineService {
                         restore();
                         return Err(RpcError::Failed(error.to_string()));
                     }
+                    // The entry approves the destination the card showed
+                    // (ADR-0031): this chat's planned-target probes may
+                    // now carry the key against the exact same baseUrl.
+                    chat.approved_key_destinations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert((pending.provider_id.clone(), pending.destination.clone()));
                     true
                 } else if params.get("key").is_some() {
                     restore();

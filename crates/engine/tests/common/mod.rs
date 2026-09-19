@@ -910,15 +910,30 @@ impl Drop for LoopbackServer {
 }
 
 pub async fn serve_loopback(content_type: &'static str, body: &'static [u8]) -> LoopbackServer {
+    serve_loopback_with_capture(content_type, body).await.0
+}
+
+/// The loopback server plus every request head it received — the seam that
+/// proves what actually left the process (the probe's Authorization header).
+pub async fn serve_loopback_with_capture(
+    content_type: &'static str,
+    body: &'static [u8],
+) -> (
+    LoopbackServer,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
+    let captured: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let sink = captured.clone();
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
                 return;
             };
+            let sink = sink.clone();
             tokio::spawn(async move {
                 // The head is never parsed — draining it is what keeps the
                 // client's write from colliding with the response.
@@ -935,6 +950,9 @@ pub async fn serve_loopback(content_type: &'static str, body: &'static [u8]) -> 
                         }
                     }
                 }
+                sink.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(String::from_utf8_lossy(&request[..filled]).into_owned());
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -945,5 +963,5 @@ pub async fn serve_loopback(content_type: &'static str, body: &'static [u8]) -> 
             });
         }
     });
-    LoopbackServer { base, task }
+    (LoopbackServer { base, task }, captured)
 }

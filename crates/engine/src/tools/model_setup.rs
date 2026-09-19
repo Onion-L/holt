@@ -928,7 +928,8 @@ fn probe_section(
                 if let Some(problem) = planned_probe_problem(&base_url).await {
                     return format!(
                         "probe {provider_id}: refused ({problem}) — a planned baseUrl \
-                         becomes probeable once the proposal is applied"
+                         becomes probeable once the proposal is applied; a settled key \
+                         never bypasses this gate"
                     );
                 }
                 (base_url, dialect)
@@ -947,6 +948,7 @@ fn probe_section(
         } else {
             None
         };
+        let key_note = if key.is_some() { ", key attached" } else { "" };
         match probe_models(&base_url, &dialect, key.as_deref(), cancellation).await {
             Ok(ids) if ids.is_empty() => {
                 format!("probe {provider_id}: endpoint returned an empty listing")
@@ -964,15 +966,23 @@ fn probe_section(
                     String::new()
                 };
                 format!(
-                    "probe {provider_id} ({}): {}{}",
+                    "probe {provider_id} ({}{}): {}{}",
                     host_of(&base_url),
+                    key_note,
                     shown.join(", "),
                     suffix
                 )
             }
             Err(problem) => format!(
-                "probe {provider_id}: unavailable ({problem}) — the provider may require \
-                 a key or not expose /models; continuing without it"
+                "probe {provider_id} ({}{}): unavailable ({problem}) — {}continuing \
+                 without it",
+                host_of(&base_url),
+                key_note,
+                if key.is_some() {
+                    "the key was attached and still rejected — it is wrong; "
+                } else {
+                    "the provider may require a key or not expose /models; "
+                }
             ),
         }
     })
@@ -1254,15 +1264,27 @@ async fn run_proposal_tool(
                         _ => None,
                     })
                     .collect();
+                let approved = approved_key_destinations(&chat);
                 lines.push(String::new());
                 for provider_id in probe_providers {
                     let target = planned.get(&provider_id).cloned();
+                    // A provider this batch defines probes its planned
+                    // transport; the key rides only when the user approved
+                    // exactly that (provider, baseUrl) via a Key request.
+                    // A provider the batch only touches keeps today's
+                    // keyless changes-mode probe.
+                    let allow_key = match &target {
+                        Some((base_url, _)) => {
+                            planned_probe_key_allowed(&approved, &provider_id, base_url)
+                        }
+                        None => false,
+                    };
                     lines.push(
                         probe_section(
                             providers.clone(),
                             &provider_id,
                             target,
-                            false,
+                            allow_key,
                             cancellation.clone(),
                         )
                         .await,
@@ -1523,6 +1545,26 @@ async fn key_request_target(
     })
 }
 
+/// May a planned-target probe carry the stored key (ADR-0031)? The user
+/// approved exactly the (provider, baseUrl) the card showed, on this chat,
+/// in this session — a changed baseUrl re-arms, and nothing else ever
+/// matches. Pure so the triple rules are unit-testable.
+pub(crate) fn planned_probe_key_allowed(
+    approved: &HashSet<(String, String)>,
+    provider_id: &str,
+    base_url: &str,
+) -> bool {
+    approved.contains(&(provider_id.to_string(), base_url.to_string()))
+}
+
+/// The chat's session approvals, snapshotted for one probe pass.
+pub(crate) fn approved_key_destinations(chat: &ChatRuntime) -> HashSet<(String, String)> {
+    chat.approved_key_destinations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// The settle's save notice — the fixed message that continues the setup
 /// chat once a key is stored. Engine-owned so the wording and the setup
 /// prompt stay one contract.
@@ -1572,8 +1614,10 @@ requires a key (HTTP 401/403) — NEVER ask the user to paste a key in chat. Par
 `providerId`. The card collects the key locally and saves it to the credential store; the \
 key is never sent to you. After calling, tell the user a key card appeared above the \
 composer and STOP your turn. Your next user message reports the outcome: 'API key saved for \
-…' means re-run the probe in inquiry mode (`model_proposal` with `providerId` and `probe: \
-true`); 'dismissed' means continue with web research.";
+…' means re-run the probe with `probe: true` (inquiry mode — `providerId` only — for a \
+provider the catalog already serves; the same `changes` again for one your proposal still \
+defines); 'dismissed' means continue with web research. A probe marked 'key attached' that \
+still fails means the key itself is wrong — say so instead of requesting again.";
 
 pub(crate) fn create_request_provider_key_tool(
     providers: Arc<ProviderAdapter>,
@@ -2007,6 +2051,44 @@ mod tests {
                 .map(String::as_str),
             Some("secret-value")
         );
+    }
+
+    #[test]
+    fn a_planned_probe_needs_the_exact_approved_triple() {
+        let approved =
+            HashSet::from([("ghost".to_string(), "https://ghost.example/v1".to_string())]);
+        // The exact (provider, baseUrl) the card showed: key rides.
+        assert!(planned_probe_key_allowed(
+            &approved,
+            "ghost",
+            "https://ghost.example/v1"
+        ));
+        // A different baseUrl re-arms — no key until a new Key request
+        // settles for the new destination.
+        assert!(!planned_probe_key_allowed(
+            &approved,
+            "ghost",
+            "https://evil.example/v1"
+        ));
+        // String-exact, on purpose: the approval is the URL the user saw.
+        assert!(!planned_probe_key_allowed(
+            &approved,
+            "ghost",
+            "https://ghost.example/v1/"
+        ));
+        // Another provider's approval never carries over.
+        assert!(!planned_probe_key_allowed(
+            &approved,
+            "other",
+            "https://ghost.example/v1"
+        ));
+        // No approvals: keyless, exactly as before ADR-0031.
+        let empty = HashSet::new();
+        assert!(!planned_probe_key_allowed(
+            &empty,
+            "ghost",
+            "https://ghost.example/v1"
+        ));
     }
 
     #[test]

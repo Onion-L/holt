@@ -61,7 +61,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (the pending request the card renders — `{}` when none) and
   `SettleProviderKeyRequest` (the card's Save/Dismiss: saves the key to
   the credential store — never the chat — and queues the fixed notice
-  that continues the setup chat).
+  that continues the setup chat; a Save also approves the exact
+  (provider, baseUrl) destination shown, letting this session's
+  planned-target probes carry the key — the SSRF public-host gate for
+  planned targets stays).
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
