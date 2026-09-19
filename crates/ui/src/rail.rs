@@ -111,6 +111,43 @@ pub fn active_tick(tick_rows: &[usize], top_row: usize) -> Option<usize> {
     }
 }
 
+/// How far past the reading line (px) a switch must be before it commits.
+pub const RAIL_ACTIVE_DEAD_BAND_PX: f32 = 24.0;
+
+/// Active-tick hysteresis: commit a switch from `committed` to a different
+/// `raw` detection only when the boundary tick's row top sits
+/// [`RAIL_ACTIVE_DEAD_BAND_PX`] beyond the reading line. Forward switches
+/// (raw > committed) judge on the first newly-active tick's row; backward
+/// switches on the previously-active tick's row. Unmeasured boundary bounds
+/// (None) hold the committed tick — the measurement gap of a splice frame is
+/// exactly when the raw walk is least trustworthy.
+pub fn settled_active(
+    committed: Option<usize>,
+    raw: Option<usize>,
+    tick_rows: &[usize],
+    boundary_top: Option<f32>,
+    read_top: f32,
+) -> Option<usize> {
+    match (committed, raw) {
+        (Some(c), Some(r)) if c != r => {
+            let (boundary, forward) = if r > c {
+                (tick_rows.get(c + 1).copied(), true)
+            } else {
+                (tick_rows.get(c).copied(), false)
+            };
+            let decisive = boundary.zip(boundary_top).is_some_and(|(_, top)| {
+                if forward {
+                    top <= read_top - RAIL_ACTIVE_DEAD_BAND_PX
+                } else {
+                    top >= read_top + RAIL_ACTIVE_DEAD_BAND_PX
+                }
+            });
+            if decisive { Some(r) } else { Some(c) }
+        }
+        (_, raw) => raw,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixed-footprint outline (shadcn MessageScroller "Transcript Outline")
 // ---------------------------------------------------------------------------
@@ -430,6 +467,8 @@ impl Transcript {
         // A minimap of one exchange is noise, not navigation — the original
         // rail hides below two marks (message-rail.tsx `marks.length < 2`).
         if pairs.len() < 2 {
+            // The tick set is changing identity; drop any stale commit.
+            self.set_rail_active_id(None);
             return gpui::Empty.into_any_element();
         }
         let tick_rows: Vec<usize> = pairs.iter().map(|(_, row)| *row).collect();
@@ -453,7 +492,26 @@ impl Transcript {
                 break;
             }
         }
-        let active = active_tick(&tick_rows, top_row);
+        let raw_active = active_tick(&tick_rows, top_row);
+        let committed_ix = self
+            .rail_active_id()
+            .and_then(|id| pairs.iter().position(|(tick, _)| tick.message_id == id));
+        let active = match (committed_ix, raw_active) {
+            (Some(c), Some(raw)) if c != raw => {
+                let boundary = if raw > c {
+                    tick_rows[c + 1]
+                } else {
+                    tick_rows[c]
+                };
+                let boundary_top = self
+                    .list_state()
+                    .bounds_for_item(boundary)
+                    .map(|b| f32::from(b.top()));
+                settled_active(Some(c), Some(raw), &tick_rows, boundary_top, read_top)
+            }
+            _ => raw_active,
+        };
+        self.set_rail_active_id(active.map(|ix| pairs[ix].0.message_id.clone()));
         let hover = self.rail_hover();
         let theme = Theme::of(cx).clone();
 
@@ -700,6 +758,63 @@ mod tests {
         // Above the first tick row → first tick still active.
         assert_eq!(active_tick(&[3, 7], 1), Some(0));
         assert_eq!(active_tick(&[], 4), None);
+    }
+
+    #[test]
+    fn settled_active_passes_raw_through_without_a_conflicting_commit() {
+        // No committed tick (first render, chat switch): raw stands.
+        assert_eq!(
+            settled_active(None, Some(1), &[0, 5], Some(1.0), 0.0),
+            Some(1)
+        );
+        assert_eq!(settled_active(None, None, &[0, 5], None, 0.0), None);
+        // Committed == raw: identity, no boundary read needed.
+        assert_eq!(
+            settled_active(Some(1), Some(1), &[0, 5], None, 0.0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn settled_active_holds_until_the_dead_band_is_cleared() {
+        let tick_rows = [0, 5];
+        let read_top = 100.0;
+        // Forward flip, boundary top only 8px past the line → hold.
+        assert_eq!(
+            settled_active(Some(0), Some(1), &tick_rows, Some(read_top - 8.0), read_top),
+            Some(0)
+        );
+        // 40px past the line → commit.
+        assert_eq!(
+            settled_active(
+                Some(0),
+                Some(1),
+                &tick_rows,
+                Some(read_top - 40.0),
+                read_top
+            ),
+            Some(1)
+        );
+        // Backward flip, 6px short of the line → hold; 40px past → commit.
+        assert_eq!(
+            settled_active(Some(1), Some(0), &tick_rows, Some(read_top + 6.0), read_top),
+            Some(1)
+        );
+        assert_eq!(
+            settled_active(
+                Some(1),
+                Some(0),
+                &tick_rows,
+                Some(read_top + 40.0),
+                read_top
+            ),
+            Some(0)
+        );
+        // Unmeasured boundary (splice-frame gap) → hold.
+        assert_eq!(
+            settled_active(Some(0), Some(1), &tick_rows, None, read_top),
+            Some(0)
+        );
     }
 
     #[test]

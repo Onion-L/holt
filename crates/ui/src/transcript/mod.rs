@@ -294,6 +294,11 @@ pub struct Transcript {
     bottom_clearance: f32,
     /// Hovered rail tick (grows + shows the preview card).
     rail_hover: Option<usize>,
+    /// Last committed rail active tick, keyed by message id (survives row
+    /// rebuilds; a chat switch simply fails the lookup). Carries the active
+    /// mark across frames so streaming bobbing can't flip it — see
+    /// `settled_active` in rail.rs.
+    rail_active_id: Option<String>,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (holt chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -485,6 +490,7 @@ impl Transcript {
             rail_enabled,
             bottom_clearance: 0.0,
             rail_hover: None,
+            rail_active_id: None,
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -536,6 +542,16 @@ impl Transcript {
 
     pub(crate) fn set_rail_hover(&mut self, hover: Option<usize>) {
         self.rail_hover = hover;
+    }
+
+    pub(crate) fn rail_active_id(&self) -> Option<&str> {
+        self.rail_active_id.as_deref()
+    }
+
+    pub(crate) fn set_rail_active_id(&mut self, id: Option<String>) {
+        if self.rail_active_id != id {
+            self.rail_active_id = id;
+        }
     }
 
     pub(crate) fn rows(&self) -> &[Row] {
