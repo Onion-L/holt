@@ -546,6 +546,10 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
+                            // The hover-revealed "…" menu button floats
+                            // over the row's right edge (right 6 + 18 hit
+                            // target): the title truncates clear of it.
+                            .pr(px(24.0))
                             .text_size(crate::typography::ui_rems(13.0))
                             .line_height(px(17.0))
                             .child(title),
