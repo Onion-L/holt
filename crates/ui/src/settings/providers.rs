@@ -132,6 +132,20 @@ pub struct ProvidersPage {
     setup_input_events: Option<Subscription>,
     setup_state_observe: Option<Subscription>,
     setup_proposals: Vec<serde_json::Value>,
+    /// The dialog session's cutoff (unix ms): proposals stored before it
+    /// belong to earlier sessions and never render as actionable — an old
+    /// proposal's Write always fails the apply-time staleness gate.
+    setup_cutoff_ms: i64,
+    /// Proposals written this session, kept past the engine's consume so
+    /// the panel can render the "written" terminal card instead of
+    /// silently vanishing the user's action.
+    setup_applied: Vec<serde_json::Value>,
+    /// Per-proposal apply failures, rendered inline on the card — an apply
+    /// error is a property of this proposal (usually the staleness gate),
+    /// not a page-level fault, so it never rides the window-top modal.
+    setup_apply_errors: HashMap<String, String>,
+    /// The in-flight apply's proposal id; one apply at a time.
+    setup_applying: Option<String>,
     /// The setup chat's queue snapshot (`WatchMessageQueue`). The send RPC
     /// returns before admission, so a turn that fails to start (missing
     /// key, unresolvable model, storage fault) never writes a doc entry —
@@ -187,6 +201,10 @@ impl ProvidersPage {
             setup_input_events: None,
             setup_state_observe: None,
             setup_proposals: Vec::new(),
+            setup_cutoff_ms: 0,
+            setup_applied: Vec::new(),
+            setup_apply_errors: HashMap::new(),
+            setup_applying: None,
             setup_queue: None,
             setup_task: None,
             setup_panel_task: None,
@@ -685,12 +703,17 @@ impl ProvidersPage {
         self.add_dialog = None;
         self.new_provider_error = None;
         // Dropping the view + the doc watch stops all background work; the
-        // next open re-prepares from a fresh subscription.
+        // next open re-prepares from a fresh subscription. The session's
+        // applied/error memories go with it — a reopened dialog lists only
+        // what its own session wrote.
         self.setup_transcript_view = None;
         self.setup_doc_empty = true;
         self.setup_proposal_signature = (0, 0);
         self.setup_queue_task = None;
         self.setup_queue = None;
+        self.setup_applied.clear();
+        self.setup_apply_errors.clear();
+        self.setup_applying = None;
         if let Some(chat_id) = self.setup_chat.clone() {
             self.state.update(cx, |state, _| {
                 state.unwatch_subagent_doc(&setup_view_key(&chat_id))
@@ -846,6 +869,7 @@ impl ProvidersPage {
                 }
                 let view_key = setup_view_key(&chat_id);
                 page.setup_chat = Some(chat_id.clone());
+                page.setup_cutoff_ms = cutoff_ms;
                 // The qualified id is both the display value and the run
                 // identity — no re-prefixing.
                 page.setup_selected_model = Some(model.clone());
@@ -1074,7 +1098,10 @@ impl ProvidersPage {
     }
 
     /// The review panel's write button: applies a stored proposal, then
-    /// refreshes everything the page shows.
+    /// refreshes everything the page shows. Success remembers the card so
+    /// the panel renders a "written" terminal state; failure lands inline
+    /// on the card — the usual cause is the apply-time staleness gate, a
+    /// property of this proposal, not a page-level fault.
     fn apply_setup_proposal(&mut self, proposal_id: String, cx: &mut Context<Self>) {
         let Some(chat_id) = self.setup_chat.clone() else {
             return;
@@ -1082,6 +1109,19 @@ impl ProvidersPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
+        if self.setup_applying.is_some() {
+            return;
+        }
+        // The card's data: the engine consumes the proposal on success, so
+        // the panel keeps its own copy for the terminal render.
+        let written = self
+            .setup_proposals
+            .iter()
+            .find(|proposal| proposal["id"] == proposal_id.as_str())
+            .cloned();
+        self.setup_applying = Some(proposal_id.clone());
+        self.setup_apply_errors.remove(&proposal_id);
+        cx.notify();
         // Detached: a proposal-signature refresh (or any panel action) must
         // not cancel a Write in flight — the user's click would be lost
         // silently.
@@ -1090,16 +1130,27 @@ impl ProvidersPage {
                 .client()
                 .call(
                     methods::APPLY_MODEL_PROPOSAL,
-                    serde_json::json!({ "chatId": chat_id, "proposalId": proposal_id }),
+                    serde_json::json!({ "chatId": chat_id, "proposalId": proposal_id.clone() }),
                 )
                 .await;
-            this.update(cx, |page, cx| match result {
-                Ok(_) => {
-                    crate::pickers::bump_provider_catalog(cx);
-                    page.load(cx);
-                    page.refresh_setup_proposals(cx);
+            this.update(cx, |page, cx| {
+                page.setup_applying = None;
+                match result {
+                    Ok(_) => {
+                        if let Some(proposal) = written {
+                            page.setup_applied.push(proposal);
+                        }
+                        page.setup_apply_errors.remove(&proposal_id);
+                        crate::pickers::bump_provider_catalog(cx);
+                        page.load(cx);
+                        page.refresh_setup_proposals(cx);
+                    }
+                    Err(error) => {
+                        page.setup_apply_errors
+                            .insert(proposal_id, error.to_string());
+                    }
                 }
-                Err(error) => page.fail(error.to_string(), cx),
+                cx.notify();
             })
             .ok();
         })
@@ -2454,7 +2505,6 @@ fn manual_tab(
 /// proposal cards are the whole surface.
 fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let input = page.setup_input.clone();
-    let proposals = page.setup_proposals.clone();
     let models_ready = matches!(page.setup_models, Loadable::Ready(_));
     let view = page.setup_transcript_view.clone();
     let doc_empty = page
@@ -2468,9 +2518,39 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
         })
         .unwrap_or(true);
     let mut column = div().flex().flex_col().gap(px(10.0)).flex_1().min_h_0();
-    if let Loadable::Error(reason) = &page.setup_models {
+    if let Loadable::Error(reason) = page.setup_models.clone() {
+        // The AI tab needs a working model of its own — a fresh install has
+        // none. Guide the way out instead of dead-ending on an error strip:
+        // the key lives on this page's provider panels, the manual form is
+        // one tab away.
         return column
-            .child(widgets::error_strip(theme, reason.clone()))
+            .child(widgets::error_strip(theme, reason))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .pt(px(4.0))
+                    .max_w(px(420.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted.opacity(0.8))
+                    .child(
+                        "Enter an API key for any provider in the list behind this \
+                         dialog first, or add the provider by hand.",
+                    )
+                    .child(
+                        action_button(theme)
+                            .id("setup-bootstrap-manual")
+                            .debug_selector(|| "setup-bootstrap-manual".into())
+                            .w(px(180.0))
+                            .hover(|style| style.bg(crate::theme::ink(0.04)))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.add_dialog = Some(AddProviderTab::Manual);
+                                cx.notify();
+                            }))
+                            .child("Use the Manual tab"),
+                    ),
+            )
             .into_any_element();
     }
     if models_ready || page.setup_chat.is_some() {
@@ -2509,8 +2589,8 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
         column = column.child(surface);
         // The review panel pops in when a proposal lands — the whole point
         // of the run — and stays out of the way otherwise.
-        if !proposals.is_empty() {
-            column = column.child(setup_review_panel(&proposals, theme, cx));
+        if !page.setup_proposals.is_empty() || !page.setup_applied.is_empty() {
+            column = column.child(setup_review_panel(page, theme, cx));
         }
         // A turn the engine could not admit never writes a doc entry —
         // without this strip the send reads as dead silence (issue 03).
@@ -2561,6 +2641,15 @@ fn setup_composer(
                 .items_center()
                 .gap(px(8.0))
                 .child(div().flex_1())
+                // The chip picks the ASSISTANT's model — the brain researching
+                // the catalog — not the model being added. Users kept reading
+                // it as the target; the label settles that.
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted.opacity(0.8))
+                        .child("Assistant"),
+                )
                 .child(setup_model_picker(page, theme, cx))
                 .child(
                     div()
@@ -2871,20 +2960,128 @@ fn proposal_signature(transcript: &[SessionMessageEntry]) -> (usize, usize) {
     (total, resolved)
 }
 
-/// The review panel: one row per stored proposal — summary, write, discard.
+/// The URL's host — the part that decides where a key would be sent, and
+/// the only part worth the row's width.
+fn url_host(url: &str) -> &str {
+    url.split("//")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or(url)
+}
+
+/// Token counts in picker shorthand: 321000 → "321k", 2000000 → "2M".
+fn fmt_tokens(value: u64) -> String {
+    if value >= 1_000_000 {
+        format!("{}M", value / 1_000_000)
+    } else if value >= 1_000 {
+        format!("{}k", value / 1_000)
+    } else {
+        format!("{value}")
+    }
+}
+
+/// One change row's render data: the subject and the fields that decide
+/// whether it is safe to write — the endpoint a key would ride to, the
+/// window the record bills against, the cost the ledger books. Engine
+/// data only (the `proposal_views` JSON), never the agent's prose.
+fn change_subject(change: &serde_json::Value) -> (String, Option<String>) {
+    let str_field = |key: &str| change[key].as_str().map(str::to_string).unwrap_or_default();
+    let action = str_field("action");
+    match action.as_str() {
+        "upsert_model_record" => {
+            let record = &change["record"];
+            let mut detail = Vec::new();
+            if let Some(url) = record["baseUrl"].as_str() {
+                detail.push(url_host(url).to_string());
+            }
+            if let Some(window) = record["contextWindow"].as_u64() {
+                detail.push(format!("ctx {}", fmt_tokens(window)));
+            }
+            if let Some(max) = record["maxTokens"].as_u64() {
+                detail.push(format!("out {}", fmt_tokens(max)));
+            }
+            if let (Some(input), Some(output)) = (
+                record["cost"]["input"].as_f64(),
+                record["cost"]["output"].as_f64(),
+            ) {
+                detail.push(format!("${input}/${output} per M"));
+            }
+            (
+                format!("± {}/{}", str_field("providerId"), str_field("modelId")),
+                (!detail.is_empty()).then(|| detail.join(" · ")),
+            )
+        }
+        "upsert_custom_provider" => {
+            let provider = &change["provider"];
+            let mut detail = Vec::new();
+            if let Some(url) = provider["baseUrl"].as_str() {
+                detail.push(url_host(url).to_string());
+            }
+            if let Some(api) = provider["defaultApi"].as_str() {
+                detail.push(api.to_string());
+            }
+            if provider.get("headers").is_some_and(|h| h.is_object()) {
+                detail.push("custom headers".into());
+            }
+            (
+                format!("+ provider {}", str_field("providerId")),
+                (!detail.is_empty()).then(|| detail.join(" · ")),
+            )
+        }
+        "remove_custom_provider" => (format!("− provider {}", str_field("providerId")), None),
+        "remove_model_record" => (
+            format!("− {}/{}", str_field("providerId"), str_field("modelId")),
+            None,
+        ),
+        "set_hidden_models" => {
+            let ids: Vec<&str> = change["modelIds"]
+                .as_array()
+                .map(|ids| ids.iter().filter_map(|id| id.as_str()).collect())
+                .unwrap_or_default();
+            let shown = if ids.len() > 6 {
+                format!("{} …", ids[..6].join(", "))
+            } else {
+                ids.join(", ")
+            };
+            (
+                format!("! {}: hide {}", str_field("providerId"), shown),
+                None,
+            )
+        }
+        other => (other.to_string(), None),
+    }
+}
+
+/// The review panel: one card per pending proposal — the engine-built
+/// summary, one structured row per change (the fields that decide whether
+/// writing is safe), and Write/Discard on the card. Failures land inline
+/// on the card they belong to; a written proposal keeps a terminal card
+/// instead of vanishing. Proposals stored before this dialog session
+/// opened never render — their Write could only fail the staleness gate.
 fn setup_review_panel(
-    proposals: &[serde_json::Value],
+    page: &mut ProvidersPage,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
+    let accent = theme.accent;
+    let cutoff = page.setup_cutoff_ms;
+    let applying = page.setup_applying.clone();
+    let pending: Vec<serde_json::Value> = page
+        .setup_proposals
+        .iter()
+        .filter(|proposal| proposal["createdAt"].as_i64().unwrap_or(0) >= cutoff)
+        .cloned()
+        .collect();
+    let applied = page.setup_applied.clone();
     let mut panel = div()
         .flex()
         .flex_col()
         .gap(px(6.0))
         .child(widgets::field_label(theme, "Pending proposals"));
-    if proposals.is_empty() {
+    if pending.is_empty() && applied.is_empty() {
         panel = panel.child(
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -2892,48 +3089,141 @@ fn setup_review_panel(
                 .child("None yet — a proposal appears here once the assistant prepares one."),
         );
     }
-    for (index, proposal) in proposals.iter().enumerate() {
-        let id = proposal["id"].as_str().unwrap_or_default().to_string();
+    for (index, proposal) in applied.iter().enumerate() {
         let summary = proposal["summary"].as_str().unwrap_or_default().to_string();
-        let apply_id = id.clone();
-        let discard_id = id.clone();
         panel = panel.child(
             div()
-                .id(("setup-proposal", index))
+                .id(("setup-applied-card", index))
+                .debug_selector(move || format!("setup-applied-card-{index}"))
                 .flex()
                 .items_center()
                 .gap(px(8.0))
                 .p(px(8.0))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(theme.border)
+                .border_color(theme.border.opacity(0.5))
+                .text_size(crate::typography::ui_rems(11.5))
+                .text_color(theme.text_muted)
+                .child(
+                    crate::icons::icon(crate::icons::CHECK)
+                        .size(px(13.0))
+                        .flex_none()
+                        .text_color(accent),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(crate::typography::ui_rems(11.5))
-                        .child(SharedString::from(summary)),
-                )
-                .child(
-                    action_button(theme)
-                        .id(("setup-proposal-apply", index))
-                        .hover(|style| style.bg(crate::theme::ink(0.04)))
-                        .on_click(cx.listener(move |page, _, _, cx| {
-                            page.apply_setup_proposal(apply_id.clone(), cx)
-                        }))
-                        .child("Write"),
-                )
-                .child(
-                    widgets::ghost_action(theme)
-                        .id(("setup-proposal-discard", index))
-                        .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-                        .on_click(cx.listener(move |page, _, _, cx| {
-                            page.discard_setup_proposal(discard_id.clone(), cx)
-                        }))
-                        .child("Discard"),
+                        .child(SharedString::from(format!("Written — {summary}"))),
                 ),
         );
+    }
+    for (index, proposal) in pending.iter().enumerate() {
+        let id = proposal["id"].as_str().unwrap_or_default().to_string();
+        let summary = proposal["summary"].as_str().unwrap_or_default().to_string();
+        let apply_id = id.clone();
+        let discard_id = id.clone();
+        let busy = applying.as_deref() == Some(id.as_str());
+        let error = page.setup_apply_errors.get(&id).cloned();
+        let mut card = div()
+            .id(("setup-proposal", index))
+            .debug_selector(move || format!("setup-proposal-card-{index}"))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .p(px(8.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .child(SharedString::from(summary)),
+                    )
+                    .child(
+                        action_button(theme)
+                            .id(("setup-proposal-apply", index))
+                            .debug_selector(move || format!("setup-proposal-apply-{index}"))
+                            .when(busy, |button| button.opacity(0.4))
+                            .hover(|style| style.bg(crate::theme::ink(0.04)))
+                            .on_click(cx.listener(move |page, _, _, cx| {
+                                page.apply_setup_proposal(apply_id.clone(), cx)
+                            }))
+                            .child("Write"),
+                    )
+                    .child(
+                        widgets::ghost_action(theme)
+                            .id(("setup-proposal-discard", index))
+                            .debug_selector(move || format!("setup-proposal-discard-{index}"))
+                            .hover(move |style| {
+                                style.bg(danger.opacity(0.10)).text_color(danger_muted)
+                            })
+                            .on_click(cx.listener(move |page, _, _, cx| {
+                                page.discard_setup_proposal(discard_id.clone(), cx)
+                            }))
+                            .child("Discard"),
+                    ),
+            );
+        for (row, change) in proposal["changes"]
+            .as_array()
+            .map(|changes| changes.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            let (subject, detail) = change_subject(change);
+            let selector = format!("setup-change-row-{index}-{row}");
+            card = card.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "setup-proposal-change-{index}-{row}"
+                    )))
+                    .debug_selector(move || selector.clone())
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.0))
+                    .pl(px(8.0))
+                    .border_l_2()
+                    .border_color(theme.border.opacity(0.6))
+                    .child(
+                        div()
+                            .font_family(theme.font_mono.clone())
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .child(SharedString::from(subject)),
+                    )
+                    .when_some(detail, |card, detail| {
+                        card.child(
+                            div()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(crate::typography::ui_rems(10.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(detail)),
+                        )
+                    }),
+            );
+        }
+        if let Some(error) = error {
+            card = card.child(
+                div()
+                    .id(("setup-proposal-error", index))
+                    .debug_selector(move || format!("setup-proposal-error-{index}"))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(danger)
+                    .child(SharedString::from(format!(
+                        "{error} Ask the assistant to propose again."
+                    ))),
+            );
+        }
+        panel = panel.child(card);
     }
     panel.into_any_element()
 }
@@ -3493,6 +3783,16 @@ mod tests {
         /// failure shape: no doc entry, the queue frame carries the reason);
         /// consumed by the first send, so a retry succeeds.
         fail_first_admission: std::sync::atomic::AtomicBool,
+        /// The review panel's stored proposals, served verbatim by
+        /// ListModelProposals (the engine's consume-on-apply included).
+        proposals: std::sync::Mutex<Vec<serde_json::Value>>,
+        applies: std::sync::Mutex<Vec<serde_json::Value>>,
+        /// True = ApplyModelProposal fails with the staleness error instead
+        /// of applying.
+        fail_applies: std::sync::atomic::AtomicBool,
+        /// True = no provider is configured (the fresh-install dead end the
+        /// AI tab must guide out of).
+        unconfigured: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -3505,32 +3805,36 @@ mod tests {
             use futures::StreamExt as _;
             use holt_rpc::{RpcError, RpcReply};
             match method {
-                methods::LIST_PROVIDERS => RpcReply::value(&serde_json::json!([
-                    {
-                        "id": "acme",
-                        "name": "Acme",
-                        "abbreviation": "A",
-                        "configured": true,
-                        "variants": [{
+                methods::LIST_PROVIDERS => {
+                    let configured = !self.unconfigured.load(std::sync::atomic::Ordering::SeqCst);
+                    let flag = |value: bool| serde_json::json!(value);
+                    RpcReply::value(&serde_json::json!([
+                        {
                             "id": "acme",
                             "name": "Acme",
-                            "configured": true,
-                        }],
-                        "custom": false,
-                    },
-                    {
-                        "id": "beta",
-                        "name": "Beta Labs",
-                        "abbreviation": "B",
-                        "configured": true,
-                        "variants": [{
+                            "abbreviation": "A",
+                            "configured": flag(configured),
+                            "variants": [{
+                                "id": "acme",
+                                "name": "Acme",
+                                "configured": flag(configured),
+                            }],
+                            "custom": false,
+                        },
+                        {
                             "id": "beta",
                             "name": "Beta Labs",
-                            "configured": true,
-                        }],
-                        "custom": false,
-                    },
-                ])),
+                            "abbreviation": "B",
+                            "configured": flag(configured),
+                            "variants": [{
+                                "id": "beta",
+                                "name": "Beta Labs",
+                                "configured": flag(configured),
+                            }],
+                            "custom": false,
+                        },
+                    ]))
+                }
                 methods::LIST_MODELS => {
                     let provider = params["providerId"].as_str().unwrap_or_default();
                     let rows: Vec<serde_json::Value> = self
@@ -3554,7 +3858,33 @@ mod tests {
                 methods::ENSURE_MODEL_SETUP_CHAT => {
                     RpcReply::value(&serde_json::json!({ "chatId": "setup-chat" }))
                 }
-                methods::LIST_MODEL_PROPOSALS => RpcReply::value(&serde_json::json!([])),
+                methods::LIST_MODEL_PROPOSALS => RpcReply::value(&serde_json::Value::Array(
+                    self.proposals.lock().unwrap().clone(),
+                )),
+                methods::APPLY_MODEL_PROPOSAL => {
+                    if self.fail_applies.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(RpcError::Failed(
+                            "the catalog changed since this proposal (it is now a no-op); \
+                             run model_proposal again"
+                                .into(),
+                        ));
+                    }
+                    self.applies.lock().unwrap().push(params.clone());
+                    let proposal_id = params["proposalId"].as_str().unwrap_or_default();
+                    self.proposals
+                        .lock()
+                        .unwrap()
+                        .retain(|proposal| proposal["id"] != serde_json::json!(proposal_id));
+                    RpcReply::value(&serde_json::json!({ "applied": ["acme/acme-2"] }))
+                }
+                methods::DISCARD_MODEL_PROPOSAL => {
+                    let proposal_id = params["proposalId"].as_str().unwrap_or_default();
+                    self.proposals
+                        .lock()
+                        .unwrap()
+                        .retain(|proposal| proposal["id"] != serde_json::json!(proposal_id));
+                    RpcReply::value(&serde_json::json!({ "discarded": true }))
+                }
                 methods::DELETE_QUEUED_MESSAGE => {
                     let message_id = params["messageId"].as_str().unwrap_or_default();
                     let mut entries = self.queue.subscribe().borrow_and_update().clone();
@@ -3726,6 +4056,10 @@ mod tests {
             resets: std::sync::Mutex::new(Vec::new()),
             queued: std::sync::Mutex::new(Vec::new()),
             fail_first_admission: std::sync::atomic::AtomicBool::new(fail_first_admission),
+            proposals: std::sync::Mutex::new(Vec::new()),
+            applies: std::sync::Mutex::new(Vec::new()),
+            fail_applies: std::sync::atomic::AtomicBool::new(false),
+            unconfigured: std::sync::atomic::AtomicBool::new(false),
         });
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4130,6 +4464,179 @@ mod tests {
             picked.as_deref(),
             Some("acme/acme-1"),
             "the reset custom model no longer pins the chip"
+        );
+    }
+
+    /// A stored proposal as the engine's `proposal_views` serves it.
+    fn proposal_json(id: &str, created_at: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "summary": "Apply 1 catalog change for acme",
+            "createdAt": created_at,
+            "changes": [{
+                "action": "upsert_model_record",
+                "providerId": "acme",
+                "modelId": "acme-2",
+                "record": {
+                    "id": "acme-2",
+                    "name": "Acme 2",
+                    "api": "openai-completions",
+                    "provider": "acme",
+                    "baseUrl": "https://acme.example/v1",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "cost": { "input": 1.5, "output": 3.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+                    "contextWindow": 200_000,
+                    "maxTokens": 8_192,
+                },
+            }],
+        })
+    }
+
+    /// The write decision shows its own data: each pending card carries the
+    /// structured change rows (endpoint, window, cost) beside the summary,
+    /// and a successful Write lands as a terminal "written" card instead
+    /// of silently vanishing.
+    #[gpui::test]
+    fn the_review_panel_renders_change_rows_and_writes(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness
+            .engine
+            .proposals
+            .lock()
+            .unwrap()
+            .push(proposal_json("prop-1", now_ms() + 30_000));
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        let (card, row) = (
+            harness.visual.debug_bounds("setup-proposal-card-0"),
+            harness.visual.debug_bounds("setup-change-row-0-0"),
+        );
+        assert!(card.is_some(), "the proposal card renders");
+        assert!(row.is_some(), "the change's structured row renders");
+
+        harness.click("setup-proposal-apply-0");
+        assert_eq!(harness.engine.applies.lock().unwrap().len(), 1);
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-applied-card-0")
+                .is_some(),
+            "the write lands as a visible terminal card"
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-proposal-card-0")
+                .is_none(),
+            "the written proposal stops offering Write"
+        );
+    }
+
+    /// An apply failure is a property of the proposal (usually the
+    /// staleness gate), not a page fault: it renders inline on the card it
+    /// belongs to, with the Write still available for a retry after the
+    /// assistant re-proposes — never as the window-top modal.
+    #[gpui::test]
+    fn an_apply_failure_lands_inline_on_the_card(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness
+            .engine
+            .fail_applies
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        harness
+            .engine
+            .proposals
+            .lock()
+            .unwrap()
+            .push(proposal_json("prop-1", now_ms() + 30_000));
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        harness.click("setup-proposal-apply-0");
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-proposal-error-0")
+                .is_some(),
+            "the failure renders on the card"
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-proposal-card-0")
+                .is_some(),
+            "the card stays for a retry"
+        );
+        let inline = harness.page.update(&mut *harness.visual, |page, _| {
+            page.setup_apply_errors.get("prop-1").cloned()
+        });
+        assert!(
+            inline
+                .unwrap_or_default()
+                .contains("changed since this proposal"),
+            "the inline error carries the engine's reason"
+        );
+    }
+
+    /// Proposals stored before this dialog session opened belong to earlier
+    /// sessions: their Write could only fail the apply-time staleness
+    /// gate, so they never render as actionable.
+    #[gpui::test]
+    fn stale_proposals_from_earlier_sessions_stay_hidden(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness
+            .engine
+            .proposals
+            .lock()
+            .unwrap()
+            .push(proposal_json("prop-old", 1));
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-proposal-card-0")
+                .is_none(),
+            "a pre-session proposal renders no card"
+        );
+        assert!(harness.engine.applies.lock().unwrap().is_empty());
+    }
+
+    /// The fresh-install dead end: no provider configured means the setup
+    /// assistant has no model to run on. The tab must offer the way out —
+    /// the manual form — not just the dead-end error strip.
+    #[gpui::test]
+    fn the_manual_tab_escape_hatch_when_no_provider_is_configured(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        harness
+            .engine
+            .unconfigured
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-bootstrap-manual")
+                .is_some(),
+            "the dead end offers the manual form"
+        );
+        harness.click("setup-bootstrap-manual");
+        let tab = harness
+            .page
+            .update(&mut *harness.visual, |page, _| page.add_dialog);
+        assert_eq!(
+            tab,
+            Some(AddProviderTab::Manual),
+            "the escape hatch switches to the manual tab"
         );
     }
 }

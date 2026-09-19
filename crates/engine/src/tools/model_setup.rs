@@ -1,12 +1,11 @@
-//! The model-setup tool pair (ADR-0029): `model_proposal` prepares and
-//! validates an exact provider-catalog change and stores it engine-side;
-//! `model_apply` executes a stored proposal by id behind an approval no
-//! permission mode exempts. The proposal tool never writes, the apply tool
-//! never accepts a change payload — only an id — so what the user saw in
-//! the transcript is bit-for-bit what executes, and an accidental apply
-//! with no stored proposal is a harmless error. API keys never enter this
-//! path: they live in the credential store and surface only as a probe's
-//! Authorization header.
+//! The model-setup surface (ADR-0029, reshaped by ADR-0030): the
+//! read-only `model_proposal` tool validates an exact provider-catalog
+//! change and stores it engine-side; the only apply path is the Settings
+//! review panel's `ApplyModelProposal` RPC, which executes a stored
+//! proposal by id under the same revalidation — the agent never holds an
+//! apply tool, so what the user saw in the transcript is bit-for-bit what
+//! executes. API keys never enter this path: they live in the credential
+//! store and surface only as a probe's Authorization header.
 
 use std::{
     collections::{BTreeSet, HashSet},
@@ -39,7 +38,8 @@ const PROBE_LISTING_CAP: usize = 200;
 const PROPOSAL_DESCRIPTION: &str = "Prepare a provider-catalog change (add or update a model \
 with full metadata, define a custom provider, hide dead models) WITHOUT writing anything. \
 Validates the change against the local catalog, reports exactly what would change (a no-op \
-says so), stores the result engine-side, and returns a proposalId for model_apply. Parameters: \
+says so), stores the result engine-side, and returns a proposalId for the \
+review panel to apply. Parameters: \
 `changes` (an array; omit it to only inspect a provider), `providerId` (when \
 inspecting: a concrete provider id; OMIT it entirely to list the organizations \
 and their providers — resolve the user's words to one before proposing), `modelId` (when inspecting: dump that one model's complete record JSON — the \
@@ -53,8 +53,8 @@ modelId}), or set_hidden_models ({providerId, modelIds}). When replacing an exis
 inspect it first and copy its api/compat/thinkingLevelMap, changing only what differs. Only \
 call this when the user explicitly asks to add, fix, or clean up models or providers — \
 research model facts first with web_fetch/web_search, then propose. After presenting the \
-resulting diff, call model_apply with the returned proposalId IN THE SAME TURN — never wait \
-for a chat reply first.";
+resulting diff, STOP — the user reviews the proposal in the dialog's review panel and \
+writes it there; never claim to apply it yourself and never wait for an in-chat approval.";
 
 // ---------------------------------------------------------------------------
 // The change vocabulary
@@ -178,6 +178,10 @@ pub(crate) struct StoredProposal {
     pub(crate) summary: String,
     pub(crate) changes: Vec<CatalogChange>,
     pub(crate) baseline: ProviderSettingsSnapshot,
+    /// Creation time (unix ms). The review panel filters proposals by it:
+    /// ones stored before the dialog opened belong to earlier sessions and
+    /// must not render as actionable.
+    pub(crate) created_at: i64,
 }
 
 /// Remembers a proposal on its chat (LRU of [`PROPOSAL_CAP`]) and returns
@@ -196,6 +200,7 @@ pub(crate) fn store_proposal(
         summary,
         changes,
         baseline,
+        created_at: chrono::Utc::now().timestamp_millis(),
     });
     while proposals.len() > PROPOSAL_CAP {
         proposals.pop_front();
@@ -944,6 +949,7 @@ pub(crate) fn proposal_views(chat: &ChatRuntime) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "id": proposal.id,
                 "summary": proposal.summary,
+                "createdAt": proposal.created_at,
                 "changes": proposal
                     .changes
                     .iter()
@@ -1145,10 +1151,9 @@ async fn run_proposal_tool(
             lines.push(String::new());
             lines.push(format!("proposalId: {id}"));
             lines.push(
-                "Proposal stored. Present the diff above to the user, then call \
-                 model_apply with this proposalId in the same turn — that call opens the \
-                 approval bar and waits for the user's verdict; nothing is written until \
-                 they allow it."
+                "Proposal stored. Present the diff above to the user and stop — they review \
+                 it in the dialog's review panel and write it there; nothing is written \
+                 from the chat."
                     .into(),
             );
             text_result(

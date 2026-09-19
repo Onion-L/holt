@@ -139,6 +139,13 @@ async fn a_setup_chat_proposes_and_the_review_rpc_applies() {
     assert!(proposals[0]["summary"].as_str().unwrap().contains("openai"));
     assert_eq!(proposals[0]["changes"][0]["action"], "upsert_model_record");
     assert_eq!(proposals[0]["changes"][0]["modelId"], "gpt-via-setup");
+    // The panel's session cutoff rides the creation stamp: present, and
+    // no later than now (a future stamp would leak into later sessions).
+    assert!(
+        proposals[0]["createdAt"]
+            .as_i64()
+            .is_some_and(|at| at > 0 && at <= chrono::Utc::now().timestamp_millis())
+    );
 
     // Nothing applied yet: the proposal is stored, not written.
     assert!(
