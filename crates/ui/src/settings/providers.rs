@@ -108,6 +108,9 @@ pub struct ProvidersPage {
     /// second executes. The GLOBAL reset rides a confirm dialog instead
     /// (`confirm_reset_all`) — the armed-button copy never fit the row.
     armed_reset: Option<String>,
+    /// The same two-step for removing a custom provider's definition —
+    /// the armed copy states what stays behind (the key, the records).
+    armed_remove: Option<String>,
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
     /// The AI tab (V2c): the hidden setup chat's id (kept across dialog
@@ -188,6 +191,7 @@ impl ProvidersPage {
             record_form: None,
             hidden: HashMap::new(),
             armed_reset: None,
+            armed_remove: None,
             confirm_reset_all: false,
             setup_chat: None,
             setup_transcript_view: None,
@@ -412,11 +416,12 @@ impl ProvidersPage {
         cx.notify();
     }
 
-    /// Retire the per-panel transients: the record form and any armed reset
-    /// belong to the variant the panel was showing.
+    /// Retire the per-panel transients: the record form and any armed
+    /// reset belong to the variant the panel was showing.
     fn close_panel_forms(&mut self) {
         self.record_form = None;
         self.armed_reset = None;
+        self.armed_remove = None;
     }
 
     fn begin_collapse(&mut self, provider: String, cx: &mut Context<Self>) {
@@ -1288,6 +1293,16 @@ impl ProvidersPage {
         }
     }
 
+    fn arm_or_remove(&mut self, provider: String, org_id: String, cx: &mut Context<Self>) {
+        if self.armed_remove.as_deref() == Some(provider.as_str()) {
+            self.armed_remove = None;
+            self.remove_custom_provider(provider, org_id, cx);
+        } else {
+            self.armed_remove = Some(provider);
+            cx.notify();
+        }
+    }
+
     fn reset_provider(&mut self, provider: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -1477,6 +1492,7 @@ impl Render for ProvidersPage {
                         &variant_id,
                         provider.custom,
                         self.armed_reset.as_deref() == Some(variant_id.as_str()),
+                        self.armed_remove.as_deref() == Some(variant_id.as_str()),
                         &theme,
                         cx,
                     );
@@ -2203,12 +2219,14 @@ fn record_form_dialog(
 }
 
 /// The panel's bottom row: reset to the catalog (two-step), and for custom
-/// providers the definition removal.
+/// providers the definition removal (two-step; the armed copy names what
+/// stays behind — the key and model records survive a definition removal).
 fn panel_danger_row(
     index: usize,
     provider_id: &str,
     custom: bool,
     armed: bool,
+    remove_armed: bool,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
@@ -2241,9 +2259,13 @@ fn panel_danger_row(
                 .id(("remove-custom-provider", index))
                 .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
                 .on_click(cx.listener(move |page, _, _, cx| {
-                    page.remove_custom_provider(remove_provider.clone(), remove_org.clone(), cx)
+                    page.arm_or_remove(remove_provider.clone(), remove_org.clone(), cx)
                 }))
-                .child("Remove provider")
+                .child(if remove_armed {
+                    "Confirm remove — the API key and model records stay"
+                } else {
+                    "Remove provider"
+                })
         }))
         .into_any_element()
 }
