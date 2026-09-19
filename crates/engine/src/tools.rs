@@ -687,6 +687,7 @@ pub(crate) fn execution_tools_for_model(
 }
 
 pub(crate) use model_setup::create_model_proposal_tool;
+pub(crate) use model_setup::create_request_provider_key_tool;
 pub(crate) use read_chat::create_read_chat_tool;
 pub use web_search::{SearchBackend, SearchHit};
 

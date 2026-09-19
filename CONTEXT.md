@@ -46,7 +46,7 @@ _Avoid_: double-Esc stop
 - **Provider**: a source of models a chat can run, addressed by id and carrying its auth shape and transport. A Provider is either built into the compiled catalog or user-defined.
   _Avoid_: vendor (one vendor may expose several Providers — minimax and minimax-cn are two)
 - **Provider catalog**: the single merged set of providers and models that listing, resolution, and requests answer from — compiled entries underneath hand-edited overlay entries underneath live user entries. The compiled base is immutable; that immutability is what Provider reset relies on.
-- **Custom provider**: a Provider the user defined — its own baseUrl, default dialect, and models — never part of the compiled catalog. Its key is entered in Settings, never through a chat.
+- **Custom provider**: a Provider the user defined — its own baseUrl, default dialect, and models — never part of the compiled catalog. Its key is entered through Settings-owned key entry, never as chat text.
   _Avoid_: user-defined provider, self-hosted provider, gateway
 - **Custom model**: a model the user added beyond the compiled catalog, in one of two forms: a bare model ID whose metadata is borrowed from a template, or a Model record carrying first-class metadata.
 - **Model record**: a complete model entry — dialect, baseUrl, modalities, context window, cost, thinking levels — that takes effect live. A record whose id matches a catalog model replaces that model outright.
@@ -55,6 +55,8 @@ _Avoid_: double-Esc stop
   _Avoid_: retired model, deleted model (nothing is deleted)
 - **Model proposal**: an exact catalog change the engine has prepared and stored — model records, a custom provider, or hidden models — applied only by an explicit user action, and applied exactly as stored.
   _Avoid_: plan (Plan Mode vocabulary), diff, suggestion
+- **Key request**: the Setup chat's way of collecting a provider API key mid-workflow: the assistant asks for it, a Settings-owned prompt collects the value locally, and saving it notifies the chat to continue. The value never enters History. The prompt shows the destination the key would be sent to, and saving it approves that destination.
+  _Avoid_: key prompt, password dialog, secret input
 - **Setup chat**: the hidden `model-setup` chat the Settings dialog drives. It runs a fixed catalog workflow with a toolset that touches no files; writes happen only through the review panel, never by its agent.
   _Avoid_: setup session, wizard chat
 - **Provider reset**: dropping every user-written catalog entry for one Provider — model records, custom provider definition, hidden models — leaving the compiled catalog under the hand-edited overlay. Credentials are not catalog entries and survive it.

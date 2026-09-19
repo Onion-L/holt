@@ -72,6 +72,19 @@ pub mod methods {
     /// deleted outright, and the dialog deletes this one on close — no
     /// conversation memory carries across opens.
     pub const START_MODEL_SETUP_CHAT: &str = "StartModelSetupChat";
+    /// The setup chat's pending Key request (ADR-0031): `{chatId}` →
+    /// `{providerId, providerName, destination, hasKey}`, or `{}` when no
+    /// request is pending. The dialog's key-entry card reads it.
+    /// In-memory only; it dies with the chat.
+    pub const GET_PROVIDER_KEY_REQUEST: &str = "GetProviderKeyRequest";
+    /// Settles the pending Key request (ADR-0031): params `{chatId, key?}`.
+    /// With `key` the value is saved to the credential store (never the
+    /// chat) and a fixed "API key saved for …" notice is queued as an
+    /// ordinary user message; without it a dismissal notice is queued and
+    /// no credential is written. Either way the request clears and the
+    /// reply is `{settled: "saved" | "dismissed", providerId,
+    /// destination}`.
+    pub const SETTLE_PROVIDER_KEY_REQUEST: &str = "SettleProviderKeyRequest";
     /// The registered API dialect ids (pi-core's compat registry) →
     /// `[String]`. The record form's dialect dropdown reads it — the set
     /// is the engine's, never the UI's.

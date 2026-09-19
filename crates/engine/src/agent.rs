@@ -147,6 +147,10 @@ pub(crate) struct ChatRuntime {
     /// re-proposes.
     pub(crate) proposals:
         Arc<Mutex<std::collections::VecDeque<crate::tools::model_setup::StoredProposal>>>,
+    /// The chat's pending Key request (ADR-0031): raised by the setup
+    /// chat's `request_provider_key` tool, settled by the dialog's card.
+    /// In-memory only — it dies with the chat, like stored proposals.
+    pub(crate) key_request: Arc<Mutex<Option<crate::tools::model_setup::PendingKeyRequest>>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
     pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
     /// The running Turn's captured usage records (the usage ledger): they
@@ -203,6 +207,7 @@ impl ChatRuntime {
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(Default::default())),
+            key_request: Arc::new(Mutex::new(None)),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -395,6 +400,7 @@ impl ChatRuntime {
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
             proposals: Arc::new(Mutex::new(Default::default())),
+            key_request: Arc::new(Mutex::new(None)),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -1807,12 +1813,17 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         }
     } else if setup_scope {
         // The fixed setup surface (model setup v2): web research plus the
-        // read-only proposal tool — no file access, no delegation, and no
-        // apply (the review panel's button applies). Normal chats mount
-        // neither model-setup tool: their catalog-write capability is nil.
+        // read-only proposal tool and the Key request (ADR-0031) — no file
+        // access, no delegation, and no apply (the review panel's button
+        // applies). Normal chats mount no model-setup tool: their
+        // catalog-write capability is nil.
         tools.retain(|tool| matches!(tool.name.as_str(), "web_fetch" | "web_search"));
         if let Some(model_providers) = &providers {
             tools.push(crate::tools::create_model_proposal_tool(
+                model_providers.clone(),
+                chat.clone(),
+            ));
+            tools.push(crate::tools::create_request_provider_key_tool(
                 model_providers.clone(),
                 chat.clone(),
             ));

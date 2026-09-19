@@ -137,7 +137,7 @@ pub struct ProvidersPage {
     /// The session view's last-rendered emptiness — the observe hook's
     /// placeholder ↔ transcript flip detector.
     setup_doc_empty: bool,
-    setup_proposal_signature: (usize, usize),
+    setup_proposal_signature: (usize, usize, usize),
     setup_models: Loadable<Vec<Model>>,
     setup_model_menu: Popup<()>,
     setup_selected_model: Option<String>,
@@ -164,6 +164,18 @@ pub struct ProvidersPage {
     /// key, unresolvable model, storage fault) never writes a doc entry —
     /// this frame is the only place its reason surfaces.
     setup_queue: Option<holt_proto::MessageQueue>,
+    /// The setup chat's pending Key request (ADR-0031): the engine's view
+    /// row (`providerId`, `providerName`, `destination`, `hasKey`), fetched
+    /// with the panel refresh and rendered as the card above the composer.
+    setup_key_request: Option<serde_json::Value>,
+    /// The card's secret input — masked like every other key field; the
+    /// value rides the settle RPC and nothing else.
+    setup_key_input: Option<Entity<ComposerInput>>,
+    /// A settle failure rendered inline on the card (a page-level modal
+    /// would overstate it).
+    setup_key_error: Option<String>,
+    /// True while a settle call is in flight — the card's buttons idle.
+    setup_key_settling: bool,
     /// The setup tab's async work is slot-separated from the page's `task`:
     /// every page action assigns `task`, and dropping a `Task` cancels it,
     /// so sharing the slot let a panel refresh abort an in-flight send
@@ -209,7 +221,7 @@ impl ProvidersPage {
             setup_chat: None,
             setup_transcript_view: None,
             setup_doc_empty: true,
-            setup_proposal_signature: (0, 0),
+            setup_proposal_signature: (0, 0, 0),
             setup_models: Loadable::Idle,
             setup_model_menu: Popup::default(),
             setup_selected_model: None,
@@ -222,6 +234,10 @@ impl ProvidersPage {
             setup_apply_errors: HashMap::new(),
             setup_applying: None,
             setup_queue: None,
+            setup_key_request: None,
+            setup_key_input: None,
+            setup_key_error: None,
+            setup_key_settling: false,
             setup_task: None,
             setup_panel_task: None,
             setup_queue_task: None,
@@ -793,12 +809,16 @@ impl ProvidersPage {
         // what its own session wrote.
         self.setup_transcript_view = None;
         self.setup_doc_empty = true;
-        self.setup_proposal_signature = (0, 0);
+        self.setup_proposal_signature = (0, 0, 0);
         self.setup_queue_task = None;
         self.setup_queue = None;
         self.setup_applied.clear();
         self.setup_apply_errors.clear();
         self.setup_applying = None;
+        self.setup_key_request = None;
+        self.setup_key_input = None;
+        self.setup_key_error = None;
+        self.setup_key_settling = false;
         // The setup chat is session-scoped: closing the dialog ends it.
         // The delete cancels any in-flight turn and drops the transcript
         // and its stored proposals — nothing carries into the next open.
@@ -949,6 +969,7 @@ impl ProvidersPage {
                 .ok();
                 return;
             };
+            let key_request = setup_key_request_row(&engine, &chat_id).await;
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
             this.update(cx, |page, cx| {
                 // The dialog closed while preparation was in flight: the
@@ -980,6 +1001,7 @@ impl ProvidersPage {
                     .map(|(provider, _)| ProviderId(provider.into()));
                 page.setup_models = Loadable::Ready(models);
                 page.setup_proposals = proposals;
+                page.set_setup_key_request(key_request, cx);
                 // The chat surface is the real Transcript (full markdown,
                 // thinking, tool chips, the working trailer). The chat is
                 // fresh per session, so its doc holds only this session —
@@ -1313,12 +1335,104 @@ impl ProvidersPage {
         };
         self.setup_panel_task = Some(cx.spawn(async move |this, cx| {
             let proposals = setup_proposal_rows(&engine, &chat_id).await;
+            let key_request = setup_key_request_row(&engine, &chat_id).await;
             this.update(cx, |page, cx| {
                 page.setup_proposals = proposals;
+                page.set_setup_key_request(key_request, cx);
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Installs a fetched Key request row (or clears the card when none):
+    /// the secret input mounts with the first row and its draft resets
+    /// when the ask moves to a different provider, so a stale key never
+    /// rides a new destination.
+    fn set_setup_key_request(&mut self, row: Option<serde_json::Value>, cx: &mut Context<Self>) {
+        // The ask moves when the provider OR its destination changes — a
+        // draft typed against one URL must never ride another.
+        let ask_moved = match (&self.setup_key_request, &row) {
+            (Some(current), Some(next)) => {
+                current["providerId"] != next["providerId"]
+                    || current["destination"] != next["destination"]
+            }
+            _ => false,
+        };
+        if row.is_some() && self.setup_key_input.is_none() {
+            self.setup_key_input = Some(cx.new(|cx| ComposerInput::new_secret("API key", cx)));
+        }
+        if ask_moved && let Some(input) = &self.setup_key_input {
+            input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        if row.is_none() {
+            self.setup_key_input = None;
+        }
+        self.setup_key_request = row;
+    }
+
+    /// The card's settle (ADR-0031): Save carries the typed key straight
+    /// to the engine's credential path; Dismiss settles without one. Both
+    /// clear the card on success — the engine queues the notice that
+    /// continues the setup chat.
+    fn settle_setup_key_request(&mut self, save: bool, cx: &mut Context<Self>) {
+        let (Some(chat_id), Some(_request)) =
+            (self.setup_chat.clone(), self.setup_key_request.clone())
+        else {
+            return;
+        };
+        if self.setup_key_settling {
+            return;
+        }
+        let key = if save {
+            let Some(input) = self.setup_key_input.clone() else {
+                return;
+            };
+            let key = input.read(cx).text().trim().to_string();
+            if key.is_empty() {
+                return;
+            }
+            key
+        } else {
+            String::new()
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.setup_key_settling = true;
+        self.setup_key_error = None;
+        cx.notify();
+        // Detached: the click must survive any later panel refresh, or a
+        // settle in flight would be cancelled with the key already gone
+        // from the input.
+        cx.spawn(async move |this, cx| {
+            let mut params = serde_json::json!({ "chatId": chat_id });
+            if save {
+                params["key"] = serde_json::json!(key);
+            }
+            let result = engine
+                .client()
+                .call(methods::SETTLE_PROVIDER_KEY_REQUEST, params)
+                .await;
+            this.update(cx, |page, cx| {
+                page.setup_key_settling = false;
+                match result {
+                    Ok(_) => {
+                        page.set_setup_key_request(None, cx);
+                        page.setup_key_error = None;
+                        // A stored key flips the provider's configured
+                        // badge on the panels behind this dialog.
+                        if save {
+                            page.load(cx);
+                        }
+                    }
+                    Err(error) => page.setup_key_error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn save_custom_provider(&mut self, cx: &mut Context<Self>) {
@@ -2855,11 +2969,131 @@ fn ai_tab(page: &mut ProvidersPage, theme: &Theme, cx: &mut Context<ProvidersPag
                     .debug_selector(|| "setup-queue-error".into()),
             );
         }
+        if page.setup_key_request.is_some() {
+            column = column.child(setup_key_request_card(page, theme, cx));
+        }
         if let Some(input) = input {
             column = column.child(setup_composer(page, theme, input, cx));
         }
     }
     column.into_any_element()
+}
+
+/// The Key request card (ADR-0031): the assistant asked for a provider
+/// key it cannot see. The destination is the point of the card — saving
+/// approves exactly that URL — and the input is masked like every other
+/// key field; the value rides the settle RPC and nothing else.
+fn setup_key_request_card(
+    page: &mut ProvidersPage,
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let Some(request) = page.setup_key_request.clone() else {
+        return div().into_any_element();
+    };
+    let provider = request["providerName"]
+        .as_str()
+        .or_else(|| request["providerId"].as_str())
+        .unwrap_or("the provider");
+    let destination = request["destination"].as_str().unwrap_or_default();
+    let has_key = request["hasKey"].as_bool().unwrap_or(false);
+    let input = page.setup_key_input.clone();
+    let typed = input
+        .as_ref()
+        .map(|input| !input.read(cx).text().trim().is_empty())
+        .unwrap_or(false);
+    let settling = page.setup_key_settling;
+    let error = page.setup_key_error.clone();
+    let mut card = div()
+        .id("setup-key-request-card")
+        .debug_selector(|| "setup-key-request-card".into())
+        .rounded(px(12.0))
+        .bg(theme.input_glass_bg())
+        .border_1()
+        .border_color(theme.border)
+        .px(px(12.0))
+        .py(px(10.0))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text)
+                        .child(SharedString::from(format!(
+                            "API key requested for {provider}"
+                        ))),
+                )
+                .child(
+                    div()
+                        .id("setup-key-request-destination")
+                        .debug_selector(|| "setup-key-request-destination".into())
+                        .text_size(crate::typography::ui_rems(10.5))
+                        .text_color(theme.text_muted.opacity(0.8))
+                        .child(SharedString::from(destination.to_string())),
+                ),
+        )
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_muted.opacity(0.8))
+                .child(
+                    "Saved locally — sent only to this destination when listing models, never to the chat.",
+                ),
+        )
+        .children(has_key.then(|| {
+            div()
+                .id("setup-key-request-existing")
+                .debug_selector(|| "setup-key-request-existing".into())
+                .text_size(crate::typography::ui_rems(10.5))
+                .text_color(theme.text_muted.opacity(0.8))
+                .child("A key is already stored — saving replaces it.")
+        }))
+        .children(input)
+        .children(error.map(|message| {
+            div()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.danger_muted.opacity(0.9))
+                .child(SharedString::from(message))
+        }));
+    if !settling {
+        card =
+            card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        action_button(theme)
+                            .id("setup-key-request-save")
+                            .debug_selector(|| "setup-key-request-save".into())
+                            .hover(|style| style.bg(crate::theme::ink(0.04)))
+                            .when(!typed, |el| el.opacity(0.35))
+                            .when(typed, |el| {
+                                el.cursor_pointer().on_click(cx.listener(|page, _, _, cx| {
+                                    page.settle_setup_key_request(true, cx)
+                                }))
+                            })
+                            .child("Save key"),
+                    )
+                    .child(
+                        widgets::ghost_action(theme)
+                            .id("setup-key-request-dismiss")
+                            .debug_selector(|| "setup-key-request-dismiss".into())
+                            .hover(move |style| widgets::ghost_hover(theme, style))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.settle_setup_key_request(false, cx)
+                            }))
+                            .child("Dismiss"),
+                    ),
+            );
+    }
+    card.into_any_element()
 }
 
 /// The canvas-style composer card: the multiline input on top, the model
@@ -3183,9 +3417,13 @@ fn setup_model_picker(
 /// The review panel's refresh signal: (total, resolved) `model_proposal`
 /// tool parts in the setup transcript. The panel re-reads only when this
 /// moves — text/tool ticks alone never trigger the RPC.
-fn proposal_signature(transcript: &[SessionMessageEntry]) -> (usize, usize) {
+/// What the panel refresh keys on: the proposal-tool chips and the
+/// key-request chips the doc holds. Any change (a new chip, one resolving)
+/// re-reads the panel's engine-side state.
+fn proposal_signature(transcript: &[SessionMessageEntry]) -> (usize, usize, usize) {
     let mut total = 0;
     let mut resolved = 0;
+    let mut key_requests = 0;
     for entry in transcript {
         for part in &entry.parts {
             if let MessagePart::Tool {
@@ -3198,9 +3436,14 @@ fn proposal_signature(transcript: &[SessionMessageEntry]) -> (usize, usize) {
                 total += 1;
                 resolved += *done as usize;
             }
+            if let MessagePart::Tool { call, .. } = part
+                && matches!(call, ToolCall::Unknown { name, .. } if name == "request_provider_key")
+            {
+                key_requests += 1;
+            }
         }
     }
-    (total, resolved)
+    (total, resolved, key_requests)
 }
 
 /// The URL's host — the part that decides where a key would be sent, and
@@ -3544,6 +3787,22 @@ async fn setup_proposal_rows(
         .ok()
         .and_then(|value| value.as_array().cloned())
         .unwrap_or_default()
+}
+
+/// The pending Key request row (`null` when none): the card's data.
+async fn setup_key_request_row(
+    engine: &crate::state::EngineHandle,
+    chat_id: &str,
+) -> Option<serde_json::Value> {
+    engine
+        .client()
+        .call(
+            methods::GET_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .ok()
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
 }
 
 /// Client-side checks for a new custom provider — the quick feedback before
@@ -4002,19 +4261,34 @@ mod tests {
     }
 
     #[test]
-    fn proposal_signature_counts_only_proposal_parts() {
-        assert_eq!(proposal_signature(&[]), (0, 0));
+    fn proposal_signature_counts_only_panel_parts() {
+        assert_eq!(proposal_signature(&[]), (0, 0, 0));
         let transcript = vec![
             entry_with("m1", vec![proposal_part(false)]),
             entry_with("m2", vec![proposal_part(true), proposal_part(true)]),
         ];
-        assert_eq!(proposal_signature(&transcript), (3, 2));
-        // Other tools never move the signature (no panel refresh storm).
+        assert_eq!(proposal_signature(&transcript), (3, 2, 0));
+        // A key-request chip moves the signature too (the card must
+        // appear), and other tools never do (no panel refresh storm).
+        let mut key_request = proposal_part(true);
+        if let MessagePart::Tool { call, .. } = &mut key_request {
+            *call = ToolCall::Unknown {
+                name: "request_provider_key".into(),
+                input: None,
+            };
+        }
+        assert_eq!(
+            proposal_signature(&[entry_with("m3", vec![key_request])]),
+            (0, 0, 1)
+        );
         let mut other = proposal_part(true);
         if let MessagePart::Tool { call, .. } = &mut other {
             *call = ToolCall::WebSearch { query: "x".into() };
         }
-        assert_eq!(proposal_signature(&[entry_with("m3", vec![other])]), (0, 0));
+        assert_eq!(
+            proposal_signature(&[entry_with("m4", vec![other])]),
+            (0, 0, 0)
+        );
     }
 
     #[test]
@@ -4092,6 +4366,10 @@ mod tests {
         /// True = no provider is configured (the fresh-install dead end the
         /// AI tab must guide out of).
         unconfigured: std::sync::atomic::AtomicBool,
+        /// The pending Key request GetProviderKeyRequest serves.
+        key_request: std::sync::Mutex<Option<serde_json::Value>>,
+        /// SettleProviderKeyRequest params, in call order.
+        settles: std::sync::Mutex<Vec<serde_json::Value>>,
     }
 
     #[async_trait::async_trait]
@@ -4180,6 +4458,23 @@ mod tests {
                             .push(params["chatId"].as_str().unwrap_or_default().to_string());
                     }
                     RpcReply::value(&serde_json::json!({}))
+                }
+                methods::GET_PROVIDER_KEY_REQUEST => RpcReply::value(
+                    &self
+                        .key_request
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or(serde_json::json!({})),
+                ),
+                methods::SETTLE_PROVIDER_KEY_REQUEST => {
+                    self.settles.lock().unwrap().push(params.clone());
+                    self.key_request.lock().unwrap().take();
+                    RpcReply::value(&serde_json::json!({
+                        "settled": if params.get("key").is_some() { "saved" } else { "dismissed" },
+                        "providerId": "beta",
+                        "destination": "https://api.beta.example/v1",
+                    }))
                 }
                 methods::LIST_MODEL_PROPOSALS => RpcReply::value(&serde_json::Value::Array(
                     self.proposals.lock().unwrap().clone(),
@@ -4378,6 +4673,8 @@ mod tests {
             deleted_chats: std::sync::Mutex::new(Vec::new()),
             chat_seq: std::sync::atomic::AtomicUsize::new(0),
             records: std::sync::Mutex::new(Vec::new()),
+            key_request: std::sync::Mutex::new(None),
+            settles: std::sync::Mutex::new(Vec::new()),
         });
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4848,6 +5145,127 @@ mod tests {
         );
     }
 
+    fn seed_key_request(engine: &FakeSetupEngine) {
+        *engine.key_request.lock().unwrap() = Some(serde_json::json!({
+            "providerId": "beta",
+            "providerName": "Beta Labs",
+            "destination": "https://api.beta.example/v1",
+            "hasKey": false,
+        }));
+    }
+
+    /// The Key request's happy path (issue 01): the card renders while a
+    /// request is pending, Save carries the typed value to the settle RPC
+    /// (never through the chat), and the card clears.
+    #[gpui::test]
+    fn the_key_request_card_saves_the_typed_key(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        seed_key_request(&harness.engine);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-card")
+                .is_some(),
+            "the card renders while a request is pending"
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-destination")
+                .is_some(),
+            "the destination the key rides to is shown"
+        );
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let input = page.setup_key_input.clone().expect("the card's input");
+            input.update(cx, |input, cx| input.set_text("sk-ui-secret", cx));
+        });
+        harness.click("setup-key-request-save");
+        harness.pump();
+
+        let settles = harness.engine.settles.lock().unwrap().clone();
+        assert_eq!(settles.len(), 1, "one settle call");
+        assert_eq!(settles[0]["key"], "sk-ui-secret");
+        assert_eq!(settles[0]["chatId"], "setup-chat-0");
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-card")
+                .is_none(),
+            "the card clears after the save"
+        );
+    }
+
+    /// Dismiss settles without a key and without touching credentials; the
+    /// card shows the stored-key hint when the provider already has one.
+    #[gpui::test]
+    fn the_key_request_card_dismisses_without_a_key(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        seed_key_request(&harness.engine);
+        if let Some(row) = harness.engine.key_request.lock().unwrap().as_mut() {
+            row["hasKey"] = serde_json::json!(true);
+        }
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-existing")
+                .is_some(),
+            "the stored-key hint renders"
+        );
+
+        harness.click("setup-key-request-dismiss");
+        harness.pump();
+
+        let settles = harness.engine.settles.lock().unwrap().clone();
+        assert_eq!(settles.len(), 1, "one settle call");
+        assert!(
+            settles[0].get("key").is_none(),
+            "the dismissal carries no key"
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-card")
+                .is_none(),
+            "the card clears after the dismissal"
+        );
+    }
+
+    /// An empty input never sends a settle with an empty key — the Save
+    /// button is dead until something is typed.
+    #[gpui::test]
+    fn an_empty_key_input_does_not_settle(cx: &mut gpui::TestAppContext) {
+        let mut harness = setup_dialog_harness(cx);
+        seed_key_request(&harness.engine);
+        harness.click("open-add-provider");
+        harness.click("add-provider-tab-ai");
+        harness.pump();
+
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.settle_setup_key_request(true, cx);
+        });
+        harness.pump();
+
+        assert!(
+            harness.engine.settles.lock().unwrap().is_empty(),
+            "no settle without a typed key"
+        );
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-card")
+                .is_some(),
+            "the card stays"
+        );
+    }
+
     /// An apply failure is a property of the proposal (usually the
     /// staleness gate), not a page fault: it renders inline on the card it
     /// belongs to, with the Write still available for a retry after the
@@ -4901,6 +5319,7 @@ mod tests {
     #[gpui::test]
     fn closing_the_dialog_deletes_the_setup_chat(cx: &mut gpui::TestAppContext) {
         let mut harness = setup_dialog_harness(cx);
+        seed_key_request(&harness.engine);
         harness.click("open-add-provider");
         harness.click("add-provider-tab-ai");
         harness.pump();
@@ -4908,8 +5327,25 @@ mod tests {
             .page
             .update(&mut *harness.visual, |page, _| page.setup_chat.clone())
             .expect("the setup chat resolved");
+        assert!(
+            harness
+                .visual
+                .debug_bounds("setup-key-request-card")
+                .is_some(),
+            "the seeded key request renders"
+        );
 
         harness.click("add-provider-close");
+        let (request, input) = harness.page.update(&mut *harness.visual, |page, _| {
+            (
+                page.setup_key_request.is_some(),
+                page.setup_key_input.is_some(),
+            )
+        });
+        assert!(
+            !request && !input,
+            "the pending key request dies with the dialog"
+        );
         assert_eq!(
             harness.engine.deleted_chats.lock().unwrap().as_slice(),
             &[first.clone()],

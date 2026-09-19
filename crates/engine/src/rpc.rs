@@ -583,12 +583,68 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// A queued run built from the chat's stored config with a prompt
+    /// swapped in — the one shape every engine-side enqueue uses (the
+    /// composer's sends arrive pre-built; the plan follow-up and the Key
+    /// request's settle notices build here).
+    fn queued_run_request(
+        config: &holt_proto::ChatConfig,
+        prompt: &str,
+        cwd: String,
+    ) -> RunRequest {
+        RunRequest {
+            prompt: prompt.to_string(),
+            provider: config.provider.clone(),
+            model: config.model.clone(),
+            reasoning: config.reasoning,
+            model_options: config.model_options.clone(),
+            cwd,
+            permission_mode: config.permission_mode,
+            auto_approve: false,
+            attachments: Vec::new(),
+            worktree: None,
+        }
+    }
+
     /// An attended send (ADR-0021): a first acceptance arriving while the
     /// chat's execution channel is settled and the queue is paused. Prep
     /// that has not reached the admission checkpoint still occupies the
     /// channel through the driver, so `driver_running` must be quiet too.
     fn attended_send(chat: &ChatRuntime, queue: &super::queue::Queue) -> bool {
         queue.paused() && queue.idle() && !chat.driver_running.load(Ordering::Acquire)
+    }
+
+    /// The one engine-side enqueue path for a run command: the composer's
+    /// `Run` and the Key request's settle notice both queue through here,
+    /// so attended-send and admission semantics cannot drift apart.
+    fn enqueue_run(
+        &self,
+        chat: Arc<ChatRuntime>,
+        request: RunRequest,
+        message_id: String,
+    ) -> Result<(), RpcError> {
+        if message_id.trim().is_empty() || request.prompt.trim().is_empty() {
+            return Err(RpcError::BadParams(
+                "messageId and prompt must not be empty".into(),
+            ));
+        }
+        {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            if chat.is_removed() {
+                return Err(RpcError::Failed("chat was deleted".into()));
+            }
+            let attended = Self::attended_send(&chat, &queue);
+            queue.enqueue(
+                request,
+                message_id,
+                PendingKind::Ordinary,
+                None,
+                None,
+                attended,
+            )?;
+        }
+        self.kick_queue(chat);
+        Ok(())
     }
 
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -619,27 +675,7 @@ impl EngineService {
                 request,
                 message_id,
             } => {
-                if message_id.trim().is_empty() || request.prompt.trim().is_empty() {
-                    return Err(RpcError::BadParams(
-                        "messageId and prompt must not be empty".into(),
-                    ));
-                }
-                {
-                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                    if chat.is_removed() {
-                        return Err(RpcError::Failed("chat was deleted".into()));
-                    }
-                    let attended = Self::attended_send(&chat, &queue);
-                    queue.enqueue(
-                        request,
-                        message_id,
-                        PendingKind::Ordinary,
-                        None,
-                        None,
-                        attended,
-                    )?;
-                }
-                self.kick_queue(chat);
+                self.enqueue_run(chat, request, message_id)?;
             }
             SessionCommandPayload::InvokeSkill {
                 request,
@@ -1396,39 +1432,12 @@ impl EngineService {
                 tracing::warn!(target: "holt::agent", "plan follow-up dropped: the chat has no working directory");
                 return;
             };
-            holt_proto::RunRequest {
-                prompt: prompt.to_string(),
-                provider: config.provider.clone(),
-                model: config.model.clone(),
-                reasoning: config.reasoning,
-                model_options: config.model_options.clone(),
-                cwd,
-                permission_mode: config.permission_mode,
-                auto_approve: false,
-                attachments: Vec::new(),
-                worktree: None,
-            }
+            Self::queued_run_request(config, prompt, cwd)
         };
-        let result = {
-            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-            if chat.is_removed() {
-                return;
-            }
-            let attended = Self::attended_send(chat, &queue);
-            queue.enqueue(
-                request,
-                uuid::Uuid::new_v4().to_string(),
-                holt_proto::PendingKind::Ordinary,
-                None,
-                None,
-                attended,
-            )
-        };
-        match result {
-            Ok(()) => self.kick_queue(chat.clone()),
-            Err(error) => {
-                tracing::warn!(target: "holt::agent", %error, "could not enqueue the plan follow-up")
-            }
+        if let Err(error) =
+            self.enqueue_run(chat.clone(), request, uuid::Uuid::new_v4().to_string())
+        {
+            tracing::warn!(target: "holt::agent", %error, "could not enqueue the plan follow-up")
         }
     }
 
@@ -2266,6 +2275,106 @@ impl RpcService for EngineService {
                 RpcReply::value(&serde_json::json!({ "discarded": discarded }))
             }
             methods::START_MODEL_SETUP_CHAT => self.start_model_setup_chat(params),
+            // The Key request's read half (ADR-0031): the dialog's card.
+            methods::GET_PROVIDER_KEY_REQUEST => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                let view =
+                    crate::tools::model_setup::key_request_view(&self.providers, &chat).await;
+                // `{}` when none: a bare JSON null on the wire reads back
+                // as an absent `ok` field and would hang the client call.
+                RpcReply::value(&view.unwrap_or(serde_json::json!({})))
+            }
+            // The settle (ADR-0031): one engine-owned operation — save the
+            // key (never the chat), queue the fixed notice, clear the card.
+            methods::SETTLE_PROVIDER_KEY_REQUEST => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                // Take (not clone) the request: a second concurrent settle
+                // finds none, and any failure below puts it back so the
+                // card stays and a retry is idempotent.
+                let pending = chat
+                    .key_request
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .ok_or_else(|| {
+                        RpcError::Failed("no pending key request on this chat".into())
+                    })?;
+                let restore = || {
+                    *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(pending.clone());
+                };
+                let saved = if let Some(key) = params
+                    .get("key")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+                {
+                    if let Err(error) = self
+                        .providers
+                        .credentials
+                        .save_key(&pending.provider_id, key)
+                        .await
+                    {
+                        restore();
+                        return Err(RpcError::Failed(error.to_string()));
+                    }
+                    true
+                } else if params.get("key").is_some() {
+                    restore();
+                    return Err(RpcError::BadParams("key must not be empty".into()));
+                } else {
+                    false
+                };
+                let notice = if saved {
+                    crate::tools::model_setup::key_saved_notice(
+                        &pending.provider_id,
+                        &pending.destination,
+                    )
+                } else {
+                    crate::tools::model_setup::key_dismissed_notice(&pending.provider_id)
+                };
+                // The notice rides the queue as an ordinary user message on
+                // the setup chat's own model — exactly what the composer
+                // would have sent had the user typed it.
+                let (config, cwd) = {
+                    let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+                    let row = chats
+                        .iter()
+                        .find(|row| row.id == chat_id)
+                        .ok_or_else(|| RpcError::Failed("chat was deleted".into()))?;
+                    let cwd = row.cwd.clone().unwrap_or_else(|| {
+                        std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+                    });
+                    (row.config.clone(), cwd)
+                };
+                let config = config
+                    .ok_or_else(|| RpcError::Failed("the setup chat has no model config".into()))?;
+                let message_id = format!("key-request-{}", uuid::Uuid::new_v4());
+                if let Err(error) = self.enqueue_run(
+                    chat.clone(),
+                    Self::queued_run_request(&config, &notice, cwd),
+                    message_id,
+                ) {
+                    restore();
+                    return Err(error);
+                }
+                RpcReply::value(&serde_json::json!({
+                    "settled": if saved { "saved" } else { "dismissed" },
+                    "providerId": pending.provider_id,
+                    "destination": pending.destination,
+                }))
+            }
             methods::LIST_API_DIALECTS => {
                 let ids: Vec<String> = pi_core::ai::compat::get_api_providers()
                     .iter()

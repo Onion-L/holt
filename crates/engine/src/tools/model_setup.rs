@@ -1012,7 +1012,10 @@ pub(crate) fn setup_system_prompt(web_search: bool) -> String {
          the dialog's review panel and writes it there — you never apply anything, and you \
          do not ask them to approve in chat.\n\
          If the docs lack a field you need, say exactly what is missing and ask — never guess \
-         a model ID or a price. API keys are never handled here; they are entered in Settings."
+         a model ID or a price. When a probe fails because the endpoint requires a key \
+         (HTTP 401/403), call `request_provider_key` once, tell the user a key card appeared \
+         above the composer, and stop; your next message reports the outcome, and a saved \
+         key means re-run the probe. Keys are never typed in chat."
     )
 }
 
@@ -1446,6 +1449,190 @@ pub(crate) fn create_model_proposal_tool(
                 Box::pin(
                     async move { run_proposal_tool(providers, chat, &params, cancellation).await },
                 ) as BoxFuture<'static, Result<AgentToolResult, String>>
+            },
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Key request (ADR-0031)
+// ---------------------------------------------------------------------------
+
+/// The setup chat's pending Key request: what the dialog's card renders
+/// and the settle RPC consumes. Deliberately key-free — only where the
+/// key would go, never a key value.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingKeyRequest {
+    pub(crate) provider_id: String,
+    pub(crate) provider_name: String,
+    /// The base URL the key would be sent to when probing — the string
+    /// the user approves by saving.
+    pub(crate) destination: String,
+}
+
+/// The card's destination: a stored custom provider's own baseUrl, else
+/// the newest unapplied proposal's planned definition, else the catalog's
+/// transport for a known provider. `None` means the id names nothing the
+/// engine can address.
+async fn key_request_target(
+    providers: &ProviderAdapter,
+    chat: &ChatRuntime,
+    provider_id: &str,
+) -> Option<PendingKeyRequest> {
+    if let Some(provider) = providers.settings.custom_provider(provider_id) {
+        return Some(PendingKeyRequest {
+            provider_id: provider_id.to_string(),
+            provider_name: provider.name,
+            destination: provider.base_url,
+        });
+    }
+    let planned = {
+        let proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
+        proposals.iter().rev().find_map(|proposal| {
+            proposal.changes.iter().find_map(|change| match change {
+                CatalogChange::UpsertCustomProvider { provider } if provider.id == provider_id => {
+                    Some(provider.clone())
+                }
+                _ => None,
+            })
+        })
+    };
+    if let Some(provider) = planned {
+        return Some(PendingKeyRequest {
+            provider_id: provider_id.to_string(),
+            provider_name: provider.name,
+            destination: provider.base_url,
+        });
+    }
+    if !providers.provider_known(provider_id) {
+        return None;
+    }
+    let (base_url, _) = probe_target(providers, provider_id)?;
+    let provider_name = providers
+        .providers()
+        .await
+        .iter()
+        .flat_map(|row| row.variants.iter())
+        .find(|variant| variant.id.0 == provider_id)
+        .map(|variant| variant.name.clone())
+        .unwrap_or_else(|| provider_id.to_string());
+    Some(PendingKeyRequest {
+        provider_id: provider_id.to_string(),
+        provider_name,
+        destination: base_url,
+    })
+}
+
+/// The settle's save notice — the fixed message that continues the setup
+/// chat once a key is stored. Engine-owned so the wording and the setup
+/// prompt stay one contract.
+pub(crate) fn key_saved_notice(provider_id: &str, destination: &str) -> String {
+    format!(
+        "API key saved for {provider_id} (probes send it to {destination}). \
+         Re-probe the provider's model list and continue."
+    )
+}
+
+/// The settle's dismissal notice — the counterpart that keeps the flow
+/// alive when the user declines.
+pub(crate) fn key_dismissed_notice(provider_id: &str) -> String {
+    format!(
+        "The user dismissed the key request for {provider_id}. \
+         Continue with web research."
+    )
+}
+
+/// The card's view of the pending request (the read RPC's reply body):
+/// who the key is for, where it goes, and whether one is already stored.
+pub(crate) async fn key_request_view(
+    providers: &ProviderAdapter,
+    chat: &ChatRuntime,
+) -> Option<serde_json::Value> {
+    let request = chat
+        .key_request
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()?;
+    let has_key = providers
+        .credentials
+        .reveal_key(&request.provider_id)
+        .await
+        .is_some();
+    Some(serde_json::json!({
+        "providerId": request.provider_id,
+        "providerName": request.provider_name,
+        "destination": request.destination,
+        "hasKey": has_key,
+    }))
+}
+
+const KEY_REQUEST_DESCRIPTION: &str = "Ask the user for a provider's API key through the \
+dialog's key-entry card. Call this when a `model_proposal` probe fails because the endpoint \
+requires a key (HTTP 401/403) — NEVER ask the user to paste a key in chat. Parameters: \
+`providerId`. The card collects the key locally and saves it to the credential store; the \
+key is never sent to you. After calling, tell the user a key card appeared above the \
+composer and STOP your turn. Your next user message reports the outcome: 'API key saved for \
+…' means re-run the probe in inquiry mode (`model_proposal` with `providerId` and `probe: \
+true`); 'dismissed' means continue with web research.";
+
+pub(crate) fn create_request_provider_key_tool(
+    providers: Arc<ProviderAdapter>,
+    chat: Arc<ChatRuntime>,
+) -> AgentTool {
+    AgentTool {
+        name: "request_provider_key".into(),
+        label: "Request API Key".into(),
+        description: KEY_REQUEST_DESCRIPTION.into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "providerId": {
+                    "type": "string",
+                    "description": "The provider the key unlocks — a catalog id, \
+        or one a stored proposal defines"
+                }
+            },
+            "required": ["providerId"]
+        }),
+        constrained_sampling: None,
+        prepare_arguments: None,
+        execution_mode: None,
+        execute: Arc::new(
+            move |_tool_call_id: &str,
+                  params: &serde_json::Value,
+                  _signal: Option<&CancellationToken>,
+                  _on_update: Option<&AgentToolUpdateCallback>| {
+                let providers = providers.clone();
+                let chat = chat.clone();
+                let params = params.clone();
+                Box::pin(async move {
+                    let provider_id = params
+                        .get("providerId")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .ok_or_else(|| "\"providerId\" is required".to_string())?
+                        .to_string();
+                    let request = key_request_target(&providers, &chat, &provider_id)
+                        .await
+                        .ok_or_else(|| {
+                            format!(
+                                "unknown provider {provider_id:?} — resolve it to a catalog \
+                                 id, or define it with upsert_custom_provider first"
+                            )
+                        })?;
+                    let destination = request.destination.clone();
+                    *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+                    text_result(
+                        format!(
+                            "Key request shown for {provider_id} — the card sits above \
+                             the composer and sends the key only to {destination}. Tell the \
+                             user to enter it there, then STOP this turn; your next user \
+                             message reports the outcome.",
+                        ),
+                        json!({ "providerId": provider_id }),
+                    )
+                }) as BoxFuture<'static, Result<AgentToolResult, String>>
             },
         ),
     }

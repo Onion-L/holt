@@ -382,6 +382,205 @@ async fn the_setup_dialogs_doc_watch_streams_the_sent_turn() {
     common::wait_for_session_status(&mut sessions, &setup_id, "idle").await;
 }
 
+/// One scripted Key-request Turn: the model calls the tool, then stops.
+async fn request_key(engine: &holt_engine::LocalEngine, fixture: &Fixture, chat_id: &str) {
+    let (_, mut sessions) = common::subscribe(engine, chat_id).await;
+    common::run_prompt(engine, chat_id, &fixture.cwd(), "list the models").await;
+    common::wait_for_session_status(&mut sessions, chat_id, "idle").await;
+}
+
+async fn pending_key_request(
+    engine: &holt_engine::LocalEngine,
+    chat_id: &str,
+) -> Option<serde_json::Value> {
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::GET_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("GetProviderKeyRequest did not return a value");
+    };
+    reply
+        .as_object()
+        .filter(|object| !object.is_empty())
+        .cloned()
+        .map(serde_json::Value::Object)
+}
+
+async fn reveal_key(engine: &holt_engine::LocalEngine, provider: &str) -> Option<String> {
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::REVEAL_PROVIDER_KEY,
+            serde_json::json!({ "providerId": provider }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("RevealProviderKey did not return a value");
+    };
+    reply["key"].as_str().map(str::to_string)
+}
+
+#[tokio::test]
+async fn a_key_request_settles_saves_the_key_and_notifies_the_chat() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "zai-coding-cn" }),
+        ),
+        ScriptedReply::text("I've asked for the key"),
+        ScriptedReply::text("re-probed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let (mut transcript, _) = common::subscribe(&engine, &setup_id).await;
+    request_key(&engine, &fixture, &setup_id).await;
+
+    // The pending request: the provider the model named, the destination
+    // its key would ride to, and no key stored yet (openai carries the
+    // fixture's admission key, so the ask targets a second provider).
+    let pending = pending_key_request(&engine, &setup_id)
+        .await
+        .expect("the key request is pending");
+    assert_eq!(pending["providerId"], "zai-coding-cn");
+    assert!(
+        pending["destination"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://")
+    );
+    assert_eq!(pending["hasKey"], false);
+
+    // Settle: the key lands in the credential store, the fixed notice
+    // rides the queue as an ordinary user message, and the request clears.
+    let RpcReply::Value(settled) = engine
+        .handle(
+            methods::SETTLE_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": setup_id, "key": "sk-test-secret" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SettleProviderKeyRequest did not return a value");
+    };
+    assert_eq!(settled["settled"], "saved");
+    assert_eq!(
+        reveal_key(&engine, "zai-coding-cn").await.as_deref(),
+        Some("sk-test-secret")
+    );
+    common::wait_for_transcript_text(&mut transcript, "API key saved for zai-coding-cn").await;
+    // The notice turn really ran (its scripted reply was consumed).
+    common::wait_for_requests(&provider, 3).await;
+    assert!(pending_key_request(&engine, &setup_id).await.is_none());
+
+    // The secret never rides the model context: every request the
+    // scripted provider saw is free of the key value.
+    for request in provider.requests() {
+        let summary = serde_json::to_string(&request.messages).unwrap_or_default();
+        assert!(
+            !summary.contains("sk-test-secret"),
+            "the key leaked to the model"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_dismissed_key_request_notifies_without_saving() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "zai-coding-cn" }),
+        ),
+        ScriptedReply::text("I've asked for the key"),
+        ScriptedReply::text("researching instead"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    let (mut transcript, _) = common::subscribe(&engine, &setup_id).await;
+    request_key(&engine, &fixture, &setup_id).await;
+
+    let RpcReply::Value(settled) = engine
+        .handle(
+            methods::SETTLE_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": setup_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SettleProviderKeyRequest did not return a value");
+    };
+    assert_eq!(settled["settled"], "dismissed");
+    common::wait_for_transcript_text(
+        &mut transcript,
+        "The user dismissed the key request for zai-coding-cn",
+    )
+    .await;
+    assert!(reveal_key(&engine, "zai-coding-cn").await.is_none());
+    assert!(pending_key_request(&engine, &setup_id).await.is_none());
+}
+
+#[tokio::test]
+async fn the_newest_key_request_replaces_the_older_one() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "openai" }),
+        ),
+        ScriptedReply::tool_call(
+            "call-2",
+            "request_provider_key",
+            serde_json::json!({ "providerId": "zai-coding-cn" }),
+        ),
+        ScriptedReply::text("asked twice"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    request_key(&engine, &fixture, &setup_id).await;
+
+    let pending = pending_key_request(&engine, &setup_id)
+        .await
+        .expect("a key request is pending");
+    assert_eq!(pending["providerId"], "zai-coding-cn");
+}
+
+#[tokio::test]
+async fn settling_without_a_pending_request_fails() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    common::setup_chat(&engine, "chat-1").await;
+    let setup_id = start_setup_chat(&engine, "openai", "openai/gpt-5.4").await;
+    assert!(
+        engine
+            .handle(
+                methods::SETTLE_PROVIDER_KEY_REQUEST,
+                serde_json::json!({ "chatId": setup_id }),
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        engine
+            .handle(
+                methods::SETTLE_PROVIDER_KEY_REQUEST,
+                serde_json::json!({ "chatId": "../escape" }),
+            )
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn normal_chats_reject_the_model_setup_tools() {
     let fixture = Fixture::new();
@@ -394,6 +593,11 @@ async fn normal_chats_reject_the_model_setup_tools() {
         ScriptedReply::tool_call(
             "call-2",
             "model_proposal",
+            serde_json::json!({ "providerId": "openai" }),
+        ),
+        ScriptedReply::tool_call(
+            "call-3",
+            "request_provider_key",
             serde_json::json!({ "providerId": "openai" }),
         ),
         ScriptedReply::text("done"),
@@ -409,7 +613,7 @@ async fn normal_chats_reject_the_model_setup_tools() {
     // tool results (no gate, no proposal, no write), and the model reads
     // the not-found errors.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    for call in ["call-1", "call-2"] {
+    for call in ["call-1", "call-2", "call-3"] {
         let empty = Vec::new();
         let part = snapshot["reset"]
             .as_array()

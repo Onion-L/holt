@@ -56,7 +56,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (starts a fresh session-scoped hidden setup chat, deleting any earlier
   one), `ListModelProposals`,
   `ApplyModelProposal` (the review panel's write button), and
-  `DiscardModelProposal` (its discard button).
+  `DiscardModelProposal` (its discard button). The setup chat's Key
+  request (ADR-0031) rides the same dialog: `GetProviderKeyRequest`
+  (the pending request the card renders — `{}` when none) and
+  `SettleProviderKeyRequest` (the card's Save/Dismiss: saves the key to
+  the credential store — never the chat — and queues the fixed notice
+  that continues the setup chat).
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
