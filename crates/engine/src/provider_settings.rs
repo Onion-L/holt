@@ -61,7 +61,7 @@ pub(crate) fn custom_provider_problem(provider: &CustomProvider) -> Option<&'sta
         return Some("its name is blank");
     }
     if !provider_store::http_base_url(&provider.base_url) {
-        return Some("its baseUrl is not http(s)");
+        return Some("its baseUrl is not https (plaintext http is loopback-only)");
     }
     if compat::get_api_provider(&provider.default_api).is_none() {
         return Some("its default api dialect is not registered");
@@ -653,15 +653,29 @@ mod tests {
                     "openai": {
                         "good": record("openai", "good", "https://openai.example/v1"),
                         "bad-url": record("openai", "bad-url", "not-a-url"),
+                        "bad-http": record("openai", "bad-http", "http://remote.example/v1"),
+                        "local": record("openai", "local", "http://127.0.0.1:8080/v1"),
                         "wrong-parent": record("anthropic", "wrong-parent", "https://openai.example/v1")
                     }
                 },
                 "customProviders": {
                     "good-gateway": custom_provider("good-gateway"),
+                    "local-gateway": {
+                        "id": "local-gateway",
+                        "name": "Local",
+                        "baseUrl": "http://localhost:11434",
+                        "defaultApi": "openai-completions"
+                    },
                     "bad-gateway": {
                         "id": "bad-gateway",
                         "name": "Bad",
                         "baseUrl": "ftp://bad.example",
+                        "defaultApi": "openai-completions"
+                    },
+                    "http-gateway": {
+                        "id": "http-gateway",
+                        "name": "Plaintext",
+                        "baseUrl": "http://remote.example/v1",
                         "defaultApi": "openai-completions"
                     }
                 },
@@ -674,10 +688,13 @@ mod tests {
         // Blank legacy ids stay: the loader keeps the section whole.
         assert_eq!(settings.custom_models_for("openai").len(), 2);
         let records = settings.model_records_for("openai");
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "good");
+        // Loopback http survives; the remote plaintext one does not.
         assert!(settings.custom_provider("good-gateway").is_some());
+        assert!(settings.custom_provider("local-gateway").is_some());
         assert!(settings.custom_provider("bad-gateway").is_none());
+        assert!(settings.custom_provider("http-gateway").is_none());
         assert_eq!(settings.hidden_models_for("openai"), vec!["gpt-5.4"]);
     }
 

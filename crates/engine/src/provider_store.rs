@@ -316,7 +316,8 @@ fn merge(entries: Vec<serde_json::Value>) -> Catalog {
             tracing::warn!(
                 target: "holt::engine",
                 provider = %provider.id,
-                "provider-store entry has a baseUrl that is not http(s); dropping the entry"
+                "provider-store entry has a disallowed baseUrl (https required; \
+                 plaintext http is loopback-only); dropping the entry"
             );
             continue;
         }
@@ -407,7 +408,7 @@ pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Opti
         return Some("its cost rates are not finite and non-negative");
     }
     if !http_base_url(&model.base_url) {
-        return Some("its baseUrl is not http(s)");
+        return Some("its baseUrl is not https (plaintext http is loopback-only)");
     }
     if compat::get_api_provider(&model.api).is_none() {
         return Some("its api dialect is not registered");
@@ -416,11 +417,28 @@ pub(crate) fn model_record_problem(provider_id: &str, model: &CoreModel) -> Opti
 }
 
 /// `baseUrl` is concatenated into request URLs, so it must be a usable
-/// http(s) prefix, not just non-empty.
+/// https endpoint — plaintext `http` would send the API key and the
+/// conversation in the clear, so it is allowed only for loopback hosts
+/// (local model servers), and credentials never ride the URL itself.
 pub(crate) fn http_base_url(url: &str) -> bool {
-    url.strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .is_some_and(|rest| !rest.is_empty())
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return false;
+    }
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed
+            .host_str()
+            .map(|host| host.trim_matches(|character| character == '[' || character == ']'))
+            .is_some_and(|host| {
+                host.parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"))
+            }),
+        _ => false,
+    }
 }
 
 /// Cost rates are what the usage ledger bills, so every rate — flat and per
@@ -627,6 +645,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn plaintext_http_base_urls_are_loopback_only() {
+        assert!(http_base_url("https://api.example.com/v1"));
+        assert!(http_base_url("http://localhost:11434/v1"));
+        assert!(http_base_url("http://127.0.0.1:8080"));
+        assert!(http_base_url("http://[::1]:8080/v1"));
+        assert!(!http_base_url("http://api.example.com/v1"));
+        assert!(!http_base_url("http://192.168.1.10:11434"));
+        assert!(!http_base_url("http://10.0.0.5/v1"));
+        assert!(!http_base_url("https://user:secret@example.com/v1"));
+        assert!(!http_base_url("ftp://example.com"));
+        assert!(!http_base_url("http://"));
+        assert!(!http_base_url("not-a-url"));
     }
 
     #[test]
