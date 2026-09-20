@@ -180,11 +180,9 @@ impl EngineService {
             chats.retain(|chat| chat.space_id.as_deref() != Some(params.space_id.as_str()));
             drop(chats);
             if !ids.is_empty() {
-                persist_chats(
-                    &self.data_dir,
-                    &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-                )
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.runtime
+                    .persist_chats_locked()
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
             }
             ids
         };
@@ -374,11 +372,9 @@ impl EngineService {
             plan_mode: None,
         });
         drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.chat(&params.chat_id);
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
@@ -457,11 +453,9 @@ impl EngineService {
         };
         row.archived = params.archived;
         drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
@@ -483,11 +477,9 @@ impl EngineService {
         };
         row.pinned = params.pinned;
         drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
@@ -508,11 +500,9 @@ impl EngineService {
         let removed = chats.len() != before;
         drop(chats);
         if removed {
-            persist_chats(
-                &self.data_dir,
-                &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-            )
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
+            self.runtime
+                .persist_chats_locked()
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
             self.runtime.remove_chat(&params.chat_id);
             self.terminals.close_chat(&params.chat_id);
             self.runtime.publish_chats();
@@ -547,11 +537,9 @@ impl EngineService {
         // so ownership is unambiguous — always persist and publish.
         row.title_source = TitleSource::UserManual;
         drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
@@ -574,11 +562,9 @@ impl EngineService {
         }
         row.last_seen_at = Some(Utc::now());
         drop(chats);
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         self.runtime.publish_chats();
         RpcReply::value(&serde_json::json!({}))
     }
@@ -935,11 +921,10 @@ impl EngineService {
             None
         };
 
-        let persistence = self
-            .runtime
-            .persistence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // No runtime-wide lock spans admission (ADR-0032): the registry
+        // write serializes on `chats_store`, the user entry on the chat's
+        // own persistence lock, and the driver's per-chat execution mutex
+        // already orders this chat's runs.
         let mut title_spawn = None;
         // The Turn's mode snapshot (ADR-0014): the stored mode, or the
         // sticky default for a row without a config yet. Taken at
@@ -1014,11 +999,9 @@ impl EngineService {
                 }
             }
         }
-        persist_chats(
-            &self.data_dir,
-            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
-        )
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
         if let Some(baseline) = baseline {
             self.turn_changes
                 .begin(chat_id, &message_id, &request.cwd, baseline);
@@ -1027,7 +1010,7 @@ impl EngineService {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .push(SessionMessageEntry {
-                id: message_id,
+                id: message_id.clone(),
                 role: MessageRole::User,
                 parts,
                 created_at: timestamp,
@@ -1054,8 +1037,9 @@ impl EngineService {
                 token,
             ));
         }
-        drop(persistence);
-        chat.publish();
+        // The admitted user entry lands in the log now, complete at
+        // creation (ADR-0032) — not on the next run event.
+        chat.persist_entry(&message_id);
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();

@@ -81,6 +81,59 @@ async fn the_history_survives_a_restart_and_feeds_the_next_turn() {
     assert_eq!(restarted[6], "user:third prompt");
 }
 
+/// The transcript log's write granularity (ADR-0032): one line per
+/// completed unit — never per stream tick. A turn of [tool_call, text]
+/// persists the run entry exactly at its completion boundaries (message
+/// end, tool resolution, message end, settle) plus the admitted user
+/// entry — six lines total, header included. A regression to per-publish
+/// whole-file rewrites shows up here as either a missing `.jsonl` or a
+/// ballooning line count.
+#[tokio::test]
+async fn the_transcript_log_writes_one_line_per_completed_unit() {
+    let fixture = common::Fixture::new();
+    std::fs::write(fixture.project_dir.path().join("notes.txt"), "disk notes\n").unwrap();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call("call-1", "read", serde_json::json!({ "path": "notes.txt" })),
+        ScriptedReply::text("the answer"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "read the notes").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let log =
+        std::fs::read_to_string(fixture.data_dir.path().join("transcripts/chat-1.jsonl")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    // header + user entry + the run entry at its four boundaries
+    assert_eq!(lines.len(), 6, "unexpected log:\n{log}");
+    assert!(lines[0].contains("\"version\":1"));
+    assert!(lines[1].contains("message-m"), "the user entry lands first");
+    let run_lines = lines[2..].to_vec();
+    // Every boundary re-appends the SAME entry id (upsert, not new rows).
+    let ids: Vec<String> = run_lines
+        .iter()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["entry"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 4);
+    assert!(ids.windows(2).all(|pair| pair[0] == pair[1]));
+    // The final line is the terminal shape: the run settled complete.
+    assert!(lines[5].contains("\"status\":\"complete\""));
+    // Replay collapses the upserts into one entry beside the user row.
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let entries = snapshot["reset"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let user_id = entries[0]["id"].as_str().unwrap();
+    let run_id = entries[1]["id"].as_str().unwrap();
+    assert_ne!(user_id, run_id);
+    assert_eq!(entries[1]["status"].as_str(), Some("complete"));
+}
+
 #[tokio::test]
 async fn a_crash_mid_turn_loses_no_completed_tool_result() {
     let fixture = common::Fixture::new();

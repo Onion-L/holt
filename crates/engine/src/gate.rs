@@ -150,12 +150,18 @@ pub(crate) fn stamp_gate(
         .transcript
         .write()
         .unwrap_or_else(|error| error.into_inner());
-    let changed = transcript
-        .iter_mut()
-        .any(|entry| entry.parts.iter_mut().any(stamped));
+    let mut changed = Vec::new();
+    for entry in transcript.iter_mut() {
+        if entry.parts.iter_mut().any(stamped) {
+            changed.push(entry.id.clone());
+        }
+    }
     drop(transcript);
-    if changed {
-        chat.publish();
+    // A gate stamp is a pause point that can outlive any stream tick
+    // (ADR-0032): the pending chip must be on disk while the Turn waits
+    // on the user, or a crash while paused loses the whole run entry.
+    for entry_id in changed {
+        chat.persist_entry(&entry_id);
     }
 }
 

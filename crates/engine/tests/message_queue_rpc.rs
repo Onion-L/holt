@@ -624,7 +624,7 @@ async fn a_started_checkpoint_recovers_even_before_the_first_transcript_or_histo
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "B").await;
     drop(engine);
     // Reproduce a crash immediately after the durable admission checkpoint.
-    std::fs::remove_file(fixture.data_dir.path().join("transcripts/chat-1.json")).unwrap();
+    std::fs::remove_file(fixture.data_dir.path().join("transcripts/chat-1.jsonl")).unwrap();
     std::fs::remove_file(fixture.data_dir.path().join("history/chat-1.jsonl")).unwrap();
     let engine = fixture.engine(&provider);
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;

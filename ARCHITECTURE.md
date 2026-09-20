@@ -503,19 +503,27 @@ operation log, or replication format anywhere in the store. Each record is
 written by `crates/engine` — atomically (tmp + rename) where a whole file is
 replaced — and every read path is tolerant rather than fatal: a damaged
 History or usage ledger is set aside as `.corrupt`, a damaged queue is kept
-and blocked instead of overwritten, and a damaged transcript opens empty
-(`load_transcript` falls back to an empty Vec; the next publish replaces the
-file).
+and blocked instead of overwritten, and a damaged transcript record opens
+behind whatever lines do parse (a damaged legacy snapshot opens empty).
 
 - `chats.json`, `spaces.json` — the chat and space lists, whole-file atomic
-  replace.
-- `transcripts/<chatId>.json` — one chat document's rendered transcript
-  (`Vec<SessionMessageEntry>`), rewritten whole and atomically on every
-  publish, streaming frames included, under the chat's persistence lock.
-  Subagent documents live under `subagents/<parentChatId>/` with the same
-  layout; finished child summaries go to `subagents/<parentChatId>/results/`.
+  replace under the runtime's registry lock.
+- `transcripts/<chatId>.jsonl` — one chat document's rendered transcript as
+  an append-only log (ADR-0032): a version header, then one
+  `SessionMessageEntry` per line. An entry lands at its completion
+  boundaries — the admitted user entry, each completed assistant message,
+  each resolved tool call, a gate stamp (a pause point), and the run's
+  terminal settle — and a later line with the same id replaces its earlier
+  one (post-run chip settles). Stream deltas never touch disk; a replay
+  collapses upserts into one entry per id. Pre-0032
+  `transcripts/<chatId>.json` whole-file snapshots are the replay base for
+  chats that predate the log and are never written again. Subagent
+  documents live under `subagents/<parentChatId>/` with the same layout;
+  finished child summaries go to `subagents/<parentChatId>/results/`.
 - `history/<chatId>.jsonl` — the model-facing History, append-only, one record
-  per line (ADR-0010).
+  per line (ADR-0010). The transcript log and the History share the chat's
+  own persistence lock; one chat's disk writes never serialize against
+  another chat's.
 - `queues/<chatId>.json` — accepted queue items, rewritten whole (with an
   fsync) on every mutation, including the admission checkpoint that precedes
   any model or tool work.

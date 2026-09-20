@@ -33,7 +33,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::history::CompactionRecord;
-use crate::store::{delete_transcript, load_transcript, persist_transcript};
+use crate::store::{
+    append_transcript_entry, delete_transcript, load_transcript, transcript_exists,
+};
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
@@ -107,6 +109,11 @@ async fn run_system_prompt(
 }
 
 pub(crate) struct ChatRuntime {
+    /// This chat's persistence lock (ADR-0032): serializes the transcript
+    /// log and History appends of THIS chat only. Chats persist disjoint
+    /// files, so the pre-0032 runtime-wide lock only serialized them
+    /// against each other — one chat's disk writes stalling every other
+    /// chat's admission.
     pub(crate) persistence: Arc<Mutex<()>>,
     pub(crate) queue: Mutex<crate::queue::Queue>,
     pub(crate) execution: Arc<tokio::sync::Mutex<()>>,
@@ -231,12 +238,8 @@ impl ChatRuntime {
     /// an empty History and one persisted Transcript notice saying where
     /// the model's memory begins — written once, never rebuilt from the
     /// Transcript.
-    pub(crate) fn load(
-        data_dir: &Path,
-        chat_id: &str,
-        device_id: &str,
-        persistence: Arc<Mutex<()>>,
-    ) -> Self {
+    pub(crate) fn load(data_dir: &Path, chat_id: &str, device_id: &str) -> Self {
+        let persistence = Arc::new(Mutex::new(()));
         let mut transcript = load_transcript(data_dir, chat_id).unwrap_or_default();
         let replayed = crate::history::load_repaired(data_dir, chat_id);
         let (mut history, mut notice) = match replayed {
@@ -264,7 +267,7 @@ impl ChatRuntime {
             && !transcript
                 .iter()
                 .any(|entry| entry.id == HISTORY_NOTICE_ENTRY_ID)
-            && crate::store::transcript_path(data_dir, chat_id).is_some_and(|p| p.exists())
+            && transcript_exists(data_dir, chat_id)
             && !crate::history::exists(data_dir, chat_id)
         {
             notice = Some(
@@ -289,7 +292,8 @@ impl ChatRuntime {
             });
             // Written now, not on the next publish: the notice is part of
             // the record the moment the chat opens.
-            let _ = persist_transcript(data_dir, chat_id, &transcript);
+            let _ =
+                append_transcript_entry(data_dir, chat_id, transcript.last().expect("just pushed"));
         }
         // An approval still pending on load belongs to a Turn the restart
         // ended (ADR-0014): settle it as aborted so the replayed chip never
@@ -339,6 +343,16 @@ impl ChatRuntime {
                             status: None,
                             continuation_of: None,
                         });
+                        // The recovery echoes land in the log as they are
+                        // built (ADR-0032): each new entry appends its own
+                        // line, never a whole-file rewrite.
+                        if let Err(error) = append_transcript_entry(
+                            data_dir,
+                            chat_id,
+                            transcript.last().expect("just pushed"),
+                        ) {
+                            recovery_error = Some(error.to_string());
+                        }
                     }
                     // A skill Turn's model-visible prompt is the formatted
                     // skill block; the synchronous load path cannot rescan
@@ -373,9 +387,13 @@ impl ChatRuntime {
                             status: Some(MessageStatus::Aborted),
                             continuation_of: None,
                         });
-                    }
-                    if let Err(error) = persist_transcript(data_dir, chat_id, &transcript) {
-                        recovery_error = Some(error.to_string());
+                        if let Err(error) = append_transcript_entry(
+                            data_dir,
+                            chat_id,
+                            transcript.last().expect("just pushed"),
+                        ) {
+                            recovery_error = Some(error.to_string());
+                        }
                     }
                 }
             }
@@ -417,27 +435,44 @@ impl ChatRuntime {
         }
     }
 
+    /// Broadcast the live transcript to the watch (and a subagent's chip
+    /// into its parent) — pure memory, no disk. Live mutations stream here
+    /// at their own cadence; the record grows only through
+    /// [`Self::persist_entry`] (ADR-0032).
     pub(crate) fn publish(&self) {
-        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
         self.transcript_tx
             .send_replace(Arc::new(transcript.clone()));
-        // A failed snapshot stops subsequent admission; the live Turn still
-        // settles. Removed chats must not recreate their persisted records.
-        if !self.chat_id.is_empty()
-            && !self.is_removed()
-            && let Err(error) = persist_transcript(&self.data_dir, &self.chat_id, &transcript)
-        {
-            *self
-                .persistence_error
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
-        }
         drop(transcript);
-        drop(_persistence);
         if let Some(child) = &self.child {
             child.publish(self);
         }
+    }
+
+    /// Append one entry to the transcript log (upsert by id) and publish.
+    /// The write cost is one entry, never the session: a run's entry lands
+    /// here once, in its terminal shape; post-run settles (approval chips,
+    /// plan cards) re-append the entry they changed. A failed append stops
+    /// subsequent admission (the live Turn still settles); a removed chat
+    /// must not recreate its persisted records.
+    pub(crate) fn persist_entry(&self, entry_id: &str) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.chat_id.is_empty() && !self.is_removed() {
+            let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let appended = transcript
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .map(|entry| append_transcript_entry(&self.data_dir, &self.chat_id, entry));
+            drop(transcript);
+            if let Some(Err(error)) = appended {
+                *self
+                    .persistence_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
+            }
+        }
+        drop(_persistence);
+        self.publish();
     }
 
     pub(crate) fn is_removed(&self) -> bool {
@@ -485,7 +520,12 @@ impl ChatRuntime {
 }
 
 pub(crate) struct AgentRuntime {
-    pub(crate) persistence: Arc<Mutex<()>>,
+    /// The registry lock (ADR-0032): serializes chats.json writes and the
+    /// registry mutations they persist. It is NOT a persistence lock for
+    /// chat records — each ChatRuntime owns its own lock for its disjoint
+    /// transcript/history files, so one chat's disk writes never stall
+    /// another chat.
+    pub(crate) chats_store: Arc<Mutex<()>>,
     pub(crate) stopping: std::sync::atomic::AtomicBool,
     pub(crate) device_id: String,
     pub(crate) workspace_scope: WorkspaceScope,
@@ -508,7 +548,7 @@ pub(crate) struct AgentRuntime {
 
 impl AgentRuntime {
     pub(crate) fn shutdown(&self) {
-        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
         self.stopping
             .store(true, std::sync::atomic::Ordering::Release);
         for chat in self
@@ -557,7 +597,7 @@ impl AgentRuntime {
         let (chats_tx, _) = watch::channel(chats_value);
         let (sessions_tx, _) = watch::channel(serde_json::json!([]));
         Self {
-            persistence: Arc::new(Mutex::new(())),
+            chats_store: Arc::new(Mutex::new(())),
             stopping: std::sync::atomic::AtomicBool::new(false),
             device_id,
             workspace_scope,
@@ -578,12 +618,7 @@ impl AgentRuntime {
         chats
             .entry(chat_id.to_string())
             .or_insert_with(|| {
-                Arc::new(ChatRuntime::load(
-                    &self.data_dir,
-                    chat_id,
-                    &self.device_id,
-                    self.persistence.clone(),
-                ))
+                Arc::new(ChatRuntime::load(&self.data_dir, chat_id, &self.device_id))
             })
             .clone()
     }
@@ -616,26 +651,26 @@ impl AgentRuntime {
     /// can neither resurrect the transcript file nor re-append History; a
     /// pending Title task is cancelled for the same reason (ADR-0012).
     pub(crate) fn remove_chat(&self, chat_id: &str) {
-        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let runtime = self
             .chat_runtime
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(chat_id);
-        if let Some(runtime) = runtime {
-            let _queue = runtime.queue.lock().unwrap_or_else(|e| e.into_inner());
-            runtime
-                .removed
+        // The chat's own persistence lock spans the removed flag and the
+        // record deletes: a racing append that already passed its own
+        // removed check completes before the delete, and one that has not
+        // sees the flag and skips — no deleted file can be resurrected.
+        let _chat_persistence = runtime
+            .as_ref()
+            .map(|chat| chat.persistence.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(chat) = runtime.as_ref() {
+            let _queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            chat.removed
                 .store(true, std::sync::atomic::Ordering::Release);
-            if let Some(token) = runtime
-                .cancel
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-            {
+            if let Some(token) = chat.cancel.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 token.cancel();
             }
-            if let Some(token) = runtime
+            if let Some(token) = chat
                 .title_cancel
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -665,11 +700,23 @@ impl AgentRuntime {
         }
     }
 
+    /// Persist the chat registry under `chats_store`, so concurrent
+    /// registry writers (turn admission, Mutate ops, session transitions)
+    /// serialize on the file write instead of relying on the shared
+    /// in-memory lock discipline around it.
+    pub(crate) fn persist_chats_locked(&self) -> Result<(), crate::EngineError> {
+        let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
+        crate::store::persist_chats(
+            &self.data_dir,
+            &self.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+    }
+
     /// Stamp the chat with the persisted "compact before next Turn" flag
     /// (the overflow fallback, ADR-0011): the last Turn ended on a context
     /// overflow, so the next Turn compacts unconditionally first.
     pub(crate) fn set_compact_before_next_turn(&self, chat_id: &str) {
-        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
@@ -692,7 +739,7 @@ impl AgentRuntime {
     /// Read and clear the flag, persisting — consumed exactly once, by the
     /// Turn that acts on it.
     pub(crate) fn take_compact_before_next_turn(&self, chat_id: &str) -> bool {
-        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        let _chats_store = self.chats_store.lock().unwrap_or_else(|e| e.into_inner());
         if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
             return false;
         }
@@ -943,7 +990,7 @@ fn resolve_tool_part(
     subagent_usage: Option<u64>,
 ) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let mut changed = false;
+    let mut changed = Vec::new();
     for entry in transcript.iter_mut() {
         let hit = entry
             .parts
@@ -967,15 +1014,18 @@ fn resolve_tool_part(
             if let TranscriptToolCall::ReadChat { title, .. } = call {
                 *title = read_chat_title.map(str::to_owned);
             }
-            changed = true;
+            changed.push(entry.id.clone());
         }
-        if changed {
+        if !changed.is_empty() {
             break;
         }
     }
     drop(transcript);
-    if changed {
-        chat.publish();
+    // A completed tool call is a completed unit (ADR-0032 mirrors
+    // ADR-0010's per-message granularity): the entry re-appends now, so a
+    // crash mid-Turn keeps every finished round on disk.
+    for entry_id in changed {
+        chat.persist_entry(&entry_id);
     }
 }
 
@@ -992,7 +1042,7 @@ pub(crate) fn push_system_part(
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .push(SessionMessageEntry {
-            id: entry_id,
+            id: entry_id.clone(),
             role: MessageRole::System,
             parts: vec![part],
             created_at: Utc::now().timestamp_millis(),
@@ -1000,7 +1050,9 @@ pub(crate) fn push_system_part(
             status: None,
             continuation_of: None,
         });
-    chat.publish();
+    // A housekeeping entry is complete the moment it is built — it lands
+    // in the log now, not on a later publish (ADR-0032).
+    chat.persist_entry(&entry_id);
 }
 
 /// The Transcript's row for one recorded compaction.
@@ -1103,20 +1155,27 @@ struct RunBase {
 /// results; settle them so no chip stays "in call" forever.
 fn settle_unresolved_tools(chat: &ChatRuntime) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let mut changed = false;
+    let mut changed = Vec::new();
     for entry in transcript.iter_mut() {
+        let mut entry_changed = false;
         for part in entry.parts.iter_mut() {
             if let MessagePart::Tool { resolved, .. } = part
                 && !*resolved
             {
                 *resolved = true;
-                changed = true;
+                entry_changed = true;
             }
+        }
+        if entry_changed {
+            changed.push(entry.id.clone());
         }
     }
     drop(transcript);
-    if changed {
-        chat.publish();
+    // The run's entry may already have landed in the log (the settle pass
+    // runs first); re-append it so the settled chips persist too
+    // (ADR-0032).
+    for entry_id in changed {
+        chat.persist_entry(&entry_id);
     }
 }
 
@@ -1268,8 +1327,14 @@ fn update_assistant_entry(
         });
     }
     drop(transcript);
-    if publish {
-        chat.publish();
+    // A terminal write is the entry's one landing in the log (ADR-0032);
+    // while it streams, the entry lives in memory and the watch only.
+    if status == MessageStatus::Streaming {
+        if publish {
+            chat.publish();
+        }
+    } else {
+        chat.persist_entry(entry_id);
     }
 }
 
@@ -1505,6 +1570,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         &device_id,
                         true,
                     );
+                    // A completed message is a completed unit (ADR-0032):
+                    // the entry lands here even while the run continues, so
+                    // a crash mid-Turn keeps every finished round — and an
+                    // approval paused behind a tool call — on disk.
+                    chat.persist_entry(&run_entry);
                     // The completed round-trip's usage joins the running
                     // Turn's pending batch (the usage ledger): captured on
                     // the raw message, before the History repair below
@@ -1947,16 +2017,19 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 MessageStatus::Complete
             };
             let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-            let mut settled = false;
+            let mut settled = Vec::new();
             for entry in transcript.iter_mut() {
                 if entry.status == Some(MessageStatus::Streaming) {
                     entry.status = Some(end_status);
-                    settled = true;
+                    settled.push(entry.id.clone());
                 }
             }
             drop(transcript);
-            if settled {
-                chat.publish();
+            // The terminal write is the run's one landing in the log —
+            // everything the run streamed in memory is captured here
+            // (ADR-0032).
+            for entry_id in settled {
+                chat.persist_entry(&entry_id);
             }
             // The overflow fallback (ADR-0011): the estimator missed and
             // the provider said so (or the usage silently exceeded the
@@ -2036,7 +2109,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     });
                 }
                 transcript.push(SessionMessageEntry {
-                    id: entry_id,
+                    id: entry_id.clone(),
                     role: MessageRole::Assistant,
                     parts,
                     created_at: Utc::now().timestamp_millis(),
@@ -2046,7 +2119,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 });
             }
             drop(transcript);
-            chat.publish();
+            chat.persist_entry(&entry_id);
             (!cancelled).then_some(reason)
         }
     };
@@ -2649,7 +2722,7 @@ mod tests {
             status: None,
             continuation_of: None,
         });
-        chat.publish();
+        chat.persist_entry("m1");
 
         // A fresh runtime over the same data dir replays the persisted
         // transcript both in memory and as the watch's opening `reset` frame.

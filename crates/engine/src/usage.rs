@@ -1139,12 +1139,7 @@ mod tests {
     #[test]
     fn settling_a_turn_drains_the_buffer_into_one_stamped_batch() {
         let dir = temp_dir();
-        let chat = ChatRuntime::load(
-            &dir,
-            "chat-1",
-            "device",
-            std::sync::Arc::new(std::sync::Mutex::new(())),
-        );
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
         chat.usage_pending
             .lock()
             .unwrap()
@@ -1175,12 +1170,7 @@ mod tests {
     #[test]
     fn a_record_outside_the_turn_model_appends_immediately() {
         let dir = temp_dir();
-        let chat = ChatRuntime::load(
-            &dir,
-            "chat-1",
-            "device",
-            std::sync::Arc::new(std::sync::Mutex::new(())),
-        );
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
         record_immediate(&chat, record(UsageKind::Title, 30, 3));
         let booked = load_records(&dir, "chat-1").unwrap();
         assert_eq!(booked.len(), 1);
@@ -1196,12 +1186,7 @@ mod tests {
     #[test]
     fn settling_stamps_only_the_turns_own_records() {
         let dir = temp_dir();
-        let chat = ChatRuntime::load(
-            &dir,
-            "chat-1",
-            "device",
-            std::sync::Arc::new(std::sync::Mutex::new(())),
-        );
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
         let mut compaction = record(UsageKind::Compaction, 40, 4);
         compaction.message_id = None;
         compaction.turn_outcome = None;
@@ -1232,12 +1217,7 @@ mod tests {
     #[test]
     fn a_tool_results_usage_merges_into_its_round_trip() {
         let dir = temp_dir();
-        let chat = ChatRuntime::load(
-            &dir,
-            "chat-1",
-            "device",
-            std::sync::Arc::new(std::sync::Mutex::new(())),
-        );
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
         chat.usage_pending
             .lock()
             .unwrap()
@@ -1282,12 +1262,7 @@ mod tests {
     #[test]
     fn a_tool_result_merges_past_an_interleaved_review_record() {
         let dir = temp_dir();
-        let chat = ChatRuntime::load(
-            &dir,
-            "chat-1",
-            "device",
-            std::sync::Arc::new(std::sync::Mutex::new(())),
-        );
+        let chat = ChatRuntime::load(&dir, "chat-1", "device");
         chat.usage_pending.lock().unwrap().extend([
             record(UsageKind::Turn, 10, 1),
             record(UsageKind::AutoReview, 90, 9),

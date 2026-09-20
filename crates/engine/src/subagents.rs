@@ -114,15 +114,10 @@ impl Subagents {
             return Ok(child.clone());
         }
         let data_dir = directory(&runtime.data_dir, parent_id);
-        if !crate::store::transcript_path(&data_dir, id).is_some_and(|path| path.is_file()) {
+        if !crate::store::transcript_exists(&data_dir, id) {
             return Err("Subagent not found".into());
         }
-        let child = Arc::new(ChatRuntime::load(
-            &data_dir,
-            id,
-            &runtime.device_id,
-            runtime.persistence.clone(),
-        ));
+        let child = Arc::new(ChatRuntime::load(&data_dir, id, &runtime.device_id));
         Ok(child)
     }
 
@@ -196,6 +191,7 @@ impl ChildLink {
                 }
             })
             .collect();
+        let first_stamp = std::cell::Cell::new(false);
         let stamp = |parts: &mut Vec<MessagePart>| {
             for part in parts.iter_mut() {
                 if let MessagePart::Tool {
@@ -207,6 +203,16 @@ impl ChildLink {
                 } = part
                     && id == &self.tool_id
                 {
+                    // The first stamp is the durable "live child" marker:
+                    // the restart settle pass reads subagentStatus off the
+                    // persisted entry, so it must land on disk once
+                    // (ADR-0032). Later tail updates stay in memory until
+                    // the parent's own completion boundary — a child
+                    // streaming must not re-append its parent's entry every
+                    // tick.
+                    if subagent_ref.is_none() {
+                        first_stamp.set(true);
+                    }
                     *subagent_ref = Some(child.chat_id.clone());
                     *subagent_status = Some(status);
                     *subagent_tail = tail.clone();
@@ -239,7 +245,11 @@ impl ChildLink {
         }
         drop(parent_entries);
         drop(entries);
-        self.parent.publish();
+        if first_stamp.get() {
+            self.parent.persist_entry(&self.parent_entry);
+        } else {
+            self.parent.publish();
+        }
     }
 }
 
@@ -328,21 +338,21 @@ async fn execute(
         label,
         status: Mutex::new(SubagentStatus::Running),
     });
+    let brief_id = format!("{id}-brief");
     let child = {
-        let _persistence = d
-            .runtime
+        // The parent's persistence lock stands in for the pre-0032 global
+        // lock here: the child's records live under the parent's tree, and
+        // the load below must not interleave with the parent's own
+        // appends.
+        let _parent_persistence = d
+            .parent
             .persistence
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if d.parent.is_removed() || cancel.is_cancelled() {
             return Err("Subagent interrupted before starting".into());
         }
-        let mut child = ChatRuntime::load(
-            &data_dir,
-            &id,
-            &d.runtime.device_id,
-            d.runtime.persistence.clone(),
-        );
+        let mut child = ChatRuntime::load(&data_dir, &id, &d.runtime.device_id);
         child.grants = d.parent.grants.clone();
         child.child = Some(link.clone());
         *child.cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
@@ -351,7 +361,7 @@ async fn execute(
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .push(SessionMessageEntry {
-                id: format!("{id}-brief"),
+                id: brief_id.clone(),
                 role: MessageRole::User,
                 parts: vec![MessagePart::Text {
                     id: "brief".into(),
@@ -371,7 +381,10 @@ async fn execute(
             .insert(id.clone(), child.clone());
         child
     };
-    child.publish();
+    // The brief is the child's durable birth record (ADR-0032): it lands
+    // now, so a chat that never completes a message is still discoverable
+    // — the registry lookup reads the transcript's existence.
+    child.persist_entry(&brief_id);
     let (stream_fn, billing) = crate::usage::metered_stream(d.stream_fn.clone());
     let ok = if child
         .persistence_error
@@ -479,6 +492,7 @@ async fn execute(
         let content = bounded_result(&text, &path)?;
         Ok((path, content))
     });
+    let mut settled = Vec::new();
     for entry in child
         .transcript
         .write()
@@ -491,7 +505,15 @@ async fn execute(
             } else {
                 MessageStatus::Aborted
             });
+            settled.push(entry.id.clone());
         }
+    }
+    // The run loop's own settle normally lands these first; if this sweep
+    // fires, its mutations are transcript edits that must re-append like
+    // any other post-run settle (ADR-0032) — a bare publish would leave
+    // the on-disk entry Streaming forever, replaying as Aborted on load.
+    for entry_id in settled {
+        child.persist_entry(&entry_id);
     }
     *link.status.lock().unwrap_or_else(|e| e.into_inner()) = if ok && prepared.is_ok() {
         SubagentStatus::Done

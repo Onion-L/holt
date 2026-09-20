@@ -1483,10 +1483,10 @@ mod tests {
         }
 
         // A persisted transcript for chat-1 dies with the chat.
-        crate::store::persist_transcript(
+        crate::store::append_transcript_entry(
             dir.path(),
             "chat-1",
-            &[holt_doc::SessionMessageEntry {
+            &holt_doc::SessionMessageEntry {
                 id: "m1".into(),
                 role: holt_doc::MessageRole::User,
                 parts: vec![],
@@ -1494,10 +1494,10 @@ mod tests {
                 device_id: "device".into(),
                 status: None,
                 continuation_of: None,
-            }],
+            },
         )
         .unwrap();
-        assert!(dir.path().join("transcripts/chat-1.json").exists());
+        assert!(dir.path().join("transcripts/chat-1.jsonl").exists());
 
         engine
             .handle(
@@ -1514,7 +1514,7 @@ mod tests {
             .map(|chat| chat["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, ["chat-2"]);
-        assert!(!dir.path().join("transcripts/chat-1.json").exists());
+        assert!(!dir.path().join("transcripts/chat-1.jsonl").exists());
 
         // Unknown chat is an idempotent no-op, not an error, with no frame.
         engine

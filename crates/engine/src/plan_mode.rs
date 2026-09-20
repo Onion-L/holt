@@ -159,7 +159,8 @@ pub(crate) fn has_pending_plan_cards(chat_id: &str, runtime: &crate::agent::Agen
 
 /// Settle every still-pending approval card in the transcript to `verdict`
 /// (ADR-0025). A resolution is pure display state — the lifecycle moved
-/// through the RPC — so this is a transcript edit only. Blocks proposed
+/// through the RPC — so this is a transcript edit only: each changed entry
+/// re-appends itself to the log (ADR-0032). Blocks proposed
 /// across turns all address the chat's Plan Mode; a verdict settles them
 /// together.
 pub(crate) fn settle_plan_cards(chat: &ChatRuntime, verdict: PlanApprovalVerdict) {
@@ -167,20 +168,24 @@ pub(crate) fn settle_plan_cards(chat: &ChatRuntime, verdict: PlanApprovalVerdict
         .transcript
         .write()
         .unwrap_or_else(|error| error.into_inner());
-    let mut changed = false;
+    let mut changed = Vec::new();
     for entry in transcript.iter_mut() {
+        let mut entry_changed = false;
         for part in entry.parts.iter_mut() {
             if let MessagePart::PlanApproval { state, .. } = part
                 && *state == PlanApprovalState::Pending
             {
                 *state = PlanApprovalState::Settled { verdict };
-                changed = true;
+                entry_changed = true;
             }
+        }
+        if entry_changed {
+            changed.push(entry.id.clone());
         }
     }
     drop(transcript);
-    if changed {
-        chat.publish();
+    for entry_id in changed {
+        chat.persist_entry(&entry_id);
     }
 }
 
