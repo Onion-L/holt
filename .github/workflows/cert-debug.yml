@@ -1,8 +1,10 @@
 name: Cert debug
 
-# One-shot diagnostic for the failing `security import` in release.yml.
-# Prints only non-secret fingerprints of the decoded P12 (length, file type,
-# leading ASN.1 header bytes, parse result). Safe to delete after use.
+# One-shot diagnostic for the certificate import in release.yml. The P12
+# route is dead on macos-26 runners (security import rejects the legacy
+# PBE containers Apple's own `security export` still writes), so the
+# release path now imports a PEM key and PEM certificate separately.
+# Safe to delete after use.
 
 on:
   workflow_dispatch:
@@ -15,24 +17,24 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Inspect the certificate secret bytes
+      - name: Inspect the PEM import path
         env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERT_PEM: ${{ secrets.APPLE_CERT_PEM }}
+          APPLE_KEY_PEM: ${{ secrets.APPLE_KEY_PEM }}
         run: |
-          echo "secret length: ${#APPLE_CERTIFICATE_P12}"
-          CERT_PATH="$(mktemp)"
-          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode >"$CERT_PATH"
-          echo "decoded bytes: $(wc -c <"$CERT_PATH")"
-          file "$CERT_PATH"
-          head -c 8 "$CERT_PATH" | xxd
-          echo "--- openssl parse:"
-          openssl pkcs12 -info -in "$CERT_PATH" \
-            -passin "pass:$APPLE_CERTIFICATE_PASSWORD" -nokeys -passout "pass:x" \
-            </dev/null 2>&1 | head -6
-          echo "--- security import:"
           KEYCHAIN="holt-debug.keychain"
-          security create-keychain -p debug "$KEYCHAIN"
-          security import "$CERT_PATH" -k "$KEYCHAIN" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" 2>&1 | head -2
-          security find-identity -v -p codesigning "$KEYCHAIN" | head -3
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          KEY_PATH="$(mktemp)"; CERT_PATH="$(mktemp)"
+          printf '%s' "$APPLE_KEY_PEM" | base64 --decode >"$KEY_PATH"
+          printf '%s' "$APPLE_CERT_PEM" | base64 --decode >"$CERT_PATH"
+          echo "key bytes: $(wc -c <"$KEY_PATH"), cert bytes: $(wc -c <"$CERT_PATH")"
+          head -1 "$KEY_PATH"; head -1 "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$KEY_PATH" -k "$KEYCHAIN" -T /usr/bin/codesign
+          security import "$CERT_PATH" -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          rm -f "$KEY_PATH" "$CERT_PATH"
