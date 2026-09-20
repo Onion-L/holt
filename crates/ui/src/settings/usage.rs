@@ -1,26 +1,25 @@
 //! The Usage settings page (usage-overview spec, tickets 02+): the
 //! device-level usage aggregate from one unary `UsageStats` call, read
-//! fresh on every entry. The page follows the reference usage-overview
-//! design: an iconed title row over the count line and the segmented
-//! range switcher, a summary line (Total plus a per-model checkbox
-//! legend) over the daily stacked bar chart, a six-cell metrics card
-//! with hairline dividers, the year-long Activity heatmap, and the By
-//! model / By project Breakdown card. Everything on the page is
-//! read-only: the only controls reload the same aggregate, and the
-//! legend's visibility toggles are ephemeral page state — a reload
-//! resets it. Reloads never blank the page: a range switch or refresh
-//! dims the stale view under a header spinner until the fresh reply
-//! lands; only a first load drops to skeletons.
+//! fresh on every entry. The page reads top-down: the header's count
+//! line and range switcher; the Total tokens hero with the model
+//! toggle chips beside it; the Daily usage stacked bar chart; the six
+//! metric tiles; the year-long Activity heatmap; and the By model /
+//! By project Breakdown donut. Everything on the page is read-only:
+//! the only controls reload the same aggregate, and the legend's
+//! visibility toggles are ephemeral page state — a reload resets it.
+//! Reloads never blank the page: a range switch or refresh dims the
+//! stale view under a header spinner until the fresh reply lands;
+//! only a first load drops to skeletons.
 //!
 //! The chart is gpui self-drawn over the shared day axis: one bar per
 //! day, the visible models stacked bottom-to-top in rank order with a
 //! rounded cap on the stack's topmost segment, over one hairline
-//! gridline per Y rung (the git graph's palette, so legend checkboxes
-//! and bar segments share one color per rank). Hovering a day washes
-//! its column and pins the day readout inside the plot over that day's
+//! gridline per Y rung (the git graph's palette, so legend chips and
+//! bar segments share one color per rank). Hovering a day washes its
+//! column and pins the day readout inside the plot over that day's
 //! own slot — instant, and it never escapes over the gutter or the
-//! content below. The heatmap is the same readout idea over a DOM grid
-//! of cells: every day is its own hover target.
+//! content below. The heatmap is the same readout idea over a DOM
+//! grid of cells: every day is its own hover target.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -86,6 +85,21 @@ fn short_date(date: &str) -> String {
 /// The header's count line, verbatim spec shape: "N chats · last N days".
 fn header_count_text(chat_count: u64, days: u32) -> String {
     format!("{chat_count} chats · last {days} days")
+}
+
+/// The hero Total's caption: the exact count, comma-separated, so the
+/// headline's precision is on the page (the compact value never shows
+/// past three significant figures) instead of a hover away.
+fn exact_tokens(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// The Y scale's rung step: the smallest of 1/2/2.5/5 × 10^k that clears
@@ -243,22 +257,13 @@ impl Summary {
             .collect()
     }
 
-    /// One day's visible total — the number the tooltip's Total row and the
-    /// stack height both print, so the readout always matches the picture.
+    /// One day's visible total — the number the readout's Total row and
+    /// the stack height both print, so the readout always matches the
+    /// picture.
     fn day_total(&self, hidden: &BTreeSet<String>, day: usize) -> u64 {
         self.visible(hidden)
             .iter()
             .map(|(_, series)| series.per_day.get(day).copied().unwrap_or(0))
-            .sum()
-    }
-
-    /// The visible models' range total — what the summary line prints, so
-    /// "Total" always matches the bars on screen: hiding a model retires
-    /// its tokens from the headline too.
-    fn visible_total(&self, hidden: &BTreeSet<String>) -> u64 {
-        self.visible(hidden)
-            .iter()
-            .map(|(_, series)| series.tokens)
             .sum()
     }
 
@@ -902,8 +907,9 @@ impl UsagePage {
             )
     }
 
-    /// The summary area: the Total + checkbox legend line over the stacked
-    /// daily bar chart.
+    /// The Daily usage section under the hero: the section label over
+    /// the stacked bar chart. The model toggle chips live in the hero
+    /// beside the Total.
     fn render_summary(
         &self,
         reply: &UsageStatsReply,
@@ -916,19 +922,18 @@ impl UsagePage {
         div()
             .id("usage-summary")
             .debug_selector(|| "usage-summary".into())
-            .mt(px(16.0))
+            .mt(px(20.0))
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(self.render_legend(&summary, &theme, cx))
+            .child(widgets::section_label(&theme, "Daily usage"))
             .child(self.render_chart(&summary, &hidden, rungs, &theme, cx))
     }
 
-    /// The summary line, the reference chart's shape: "Total N" followed
-    /// by one checkbox item per model — filled with its series color while
-    /// its bars show, hollow when hidden. The total is the visible models'
-    /// sum, matching the bars; clicking an item toggles its bars; a hidden
-    /// row reads dimmed.
+    /// The chart's legend, the hero row's right side: one toggle chip
+    /// per model — checkbox filled with the series color while its
+    /// bars show, hollow when hidden — plus the model's range total.
+    /// Chips wrap quietly beside the Total; a hidden chip reads dimmed.
     fn render_legend(
         &self,
         summary: &Arc<Summary>,
@@ -938,35 +943,14 @@ impl UsagePage {
         div()
             .id("usage-legend")
             .debug_selector(|| "usage-legend".into())
+            .flex_1()
+            .min_w_0()
             .flex()
             .flex_row()
             .flex_wrap()
             .items_center()
-            .gap_x(px(32.0))
-            .gap_y(px(6.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_baseline()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .text_color(theme.text_muted)
-                            .child("Total"),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "usage-total".into())
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text)
-                            .child(SharedString::from(compact_tokens(
-                                summary.visible_total(&self.hidden),
-                            ))),
-                    ),
-            )
+            .gap_x(px(24.0))
+            .gap_y(px(8.0))
             .children(
                 summary
                     .series
@@ -1313,8 +1297,63 @@ impl UsagePage {
             .into_any_element()
     }
 
-    /// The six metric tiles: one card split into six cells by hairline
-    /// dividers — compact values on the cells, exact counts on hover.
+    /// The hero block above the chart: Total tokens as the big number
+    /// over the exact comma-separated count on the left, the model
+    /// toggle chips wrapping on the right. The numbers are range
+    /// facts: the chips' visibility toggles never touch them.
+    fn render_total_hero(
+        &self,
+        reply: &UsageStatsReply,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = Theme::of(cx).clone();
+        let totals = &reply.totals;
+        let total = totals.input + totals.output + totals.cache_read + totals.cache_write;
+        let summary = Arc::new(fold_summary(reply));
+        div()
+            .id("usage-hero")
+            .debug_selector(|| "usage-hero".into())
+            .mt(px(20.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(40.0))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child("Total tokens"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "usage-total".into())
+                            .text_size(crate::typography::ui_rems(32.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(SharedString::from(compact_tokens(total))),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(format!(
+                                "{} tokens",
+                                exact_tokens(total)
+                            ))),
+                    ),
+            )
+            .child(self.render_legend(&summary, &theme, cx))
+    }
+
+    /// The six metric tiles below the chart: one card split into six
+    /// cells by hairline dividers — compact values on the cells, exact
+    /// counts on hover.
     fn render_metrics(
         &self,
         reply: &UsageStatsReply,
@@ -1332,46 +1371,53 @@ impl UsagePage {
             .border_color(theme.border)
             .children(
                 metric_tiles(reply)
-                    .into_iter()
+                    .iter()
                     .enumerate()
-                    .map(|(index, tile)| {
-                        let slug = tile.label.to_lowercase().replace(' ', "-");
-                        div()
-                            .id(SharedString::from(format!("usage-metric-{slug}")))
-                            .debug_selector(move || format!("usage-metric-{slug}"))
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .px(px(14.0))
-                            .py(px(12.0))
-                            .when(index > 0, |cell| {
-                                cell.border_l_1().border_color(theme.border)
-                            })
-                            .cursor_default()
-                            .hover(|cell| cell.bg(theme.ink(0.03)))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| {
-                                    crate::image_viewer::ViewerTooltip(tile.detail.clone().into())
-                                })
-                                .into()
-                            })
-                            .tooltip_show_delay(DAY_TOOLTIP_DELAY)
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .text_color(theme.text_muted)
-                                    .child(tile.label),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(16.0))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme.text)
-                                    .child(SharedString::from(tile.value)),
-                            )
-                    }),
+                    .map(|(index, tile)| self.metric_cell(tile, index > 0, &theme)),
+            )
+    }
+
+    /// One metric tile: the muted label over the compact value, the
+    /// exact counts on hover. `divided` draws the hairline separating
+    /// the cell from the one on its left.
+    fn metric_cell(
+        &self,
+        tile: &MetricTile,
+        divided: bool,
+        theme: &Theme,
+    ) -> gpui::Stateful<gpui::Div> {
+        let slug = tile.label.to_lowercase().replace(' ', "-");
+        let detail = tile.detail.clone();
+        div()
+            .id(SharedString::from(format!("usage-metric-{slug}")))
+            .debug_selector(move || format!("usage-metric-{slug}"))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(14.0))
+            .py(px(12.0))
+            .when(divided, |cell| cell.border_l_1().border_color(theme.border))
+            .cursor_default()
+            .hover(|cell| cell.bg(theme.ink(0.03)))
+            .tooltip(move |_, cx| {
+                cx.new(|_| crate::image_viewer::ViewerTooltip(detail.clone().into()))
+                    .into()
+            })
+            .tooltip_show_delay(DAY_TOOLTIP_DELAY)
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_muted)
+                    .child(tile.label),
+            )
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(16.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child(SharedString::from(tile.value.clone())),
             )
     }
 
@@ -1981,6 +2027,7 @@ impl Render for UsagePage {
                         // instead of blanking to skeletons.
                         .when(self.reloading, |page| page.opacity(0.6))
                         .child(self.render_header(reply, cx))
+                        .child(self.render_total_hero(reply, cx))
                         .child(self.render_summary(reply, cx))
                         .child(self.render_metrics(reply, cx))
                         .child(self.render_heatmap(reply, cx))
@@ -2429,15 +2476,63 @@ mod tests {
     }
 
     #[test]
-    fn the_headline_total_follows_the_visible_models() {
-        let summary = fold_summary(&decode_reply(summary_reply_json()));
-        let mut hidden = BTreeSet::new();
-        assert_eq!(summary.visible_total(&hidden), 400);
+    fn the_hero_caption_prints_the_exact_count() {
+        assert_eq!(exact_tokens(0), "0");
+        assert_eq!(exact_tokens(999), "999");
+        assert_eq!(exact_tokens(1_000), "1,000");
+        assert_eq!(exact_tokens(858_392_112), "858,392,112");
+    }
 
-        // Hiding a model retires its tokens from the headline — the Total
-        // always matches the bars on screen.
-        hidden.insert("openai/gpt-5.4".into());
-        assert_eq!(summary.visible_total(&hidden), 100);
+    #[gpui::test]
+    fn the_hero_sits_above_the_chart(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], summary_reply());
+
+        // The hero block rides above the Daily usage chart, the six
+        // tiles in the strip below the chart.
+        assert!(harness.present("usage-hero"));
+        assert!(harness.present("usage-total"), "the hero total renders");
+        assert!(harness.present("usage-metrics"));
+        let hero = harness.bounds("usage-hero");
+        let chart = harness.bounds("usage-summary");
+        assert!(
+            hero.bottom() <= chart.origin.y,
+            "the hero rides above the chart: {hero:?} vs {chart:?}"
+        );
+        // The model toggle chips ride inside the hero, right of the
+        // Total block.
+        let total = harness.bounds("usage-total");
+        let legend = harness.bounds("usage-legend");
+        assert!(
+            legend.left() >= total.right(),
+            "the legend sits right of the total: {legend:?} vs {total:?}"
+        );
+        assert!(
+            legend.origin.y >= hero.origin.y && legend.bottom() <= hero.bottom(),
+            "the legend stays inside the hero row: {legend:?} vs {hero:?}"
+        );
+        let metrics = harness.bounds("usage-metrics");
+        assert!(
+            metrics.origin.y >= chart.bottom(),
+            "the metrics strip sits below the chart"
+        );
+        for slug in [
+            "input",
+            "output",
+            "cache-read",
+            "cache-write",
+            "cache-hit",
+            "active-days",
+        ] {
+            assert!(
+                harness.present(Box::leak(format!("usage-metric-{slug}").into_boxed_str())),
+                "the {slug} tile renders"
+            );
+        }
+
+        // The hero is a range fact: hiding a model from the chart leaves
+        // it untouched.
+        harness.click("usage-legend-1");
+        assert!(harness.present("usage-total"));
     }
 
     #[test]
