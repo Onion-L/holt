@@ -272,6 +272,25 @@ pub(crate) struct Delegation {
     pub(crate) cancel: CancellationToken,
 }
 
+/// The per-Turn Agent-call budget gate. The counter is mounted with the tool
+/// (once per Turn), so every call consumes a slot — including calls made from
+/// later assistant messages of the same Turn; the message states that
+/// granularity and the used/limit counts so the model can budget the rest of
+/// its run.
+fn claim_child_slot(count: &AtomicUsize) -> Result<(), String> {
+    match count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        (n < MAX_CHILDREN_PER_TURN).then_some(n + 1)
+    }) {
+        Ok(_) => Ok(()),
+        Err(used) => Err(format!(
+            "Your run has used all {MAX_CHILDREN_PER_TURN} subagent slots \
+             ({used}/{MAX_CHILDREN_PER_TURN}) — the budget counts every Agent \
+             call for the whole Turn, not per assistant message. Complete the \
+             remaining work yourself."
+        )),
+    }
+}
+
 pub(crate) fn tool(delegation: Delegation) -> AgentTool {
     let count = Arc::new(AtomicUsize::new(0));
     AgentTool {
@@ -291,9 +310,7 @@ pub(crate) fn tool(delegation: Delegation) -> AgentTool {
             let id = id.to_owned();
             let args = args.clone();
             Box::pin(async move {
-                if count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < MAX_CHILDREN_PER_TURN).then_some(n + 1)).is_err() {
-                    return Err("This Turn has already started eight subagents. Complete the remaining work yourself.".into());
-                }
+                claim_child_slot(&count)?;
                 execute(delegation, id, args).await
             })
         }),
@@ -687,6 +704,25 @@ mod tests {
 
         let worker = system_prompt("worker", "/tmp/holt", &catalog, false).await;
         assert!(worker.contains("ls, read, grep, read_chat, web_fetch, write, edit, and bash;"));
+    }
+
+    #[test]
+    fn child_budget_counts_every_call_in_the_turn_and_reports_usage() {
+        let count = AtomicUsize::new(0);
+        for _ in 0..MAX_CHILDREN_PER_TURN {
+            claim_child_slot(&count).expect("within budget");
+        }
+        let error = claim_child_slot(&count).expect_err("budget exhausted");
+        assert!(
+            error.contains(&format!(
+                "({MAX_CHILDREN_PER_TURN}/{MAX_CHILDREN_PER_TURN})"
+            )),
+            "message must report the used/limit counts: {error}"
+        );
+        assert!(
+            error.contains("not per assistant message"),
+            "message must state the counting granularity: {error}"
+        );
     }
 
     #[test]
