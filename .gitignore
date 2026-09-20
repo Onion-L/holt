@@ -15,6 +15,5 @@ edge/dist/
 vendor/**/.git
 .scratch
 docs/research/
-scripts/
 docs/spark/
 .agents/skills/spark/

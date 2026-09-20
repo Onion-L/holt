@@ -62,6 +62,26 @@ or error handling just to make a test pass.
 - Describe the user-visible behavior and how you verified it.
 - Make sure the checks above pass before requesting review.
 
+## Releases
+
+Pushing a `v*` tag runs the Release workflow. The tag must match the
+`workspace.version` in `Cargo.toml` — the workflow fails closed on a mismatch,
+so the release procedure is:
+
+1. Bump `workspace.version` in `Cargo.toml`, commit.
+2. `git tag v<version> && git push origin v<version>`.
+
+If you forget the bump, the workflow fails before building anything; delete
+the tag, bump, and re-tag. A tag whose release already exists is refused.
+
+The workflow tests, then builds, signs, and notarizes two DMGs (arm64, x64)
+and publishes them to a GitHub Release with generated notes. It needs these
+repository secrets: `APPLE_CERTIFICATE_P12` / `APPLE_CERTIFICATE_PASSWORD`
+(Developer ID certificate, P12 base64-encoded) and `APPLE_API_KEY_P8` /
+`APPLE_API_KEY_ID` / `APPLE_API_ISSUER_ID` (App Store Connect API key for
+notarization). Locally, `scripts/build-dmg.sh` does the same build against
+your own keychain.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the
