@@ -272,12 +272,21 @@ impl ImageStore {
         }
         reclaimed
     }
-    /// Substring scan of the durable stores for any of `candidates`.
+    /// Substring scan of the durable stores for any of `candidates`. Files
+    /// are searched as raw text, not parsed: a managed name is plain ASCII
+    /// (uuid stem + extension) that JSON never escapes, so a byte-level
+    /// multi-pattern search answers the same question a Value-tree walk did
+    /// without materializing the whole chat corpus as JSON DOM at boot. The
+    /// whole-file scan sees more than string values alone, so a borderline
+    /// hit retains a file instead of reclaiming it.
     fn scan_references(&self, candidates: &[String]) -> HashSet<String> {
         let mut referenced = HashSet::new();
         if candidates.is_empty() {
             return referenced;
         }
+        let mut hit = vec![false; candidates.len()];
+        let automaton = aho_corasick::AhoCorasick::new(candidates)
+            .expect("image file names are literal patterns");
         for dir in ["queues", "history", "transcripts"] {
             let entries = match std::fs::read_dir(self.data_dir.join(dir)) {
                 Ok(entries) => entries,
@@ -298,45 +307,18 @@ impl ImageStore {
                     referenced.extend(candidates.iter().cloned());
                     continue;
                 };
-                fn retain_strings(
-                    value: &serde_json::Value,
-                    candidates: &[String],
-                    referenced: &mut HashSet<String>,
-                ) {
-                    match value {
-                        serde_json::Value::String(text) => {
-                            for name in candidates {
-                                if text.contains(name) {
-                                    referenced.insert(name.clone());
-                                }
-                            }
-                        }
-                        serde_json::Value::Array(values) => {
-                            for value in values {
-                                retain_strings(value, candidates, referenced);
-                            }
-                        }
-                        serde_json::Value::Object(values) => {
-                            for value in values.values() {
-                                retain_strings(value, candidates, referenced);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                let records =
-                    serde_json::Deserializer::from_str(&content).into_iter::<serde_json::Value>();
-                for record in records {
-                    match record {
-                        Ok(value) => retain_strings(&value, candidates, &mut referenced),
-                        Err(_) => {
-                            referenced.extend(candidates.iter().cloned());
-                            break;
-                        }
-                    }
+                for found in automaton.find_iter(&content) {
+                    hit[found.pattern().as_usize()] = true;
                 }
             }
         }
+        referenced.extend(
+            candidates
+                .iter()
+                .zip(hit)
+                .filter(|(_, hit)| *hit)
+                .map(|(name, _)| name.clone()),
+        );
         referenced
     }
 }
@@ -545,6 +527,35 @@ mod tests {
         let reclaimed = images.cleanup_unreferenced().await;
         assert!(reclaimed.is_empty(), "no reclaim on an unreadable store");
         assert!(Path::new(&staged.path).exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_matches_names_in_broken_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = store(dir.path());
+        std::fs::create_dir_all(dir.path().join("history")).unwrap();
+        let referenced = images.stage(png_bytes()).await.unwrap();
+        let orphan = images.stage(png_bytes()).await.unwrap();
+        // A truncated append-only tail is not parseable JSON; the scan reads
+        // bytes, so the name it does carry still protects its image.
+        std::fs::write(
+            dir.path().join("history").join("chat.jsonl"),
+            format!("{{\"text\":\"{}\"}}{{\"unterminated\":", referenced.path),
+        )
+        .unwrap();
+        let reclaimed = images.cleanup_unreferenced().await;
+        assert_eq!(
+            reclaimed,
+            vec![
+                Path::new(&orphan.path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert!(Path::new(&referenced.path).exists());
+        assert!(!Path::new(&orphan.path).exists());
     }
 
     #[tokio::test]

@@ -25,6 +25,7 @@ git2.workspace = true
 sha2.workspace = true
 ignore.workspace = true
 nucleo-matcher.workspace = true
+aho-corasick.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
 notify.workspace = true

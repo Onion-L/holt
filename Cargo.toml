@@ -96,6 +96,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 ignore = "0.4"
 # The content-search stack for the agent-facing `grep` API (ADR-0004), using
 # ripgrep's own crates in process — no dependency on a system `rg` binary.
+aho-corasick = "1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 nucleo-matcher = "0.3"
