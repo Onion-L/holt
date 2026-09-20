@@ -6,10 +6,10 @@
 //! metric tiles; the year-long Activity heatmap; and the By model /
 //! By project Breakdown donut. Everything on the page is read-only:
 //! the only controls reload the same aggregate, and the legend's
-//! visibility toggles are ephemeral page state — a reload resets it.
-//! Reloads never blank the page: a range switch or refresh dims the
-//! stale view under a header spinner until the fresh reply lands;
-//! only a first load drops to skeletons.
+//! visibility toggles and fold are ephemeral page state — a reload
+//! resets them. Reloads never blank the page: a range switch or
+//! refresh dims the stale view under a header spinner until the fresh
+//! reply lands; only a first load drops to skeletons.
 //!
 //! The chart is gpui self-drawn over the shared day axis: one bar per
 //! day, the visible models stacked bottom-to-top in rank order with a
@@ -353,6 +353,11 @@ fn series_color(rank: usize, theme: &Theme) -> Hsla {
     PALETTE[rank % PALETTE.len()](theme)
 }
 
+/// The legend's fold threshold: past this many models the rest hide
+/// behind a "+N more" chip — about two rows of chips, so the hero row
+/// keeps its height no matter how many models the range saw.
+const LEGEND_VISIBLE: usize = 6;
+
 /// Hide or restore one model's bars. The last visible model refuses to
 /// hide: a chart of nothing is not a view of the data.
 fn toggle_hidden(hidden: &mut BTreeSet<String>, summary: &Summary, id: &str) {
@@ -643,6 +648,9 @@ pub struct UsagePage {
     /// Hidden models' series ids — the legend's click-to-hide state. Page
     /// -local and ephemeral: every reload clears it.
     hidden: BTreeSet<String>,
+    /// The legend's "+N more" expansion. Ephemeral like the visibility
+    /// state: a reload re-folds the legend.
+    legend_expanded: bool,
     /// The Breakdown block's tab. Unlike the legend's visibility this
     /// survives a reload: the tab is a view preference, and flipping back
     /// to By model on every refresh would fight the reader.
@@ -673,6 +681,7 @@ impl UsagePage {
             stats: Loadable::Idle,
             task: None,
             hidden: BTreeSet::new(),
+            legend_expanded: false,
             breakdown_tab: BreakdownTab::default(),
             hover_slice: None,
             hover_day: None,
@@ -710,6 +719,7 @@ impl UsagePage {
                 page.reloading = false;
                 page.loaded_days = days;
                 page.hidden.clear();
+                page.legend_expanded = false;
                 page.stats = match result {
                     Ok(value) => serde_json::from_value(value)
                         .map(Loadable::Ready)
@@ -933,13 +943,18 @@ impl UsagePage {
     /// The chart's legend, the hero row's right side: one toggle chip
     /// per model — checkbox filled with the series color while its
     /// bars show, hollow when hidden — plus the model's range total.
-    /// Chips wrap quietly beside the Total; a hidden chip reads dimmed.
+    /// Chips wrap beside the Total; past [`LEGEND_VISIBLE`] the rest
+    /// fold behind a "+N more" chip so a long model list never
+    /// stretches the hero row. A hidden chip reads dimmed.
     fn render_legend(
         &self,
         summary: &Arc<Summary>,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let total = summary.series.len();
+        let collapsed = !self.legend_expanded && total > LEGEND_VISIBLE;
+        let shown = if collapsed { LEGEND_VISIBLE } else { total };
         div()
             .id("usage-legend")
             .debug_selector(|| "usage-legend".into())
@@ -955,9 +970,48 @@ impl UsagePage {
                 summary
                     .series
                     .iter()
+                    .take(shown)
                     .enumerate()
                     .map(|(rank, series)| self.legend_item(series, rank, theme, cx)),
             )
+            .when(total > LEGEND_VISIBLE, |legend| {
+                legend.child(self.legend_fold_chip(collapsed, total - LEGEND_VISIBLE, theme, cx))
+            })
+    }
+
+    /// The legend's fold disclosure: "+N more" when collapsed, "Show
+    /// less" once expanded — a quiet text switch next to the chips.
+    fn legend_fold_chip(
+        &self,
+        collapsed: bool,
+        folded: usize,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (tag, label) = if collapsed {
+            ("more", format!("+{folded} more"))
+        } else {
+            ("less", "Show less".to_string())
+        };
+        div()
+            .id(SharedString::from(format!("usage-legend-{tag}")))
+            .debug_selector(move || format!("usage-legend-{tag}"))
+            .flex_none()
+            .h(px(20.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .rounded(px(5.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|chip| chip.text_color(theme.text).bg(theme.ink(0.05)))
+            .on_click(cx.listener(|page, _, _, cx| {
+                page.legend_expanded = !page.legend_expanded;
+                cx.notify();
+            }))
+            .child(label)
     }
 
     fn legend_item(
@@ -2647,6 +2701,53 @@ mod tests {
             "a reload restores every series"
         );
         assert!(harness.present("usage-day-0"), "back on the ready state");
+    }
+
+    #[gpui::test]
+    fn the_legend_folds_extra_models_behind_a_more_chip(cx: &mut gpui::TestAppContext) {
+        // Eight models: the first six show, the rest fold behind a
+        // "+2 more" chip, so the hero row keeps its height.
+        let models: Vec<serde_json::Value> = (0..8)
+            .map(|index| {
+                serde_json::json!({
+                    "provider": "p",
+                    "model": format!("m{index}"),
+                    "days": [{"date": "2026-09-16", "tokens": (8 - index) * 10}],
+                })
+            })
+            .collect();
+        let reply = Scripted::Ok(serde_json::json!({
+            "chatCount": 1, "days": 30,
+            "totals": { "input": 10, "output": 10, "cacheRead": 0,
+                        "cacheWrite": 0, "cacheHit": null, "activeDays": 1 },
+            "models": models, "byModel": [], "byProject": [], "heatmap": [],
+        }));
+        let mut harness = harness(cx, vec![], reply);
+
+        assert!(harness.present("usage-legend-5"));
+        assert!(
+            !harness.present("usage-legend-6"),
+            "the seventh model folds away"
+        );
+        assert!(harness.present("usage-legend-more"));
+
+        harness.click("usage-legend-more");
+        harness.repaint();
+        assert!(harness.present("usage-legend-7"));
+        assert!(harness.present("usage-legend-less"));
+        assert!(!harness.present("usage-legend-more"));
+
+        harness.click("usage-legend-less");
+        harness.repaint();
+        assert!(!harness.present("usage-legend-6"));
+
+        // A reload re-folds the legend, like the visibility toggles.
+        harness.click("usage-legend-more");
+        harness.repaint();
+        harness.click("usage-refresh");
+        harness.pump();
+        assert!(harness.present("usage-legend-more"));
+        assert!(!harness.present("usage-legend-6"));
     }
 
     #[gpui::test]
