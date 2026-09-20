@@ -529,7 +529,7 @@ impl Shell {
     /// transcripts (nested spawns open their own tabs).
     pub(super) fn on_transcript_event(
         &mut self,
-        _: Entity<Transcript>,
+        transcript: Entity<Transcript>,
         event: &TranscriptEvent,
         cx: &mut Context<Self>,
     ) {
@@ -569,6 +569,17 @@ impl Shell {
             // read fence admits the skill roots.
             TranscriptEvent::OpenSkillFile { path } => {
                 self.open_file(path.clone(), None, true, cx);
+            }
+            TranscriptEvent::EditLastMessage {
+                chat_id,
+                message_id,
+                text,
+            } => {
+                if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
+                    transcript.update(cx, |transcript, cx| {
+                        transcript.begin_message_edit(message_id.clone(), text.clone(), cx)
+                    });
+                }
             }
         }
     }

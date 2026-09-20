@@ -197,6 +197,7 @@ pub fn init(cx: &mut App) {
     let ctx = Some("Composer");
     let mut bindings = vec![
         KeyBinding::new("enter", Submit, ctx),
+        KeyBinding::new("cmd-enter", Newline, ctx),
         KeyBinding::new("tab", MentionTab, ctx),
         KeyBinding::new("escape", MentionEscape, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),

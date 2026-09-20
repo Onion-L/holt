@@ -44,13 +44,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    ClipboardItem, Context, Entity, ListAlignment, ListOffset, ListScrollEvent, ListState,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Subscription, Task,
-    Window, px,
+    AppContext, ClipboardItem, Context, Entity, ListAlignment, ListOffset, ListScrollEvent,
+    ListState, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString,
+    Subscription, Task, Window, px,
 };
 
 use holt_doc::{MessageStatus, SessionMessageEntry};
 
+use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::markdown::mermaid::{MermaidHost, MermaidStore};
 use crate::markdown::parser::{BlockTree, IncrementalParser};
 use crate::markdown::render::{RenderCache, update_drag_at};
@@ -214,6 +215,7 @@ pub struct Transcript {
     /// don't need it (the pin branch already opens at the end).
     land_end_pending: bool,
     row_cache: HashMap<String, CachedRows>,
+    message_edit: Option<InlineMessageEdit>,
     live_parsers: HashMap<String, IncrementalParser>,
     tree_cache: HashMap<String, (usize, Arc<BlockTree>)>,
     folds: HashMap<SharedString, FoldState>,
@@ -334,6 +336,13 @@ pub struct Transcript {
     _observe: Subscription,
 }
 
+struct InlineMessageEdit {
+    message_id: String,
+    input: Entity<ComposerInput>,
+    focus_pending: bool,
+    _events: Subscription,
+}
+
 /// One sidecar blob fetch's lifecycle.
 enum BlobFetch {
     Loading(#[allow(dead_code)] Task<()>),
@@ -373,6 +382,14 @@ pub enum TranscriptEvent {
     /// engine advertised — it may live outside the workspace (a personal
     /// skill); the engine's read fence admits the skill roots.
     OpenSkillFile { path: String },
+    /// Edit the latest user message in the primary chat. The payload keeps
+    /// the raw text so path references and image trailers survive the round
+    /// trip; the engine validates that the id is still the latest message.
+    EditLastMessage {
+        chat_id: String,
+        message_id: String,
+        text: String,
+    },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
@@ -460,6 +477,7 @@ impl Transcript {
             viewport_finalize_scheduled: false,
             viewport_layout_revision: 0,
             row_cache: HashMap::new(),
+            message_edit: None,
             live_parsers: HashMap::new(),
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
@@ -1558,6 +1576,7 @@ impl Transcript {
             self.highlights.entries.clear();
             self.copied_message = None;
             self.copied_message_clear = None;
+            self.message_edit = None;
             self.list.reset(0);
             self.pending_viewport = None;
             self.viewport_generation = self.viewport_generation.wrapping_add(1);
@@ -2074,6 +2093,75 @@ impl Transcript {
             .ok();
         }));
         cx.notify();
+    }
+
+    pub(super) fn begin_message_edit(
+        &mut self,
+        message_id: String,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| ComposerInput::new("Edit message", cx));
+        input.update(cx, |input, cx| input.set_text(text, cx));
+        let events = cx.subscribe(&input, |this, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.submit_message_edit(cx);
+            }
+        });
+        self.message_edit = Some(InlineMessageEdit {
+            message_id,
+            input,
+            focus_pending: true,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn submit_message_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.message_edit.as_ref() else {
+            return;
+        };
+        let Some(chat_id) = self.chat_id.clone() else {
+            return;
+        };
+        let prompt = edit.input.read(cx).text().trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        let message_id = edit.message_id.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = crate::attachments::call_with_timeout(
+                &engine,
+                cx.background_executor(),
+                holt_rpc::methods::EDIT_LAST_MESSAGE,
+                serde_json::json!({
+                    "chatId": chat_id,
+                    "messageId": message_id,
+                    "prompt": prompt,
+                }),
+                Duration::from_secs(30),
+            )
+            .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    tracing::warn!(error = %error, "message edit failed");
+                } else {
+                    this.message_edit = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn cancel_message_edit(&mut self, cx: &mut Context<Self>) {
+        if self.message_edit.take().is_some() {
+            cx.notify();
+        }
     }
 }
 

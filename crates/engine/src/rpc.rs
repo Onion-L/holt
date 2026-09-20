@@ -1006,18 +1006,22 @@ impl EngineService {
             self.turn_changes
                 .begin(chat_id, &message_id, &request.cwd, baseline);
         }
-        chat.transcript
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(SessionMessageEntry {
-                id: message_id.clone(),
-                role: MessageRole::User,
-                parts,
-                created_at: timestamp,
-                device_id: self.engine_info.device_id.clone(),
-                status: None,
-                continuation_of: None,
-            });
+        let entry = SessionMessageEntry {
+            id: message_id.clone(),
+            role: MessageRole::User,
+            parts,
+            created_at: timestamp,
+            device_id: self.engine_info.device_id.clone(),
+            status: None,
+            continuation_of: None,
+        };
+        let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == message_id) {
+            *existing = entry;
+        } else {
+            transcript.push(entry);
+        }
+        drop(transcript);
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
         // Run acceptance rewrites the chat's config from the request, so the
@@ -1120,6 +1124,229 @@ impl EngineService {
             );
             crate::usage::publish(&chat);
         }
+    }
+
+    /// Replace the latest user message and run it again. Drafting stays in
+    /// the UI; submission is the serialization point that cancels the old
+    /// Turn, prunes both records, and requeues the replacement ahead of any
+    /// remaining work.
+    async fn edit_last_message(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        let message_id = required_string(&params, "messageId")?;
+        let prompt = required_string(&params, "prompt")?.to_string();
+        if !crate::store::id_is_path_safe(chat_id) {
+            return Err(RpcError::BadParams("invalid chatId".into()));
+        }
+        if prompt.trim().is_empty() {
+            return Err(RpcError::BadParams("prompt must not be empty".into()));
+        }
+        let chat = self.runtime.chat(chat_id);
+
+        let (target_index, target, skill) = {
+            let transcript = chat.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let Some((index, target)) = transcript
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, entry)| entry.role == MessageRole::User)
+            else {
+                return Err(RpcError::Failed("chat has no user message to edit".into()));
+            };
+            if target.id != message_id {
+                return Err(RpcError::Failed(
+                    "only the latest user message can be edited".into(),
+                ));
+            }
+            let skill = target.parts.iter().find_map(|part| match part {
+                MessagePart::Skill { name, file, .. } => Some((name.clone(), file.clone())),
+                _ => None,
+            });
+            (index, target.clone(), skill)
+        };
+
+        let (request, kind, skill_name, extra_instructions, attended) = {
+            let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+            let row = chats
+                .iter()
+                .find(|row| row.id == chat_id)
+                .ok_or_else(|| RpcError::Failed("unknown chat".into()))?;
+            let config = row
+                .config
+                .clone()
+                .ok_or_else(|| RpcError::Failed("chat has no run configuration".into()))?;
+            let cwd = row
+                .cwd
+                .clone()
+                .ok_or_else(|| RpcError::Failed("chat has no working directory".into()))?;
+            let request = RunRequest {
+                prompt: if skill.is_some() {
+                    String::new()
+                } else {
+                    prompt.clone()
+                },
+                provider: config.provider,
+                model: config.model,
+                reasoning: config.reasoning,
+                model_options: config.model_options,
+                cwd,
+                permission_mode: config.permission_mode,
+                auto_approve: false,
+                attachments: Vec::new(),
+                worktree: None,
+            };
+            let extra = skill.as_ref().map(|_| prompt.clone());
+            let attended = {
+                let queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                queue.paused()
+            };
+            (
+                request,
+                if skill.is_some() {
+                    PendingKind::Skill
+                } else {
+                    PendingKind::Ordinary
+                },
+                skill.as_ref().map(|(name, _)| name.clone()),
+                extra,
+                attended,
+            )
+        };
+
+        // Pause before cancelling so a pending item cannot be admitted while
+        // the old Turn is unwinding. The execution mutex is released only
+        // after queue settlement and History repair have completed.
+        {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue.pause(true)?;
+        }
+        if let Some(cancel) = chat
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            cancel.cancel();
+        }
+        let _execution = chat.execution.lock().await;
+
+        // The pause parks ordinary sends, but an attended send admitted
+        // before the pause, a second edit request, or another device may
+        // have changed the tail — re-validate under the execution lock.
+        let entries = {
+            let transcript = chat.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let Some((latest_index, latest)) = transcript
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, entry)| entry.role == MessageRole::User)
+            else {
+                self.resume_after_edit_failure(&chat, attended);
+                return Err(RpcError::Failed("chat has no user message to edit".into()));
+            };
+            if latest_index != target_index || latest.id != message_id {
+                self.resume_after_edit_failure(&chat, attended);
+                return Err(RpcError::Failed(
+                    "only the latest user message can be edited".into(),
+                ));
+            }
+            let mut replacement = latest.clone();
+            if let Some((name, file)) = skill.as_ref() {
+                replacement.parts = crate::skills::user_entry_parts(
+                    name.clone(),
+                    file.clone(),
+                    Some(prompt.clone()),
+                );
+            } else {
+                let mut replaced = false;
+                for part in &mut replacement.parts {
+                    if let MessagePart::Text { text, .. } = part {
+                        if !replaced {
+                            *text = prompt.clone();
+                            replaced = true;
+                        } else {
+                            *text = String::new();
+                        }
+                    }
+                }
+                if !replaced {
+                    replacement.parts.push(MessagePart::Text {
+                        id: "t0".into(),
+                        text: prompt.clone(),
+                    });
+                }
+            }
+            let mut entries = transcript[..=latest_index].to_vec();
+            entries[latest_index] = replacement.clone();
+            entries
+        };
+
+        // Persistence first, then the records — the same nesting the run
+        // path settles under (ADR-0032), so repair cannot interleave with
+        // a settle.
+        let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        let mut history = chat.history.write().unwrap_or_else(|e| e.into_inner());
+        let history_index = history
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| {
+                matches!(message, pi_core::agent::types::AgentMessage::User(user) if user.timestamp == target.created_at)
+            })
+            .map(|(index, _)| index);
+        let Some(history_index) = history_index else {
+            drop(history);
+            self.resume_after_edit_failure(&chat, attended);
+            return Err(RpcError::Failed(
+                "the message is not present in chat history".into(),
+            ));
+        };
+        history.truncate(history_index);
+        if let Err(error) = crate::store::rewrite_transcript(&self.data_dir, chat_id, &entries) {
+            drop(history);
+            self.resume_after_edit_failure(&chat, attended);
+            return Err(RpcError::Failed(error.to_string()));
+        }
+        if let Err(error) = crate::history::rewrite(&self.data_dir, chat_id, &history) {
+            drop(history);
+            self.resume_after_edit_failure(&chat, attended);
+            return Err(RpcError::Failed(error.to_string()));
+        }
+        drop(history);
+        *chat.transcript.write().unwrap_or_else(|e| e.into_inner()) = entries;
+        chat.publish();
+
+        // Requeue outside the queue lock: the failure path re-locks the
+        // queue to restore its pre-edit state.
+        let enqueue = {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue.enqueue_replacement(
+                request,
+                message_id.to_string(),
+                kind,
+                skill_name,
+                extra_instructions,
+                attended,
+            )
+        };
+        if let Err(error) = enqueue {
+            self.resume_after_edit_failure(&chat, attended);
+            return Err(error);
+        }
+        drop(_execution);
+        drop(_persistence);
+        self.kick_queue(chat);
+        RpcReply::value(&serde_json::json!({ "messageId": message_id }))
+    }
+
+    /// Undo the edit's pause on a failure path: a queue the user had
+    /// already parked stays parked; only a queue that was running before
+    /// the edit resumes.
+    fn resume_after_edit_failure(&self, chat: &Arc<ChatRuntime>, was_paused: bool) {
+        if !was_paused {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = queue.resume();
+        }
+        self.kick_queue(chat.clone());
     }
 
     /// The chat's selected model as the occupancy windows are keyed — the
@@ -2145,6 +2372,7 @@ impl RpcService for EngineService {
                 };
                 RpcReply::value(&snapshot)
             }
+            methods::EDIT_LAST_MESSAGE => self.edit_last_message(params).await,
             methods::DELETE_QUEUED_MESSAGE => {
                 let chat_id = required_string(&params, "chatId")?;
                 let message_id = required_string(&params, "messageId")?;

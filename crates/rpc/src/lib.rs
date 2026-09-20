@@ -160,6 +160,11 @@ pub mod methods {
     /// position, command kind, and the captured model/reasoning are the
     /// queue's — an item that already started fails without mutating it.
     pub const EDIT_QUEUED_MESSAGE: &str = "EditQueuedMessage";
+    /// Replace the latest user message and restart its Turn: params
+    /// `{chatId, messageId, prompt}`. The message must still be the latest
+    /// user entry when submitted; the old Turn is cancelled and its later
+    /// conversation is removed before the replacement runs.
+    pub const EDIT_LAST_MESSAGE: &str = "EditLastMessage";
     /// Remove a pending ordinary message from the queue: params
     /// `{chatId, messageId}`; replies with the accepted `MessageQueue`
     /// snapshot. Remaining items keep their order; a started item fails

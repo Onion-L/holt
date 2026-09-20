@@ -258,6 +258,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `DeleteQueuedMessage` (`{chatId, messageId}`) removes one, preserving the
   order of the rest. Both acknowledge only after the queue file is durably
   replaced and reply with the accepted snapshot; a started item refuses both
+  instead of touching the active Turn. `EditLastMessage`
+  (`{chatId, messageId, prompt}`) applies only to the latest user Transcript
+  entry: submission cancels the active Turn, prunes that Turn's later
+  Transcript and History, preserves the message identity and skill/path
+  payload, and queues a replacement ahead of remaining work using the
+  current chat settings. Existing workspace side effects and usage remain;
+  a stale message id is rejected.
   instead of touching the active Turn. Admission errors arrive through the
   Watch.
 - Token usage: `WatchChatUsage` (`ChatUsage` snapshots per chat, params
@@ -647,8 +654,10 @@ the same stream function the agent loop uses: automatically before a Turn
 and between tool rounds (`prepare_next_turn`), manually with the `/compact`
 slash command (a typed queue item — the `Compacting` session status is
 interruptible like a run when the queue admits it), and unconditionally on
-the Turn after a context overflow. The Transcript never shrinks — dividers
-(expandable, with before/after token counts and the trigger) and notices
+the Turn after a context overflow. The Transcript never shrinks — a
+Last-message edit is the one exception, replacing the latest user message
+and the conversation after it (ADR-0033) — and dividers (expandable, with
+before/after token counts and the trigger) and notices
 mark what happened. Queue items — ordinary messages, skill invocations,
 and manual Compaction commands — persist in `queues/<chatId>.json`,
 independently of Transcript and History. Each chat has one FIFO consumer

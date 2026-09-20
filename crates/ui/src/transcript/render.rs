@@ -11,11 +11,11 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, BorderStyle, ClipboardItem, Context, CursorStyle, MouseButton, ObjectFit,
-    SharedString, StyledImage as _, StyledText, Task, TextRun, Window, canvas, div, img, list,
-    prelude::*, px, quad,
+    AnyElement, BorderStyle, ClipboardItem, Context, CursorStyle, Focusable, KeyDownEvent,
+    MouseButton, ObjectFit, SharedString, StyledImage as _, StyledText, Task, TextRun, Window,
+    canvas, div, img, list, prelude::*, px, quad,
 };
-use holt_doc::{MessageRole, MessageStatus, SubagentStatus, ToolGateState};
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
 use holt_proto::TurnChangeSet;
 use holt_proto::TurnFileChange;
@@ -1230,25 +1230,58 @@ impl Transcript {
                             })),
                     );
                 }
-                if !text.is_empty() || skill.is_some() {
-                    let bubble_child = match skill {
-                        Some(skill) => self.render_user_skill(
-                            &row.id,
-                            &skill,
-                            &text,
-                            &mentions,
-                            &theme,
-                            image_open.clone(),
-                        ),
-                        None => user_bubble_text_with_chip(
-                            &row.id,
-                            text,
-                            mentions,
-                            None,
-                            &theme,
-                            Some(image_open),
-                        )
-                        .into_any_element(),
+                if !text.is_empty()
+                    || skill.is_some()
+                    || self
+                        .message_edit
+                        .as_ref()
+                        .is_some_and(|edit| edit.message_id == row.entry_id.as_ref())
+                {
+                    let inline_editor = self
+                        .message_edit
+                        .as_ref()
+                        .filter(|edit| edit.message_id == row.entry_id.as_ref())
+                        .map(|edit| edit.input.clone());
+                    if let Some(input) = inline_editor.as_ref()
+                        && self
+                            .message_edit
+                            .as_mut()
+                            .is_some_and(|edit| std::mem::take(&mut edit.focus_pending))
+                    {
+                        window.focus(&input.focus_handle(cx), cx);
+                    }
+                    let bubble_child = if let Some(input) = inline_editor {
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                if event.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    this.cancel_message_edit(cx);
+                                }
+                            }))
+                            .child(input)
+                            .into_any_element()
+                    } else {
+                        match skill {
+                            Some(skill) => self.render_user_skill(
+                                &row.id,
+                                &skill,
+                                &text,
+                                &mentions,
+                                &theme,
+                                image_open.clone(),
+                            ),
+                            None => user_bubble_text_with_chip(
+                                &row.id,
+                                text,
+                                mentions,
+                                None,
+                                &theme,
+                                Some(image_open),
+                            )
+                            .into_any_element(),
+                        }
                     };
 
                     // `min_w_0` is load-bearing: gpui text answers min/max-content
@@ -1421,6 +1454,39 @@ impl Transcript {
         let copied_message = self.copied_message.as_ref() == Some(&row.entry_id);
         let copy_text = row.copy_text.clone();
         let copy_entry_id = row.entry_id.clone();
+        let edit_text = if is_user_row
+            && self.chat_id.is_some()
+            && self.doc_override.is_none()
+            && self
+                .state
+                .read(cx)
+                .transcript
+                .iter()
+                .rev()
+                .find(|entry| entry.role == MessageRole::User)
+                .is_some_and(|entry| entry.id == row.entry_id.as_ref())
+        {
+            self.state
+                .read(cx)
+                .transcript
+                .iter()
+                .find(|entry| entry.id == row.entry_id.as_ref())
+                .map(|entry| {
+                    entry
+                        .parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            MessagePart::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                })
+        } else {
+            None
+        };
+        let edit_entry_id = row.entry_id.clone();
+        let edit_chat_id = self.chat_id.clone().unwrap_or_default();
         let strip = row.timestamp.map(|ms| {
             let timestamp = div()
                 .text_size(crate::typography::ui_rems(12.0))
@@ -1463,7 +1529,36 @@ impl Transcript {
                 .flex_row()
                 .items_center()
                 .gap(px(Theme::SPACE_SM));
-            let metadata = metadata.child(timestamp).children(copy);
+            let edit = edit_text.map(|text| {
+                let entry_id = edit_entry_id.clone();
+                let chat_id = edit_chat_id.clone();
+                div()
+                    .id(SharedString::from(format!("edit-message-{entry_id}")))
+                    .size(px(Theme::SPACE_MD * 2.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .cursor_pointer()
+                    .bg(motion::hover_blend(
+                        &format!("edit-message-hover-{entry_id}"),
+                        gpui::transparent_black(),
+                        crate::theme::ink(0.08),
+                    ))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TranscriptEvent::EditLastMessage {
+                            chat_id: chat_id.clone(),
+                            message_id: entry_id.to_string(),
+                            text: text.clone(),
+                        });
+                    }))
+                    .child(
+                        crate::icons::icon(crate::icons::PEN)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+            });
+            let metadata = metadata.child(timestamp).children(edit).children(copy);
             div()
                 .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
                 .pt(px(Theme::SPACE_SM))

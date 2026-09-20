@@ -151,6 +151,46 @@ pub(crate) fn append_transcript_entry(
     writeln!(file, "{line}")
 }
 
+/// Replace a chat's transcript log after a Last-message edit. The rewrite is
+/// atomic so a crash cannot expose a half-pruned conversation; the legacy
+/// snapshot is removed only after the new log is in place.
+pub(crate) fn rewrite_transcript(
+    data_dir: &Path,
+    chat_id: &str,
+    entries: &[SessionMessageEntry],
+) -> std::io::Result<()> {
+    let Some(path) = transcript_log_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    let dir = path.parent().expect("transcript log path has a parent");
+    std::fs::create_dir_all(dir)?;
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        let header = serde_json::json!({ "version": TRANSCRIPT_VERSION });
+        writeln!(file, "{header}")?;
+        for entry in entries {
+            let line = serde_json::to_string(&TranscriptLine::Entry(entry.clone()))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            writeln!(file, "{line}")?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&temp, &path)?;
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temp);
+    if result.is_ok()
+        && let Some(legacy) = transcript_path(data_dir, chat_id)
+    {
+        let _ = std::fs::remove_file(legacy);
+    }
+    result
+}
+
 /// Replay one log line onto the transcript: an id that already exists
 /// replaces its earlier line (a post-run settle), a new id appends.
 fn replay_transcript_line(transcript: &mut Vec<SessionMessageEntry>, line: &str) {
@@ -286,6 +326,16 @@ mod tests {
             load_transcript(&dir, "chat-1").expect("load"),
             vec![settled, entry("m2")]
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rewrite_prunes_old_tail_and_replays_the_new_log() {
+        let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
+        append_transcript_entry(&dir, "chat-1", &entry("m1")).expect("append");
+        append_transcript_entry(&dir, "chat-1", &entry("m2")).expect("append");
+        rewrite_transcript(&dir, "chat-1", &[entry("m1")]).expect("rewrite");
+        assert_eq!(load_transcript(&dir, "chat-1").unwrap(), vec![entry("m1")]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

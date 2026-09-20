@@ -282,6 +282,42 @@ impl Queue {
         self.commit(next)
     }
 
+    /// Requeue an edited Turn with its original identity. Unlike ordinary
+    /// enqueue, this deliberately bypasses the accepted-id deduplication:
+    /// the old Turn has been removed from the conversation, while the id
+    /// remains the stable identity of its replacement.
+    pub fn enqueue_replacement(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+        kind: PendingKind,
+        skill_name: Option<String>,
+        extra_instructions: Option<String>,
+        attended: bool,
+    ) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        next.pending.retain(|item| item.message_id != message_id);
+        next.priority.retain(|id| id != &message_id);
+        next.pending.push(PendingMessage {
+            message_id: message_id.clone(),
+            request,
+            kind,
+            skill_name,
+            extra_instructions,
+            submitted_at: chrono::Utc::now().timestamp_millis(),
+            error: None,
+        });
+        next.priority.push(message_id.clone());
+        if attended {
+            next.attended_grant = Some(message_id);
+            next.paused = false;
+            next.priority_only = true;
+        } else {
+            next.paused = false;
+        }
+        self.commit(next)
+    }
+
     /// How edit/delete must answer for an id that is not waiting in the
     /// queue: a started item has already become a Turn, anything else was
     /// never (or is no longer) pending.
@@ -1006,6 +1042,28 @@ mod tests {
         assert_eq!(after.request.model_options, before.request.model_options);
         assert_eq!(queue.record.pending.len(), 2);
         assert_eq!(queue.record.pending[1].request.prompt, "C");
+    }
+
+    #[test]
+    fn replacement_reuses_identity_and_runs_before_parked_work() {
+        let (mut queue, _dir) = queue_with_pending();
+        queue.pause(true).expect("pause");
+        queue
+            .enqueue_replacement(
+                request("edited", "openai/gpt-5.4"),
+                "m-old".into(),
+                PendingKind::Ordinary,
+                None,
+                None,
+                true,
+            )
+            .expect("replacement");
+        assert!(!queue.paused());
+        assert_eq!(queue.head().unwrap().message_id, "m-old");
+        assert_eq!(queue.record.pending.len(), 3);
+        assert_eq!(queue.record.accepted.len(), 2);
+        assert_eq!(queue.record.pending[0].request.prompt, "B");
+        assert_eq!(queue.record.pending[2].request.prompt, "edited");
     }
 
     #[test]

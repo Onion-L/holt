@@ -118,6 +118,42 @@ pub(crate) fn append_compaction(
     append_entry(data_dir, chat_id, &HistoryEntry::Compaction(record.clone()))
 }
 
+/// Replace a chat's model History after a Last-message edit. The in-memory
+/// sequence is already the repaired request payload, so writing its messages
+/// directly intentionally drops obsolete compaction records and every entry
+/// after the edited user message.
+pub(crate) fn rewrite(
+    data_dir: &Path,
+    chat_id: &str,
+    messages: &[AgentMessage],
+) -> std::io::Result<()> {
+    let Some(path) = history_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    let dir = path.parent().expect("history path has a parent");
+    std::fs::create_dir_all(dir)?;
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        let header = serde_json::json!({ "version": HISTORY_VERSION });
+        writeln!(file, "{header}")?;
+        for message in messages {
+            let line = serde_json::to_string(&HistoryEntry::Message(message.clone()))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            writeln!(file, "{line}")?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&temp, &path)?;
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temp);
+    result
+}
+
 /// Replay the History linearly into the in-memory message sequence. A
 /// missing file is an empty History (a chat that never ran — or a legacy
 /// chat, whose notice arrives with its slice); an unreadable header or an
@@ -794,6 +830,18 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["before", "after"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rewrite_discards_the_old_turn_tail() {
+        let dir = temp_dir();
+        let before = user("before");
+        let after = user("after");
+        append_message(&dir, "chat-1", &before).unwrap();
+        append_message(&dir, "chat-1", &after).unwrap();
+        rewrite(&dir, "chat-1", std::slice::from_ref(&before)).unwrap();
+        assert_eq!(load(&dir, "chat-1").unwrap(), vec![before]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
