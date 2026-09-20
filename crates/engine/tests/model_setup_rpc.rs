@@ -7,7 +7,6 @@
 mod common;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
-use futures::StreamExt as _;
 use holt_rpc::{RpcReply, RpcService, methods};
 
 /// One complete, servable record — the fixture every scripted proposal
