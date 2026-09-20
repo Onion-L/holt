@@ -76,11 +76,12 @@ the tag, bump, and re-tag. A tag whose release already exists is refused.
 
 The workflow tests, then builds, signs, and notarizes two DMGs (arm64, x64)
 and publishes them to a GitHub Release with generated notes. It needs these
-repository secrets: `APPLE_CERTIFICATE_P12` / `APPLE_CERTIFICATE_PASSWORD`
-(Developer ID certificate, P12 base64-encoded) and `APPLE_API_KEY_P8` /
-`APPLE_API_KEY_ID` / `APPLE_API_ISSUER_ID` (App Store Connect API key for
-notarization). Locally, `scripts/build-dmg.sh` does the same build against
-your own keychain.
+repository secrets: `APPLE_CERT_PEM` / `APPLE_KEY_PEM` (the Developer ID
+certificate and its private key as PEM, each base64-encoded — the P12 route
+is dead on macos-26 runners, whose `security import` rejects the legacy PBE
+containers) and `APPLE_API_KEY_P8` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER_ID`
+(App Store Connect API key for notarization). Locally, `scripts/build-dmg.sh`
+does the same build against your own keychain.
 
 ## License
 

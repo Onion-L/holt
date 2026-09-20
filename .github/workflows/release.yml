@@ -46,21 +46,27 @@ jobs:
 
       - name: Import signing certificate
         env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERT_PEM: ${{ secrets.APPLE_CERT_PEM }}
+          APPLE_KEY_PEM: ${{ secrets.APPLE_KEY_PEM }}
         run: |
+          # The P12 route is dead on macos-26 runners (security import rejects
+          # the legacy PBE containers), so the key and certificate ride as
+          # separate PEMs and import individually.
           KEYCHAIN="holt-build.keychain"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          KEY_PATH="$(mktemp)"
           CERT_PATH="$(mktemp)"
-          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode >"$CERT_PATH"
+          printf '%s' "$APPLE_KEY_PEM" | base64 --decode >"$KEY_PATH"
+          printf '%s' "$APPLE_CERT_PEM" | base64 --decode >"$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$KEY_PATH" -k "$KEYCHAIN" -T /usr/bin/codesign
+          security import "$CERT_PATH" -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security find-identity -v -p codesigning "$KEYCHAIN"
-          rm -f "$CERT_PATH"
+          rm -f "$KEY_PATH" "$CERT_PATH"
 
       - name: Store notarytool credentials
         env:
