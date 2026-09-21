@@ -24,7 +24,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
-use holt_proto::{Model, Provider, ProviderId, ReasoningLevel, RepoRef};
+use holt_proto::{Model, PermissionMode, Provider, ProviderId, ReasoningLevel, RepoRef};
 
 /// Display cap for the ref list (t3code shows pages of 100 with a status
 /// footer; a flat cap + "Showing X of Y refs" reads the same without
@@ -155,6 +155,11 @@ pub struct Pickers {
     /// Selection the draft picks belong to — switching chats drops them so a
     /// pick made in one chat never leaks into another.
     draft_owner: Option<String>,
+    /// The engine's sticky permission-mode default for new chats (ADR-0014),
+    /// fetched once via `GetPermissionModeDefault`: the canvas chip's
+    /// fallback when no chat row and no draft pick applies.
+    sticky_mode: PermissionMode,
+    sticky_mode_loaded: bool,
     pub(crate) plan_mode_draft: bool,
     /// Space the branch draft/cache belong to (see the state observer).
     space_owner: Option<String>,
@@ -336,6 +341,8 @@ impl Pickers {
             defaults,
             data_dir,
             draft_owner,
+            sticky_mode: PermissionMode::default(),
+            sticky_mode_loaded: false,
             plan_mode_draft: false,
             open,
             model_rail: ModelRail::default(),
@@ -379,6 +386,12 @@ impl Pickers {
 
     pub fn draft(&self) -> &DraftConfig {
         &self.config
+    }
+
+    /// The engine's sticky permission-mode default for new chats (ADR-0014):
+    /// what an untouched canvas send would actually run under.
+    pub(crate) fn sticky_mode(&self) -> PermissionMode {
+        self.sticky_mode
     }
 
     /// Provider is locked once the chat exists (feature-inventory §1.7).
@@ -1194,6 +1207,9 @@ impl Render for Pickers {
         // opens, and rail switches inside the picker are instant.
         self.ensure_providers(false, cx);
         self.prefetch_models(false, cx);
+        // The canvas mode chip's fallback: the engine's sticky new-chat
+        // default (ADR-0014) — idempotent, one fetch per engine attach.
+        self.ensure_mode_default(cx);
         // A popover opened data-side (HOLT_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).
         if matches!(

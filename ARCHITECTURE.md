@@ -117,7 +117,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   the stored mode is authoritative; a Turn snapshots it at start, so a
   switch lands from the next Turn — and records the device's sticky
   default for new chats (`permission-mode-default.json`, the title-settings
-  pattern; first launch defaults to confirm-changes). In confirm-changes
+  pattern; first launch defaults to confirm-changes).
+  `GetPermissionModeDefault` (`{}` → `{mode}`) serves that default so the
+  new-chat canvas chip advertises the tier a first send would inherit. In
+  confirm-changes
   every mutating call (write/edit/bash) pauses the Turn behind a pending
   Approval — a gate chip on the call's Tool part in the transcript watch —
   until `ResolveApproval` (`{approvalId, verdict}`: allow / always-allow /

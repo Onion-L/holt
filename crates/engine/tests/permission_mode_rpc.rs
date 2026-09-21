@@ -67,6 +67,37 @@ async fn watched_mode(engine: &LocalEngine, chat_id: &str) -> String {
         .to_string()
 }
 
+/// The sticky default is a first-class read now: the new-chat canvas chip
+/// fetches it (before any chat exists) so it can advertise the tier a first
+/// send would inherit.
+#[tokio::test]
+async fn the_sticky_default_is_served_before_any_chat_exists() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(Vec::new()));
+
+    // First launch: the built-in default.
+    let RpcReply::Value(reply) = engine
+        .handle(methods::GET_PERMISSION_MODE_DEFAULT, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("GetPermissionModeDefault did not return a value");
+    };
+    assert_eq!(reply["mode"], "confirm-changes");
+
+    // A switch moves it for future chats — the read follows immediately.
+    create_chat_with_config(&engine, "chat-1", "confirm-changes").await;
+    switch_mode(&engine, "chat-1", "full-access").await;
+    let RpcReply::Value(reply) = engine
+        .handle(methods::GET_PERMISSION_MODE_DEFAULT, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("GetPermissionModeDefault did not return a value");
+    };
+    assert_eq!(reply["mode"], "full-access");
+}
+
 #[tokio::test]
 async fn first_launch_defaults_new_chats_to_confirm_changes() {
     let fixture = Fixture::new();

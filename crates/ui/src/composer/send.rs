@@ -225,9 +225,10 @@ impl Composer {
             .and_then(|c| c.cwd.clone());
         // The chat's permission mode rides the Run request (ADR-0014): an
         // existing chat carries its stored mode; a fresh row takes the draft
-        // pick when one was made, else defaults to confirm-changes. (The
+        // pick when one was made, else the engine's sticky default. (The
         // field is advisory — the engine preserves the STORED mode; the
         // draft pick lands authoritatively via setChatPermissionMode below.)
+        let sticky_mode = self.pickers.read(cx).sticky_mode();
         let draft_mode = if is_new {
             self.pickers.read(cx).draft().permission_mode
         } else {
@@ -239,6 +240,7 @@ impl Composer {
                 .selected_chat_row()
                 .and_then(|c| c.config.as_ref().map(|config| config.permission_mode)),
             draft_mode,
+            sticky_mode,
         );
         let space = self.state.read(cx).selected_space_row().cloned();
         let local_device_id = self.state.read(cx).local_device_id.clone();

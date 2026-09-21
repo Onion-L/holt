@@ -181,6 +181,11 @@ pub mod methods {
     /// verdict releases the gate the run is blocked in; unknown ids fail —
     /// an approval resolves once.
     pub const RESOLVE_APPROVAL: &str = "ResolveApproval";
+    /// The engine's sticky permission-mode default for NEW chats (ADR-0014):
+    /// `{}` → `{ "mode": <kebab tier> }`. Read-only — the default moves only
+    /// through `Mutate setChatPermissionMode`. Lets the new-chat canvas chip
+    /// advertise the mode a first send would actually run under.
+    pub const GET_PERMISSION_MODE_DEFAULT: &str = "GetPermissionModeDefault";
     /// Plan Mode (ADR-0025). `EnterPlanMode` / `ExitPlanMode` take
     /// `{chatId}` and reply the chat's `holt_proto::PlanModeState`; both are
     /// idempotent (entering an already-planning chat replies its state).

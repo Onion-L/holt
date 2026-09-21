@@ -83,14 +83,15 @@ pub fn mode_index(mode: PermissionMode) -> usize {
 
 /// The mode-precedence rule, shared by the footer chip and the send path:
 /// the selected chat's stored config wins; on the new-chat canvas the draft
-/// pick applies; untouched means confirm-changes (the proto default — the
-/// engine's sticky default only reveals itself once the chat exists, an
-/// accepted limitation).
+/// pick applies; untouched means the engine's sticky default — what a first
+/// send would actually run under (fetched once via `GetPermissionModeDefault`,
+/// falling back to the proto default until it lands).
 pub fn resolve_permission_mode(
     chat_config: Option<PermissionMode>,
     draft_pick: Option<PermissionMode>,
+    sticky_default: PermissionMode,
 ) -> PermissionMode {
-    chat_config.or(draft_pick).unwrap_or_default()
+    chat_config.or(draft_pick).unwrap_or(sticky_default)
 }
 
 /// `Mutate setChatPermissionMode` with the send path's timeout + warn — the
@@ -128,9 +129,8 @@ pub(crate) fn plan_label(chat: Option<&Chat>) -> Option<String> {
 
 impl Pickers {
     /// The mode the chip advertises: the selected chat's stored mode; on the
-    /// new-chat canvas the draft pick, else confirm-changes (the first-launch
-    /// default — the engine's sticky default only reveals itself once the
-    /// chat exists and its watch row lands).
+    /// new-chat canvas the draft pick, else the engine's sticky default (the
+    /// mode a first send would inherit — fetched once the engine attaches).
     pub fn effective_permission_mode(&self, cx: &App) -> PermissionMode {
         resolve_permission_mode(
             self.state
@@ -139,7 +139,46 @@ impl Pickers {
                 .and_then(|chat| chat.config.as_ref())
                 .map(|config| config.permission_mode),
             self.config.permission_mode,
+            self.sticky_mode,
         )
+    }
+
+    /// Fetch the engine's sticky new-chat default (ADR-0014), once per
+    /// engine attach. Best-effort: a failure keeps the built-in default —
+    /// the engine stays authoritative either way.
+    pub(super) fn ensure_mode_default(&mut self, cx: &mut Context<Self>) {
+        if self.sticky_mode_loaded {
+            return;
+        }
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        self.sticky_mode_loaded = true;
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::GET_PERMISSION_MODE_DEFAULT, serde_json::json!({}))
+                .await;
+            this.update(cx, |pickers, cx| {
+                let mode = result
+                    .ok()
+                    .and_then(|value| {
+                        serde_json::from_value::<PermissionMode>(value["mode"].clone()).ok()
+                    })
+                    .or_else(|| {
+                        tracing::warn!(
+                            "GetPermissionModeDefault failed; keeping the built-in new-chat default"
+                        );
+                        None
+                    });
+                if let Some(mode) = mode {
+                    pickers.sticky_mode = mode;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// A tier pick from the menu. An existing chat switches through the mode
@@ -437,6 +476,30 @@ mod tests {
         );
         assert_eq!(mode_label(PermissionMode::AutoReview), "Auto review");
         assert_eq!(mode_label(PermissionMode::FullAccess), "Full access");
+    }
+
+    /// The precedence rule: the chat's stored config, then the canvas draft
+    /// pick, then the engine's sticky default — never a hardcoded tier.
+    #[test]
+    fn resolution_prefers_chat_then_draft_then_the_sticky_default() {
+        let sticky = PermissionMode::FullAccess;
+        assert_eq!(
+            resolve_permission_mode(
+                Some(PermissionMode::AutoReview),
+                Some(PermissionMode::ConfirmChanges),
+                sticky
+            ),
+            PermissionMode::AutoReview
+        );
+        assert_eq!(
+            resolve_permission_mode(None, Some(PermissionMode::ConfirmChanges), sticky),
+            PermissionMode::ConfirmChanges
+        );
+        // Untouched canvas: what a first send would actually inherit.
+        assert_eq!(
+            resolve_permission_mode(None, None, sticky),
+            PermissionMode::FullAccess
+        );
     }
 
     #[test]

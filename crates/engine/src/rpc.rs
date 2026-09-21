@@ -3653,6 +3653,12 @@ impl RpcService for EngineService {
             // `{approvalId, verdict}` with `holt_proto::ApprovalVerdict`
             // as the verdict.
             methods::RESOLVE_APPROVAL => self.resolve_approval(params),
+            // The sticky default new chats inherit (ADR-0014) — the
+            // new-chat canvas chip reads it so it can advertise the mode a
+            // first send would actually run under.
+            methods::GET_PERMISSION_MODE_DEFAULT => {
+                RpcReply::value(&serde_json::json!({ "mode": self.mode_default.get() }))
+            }
             methods::ENTER_PLAN_MODE => self.enter_plan_mode(params),
             methods::EXIT_PLAN_MODE => self.exit_plan_mode(params),
             methods::GET_PLAN_MODE => {
