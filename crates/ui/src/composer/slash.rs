@@ -69,13 +69,14 @@ impl SlashCandidate {
         }
     }
 
-    /// The row's primary label: a skill shows its bare name (the reference
-    /// menu style), a command its slash word — each row names its own
-    /// identity.
+    /// The row's primary label: the bare name for skills and commands
+    /// alike (reference menu style). The fill text keeps the slash —
+    /// see [`Self::title`].
     pub(crate) fn row_label(&self) -> String {
         match self {
-            SlashCandidate::Skill { name, .. } => name.to_string(),
-            SlashCandidate::Command { name, .. } => format!("/{name}"),
+            SlashCandidate::Skill { name, .. } | SlashCandidate::Command { name, .. } => {
+                name.to_string()
+            }
         }
     }
 
@@ -102,8 +103,8 @@ impl SlashCandidate {
     }
 
     /// What per-keystroke local filtering matches against: name plus
-    /// description for skills, the slash word plus description for
-    /// commands (typing `co` still finds `/compact`).
+    /// description for skills and commands alike (typing `co` still
+    /// finds `compact`).
     pub(crate) fn filter_label(&self) -> String {
         match self {
             SlashCandidate::Skill {
@@ -352,12 +353,11 @@ mod tests {
         assert_eq!(candidates[1].title(), "/skill grill");
         assert_eq!(candidates[1].row_label(), "grill");
         assert_eq!(candidates[1].root_tag(), Some("personal"));
-        assert_eq!(candidates[0].row_label(), "/compact");
+        assert_eq!(candidates[0].row_label(), "compact");
         assert_eq!(candidates[0].root_tag(), None);
-        // Filtering matches name+description for skills, slash word for
-        // commands.
+        // Filtering matches name+description for both sources.
         assert!(candidates[1].filter_label().contains("Grill a plan."));
-        assert!(candidates[0].filter_label().starts_with("/compact"));
+        assert!(candidates[0].filter_label().starts_with("compact"));
     }
 
     #[test]
