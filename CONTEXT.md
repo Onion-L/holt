@@ -119,3 +119,8 @@ _Avoid_: importing or registering a skill (placement in a skill root is the only
 _Avoid_: refs fixed at creation, locked session refs (a chat's working directory and branch are switchable at any time)
 _Avoid_: context, conversation, memory (for the model-facing message sequence — it is the History)
 _Avoid_: summarization, truncation, pruning (for shrinking the History — it is Compaction)
+- **MCP server**: an external tool provider Holt connects to as an MCP client over stdio or Streamable HTTP. Always written with the prefix; bare "server" stays reserved for the RPC backend.
+  _Avoid_: plugin, extension, connector
+- **MCP connection**: the engine-owned live link to one MCP server, shared by every chat on the device. A Turn snapshots the tools its connections offer when the Turn starts.
+- **MCP tool**: a tool an MCP server exposes. The model and the permission rules know it only by its two-level name `mcp__<server>__<tool>` — never bare, never server-less.
+  _Avoid_: remote tool, custom tool
