@@ -47,6 +47,7 @@ fi
 
 APP="$OUT_DIR/$APP_NAME.app"
 DMG="$OUT_DIR/$APP_NAME-$VERSION-$ARCH.dmg"
+TMP_DMG="$OUT_DIR/holt-tmp-$ARCH.dmg"
 ICONSET="$OUT_DIR/holt.iconset"
 STAGING="$OUT_DIR/holt-dmg-staging"
 
@@ -80,13 +81,64 @@ PLIST
 
 codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
-rm -rf "$STAGING" "$DMG"
+rm -rf "$STAGING" "$DMG" "$TMP_DMG"
 mkdir -p "$STAGING"
 cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
+
+# Build a read-write image first so the Finder window can be styled (background,
+# icon layout, volume icon), then convert to the compressed read-only DMG.
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING" -ov -format UDRW "$TMP_DMG" >/dev/null
+rm -rf "$STAGING"
+
+MOUNT_DIR="$(hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p')"
+if [[ -z "$MOUNT_DIR" ]]; then
+  echo "failed to mount $TMP_DMG" >&2
+  exit 1
+fi
+trap 'hdiutil detach "$MOUNT_DIR" -quiet 2>/dev/null || true' ERR
+DISK_NAME="$(basename "$MOUNT_DIR")"
+
+mkdir -p "$MOUNT_DIR/.background"
+tiffutil -cathidpicheck "$ROOT_DIR/assets/dmg/background.png" "$ROOT_DIR/assets/dmg/background@2x.png" -out "$MOUNT_DIR/.background/background.tiff"
+cp "$APP/Contents/Resources/AppIcon.icns" "$MOUNT_DIR/.VolumeIcon.icns"
+SetFile -c icnC "$MOUNT_DIR/.VolumeIcon.icns"
+SetFile -a C "$MOUNT_DIR"
+
+# Icon positions must match the artwork in assets/dmg/background.png.
+osascript - "$DISK_NAME" <<'APPLESCRIPT'
+on run argv
+  set diskName to item 1 of argv
+  tell application "Finder"
+    tell disk diskName
+      open
+      set current view of container window to icon view
+      set toolbar visible of container window to false
+      set statusbar visible of container window to false
+      set the bounds of container window to {400, 100, 1020, 480}
+      set viewOptions to the icon view options of container window
+      set arrangement of viewOptions to not arranged
+      set icon size of viewOptions to 104
+      set background picture of viewOptions to file ".background:background.tiff"
+      set position of item "Holt.app" of container window to {150, 145}
+      set position of item "Applications" of container window to {470, 145}
+      close
+      open
+      update without registering applications
+      delay 2
+      close
+    end tell
+  end tell
+end run
+APPLESCRIPT
+
+sync
+hdiutil detach "$MOUNT_DIR" -quiet
+trap - ERR
+hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -ov -o "$DMG" >/dev/null
+rm -f "$TMP_DMG"
+
 xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
-rm -rf "$STAGING"
 echo "Created $DMG"
