@@ -91,12 +91,13 @@ async fn a_stdio_servers_tools_join_the_toolset_and_run_in_a_turn() {
         ),
         "results: {summary:?}"
     );
-    // The transcript's unknown-tool part carries the full two-level name.
+    // The transcript folds the call onto the structured Mcp chip
+    // (server + tool), not the raw two-level name.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    assert!(
-        snapshot.to_string().contains("mcp__fixture__echo"),
-        "transcript: {snapshot}"
-    );
+    let snapshot = snapshot.to_string();
+    assert!(snapshot.contains("\"kind\":\"mcp\""), "{snapshot}");
+    assert!(snapshot.contains("\"server\":\"fixture\""), "{snapshot}");
+    assert!(snapshot.contains("\"tool\":\"echo\""), "{snapshot}");
 }
 
 #[tokio::test]

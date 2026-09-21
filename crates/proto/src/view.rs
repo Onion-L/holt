@@ -171,6 +171,26 @@ mod gate_tests {
     use super::*;
 
     #[test]
+    fn mcp_chips_read_as_display_names_not_raw_two_level_names() {
+        use crate::ToolCall;
+        let (label, detail) = tool_chip_content(&ToolCall::Mcp {
+            server: "dashboard-icons".into(),
+            tool: "suggest_icon".into(),
+            input: None,
+        });
+        assert_eq!(label, "MCP");
+        assert_eq!(detail, "DashboardIcons 【suggest_icon】");
+        // Single-word and underscored server names too.
+        let (label, detail) = tool_chip_content(&ToolCall::Mcp {
+            server: "github".into(),
+            tool: "get_readme".into(),
+            input: None,
+        });
+        assert_eq!(label, "MCP");
+        assert_eq!(detail, "Github 【get_readme】");
+    }
+
+    #[test]
     fn connection_status_drives_the_gate() {
         assert_eq!(
             gate_phase(&ConnectionStatus::Connecting, None, None),
@@ -370,7 +390,22 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
             let done = items.iter().filter(|i| i.done).count();
             ("Todo", format!("{done}/{} done", items.len()))
         }
-        ToolCall::Mcp { server, tool, .. } => ("MCP", format!("{server} · {tool}")),
+        ToolCall::Mcp { server, tool, .. } => {
+            // "dashboard-icons" reads as "DashboardIcons" — the raw
+            // two-level name stays in the expandable detail.
+            let display: String = server
+                .split(['-', '_'])
+                .filter(|word| !word.is_empty())
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect();
+            ("MCP", format!("{display} 【{tool}】"))
+        }
         // Subagent spawns decode as Unknown named "Agent[: <description>]"
         // (every native driver's convention): label them "Agent" with the
         // description as the detail — "Tool · Agent: scan repo" read as two

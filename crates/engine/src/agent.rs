@@ -944,6 +944,19 @@ fn decode_tool_call(
         "web_search" => TranscriptToolCall::WebSearch {
             query: arg("query").unwrap_or_default(),
         },
+        // MCP tools (ADR-0034) decode onto the structured Mcp chip: the
+        // two-level name splits at the first `__` after the prefix, the
+        // input rides verbatim. A server name containing `__` would
+        // mis-split the DISPLAY only — the full name stays authoritative
+        // in History and approval grants.
+        name if let Some(rest) = name.strip_prefix("mcp__") => {
+            let (server, tool) = rest.split_once("__").unwrap_or((rest, ""));
+            TranscriptToolCall::Mcp {
+                server: server.to_owned(),
+                tool: tool.to_owned(),
+                input: Some(serde_json::Value::Object(arguments.clone())),
+            }
+        }
         other => TranscriptToolCall::Unknown {
             name: other.to_owned(),
             input: Some(serde_json::Value::Object(arguments.clone())),
@@ -3025,6 +3038,20 @@ mod tests {
             TranscriptToolCall::WriteFile {
                 path: "a.rs".into(),
                 content: None,
+            }
+        );
+        // MCP two-level names decode onto the structured Mcp chip; like
+        // every chip, the sanitize pass drops the input (it stays in
+        // History and the expandable detail's live journal).
+        assert_eq!(
+            transcript_tool_call(&tool_call(
+                "mcp__dashboard-icons__suggest_icon",
+                serde_json::json!({ "query": "home" })
+            )),
+            TranscriptToolCall::Mcp {
+                server: "dashboard-icons".into(),
+                tool: "suggest_icon".into(),
+                input: None,
             }
         );
         assert_eq!(
