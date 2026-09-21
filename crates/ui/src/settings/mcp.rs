@@ -873,10 +873,12 @@ impl McpPage {
             }
             _ => {
                 let action_name = name.clone();
+                let action_theme = theme.clone();
                 row = row.child(
                     widgets::ghost_action(theme)
                         .id(SharedString::from(format!("mcp-test-{name}")))
                         .text_color(theme.text_muted)
+                        .hover(move |style| widgets::ghost_hover(&action_theme, style))
                         .on_click(cx.listener(move |page, _, _, cx| {
                             page.probe(cx, action_name.clone());
                         }))
