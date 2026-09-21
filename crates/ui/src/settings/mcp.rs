@@ -322,6 +322,11 @@ pub struct McpPage {
     validation_error: Option<String>,
     editor: Option<McpEditor>,
     probe: BTreeMap<String, ProbeView>,
+    /// The last enabled-toggle flip and when it happened — the animated
+    /// switch plays its slide only inside a short window after the click,
+    /// so loads and reloads never replay every knob slide at once (the
+    /// Skills page's pattern).
+    toggle_flip: Option<(String, std::time::Instant)>,
     /// The server name awaiting remove confirmation.
     confirm_remove: Option<String>,
     /// One slot per in-flight RPC: a dropped gpui `Task` cancels its
@@ -338,6 +343,7 @@ impl McpPage {
             validation_error: None,
             editor: None,
             probe: BTreeMap::new(),
+            toggle_flip: None,
             confirm_remove: None,
             tasks: Vec::new(),
         };
@@ -751,6 +757,20 @@ impl McpPage {
         let toggle_theme = theme.clone();
         let toggle_server = server.clone();
         let toggle_name = name.clone();
+        let animating = self.toggle_flip.as_ref().is_some_and(|(flipped, at)| {
+            flipped == &name && at.elapsed() < std::time::Duration::from_millis(400)
+        });
+        let switch = if animating {
+            // The state in the key restarts gpui's element-id-keyed clock,
+            // so the flip plays exactly once as the transition.
+            widgets::animated_toggle_switch(
+                &toggle_theme,
+                server.enabled,
+                format!("mcp-switch-{name}-{}", server.enabled),
+            )
+        } else {
+            widgets::toggle_switch(&toggle_theme, server.enabled)
+        };
         // The row: name + transport summary, the enabled toggle, and three
         // quiet text actions.
         let mut row = div()
@@ -805,8 +825,9 @@ impl McpPage {
                         let mut server = toggle_server.clone();
                         server.enabled = !server.enabled;
                         page.save(cx, toggle_name.clone(), server);
+                        page.toggle_flip = Some((toggle_name.clone(), std::time::Instant::now()));
                     }))
-                    .child(widgets::toggle_switch(&toggle_theme, server.enabled)),
+                    .child(switch),
             );
         for label in ["Test", "Edit", "Remove"] {
             let action_theme = theme.clone();
