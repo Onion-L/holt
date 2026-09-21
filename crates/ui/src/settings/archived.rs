@@ -352,6 +352,10 @@ impl Render for ArchivedPage {
                 )
             };
             let card = crate::popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.confirm_clear = false;
+                    cx.notify();
+                }))
                 .child(crate::popover::dialog_title(
                     &theme,
                     "Clear archived sessions?",

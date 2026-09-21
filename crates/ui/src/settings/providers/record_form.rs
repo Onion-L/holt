@@ -203,6 +203,15 @@ pub(super) fn record_form_dialog(
             )
     };
     let mut card = popover::dialog_card(theme)
+        // A mask click dismisses — unless the API dropdown is open, whose
+        // rows float outside this card's bounds and must survive the same
+        // press that closes the menu.
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| {
+            if page.record_api_menu.get().is_none() {
+                page.record_form = None;
+                cx.notify();
+            }
+        }))
         .w(px(560.0))
         .gap(px(14.0))
         .child(

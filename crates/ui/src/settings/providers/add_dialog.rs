@@ -79,6 +79,7 @@ pub(super) fn add_provider_dialog(
     // The AI tab is a chat surface: near-window size so the transcript has
     // room; the Manual tab keeps the compact form card.
     let mut card = popover::dialog_card(theme)
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_add_dialog(cx)))
         .w(if tab == AddProviderTab::Ai {
             px(760.0)
         } else {

@@ -1523,6 +1523,10 @@ impl Shell {
         });
         if let Some((_id, title)) = dirty_tab {
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.dirty_file_close = None;
+                    cx.notify();
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.dirty_file_close = None;
@@ -1580,6 +1584,10 @@ impl Shell {
                 .map(|row| row.display_name().to_string())
                 .unwrap_or_else(|| "This space".into());
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.dirty_space_close = None;
+                    cx.notify();
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.dirty_space_close = None;
@@ -1643,6 +1651,9 @@ impl Shell {
                 .unwrap_or(path.as_str())
                 .to_string();
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.cancel_trash_confirm(cx);
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.cancel_trash_confirm(cx);
@@ -1889,6 +1900,9 @@ impl Shell {
             let pending = dialog.pending;
             let input = dialog.input.clone();
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.close_file_op_dialog(cx);
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.close_file_op_dialog(cx);

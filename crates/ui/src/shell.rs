@@ -2155,6 +2155,10 @@ impl Shell {
             }
             let input = dialog.input.clone();
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.rename_dialog = None;
+                    cx.notify();
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.rename_dialog = None;
@@ -2216,6 +2220,10 @@ impl Shell {
                     .unwrap_or_else(|| "New session".into()),
             );
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.delete_confirm = None;
+                    cx.notify();
+                }))
                 .child(popover::dialog_title(&theme, "Delete session?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,
@@ -2260,6 +2268,10 @@ impl Shell {
                     .unwrap_or_else(|| "New session".into()),
             );
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.archive_confirm = None;
+                    cx.notify();
+                }))
                 .child(popover::dialog_title(&theme, "Archive session?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
                     &theme,

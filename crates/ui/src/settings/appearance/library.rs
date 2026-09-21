@@ -15,6 +15,10 @@ impl AppearancePage {
             .into_iter()
             .find(|entry| &entry.id == entry_id)?;
         let mut card = popover::dialog_card(theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.review_entry = None;
+                cx.notify();
+            }))
             .id("theme-review-card")
             .w(px(660.0))
             .max_h(px(720.0))

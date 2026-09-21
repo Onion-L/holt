@@ -813,6 +813,10 @@ impl Pickers {
             return div().into_any_element();
         };
         let mut card = popover::dialog_card(&theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.switch_dialog = None;
+                cx.notify();
+            }))
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {
                     this.switch_dialog = None;

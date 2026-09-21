@@ -293,6 +293,10 @@ pub(super) fn panel_danger_row(
 /// pattern): destructive, counted-out, explicit.
 pub(super) fn reset_all_dialog(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     popover::dialog_card(theme)
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| {
+            page.confirm_reset_all = false;
+            cx.notify();
+        }))
         .child(popover::dialog_title(theme, "Reset all providers?"))
         .child(div().mt(px(6.0)).child(popover::dialog_body(
             theme,

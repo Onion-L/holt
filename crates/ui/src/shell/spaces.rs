@@ -2458,6 +2458,10 @@ impl Shell {
             }
             let input = dialog.input.clone();
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.rename_space_dialog = None;
+                    cx.notify();
+                }))
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         this.rename_space_dialog = None;
@@ -2518,6 +2522,10 @@ impl Shell {
                 )
             };
             let card = popover::dialog_card(&theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.delete_space_confirm = None;
+                    cx.notify();
+                }))
                 .child(popover::dialog_title(&theme, "Remove project?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, copy)))
                 .child(
