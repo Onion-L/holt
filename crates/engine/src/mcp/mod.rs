@@ -23,7 +23,10 @@ use rmcp::{
     ServiceExt,
     model::{CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult, Tool},
     service::{RoleClient, RunningService, ServiceError},
-    transport::TokioChildProcess,
+    transport::{
+        StreamableHttpClientTransport, TokioChildProcess,
+        streamable_http_client::StreamableHttpClientTransportConfig,
+    },
 };
 use tokio_util::sync::CancellationToken;
 
@@ -216,8 +219,37 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
                 tool_timeout,
             })
         }
-        ServerTransport::Http { .. } => {
-            Err("http MCP servers are not supported yet (ticket 04)".into())
+        ServerTransport::Http {
+            url,
+            headers,
+            bearer_token_env_var,
+        } => {
+            let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone());
+            for (name, value) in headers {
+                let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|error| format!("header name {name:?} is invalid: {error}"))?;
+                let value = reqwest::header::HeaderValue::from_str(value)
+                    .map_err(|error| format!("header {name:?} value is invalid: {error}"))?;
+                config.custom_headers.insert(name, value);
+            }
+            if let Some(var) = bearer_token_env_var {
+                // Read from the named environment variable here — the value
+                // never lands in the config file, a log line, or an error
+                // string (ADR-0034).
+                let token = std::env::var(var)
+                    .map_err(|_| format!("bearer token environment variable {var:?} is not set"))?;
+                config.auth_header = Some(token);
+            }
+            let transport =
+                StreamableHttpClientTransport::with_client(reqwest_mcp::Client::new(), config);
+            let service = tokio::time::timeout(timeout, ().serve(transport))
+                .await
+                .map_err(|_| format!("{url:?} did not initialize within its startup timeout"))?
+                .map_err(|error| format!("could not initialize {url:?}: {error}"))?;
+            Ok(LiveServer {
+                service,
+                tool_timeout,
+            })
         }
     }
 }

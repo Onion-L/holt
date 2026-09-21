@@ -35,11 +35,21 @@ chrono.workspace = true
 tiktoken-rs = "0.7"
 reqwest.workspace = true
 htmd = "0.5"
-# The MCP client (ADR-0034): official SDK, client role only, stdio child
-# transport for now — no server role, no macros, no auth.
+# The MCP client (ADR-0034): official SDK, client role only — stdio
+# child transport plus Streamable HTTP. No server role, no macros, no
+# OAuth. rmcp 3.x speaks reqwest 0.13 while holt's own HTTP surface is
+# 0.12, so the renamed dep supplies rmcp's client (feature-unified with
+# rustls through rmcp's `reqwest` feature).
 rmcp = { version = "3.4", default-features = false, features = [
     "client",
     "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls",
 ] }
 
 # System-trash deletion (ticket 07): the same objc2-foundation the vendored
