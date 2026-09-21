@@ -236,16 +236,13 @@ fn parse_import(text: &str) -> Result<Vec<(String, McpServerView)>, String> {
 }
 
 /// What a probe reported, held per server name until the next probe.
+/// Success carries only the count — the tools themselves show up in the
+/// transcript the moment the model calls one.
 #[derive(Debug, Clone)]
 enum ProbeView {
     Running,
-    Ok {
-        tool_count: usize,
-        tool_names: Vec<String>,
-    },
-    Failed {
-        reason: String,
-    },
+    Ok { tool_count: usize },
+    Failed { reason: String },
 }
 
 /// Which transport the editor dialog is filling.
@@ -471,16 +468,6 @@ impl McpPage {
                 let view = if value["status"] == "ok" {
                     ProbeView::Ok {
                         tool_count: value["toolCount"].as_u64().unwrap_or(0) as usize,
-                        tool_names: value["toolNames"]
-                            .as_array()
-                            .map(|names| {
-                                names
-                                    .iter()
-                                    .filter_map(serde_json::Value::as_str)
-                                    .map(str::to_string)
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
                     }
                 } else {
                     ProbeView::Failed {
@@ -777,8 +764,6 @@ impl McpPage {
             .w_full()
             .px(px(12.0))
             .py(px(10.0))
-            .rounded(px(8.0))
-            .hover(|state| state.bg(ink(0.03)))
             .flex()
             .flex_row()
             .items_center()
@@ -829,7 +814,49 @@ impl McpPage {
                     }))
                     .child(switch),
             );
-        for label in ["Test", "Edit", "Remove"] {
+        // The Test slot: the probe state lives here, in place — "Testing…"
+        // while running, a compact ✓ pill when it passed (click to run
+        // again), the plain action otherwise. Only a failure earns a line
+        // below the row, because the reason is the one thing this slot
+        // cannot carry.
+        match self.probe.get(&server.name) {
+            Some(ProbeView::Running) => {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted.opacity(0.7))
+                        .child("Testing…"),
+                );
+            }
+            Some(ProbeView::Ok { tool_count }) => {
+                let count = *tool_count;
+                let action_name = name.clone();
+                row = row.child(
+                    div()
+                        .id(SharedString::from(format!("mcp-test-{name}")))
+                        .flex_none()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.probe(cx, action_name.clone());
+                        }))
+                        .child(widgets::badge_active(theme, format!("✓ {count} tools"))),
+                );
+            }
+            _ => {
+                let action_name = name.clone();
+                row = row.child(
+                    widgets::ghost_action(theme)
+                        .id(SharedString::from(format!("mcp-test-{name}")))
+                        .text_color(theme.text_muted)
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.probe(cx, action_name.clone());
+                        }))
+                        .child("Test"),
+                );
+            }
+        }
+        for label in ["Edit", "Remove"] {
             let action_theme = theme.clone();
             let action_name = name.clone();
             let danger = label == "Remove";
@@ -848,7 +875,6 @@ impl McpPage {
                     .on_click(cx.listener(move |page, _, _, cx| {
                         cx.stop_propagation();
                         match label {
-                            "Test" => page.probe(cx, action_name.clone()),
                             "Edit" => {
                                 let server = page.servers.ready().and_then(|servers| {
                                     servers
@@ -913,26 +939,13 @@ impl McpPage {
                     ),
             );
         }
-        // The probe result.
-        if let Some(view) = self.probe.get(&server.name) {
-            let strip = match view {
-                ProbeView::Running => widgets::row_description(theme, "Testing…"),
-                ProbeView::Ok {
-                    tool_count,
-                    tool_names,
-                } => {
-                    let names = if tool_names.len() > 8 {
-                        format!("{} …", tool_names[..8].join(", "))
-                    } else {
-                        tool_names.join(", ")
-                    };
-                    widgets::row_description(theme, format!("ok · {tool_count} tools: {names}"))
-                }
-                ProbeView::Failed { reason } => {
-                    widgets::error_strip(theme, format!("Test failed: {reason}"))
-                }
-            };
-            column = column.child(strip);
+        // Only a failure earns a line — the reason is the one thing the
+        // compact slot cannot carry.
+        if let Some(ProbeView::Failed { reason }) = self.probe.get(&server.name) {
+            column = column.child(widgets::error_strip(
+                theme,
+                format!("Test failed: {reason}"),
+            ));
         }
         column.into_any_element()
     }
