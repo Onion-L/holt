@@ -2,12 +2,14 @@
 //! shows a count — a subagent chip's summary and the status strip's usage
 //! line — so the same number never reads two ways.
 
-/// A compact token count: `999`, `1.5k`, `1M`. The scale switches where a
-/// branch's own rounding would carry into the next suffix (a plain `>= 1k`
-/// test prints `999_999` as `1000.0k`), and a trailing `.0` is dropped so a
-/// million reads `1M`, not `1.0M`.
+/// A compact token count: `999`, `1.5k`, `1M`, `1.5B`. The scale switches
+/// where a branch's own rounding would carry into the next suffix (a plain
+/// `>= 1k` test prints `999_999` as `1000.0k`), and a trailing `.0` is
+/// dropped so a billion reads `1B`, not `1.0B`.
 pub(crate) fn compact_tokens(tokens: u64) -> String {
-    let (scale, suffix) = if tokens >= 999_950 {
+    let (scale, suffix) = if tokens >= 999_950_000 {
+        (1_000_000_000.0, "B")
+    } else if tokens >= 999_950 {
         (1_000_000.0, "M")
     } else if tokens >= 1_000 {
         (1_000.0, "k")
@@ -35,5 +37,9 @@ mod tests {
         assert_eq!(compact_tokens(1_000_000), "1M");
         assert_eq!(compact_tokens(272_000), "272k");
         assert_eq!(compact_tokens(1_050_000), "1.1M");
+        assert_eq!(compact_tokens(999_949_999), "999.9M");
+        assert_eq!(compact_tokens(999_950_000), "1B");
+        assert_eq!(compact_tokens(1_019_364_363), "1B");
+        assert_eq!(compact_tokens(1_050_000_000), "1.1B");
     }
 }
