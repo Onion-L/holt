@@ -57,33 +57,55 @@ impl McpPool {
             if !server.enabled {
                 continue;
             }
-            let connection = match connections.get(&name) {
-                Some(connection) => Arc::clone(connection),
-                None => match connect(&server).await {
-                    Ok(connection) => {
-                        let connection = Arc::new(connection);
-                        connections.insert(name.clone(), Arc::clone(&connection));
-                        connection
-                    }
-                    // A server that cannot start is skipped for this Turn
-                    // (log line, tools absent); the next Turn retries.
+            // A cached connection whose list has gone stale (a child that
+            // died since the last Turn) is dropped and reconnected in the
+            // same pass — a server restarted between Turns works again on
+            // the very next one, no app restart (ADR-0034).
+            let mut fresh: Option<(Arc<LiveServer>, ListToolsResult)> = None;
+            if let Some(connection) = connections.get(&name).cloned() {
+                match connection.list_tools().await {
+                    Ok(list) => fresh = Some((connection, list)),
                     Err(error) => {
                         tracing::warn!(
                             target: "holt::mcp",
                             server = %name,
                             %error,
-                            "mcp server failed to connect; skipping it for this turn"
+                            "mcp connection went stale; reconnecting for this turn"
                         );
-                        continue;
+                        connections.remove(&name);
                     }
-                },
+                }
+            }
+            let hit = match fresh {
+                Some(hit) => Some(hit),
+                None => connect_fresh(&mut connections, &name, &server).await,
             };
-            match connection.list_tools().await {
-                Ok(list) => tools.extend(
-                    list.tools
-                        .into_iter()
-                        .map(|tool| wrap_server_tool(&name, tool, &connection)),
-                ),
+            let Some((connection, list)) = hit else {
+                continue;
+            };
+            tools.extend(
+                list.tools
+                    .into_iter()
+                    .map(|tool| wrap_server_tool(&name, tool, &connection)),
+            );
+        }
+        tools
+    }
+}
+
+/// Connect (or reconnect) one server and list its tools, caching the
+/// live connection on success. `None` — with a log line — skips the
+/// server for this Turn.
+async fn connect_fresh(
+    connections: &mut HashMap<String, Arc<LiveServer>>,
+    name: &str,
+    server: &McpServer,
+) -> Option<(Arc<LiveServer>, ListToolsResult)> {
+    match connect(server).await {
+        Ok(connection) => {
+            let connection = Arc::new(connection);
+            let list = match connection.list_tools().await {
+                Ok(list) => list,
                 Err(error) => {
                     tracing::warn!(
                         target: "holt::mcp",
@@ -91,20 +113,34 @@ impl McpPool {
                         %error,
                         "mcp server failed to list tools; skipping it for this turn"
                     );
-                    // Drop the dead entry so the next Turn reconnects.
-                    connections.remove(&name);
+                    return None;
                 }
-            }
+            };
+            connections.insert(name.to_string(), Arc::clone(&connection));
+            Some((connection, list))
         }
-        tools
+        // A server that cannot start is skipped for this Turn (log line,
+        // tools absent); the next Turn retries the same lazy way.
+        Err(error) => {
+            tracing::warn!(
+                target: "holt::mcp",
+                server = %name,
+                %error,
+                "mcp server failed to connect; skipping it for this turn"
+            );
+            None
+        }
     }
 }
 
 /// One live server connection: the running client service over its
 /// transport. Holding it keeps the child (or HTTP session) alive; dropping
-/// the last reference shuts it down.
+/// the last reference shuts it down. The per-call timeout (the server's
+/// `toolTimeoutMs`, default 60 s) is every `tools/call`'s hard wall — a
+/// hung server cannot wedge the chat.
 struct LiveServer {
     service: RunningService<RoleClient, ()>,
+    tool_timeout: Duration,
 }
 
 impl LiveServer {
@@ -124,10 +160,11 @@ impl LiveServer {
     ) -> Result<CallToolResult, String> {
         let mut params = CallToolRequestParams::new(name.to_owned());
         params.arguments = arguments.as_object().cloned();
-        let response = self
-            .service
-            .call_tool_once(params)
+        let response = tokio::time::timeout(self.tool_timeout, self.service.call_tool_once(params))
             .await
+            .map_err(|_| {
+                format!("mcp tool {name:?} exceeded its call timeout; the call was aborted")
+            })?
             .map_err(|error| service_error(&error))?;
         match response {
             CallToolResponse::Complete(result) => Ok(result),
@@ -155,6 +192,7 @@ fn service_error(error: &ServiceError) -> String {
 /// config layer (ticket 06).
 async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     let timeout = Duration::from_millis(server.startup_timeout_ms);
+    let tool_timeout = Duration::from_millis(server.tool_timeout_ms);
     match &server.transport {
         ServerTransport::Stdio {
             command,
@@ -173,7 +211,10 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
                 .await
                 .map_err(|_| format!("{command:?} did not initialize within its startup timeout"))?
                 .map_err(|error| format!("could not initialize {command:?}: {error}"))?;
-            Ok(LiveServer { service })
+            Ok(LiveServer {
+                service,
+                tool_timeout,
+            })
         }
         ServerTransport::Http { .. } => {
             Err("http MCP servers are not supported yet (ticket 04)".into())

@@ -7,10 +7,17 @@
 //!
 //! - `FIXTURE_MARKER`: a path touched once the process starts — the lazy-
 //!   start and never-started assertions watch it.
-//! - `FIXTURE_LIST_CHANGED_AFTER`: touch `tools/list` this many times
-//!   before emitting a `notifications/tools/list_changed` (ticket 03).
+//! - `FIXTURE_LIST_CHANGED_AFTER`: emit `notifications/tools/list_changed`
+//!   after this many `tools/list` calls (ticket 03).
 //! - `FIXTURE_EXIT_ON_CALL`: exit the process when the Nth `tools/call`
 //!   arrives (ticket 03's mid-Turn death).
+//! - `FIXTURE_STALL_INITIALIZE`: never answer `initialize` — the startup
+//!   timeout's hang stand-in (ticket 03).
+//! - `FIXTURE_SLOW_CALL_MS`: sleep this many ms before answering each
+//!   `tools/call` (ticket 03's per-call timeout).
+//! - `FIXTURE_ONE_TOOL_FIRST_LIST`: the first `tools/list` answers with
+//!   only `echo`; later lists answer with the full set (ticket 03's
+//!   listChanged-lands-next-Turn).
 //!
 //! stdout carries protocol messages only; diagnostics go to stderr.
 
@@ -84,6 +91,11 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
     let id = message.get("id").cloned();
     match (method.as_str(), id) {
         ("initialize", Some(id)) => {
+            if std::env::var("FIXTURE_STALL_INITIALIZE").is_ok() {
+                // Hang the handshake: the client's startup timeout is the
+                // behavior under test.
+                return Ok(());
+            }
             // Echo the requested protocol version: the fixture speaks
             // whatever the client asked for.
             let version = message["params"]["protocolVersion"]
@@ -103,7 +115,13 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
         ("ping", Some(id)) => reply(&id, serde_json::json!({})),
         ("tools/list", Some(id)) => {
             let count = LIST_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            reply(&id, serde_json::json!({ "tools": tools() }));
+            let one_tool = std::env::var("FIXTURE_ONE_TOOL_FIRST_LIST").is_ok() && count == 0;
+            let listed = if one_tool {
+                serde_json::Value::Array(vec![tools()[0].clone()])
+            } else {
+                tools()
+            };
+            reply(&id, serde_json::json!({ "tools": listed }));
             if let Ok(after) = std::env::var("FIXTURE_LIST_CHANGED_AFTER")
                 && count >= after.parse::<usize>().unwrap_or(0)
             {
@@ -114,6 +132,10 @@ fn serve(message: &serde_json::Value) -> Result<(), String> {
             }
         }
         ("tools/call", Some(id)) => {
+            if let Ok(slow) = std::env::var("FIXTURE_SLOW_CALL_MS") {
+                let ms: u64 = slow.parse().unwrap_or(0);
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             let name = message["params"]["name"].as_str().unwrap_or_default();
             let arguments = message["params"]["arguments"].clone();
             match name {
