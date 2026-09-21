@@ -193,9 +193,19 @@ struct McpEditor {
     error: Option<String>,
 }
 
-/// Parse `KEY=VALUE` (or `Key: value`) lines into a map — the env and
-/// headers fields' wire form.
-fn parse_pair_lines(text: &str) -> BTreeMap<String, String> {
+/// Parse `KEY=VALUE` lines — the env field's wire form. The value keeps
+/// any `:` or later `=` it carries.
+fn parse_env_lines(text: &str) -> BTreeMap<String, String> {
+    parse_pair_lines(text, '=')
+}
+
+/// Parse `Header-Name: value` lines — the headers field's wire form. The
+/// value keeps any `=` it carries.
+fn parse_header_lines(text: &str) -> BTreeMap<String, String> {
+    parse_pair_lines(text, ':')
+}
+
+fn parse_pair_lines(text: &str, separator: char) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -203,8 +213,7 @@ fn parse_pair_lines(text: &str) -> BTreeMap<String, String> {
             continue;
         }
         let split = line
-            .split_once('=')
-            .or_else(|| line.split_once(':'))
+            .split_once(separator)
             .map(|(name, value)| (name.trim(), value.trim()))
             .filter(|(name, _)| !name.is_empty());
         if let Some((name, value)) = split {
@@ -222,7 +231,10 @@ pub struct McpPage {
     probe: BTreeMap<String, ProbeView>,
     /// The server name awaiting remove confirmation.
     confirm_remove: Option<String>,
-    task: Option<Task<()>>,
+    /// One slot per in-flight RPC: a dropped gpui `Task` cancels its
+    /// future, so concurrent actions (a probe plus an enabled toggle)
+    /// must not evict each other.
+    tasks: Vec<Task<()>>,
 }
 
 impl McpPage {
@@ -234,7 +246,7 @@ impl McpPage {
             editor: None,
             probe: BTreeMap::new(),
             confirm_remove: None,
-            task: None,
+            tasks: Vec::new(),
         };
         page.load(cx);
         page
@@ -251,7 +263,7 @@ impl McpPage {
             self.servers = Loadable::Error("Engine not connected".into());
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.tasks.push(cx.spawn(async move |this, cx| {
             let result = engine.client().call(method, params).await;
             this.update(cx, |page, cx| {
                 match result {
@@ -516,7 +528,7 @@ impl McpPage {
                     .filter(|line| !line.is_empty())
                     .map(str::to_string)
                     .collect();
-                server.env = parse_pair_lines(editor.env.read(cx).text());
+                server.env = parse_env_lines(editor.env.read(cx).text());
                 let cwd = editor.cwd.read(cx).text().trim().to_string();
                 server.cwd = (!cwd.is_empty()).then_some(cwd);
             }
@@ -526,7 +538,7 @@ impl McpPage {
                     return Err("An http server needs a URL.".into());
                 }
                 server.url = Some(url);
-                server.headers = parse_pair_lines(editor.headers.read(cx).text());
+                server.headers = parse_header_lines(editor.headers.read(cx).text());
                 let bearer = editor.bearer.read(cx).text().trim().to_string();
                 server.bearer_token_env_var = (!bearer.is_empty()).then_some(bearer);
             }
@@ -1105,14 +1117,25 @@ mod tests {
     }
 
     #[test]
-    fn pair_lines_parse_both_separators() {
-        let map = parse_pair_lines("A=1\nHeader-Name: two words\n# comment\n\nB=x=y");
+    fn env_lines_split_on_equals_only() {
+        let map = parse_env_lines("A=1\nKEY=http://x/y\n# not a pair\n\nB=x=y");
         assert_eq!(map.get("A").map(String::as_str), Some("1"));
-        assert_eq!(
-            map.get("Header-Name").map(String::as_str),
-            Some("two words")
-        );
+        // A URL in the value keeps its colons and slashes.
+        assert_eq!(map.get("KEY").map(String::as_str), Some("http://x/y"));
         assert_eq!(map.get("B").map(String::as_str), Some("x=y"));
         assert_eq!(map.len(), 3);
+    }
+
+    #[test]
+    fn header_lines_split_on_colons_only() {
+        let map = parse_header_lines("Authorization: Bearer abc=def\nX-Static: 1\nbroken");
+        // An `=` inside the value never splits the header.
+        assert_eq!(
+            map.get("Authorization").map(String::as_str),
+            Some("Bearer abc=def")
+        );
+        assert_eq!(map.get("X-Static").map(String::as_str), Some("1"));
+        // A line without the separator is dropped, never half-parsed.
+        assert_eq!(map.len(), 2);
     }
 }
