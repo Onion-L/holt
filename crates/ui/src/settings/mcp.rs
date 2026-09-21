@@ -488,11 +488,17 @@ impl McpPage {
                 cx.notify();
                 // The ✓ pill is a transient confirmation: back to Test
                 // after a few seconds. The landing time guards against a
-                // stale timer wiping a fresher re-test's result.
+                // stale timer wiping a fresher re-test's result. The delay
+                // rides gpui's own executor timer — this future runs on
+                // gpui's scheduler, which is no tokio runtime, so a
+                // `tokio::time::sleep` here would abort the app.
                 if succeeded {
                     let revert = name.clone();
+                    let timer = cx
+                        .background_executor()
+                        .timer(std::time::Duration::from_secs(2));
                     page.tasks.push(cx.spawn(async move |this, cx| {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        timer.await;
                         this.update(cx, |page, cx| {
                             if matches!(
                                 page.probe.get(&revert),
