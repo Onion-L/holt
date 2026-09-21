@@ -18,6 +18,7 @@ pub mod appearance;
 pub mod archived;
 pub mod composer;
 pub mod general;
+pub mod mcp;
 pub mod providers;
 pub mod shortcuts;
 pub mod skills;

@@ -324,17 +324,19 @@ pub enum SettingsSection {
     Appearance,
     Shortcuts,
     Skills,
+    Mcp,
     Usage,
     Archived,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
+    pub const ALL: [SettingsSection; 8] = [
         SettingsSection::General,
         SettingsSection::Providers,
         SettingsSection::Appearance,
         SettingsSection::Shortcuts,
         SettingsSection::Skills,
+        SettingsSection::Mcp,
         SettingsSection::Usage,
         SettingsSection::Archived,
     ];
@@ -347,6 +349,7 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::Skills => "Skills",
+            SettingsSection::Mcp => "MCP Servers",
             SettingsSection::Usage => "Usage",
             SettingsSection::General => "General",
             SettingsSection::Archived => "Archived sessions",
@@ -695,6 +698,7 @@ pub struct Shell {
     providers_page: Option<Entity<ProvidersPage>>,
     providers_sub: Option<Subscription>,
     skills_page: Option<Entity<crate::settings::skills::SkillsPage>>,
+    mcp_page: Option<Entity<crate::settings::mcp::McpPage>>,
     general_page: Option<Entity<crate::settings::general::GeneralPage>>,
     usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
     /// Last action failure from the providers page, shown as the window-top
@@ -1055,6 +1059,7 @@ impl Shell {
             file_seq: 0,
             route,
             nav,
+            mcp_page: None,
             archived_page: None,
             appearance_page: None,
             shortcuts_page: None,
@@ -1831,6 +1836,17 @@ impl Shell {
                         Some(cx.new(|cx| crate::settings::general::GeneralPage::new(state, cx)));
                 }
                 match &self.general_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Mcp => {
+                if self.mcp_page.is_none() {
+                    let state = self.state.clone();
+                    self.mcp_page =
+                        Some(cx.new(|cx| crate::settings::mcp::McpPage::new(state, cx)));
+                }
+                match &self.mcp_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }

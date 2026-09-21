@@ -120,6 +120,7 @@ impl Shell {
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Skills => icons::WIDGET,
+            SettingsSection::Mcp => icons::CUBE,
             SettingsSection::Usage => icons::CHART_COLUMN,
             SettingsSection::General => icons::SETTINGS_MINIMALISTIC,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
