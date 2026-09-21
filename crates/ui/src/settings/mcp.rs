@@ -492,12 +492,12 @@ impl McpPage {
                 if succeeded {
                     let revert = name.clone();
                     page.tasks.push(cx.spawn(async move |this, cx| {
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         this.update(cx, |page, cx| {
                             if matches!(
                                 page.probe.get(&revert),
                                 Some(ProbeView::Ok { at, .. })
-                                    if at.elapsed() >= std::time::Duration::from_secs(5)
+                                    if at.elapsed() >= std::time::Duration::from_secs(2)
                             ) {
                                 page.probe.remove(&revert);
                                 cx.notify();
