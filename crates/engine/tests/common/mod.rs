@@ -272,6 +272,13 @@ impl ScriptedProvider {
                     .iter()
                     .map(|tool| tool.name.clone())
                     .collect(),
+                tool_descriptions: context
+                    .tools
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|tool| tool.description.clone())
+                    .collect(),
             });
             let reply = match &title {
                 Some(title)
@@ -351,6 +358,10 @@ pub struct RecordedRequest {
     /// How many tools the request advertised (0 = a bare completion).
     pub tools: usize,
     pub tool_names: Vec<String>,
+    /// Each advertised tool's description, aligned with `tool_names` —
+    /// the seam that proves server-side text reached the model verbatim
+    /// (or capped, for the MCP ceilings).
+    pub tool_descriptions: Vec<String>,
 }
 
 /// Render one scripted reply onto a fresh stream as its terminal event —

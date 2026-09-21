@@ -21,7 +21,9 @@ use pi_core::{
 };
 use rmcp::{
     ServiceExt,
-    model::{CallToolRequestParams, CallToolResponse, CallToolResult, ListToolsResult, Tool},
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, PaginatedRequestParams, Tool,
+    },
     service::{RoleClient, RunningService, ServiceError},
     transport::{
         StreamableHttpClientTransport, TokioChildProcess,
@@ -64,7 +66,7 @@ impl McpPool {
             // died since the last Turn) is dropped and reconnected in the
             // same pass — a server restarted between Turns works again on
             // the very next one, no app restart (ADR-0034).
-            let mut fresh: Option<(Arc<LiveServer>, ListToolsResult)> = None;
+            let mut fresh: Option<(Arc<LiveServer>, Vec<Tool>)> = None;
             if let Some(connection) = connections.get(&name).cloned() {
                 match connection.list_tools().await {
                     Ok(list) => fresh = Some((connection, list)),
@@ -87,8 +89,7 @@ impl McpPool {
                 continue;
             };
             tools.extend(
-                list.tools
-                    .into_iter()
+                list.into_iter()
                     .map(|tool| wrap_server_tool(&name, tool, &connection)),
             );
         }
@@ -103,7 +104,7 @@ async fn connect_fresh(
     connections: &mut HashMap<String, Arc<LiveServer>>,
     name: &str,
     server: &McpServer,
-) -> Option<(Arc<LiveServer>, ListToolsResult)> {
+) -> Option<(Arc<LiveServer>, Vec<Tool>)> {
     match connect(server).await {
         Ok(connection) => {
             let connection = Arc::new(connection);
@@ -119,6 +120,18 @@ async fn connect_fresh(
                     return None;
                 }
             };
+            // A server listing an illegal or overlong tool name is
+            // rejected here — truncating would make an approval rule
+            // point at the wrong tool (ADR-0034).
+            if let Some(bad) = list.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
+                tracing::warn!(
+                    target: "holt::mcp",
+                    server = %name,
+                    tool = %bad.name,
+                    "mcp server lists an illegal tool name; refusing the server"
+                );
+                return None;
+            }
             connections.insert(name.to_string(), Arc::clone(&connection));
             Some((connection, list))
         }
@@ -147,12 +160,27 @@ struct LiveServer {
 }
 
 impl LiveServer {
-    /// `tools/list`, one page (pagination following is ticket 05).
-    async fn list_tools(&self) -> Result<ListToolsResult, String> {
-        self.service
-            .list_tools(None)
-            .await
-            .map_err(|error| service_error(&error))
+    /// `tools/list`, following pagination to completion with a 100-page
+    /// cap (ADR-0034) — a server that pages past the ceiling is refused,
+    /// never silently truncated.
+    async fn list_tools(&self) -> Result<Vec<Tool>, String> {
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let page = self
+                .service
+                .list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+                .await
+                .map_err(|error| service_error(&error))?;
+            tools.extend(page.tools);
+            match page.next_cursor {
+                Some(next) if !next.is_empty() => cursor = Some(next),
+                _ => return Ok(tools),
+            }
+        }
+        Err(format!(
+            "tools/list paged past the {MAX_LIST_PAGES}-page ceiling"
+        ))
     }
 
     /// One `tools/call`.
@@ -254,18 +282,71 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     }
 }
 
+/// Resource ceilings (ADR-0034): what an MCP server may push into the
+/// model's context before the engine caps it.
+/// Tool descriptions truncate at 2 KB.
+const MAX_DESCRIPTION_BYTES: usize = 2 * 1024;
+/// Result text caps at 100k characters, joined text blocks included.
+const MAX_RESULT_CHARS: usize = 100_000;
+/// `tools/list` pagination follows to completion, but stops — and refuses
+/// the listing — past this many pages.
+const MAX_LIST_PAGES: usize = 100;
+/// A tool name the two-level scheme can carry verbatim (the 2025-11-25
+/// spec's `[a-zA-Z0-9_-]{1,64}`). A server listing anything else is
+/// rejected at connect; names are never truncated or rewritten.
+fn tool_name_is_legal(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Truncate a tool description at the 2 KB ceiling with an in-band marker.
+fn truncate_description(description: &str) -> String {
+    if description.len() <= MAX_DESCRIPTION_BYTES {
+        return description.to_string();
+    }
+    // Cut on a char boundary at or before the cap, keeping room for the
+    // marker.
+    let mut end = MAX_DESCRIPTION_BYTES;
+    while end > 0 && !description.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n…[description truncated at {} bytes]",
+        &description[..end],
+        MAX_DESCRIPTION_BYTES
+    )
+}
+
+/// Cap joined result text at the 100k-character ceiling with an in-band
+/// marker.
+fn truncate_result(text: &str) -> String {
+    if text.chars().count() <= MAX_RESULT_CHARS {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(MAX_RESULT_CHARS).collect();
+    out.push_str(&format!(
+        "\n…[result truncated at {} characters]",
+        MAX_RESULT_CHARS
+    ));
+    out
+}
+
 /// Wrap one listed server tool as a standard agent tool (ADR-0034): the
-/// two-level name, the description and input schema as received, execute
-/// forwarding to `tools/call` under the server's call timeout. Text
-/// content blocks join with newlines; `isError` results settle as error
-/// results the model reads.
+/// two-level name, the description (capped at 2 KB) and input schema as
+/// received, execute forwarding to `tools/call` under the server's call
+/// timeout. Text content blocks join with newlines, cap at 100k
+/// characters, and drop non-text blocks with an in-band notice;
+/// `isError` results settle as error results the model reads.
 fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> AgentTool {
     let tool_name = tool.name.to_string();
     let label = tool
         .title
         .clone()
         .unwrap_or_else(|| format!("MCP {server} · {tool_name}"));
-    let description = tool.description.as_deref().unwrap_or_default().to_string();
+    let description = truncate_description(tool.description.as_deref().unwrap_or_default());
     let parameters = serde_json::Value::Object((*tool.input_schema).clone());
     let connection = Arc::clone(connection);
     AgentTool {
@@ -286,7 +367,17 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
                 let params = params.clone();
                 Box::pin(async move {
                     let result = connection.call(&name, &params).await?;
-                    let text = join_text_content(&result);
+                    // Join, cap, then append the non-text notice — the
+                    // notice must survive the cap, or a flood would hide
+                    // that content was dropped at all.
+                    let (joined, dropped_non_text) = split_text_content(&result);
+                    let mut text = truncate_result(&joined);
+                    if dropped_non_text {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str("[non-text content blocks were dropped]");
+                    }
                     if result.is_error.unwrap_or(false) {
                         let reason = if text.trim().is_empty() {
                             format!("mcp tool {name:?} reported an error without detail")
@@ -308,10 +399,10 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
     }
 }
 
-/// Text content blocks joined with newlines; non-text blocks (images,
-/// audio, embedded resources) drop with an in-band notice, and
-/// `structuredContent` is ignored (ADR-0034).
-fn join_text_content(result: &CallToolResult) -> String {
+/// Split a result's content: text blocks joined with newlines, plus
+/// whether any non-text block (images, audio, embedded resources) was
+/// dropped. `structuredContent` is ignored (ADR-0034).
+fn split_text_content(result: &CallToolResult) -> (String, bool) {
     let mut parts = Vec::new();
     let mut dropped_non_text = false;
     for block in &result.content {
@@ -320,12 +411,63 @@ fn join_text_content(result: &CallToolResult) -> String {
             _ => dropped_non_text = true,
         }
     }
-    let mut text = parts.join("\n");
-    if dropped_non_text {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str("[non-text content blocks were dropped]");
+    (parts.join("\n"), dropped_non_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptions_truncate_at_two_kilobytes_with_a_marker() {
+        let short = truncate_description("short description");
+        assert_eq!(short, "short description");
+        let verbose = "v".repeat(3 * 1024);
+        let truncated = truncate_description(&verbose);
+        assert!(
+            truncated.len() < verbose.len(),
+            "the 3 KB description must shrink"
+        );
+        assert!(
+            truncated.contains("description truncated at 2048 bytes"),
+            "marker missing: {}…",
+            truncated.chars().rev().take(80).collect::<String>()
+        );
+        assert!(truncated.starts_with(&verbose[..1024]));
+        // Exactly-at-the-cap text passes untouched.
+        let exact = "d".repeat(MAX_DESCRIPTION_BYTES);
+        assert_eq!(truncate_description(&exact), exact);
+        // Multibyte characters cut on a char boundary, never mid-codepoint.
+        let multibyte = "é".repeat(MAX_DESCRIPTION_BYTES);
+        let truncated = truncate_description(&multibyte);
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
-    text
+
+    #[test]
+    fn results_cap_at_one_hundred_thousand_characters_with_a_marker() {
+        let fine = truncate_result("small");
+        assert_eq!(fine, "small");
+        let huge: String = "x".repeat(MAX_RESULT_CHARS + 5_000);
+        let capped = truncate_result(&huge);
+        assert!(
+            capped.contains("result truncated at 100000 characters"),
+            "marker missing"
+        );
+        let without_marker_len = capped.find("\n…[").unwrap();
+        assert_eq!(without_marker_len, MAX_RESULT_CHARS);
+        let exact: String = "y".repeat(MAX_RESULT_CHARS);
+        assert_eq!(truncate_result(&exact).chars().count(), MAX_RESULT_CHARS);
+    }
+
+    #[test]
+    fn tool_names_validate_the_two_level_carrier() {
+        assert!(tool_name_is_legal("echo"));
+        assert!(tool_name_is_legal("a-b_C9"));
+        assert!(tool_name_is_legal(&"n".repeat(64)));
+        // Illegal: empty, overlong, or outside [A-Za-z0-9_-].
+        assert!(!tool_name_is_legal(""));
+        assert!(!tool_name_is_legal(&"n".repeat(65)));
+        assert!(!tool_name_is_legal("bad name"));
+        assert!(!tool_name_is_legal("bad/name"));
+    }
 }
