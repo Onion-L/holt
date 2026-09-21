@@ -995,6 +995,13 @@ impl McpPage {
         let cancel_theme = theme.clone();
         let card = popover::dialog_card(theme)
             .w(px(440.0))
+            .id("mcp-editor-card")
+            // A mask click dismisses — the same outside-click close the
+            // popover menus use.
+            .on_mouse_down_out(cx.listener(|page, _, _, cx| {
+                page.editor = None;
+                cx.notify();
+            }))
             .on_key_down(cx.listener(|page, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {
                     page.editor = None;
@@ -1070,6 +1077,11 @@ impl McpPage {
         let cancel_theme = theme.clone();
         let card = popover::dialog_card(theme)
             .w(px(480.0))
+            .id("mcp-import-card")
+            .on_mouse_down_out(cx.listener(|page, _, _, cx| {
+                page.import = None;
+                cx.notify();
+            }))
             .on_key_down(cx.listener(|page, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {
                     page.import = None;
