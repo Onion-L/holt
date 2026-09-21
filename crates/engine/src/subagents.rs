@@ -268,6 +268,9 @@ pub(crate) struct Delegation {
     /// The parent Turn's web-search backend snapshot (ADR-0023): children
     /// mount `web_search` under the same admission-time choice.
     pub(crate) search_backend: Option<Arc<dyn crate::tools::SearchBackend>>,
+    /// The parent Turn's attribution recorder: the child shares the parent
+    /// Turn's write set, like its baseline and working directory.
+    pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     pub(crate) stream_fn: StreamFn,
     pub(crate) cancel: CancellationToken,
 }
@@ -430,6 +433,7 @@ async fn execute(
                 setup_scope: false,
                 search_backend: d.search_backend,
                 providers: None,
+                attribution: d.attribution,
                 stream_fn: Some(stream_fn),
             })
             .await,

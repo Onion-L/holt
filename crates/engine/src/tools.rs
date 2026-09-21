@@ -16,8 +16,10 @@ pub(crate) mod test_http;
 mod web_fetch;
 pub(crate) mod web_search;
 
+use crate::git::Git;
 use crate::shell_env::login_shell;
-use std::{future::pending, path::Path, process::Stdio, sync::Arc};
+use crate::turn_changes::Attribution;
+use std::{collections::HashMap, future::pending, path::Path, process::Stdio, sync::Arc};
 
 use futures::future::BoxFuture;
 use pi_core::agent::{
@@ -661,21 +663,140 @@ fn with_execution_context(tool: AgentHarnessTool, context: &AgentToolContext) ->
 /// (no backend means the tool is absent, never registered-and-erroring).
 #[cfg(test)]
 pub(crate) fn execution_tools(cwd: &str) -> Vec<AgentTool> {
-    execution_tools_for_model(cwd, true, None)
+    execution_tools_for_model(cwd, true, None, None)
+}
+
+/// The per-Turn write-attribution handle (ADR-0024): the tools record the
+/// paths they mutate; the Turn change set keeps only attributed files, so
+/// another chat's concurrent work in the same working tree never lands in
+/// this Turn's card. Cloned per tool; the set is shared. `None` on runs
+/// without a Turn (compaction) — nothing records, nothing filters.
+#[derive(Clone)]
+pub(crate) struct ChangeAttribution {
+    set: Arc<Attribution>,
+    git: Git,
+}
+
+impl ChangeAttribution {
+    pub(crate) fn new(set: Arc<Attribution>, git: Git) -> Self {
+        Self { set, git }
+    }
+
+    /// A write/edit tool's target path, resolved to the repo-root-relative
+    /// form the capture vocabulary uses. Recording is best-effort: an
+    /// unresolved path attributes nothing, never fails the tool.
+    async fn record_tool_path(&self, cwd: &str, path: &str) {
+        if let Some(relative) = self.git.repo_relative(cwd, path).await {
+            self.set.record([relative]);
+        }
+    }
+
+    /// The current uncommitted section map — a bash command's window start.
+    async fn sections(&self, cwd: &str) -> HashMap<String, String> {
+        self.git.changed_sections(cwd).await
+    }
+
+    /// Attribute a bash command's writes: every path whose section changed
+    /// across the command's window (creations, modifications, deletions).
+    /// Runs after the command whatever its exit code — a failed command's
+    /// partial writes still happened.
+    async fn record_bash_delta(&self, cwd: &str, before: HashMap<String, String>) {
+        let after = self.git.changed_sections(cwd).await;
+        let touched = after
+            .iter()
+            .filter(|(path, text)| before.get(*path) != Some(*text))
+            .map(|(path, _)| path.clone())
+            .chain(
+                before
+                    .keys()
+                    .filter(|path| !after.contains_key(*path))
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        self.set.record(touched);
+    }
+}
+
+/// Wrap a write/edit tool so a successful call records its target path.
+fn attribute_tool(
+    mut tool: AgentTool,
+    attribution: Option<&ChangeAttribution>,
+    cwd: &str,
+) -> AgentTool {
+    let Some(attribution) = attribution else {
+        return tool;
+    };
+    let attribution = attribution.clone();
+    let cwd = cwd.to_string();
+    let execute = Arc::clone(&tool.execute);
+    tool.execute = Arc::new(move |id, params, signal, update| {
+        let attribution = attribution.clone();
+        let cwd = cwd.clone();
+        let path = params
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let future = execute(id, params, signal, update);
+        Box::pin(async move {
+            let result = future.await;
+            if result.is_ok()
+                && let Some(path) = path.as_deref()
+            {
+                attribution.record_tool_path(&cwd, path).await;
+            }
+            result
+        })
+    });
+    tool
+}
+
+/// Wrap the bash tool so the command's window records its write delta.
+fn attribute_bash(
+    mut tool: AgentTool,
+    attribution: Option<&ChangeAttribution>,
+    cwd: &str,
+) -> AgentTool {
+    let Some(attribution) = attribution else {
+        return tool;
+    };
+    let attribution = attribution.clone();
+    let cwd = cwd.to_string();
+    let execute = Arc::clone(&tool.execute);
+    tool.execute = Arc::new(move |id, params, signal, update| {
+        let attribution = attribution.clone();
+        let cwd = cwd.clone();
+        let future = execute(id, params, signal, update);
+        Box::pin(async move {
+            let before = attribution.sections(&cwd).await;
+            let result = future.await;
+            attribution.record_bash_delta(&cwd, before).await;
+            result
+        })
+    });
+    tool
 }
 
 pub(crate) fn execution_tools_for_model(
     cwd: &str,
     allow_images: bool,
     search_backend: Option<Arc<dyn web_search::SearchBackend>>,
+    attribution: Option<ChangeAttribution>,
 ) -> Vec<AgentTool> {
     let env: Arc<dyn ExecutionEnv> = Arc::new(LocalExecutionEnv::new(cwd));
     let context = ExecutionToolContext { env }.into_tool_context();
     let mut tools = vec![
         image_read_tool(&context, allow_images),
-        with_execution_context(create_write_tool(), &context),
-        with_execution_context(create_edit_tool(), &context),
-        bash_tool(&context),
+        attribute_tool(
+            with_execution_context(create_write_tool(), &context),
+            attribution.as_ref(),
+            cwd,
+        ),
+        attribute_tool(
+            with_execution_context(create_edit_tool(), &context),
+            attribution.as_ref(),
+            cwd,
+        ),
+        attribute_bash(bash_tool(&context), attribution.as_ref(), cwd),
         grep::create_grep_tool(cwd),
         ls::create_ls_tool(cwd),
         web_fetch::create_web_fetch_tool(),
@@ -904,7 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_tool_wraps_execute_without_disturbing_fast_calls() {
-        let tools = execution_tools_for_model(".", true, None);
+        let tools = execution_tools_for_model(".", true, None, None);
         let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
         let result = (bash.execute)(
             "test-call",

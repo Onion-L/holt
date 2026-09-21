@@ -60,24 +60,35 @@ pub(crate) fn subscribe(
         // signal on the chat; the claim drops on every exit below.
         let _claim = changes.watcher_claim(&chat_id);
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
-        let mut watcher = notify::recommended_watcher(move |result: Result<notify::Event, _>| {
-            if let Ok(event) = result {
-                let _ = event_tx.blocking_send(event);
-            }
-        })
-        .ok();
-        // A root that cannot be watched still streams — it polls instead of
-        // failing the whole subscription.
-        let mut poll_due = match watcher.as_mut() {
-            Some(watcher) => match watcher.watch(&root, notify::RecursiveMode::Recursive) {
-                Ok(()) => None,
-                Err(error) => {
-                    tracing::warn!(%error, root = %root.display(), "turn change watch unavailable");
-                    Some(Instant::now() + POLL_INTERVAL)
+        // Creating and arming the watcher blocks: FSEventStream registration
+        // (macOS) is a synchronous RPC to the system's fseventsd and, with
+        // several engines in one process, has been observed to park for tens
+        // of seconds. Two consequences, both load-bearing here: the arm runs
+        // on the blocking pool — never on the runtime thread (a synchronous
+        // stall there starves every other task) — and the loop below starts
+        // IMMEDIATELY, polling until the arm lands, so frame delivery never
+        // waits for fseventsd.
+        let root_for_watch = root.clone();
+        let (armed_tx, mut armed_rx) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let armed = notify::recommended_watcher(move |result: Result<notify::Event, _>| {
+                if let Ok(event) = result {
+                    let _ = event_tx.blocking_send(event);
                 }
-            },
-            None => Some(Instant::now() + POLL_INTERVAL),
-        };
+            })
+            .and_then(|mut watcher| {
+                watcher
+                    .watch(&root_for_watch, notify::RecursiveMode::Recursive)
+                    .map(|()| watcher)
+            });
+            let _ = armed_tx.send(armed);
+        });
+        // A root that cannot be watched still streams — it polls instead of
+        // failing the whole subscription. Until the arm lands (or if it
+        // never does) the poll cadence below is the frame source.
+        let mut watcher: Option<notify::RecommendedWatcher> = None;
+        let mut arm_failed = false;
+        let mut poll_due = Some(Instant::now() + POLL_INTERVAL);
         let mut debounce = Debounce::new();
         let mut pending_finals = PendingFinals::default();
         let mut last: Option<FrameKey> = None;
@@ -92,6 +103,30 @@ pub(crate) fn subscribe(
                         break;
                     }
                     debounce.event(Instant::now());
+                }
+                armed = &mut armed_rx, if watcher.is_none() && !arm_failed => {
+                    match armed {
+                        Ok(Ok(armed_watcher)) => {
+                            watcher = Some(armed_watcher);
+                            // The fs stream takes over from polling — but
+                            // events missed while the stream was arming must
+                            // not be lost: nudge the debounce so the next
+                            // quiet window recaptures the current tree (the
+                            // frame key dedups if nothing moved).
+                            poll_due = None;
+                            debounce.event(Instant::now());
+                        }
+                        Ok(Err(error)) => {
+                            arm_failed = true;
+                            tracing::warn!(%error, root = %root.display(), "turn change watch unavailable");
+                        }
+                        Err(_) => {
+                            // The arming task died without answering — same
+                            // degrade-to-poll as a failed arm.
+                            arm_failed = true;
+                            tracing::warn!(root = %root.display(), "turn change watch arming task lost");
+                        }
+                    }
                 }
                 event = events.recv() => match event {
                     Ok(event) if event.chat_id == chat_id => {

@@ -1002,10 +1002,24 @@ impl EngineService {
         self.runtime
             .persist_chats_locked()
             .map_err(|error| RpcError::Failed(error.to_string()))?;
+        let had_baseline = baseline.is_some();
         if let Some(baseline) = baseline {
             self.turn_changes
                 .begin(chat_id, &message_id, &request.cwd, baseline);
         }
+        // The Turn's attribution recorder, resolved now that `begin` has
+        // created the record: the run's tools record their write paths into
+        // it, and the change set keeps only attributed files (another
+        // chat's concurrent work in the same working tree must not land in
+        // this Turn's card). A turn without a Git baseline has no change
+        // set to filter — no recorder.
+        let attribution = if had_baseline {
+            self.turn_changes
+                .attribution(chat_id, &message_id)
+                .map(|set| crate::tools::ChangeAttribution::new(set, self.git.clone()))
+        } else {
+            None
+        };
         let entry = SessionMessageEntry {
             id: message_id.clone(),
             role: MessageRole::User,
@@ -1068,6 +1082,7 @@ impl EngineService {
             // next Turn — the same snapshot semantics as the mode.
             search_backend: self.search_backend(),
             providers: Some(Arc::clone(&self.providers)),
+            attribution,
             stream_fn: self.runtime.stream_fn.clone(),
         })
     }
@@ -3190,16 +3205,17 @@ impl RpcService for EngineService {
                         let chat_id = required_string(&params, "chatId")?;
                         // No snapshot (never ran, engine restarted) is an
                         // explicit error — never a silent empty diff.
-                        let Some(baseline) = self
-                            .turn_changes
-                            .snapshot(chat_id)
-                            .map(|record| record.baseline)
-                        else {
+                        let Some(record) = self.turn_changes.snapshot(chat_id) else {
                             return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
                         };
                         let diff = self
                             .git
-                            .turn_diff(cwd, &self.engine_info.device_id, &baseline)
+                            .turn_diff(
+                                cwd,
+                                &self.engine_info.device_id,
+                                &record.baseline,
+                                Some(&record.attribution.snapshot()),
+                            )
                             .await
                             .map_err(git_fault)?;
                         RpcReply::value(&diff)
@@ -3270,11 +3286,7 @@ impl RpcService for EngineService {
                                 return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
                             }
                         }
-                        let Some(baseline) = self
-                            .turn_changes
-                            .snapshot(chat_id)
-                            .map(|record| record.baseline)
-                        else {
+                        let Some(record) = self.turn_changes.snapshot(chat_id) else {
                             return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
                         };
                         let text = self
@@ -3283,7 +3295,8 @@ impl RpcService for EngineService {
                                 &request.cwd,
                                 &self.engine_info.device_id,
                                 &request,
-                                &baseline,
+                                &record.baseline,
+                                Some(&record.attribution.snapshot()),
                             )
                             .await
                             .map_err(git_fault)?;

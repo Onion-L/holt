@@ -14,7 +14,7 @@
 //! Subagent edits need no special handling: a child shares the parent Turn's
 //! working directory, so the parent's baseline already covers them.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use holt_proto::{TurnChangeSet, TurnChangeSetPhase};
@@ -22,12 +22,38 @@ use tokio::sync::Notify;
 
 use crate::git::{Git, GitFault, TurnBaseline, TurnChangeCapture};
 
+/// One live Turn's attributed write paths (repo-root-relative): the paths
+/// the Turn's own tools mutated — write/edit targets plus each bash
+/// command's before/after worktree delta. The change set keeps only files
+/// in this set, so another chat's concurrent work in the same working
+/// tree can never land in this Turn's card. Subagents record into the
+/// parent Turn's set: they share its working directory, like its baseline.
+#[derive(Default)]
+pub(crate) struct Attribution {
+    paths: Mutex<HashSet<String>>,
+}
+
+impl Attribution {
+    pub(crate) fn record<I: IntoIterator<Item = String>>(&self, paths: I) {
+        let mut guard = self.paths.lock().unwrap_or_else(|error| error.into_inner());
+        guard.extend(paths);
+    }
+
+    pub(crate) fn snapshot(&self) -> HashSet<String> {
+        self.paths
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
 /// The chat's current Turn: its identity, working directory, admission
 /// baseline, and — once the Turn settled — its frozen final change set.
 struct TurnRecord {
     message_id: String,
     cwd: String,
     baseline: TurnBaseline,
+    attribution: Arc<Attribution>,
     /// The Turn is over (succeeded, failed, or interrupted): the change set
     /// no longer moves.
     settled: bool,
@@ -50,6 +76,7 @@ pub(crate) struct TurnSnapshot {
     pub message_id: String,
     pub cwd: String,
     pub baseline: TurnBaseline,
+    pub attribution: Arc<Attribution>,
     pub settled: bool,
     pub final_change: Option<TurnChangeCapture>,
 }
@@ -86,6 +113,7 @@ impl TurnChanges {
                 message_id: message_id.to_string(),
                 cwd: cwd.to_string(),
                 baseline,
+                attribution: Arc::new(Attribution::default()),
                 settled: false,
                 final_change: None,
             },
@@ -132,6 +160,16 @@ impl TurnChanges {
             .current
             .get(chat_id)
             .map(|record| record.message_id.clone())
+    }
+
+    /// The named Turn's attribution recorder. Subagents resolve this against
+    /// their PARENT chat at spawn — they share the parent Turn's write set.
+    pub(crate) fn attribution(&self, chat_id: &str, message_id: &str) -> Option<Arc<Attribution>> {
+        self.registry()
+            .current
+            .get(chat_id)
+            .filter(|record| record.message_id == message_id)
+            .map(|record| Arc::clone(&record.attribution))
     }
 
     /// Read the chat's current Turn change set: the frozen final once the
@@ -250,8 +288,9 @@ impl TurnChanges {
         let capture = match &snapshot.final_change {
             Some(capture) => capture.clone(),
             None => {
+                let attributed = snapshot.attribution.snapshot();
                 let capture = git
-                    .turn_change_capture(&snapshot.cwd, device_id, &snapshot.baseline)
+                    .turn_change_capture(&snapshot.cwd, device_id, &snapshot.baseline, &attributed)
                     .await?;
                 if snapshot.settled {
                     // The settle-time capture failed: freeze the first
@@ -356,6 +395,7 @@ impl TurnSnapshot {
             message_id: record.message_id.clone(),
             cwd: record.cwd.clone(),
             baseline: record.baseline.clone(),
+            attribution: Arc::clone(&record.attribution),
             settled: record.settled,
             final_change: record.final_change.clone(),
         }
@@ -414,6 +454,17 @@ impl PendingFinals {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn attribution_records_and_snapshots_paths() {
+        let attribution = Attribution::default();
+        assert!(attribution.snapshot().is_empty());
+        attribution.record(["a.txt".to_string(), "b.txt".to_string()]);
+        attribution.record(Vec::<String>::new());
+        let snapshot = attribution.snapshot();
+        assert!(snapshot.contains("a.txt") && snapshot.contains("b.txt"));
+        assert_eq!(snapshot.len(), 2, "an empty record adds nothing");
+    }
 
     #[tokio::test]
     async fn final_signal_releases_a_late_waiter_and_clears() {

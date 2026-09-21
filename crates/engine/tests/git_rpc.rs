@@ -1747,6 +1747,47 @@ async fn complete_turn(engine: &LocalEngine, chat_id: &str, cwd: &str) {
     }
 }
 
+/// Lift the approval gate so scripted write/bash calls execute instead of
+/// parking behind the permission mode.
+async fn grant_full_access(engine: &LocalEngine, chat_id: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "setChatPermissionMode",
+                "chatId": chat_id,
+                "mode": "full-access",
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+/// An engine whose single turn writes one file through the real `write`
+/// tool, then answers "done" — the deterministic "the agent edited a file"
+/// primitive. Only TOOL writes are attributed to the Turn, so every test
+/// that means "the agent wrote" must drive the real tool.
+fn write_turn_engine(path: &str, content: &str) -> LocalEngine {
+    let script = vec![
+        common::ScriptedReply::tool_call(
+            "w-1",
+            "write",
+            serde_json::json!({ "path": path, "content": content }),
+        ),
+        common::ScriptedReply::text("done"),
+    ];
+    // Leaked: the engine owns nothing here, but the data dir must outlive
+    // the whole test and a local would drop it at return.
+    let data_dir: &'static TempDir = Box::leak(Box::new(TempDir::new().unwrap()));
+    LocalEngine::assemble(&EngineConfig {
+        data_dir: data_dir.path().into(),
+        personal_skills_dir: None,
+        stream_fn: Some(common::ScriptedProvider::new(script).stream_fn()),
+        search_backend_resolver: None,
+    })
+    .unwrap()
+}
+
 async fn turn_diff(
     engine: &LocalEngine,
     cwd: &str,
@@ -1805,7 +1846,15 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
     let fixture = Fixture::new();
     let first = Arc::new(tokio::sync::Notify::new());
     let second = Arc::new(tokio::sync::Notify::new());
+    // Turn A writes through its tool, then parks on the gate: the write is
+    // attributed to turn A while it stays live. It lands on `feature` — the
+    // switch below happens while turn A is live.
     let provider = common::ScriptedProvider::new(vec![
+        common::ScriptedReply::tool_call(
+            "w-1",
+            "write",
+            serde_json::json!({ "path": "README.md", "content": "change before B\n" }),
+        ),
         common::ScriptedReply::gated(first.clone(), "A done"),
         common::ScriptedReply::gated(second.clone(), "B done"),
     ]);
@@ -1825,8 +1874,9 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
         )
         .await
         .unwrap();
+    grant_full_access(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.repo_path(), "A").await;
-    common::wait_for_requests(&provider, 1).await;
+    common::wait_for_requests(&provider, 2).await;
     common::run_prompt(&engine, "chat-1", &fixture.repo_path(), "B").await;
     engine
         .handle(
@@ -1839,20 +1889,18 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
         chat_row(&engine, "chat-1").await.branch.as_deref(),
         Some("main")
     );
-    std::fs::write(
-        fixture.repo_dir.path().join("README.md"),
-        "change before B\n",
-    )
-    .unwrap();
     assert!(
         turn_diff(&engine, &fixture.repo_path(), "chat-1")
             .await
             .unwrap()
             .patch
-            .contains("change before B")
+            .contains("change before B"),
+        "turn A's own write shows in its live scope"
     );
+    // Turn A settles; turn B is admitted on `feature` with turn A's write
+    // already dirty in the tree — turn B's own change set is empty.
     first.notify_one();
-    common::wait_for_requests(&provider, 2).await;
+    common::wait_for_requests(&provider, 3).await;
     assert_eq!(
         chat_row(&engine, "chat-1").await.branch.as_deref(),
         Some("feature")
@@ -1862,7 +1910,8 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
             .await
             .unwrap()
             .patch
-            .is_empty()
+            .is_empty(),
+        "turn B changed nothing of its own"
     );
     second.notify_one();
 }
@@ -1870,15 +1919,12 @@ async fn a_pending_message_refreshes_branch_and_diff_only_when_its_turn_starts()
 #[tokio::test]
 async fn turn_diff_on_a_clean_start_shows_changes_since_the_turn_began() {
     let fixture = Fixture::new();
-    let engine = fixture.engine();
+    let engine = write_turn_engine("README.md", "agent edits live\n");
     register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+    grant_full_access(&engine, "chat-1").await;
     complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
-    std::fs::write(
-        fixture.repo_dir.path().join("README.md"),
-        "agent edits live\n",
-    )
-    .unwrap();
     let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
         .await
         .unwrap();
@@ -1886,7 +1932,8 @@ async fn turn_diff_on_a_clean_start_shows_changes_since_the_turn_began() {
     assert!(diff.patch.contains("+agent edits live"), "{}", diff.patch);
     assert_eq!(diff.files.len(), 1);
 
-    // Live updates: a later edit changes the same query's answer.
+    // Live updates: a later edit changes the same query's answer (the file
+    // stays attributed to the turn).
     std::fs::write(fixture.repo_dir.path().join("README.md"), "more edits\n").unwrap();
     let again = turn_diff(&engine, &fixture.repo_path(), "chat-1")
         .await
@@ -1898,8 +1945,55 @@ async fn turn_diff_on_a_clean_start_shows_changes_since_the_turn_began() {
 #[tokio::test]
 async fn turn_diff_filters_net_changes_on_a_dirty_start() {
     let fixture = Fixture::new();
-    let engine = fixture.engine();
+    let engine = LocalEngine::assemble(&EngineConfig {
+        data_dir: {
+            // Leaked: the data dir must outlive the whole test.
+            let dir: &'static TempDir = Box::leak(Box::new(TempDir::new().unwrap()));
+            dir.path().into()
+        },
+        personal_skills_dir: None,
+        stream_fn: Some(
+            common::ScriptedProvider::new(vec![
+                // Different files — one parallel round is safe.
+                common::ScriptedReply::ToolCalls(vec![
+                    common::tool_call(
+                        "w-1",
+                        "write",
+                        serde_json::json!({ "path": "edited.txt", "content": "user base\nagent touched\n" }),
+                    ),
+                    common::tool_call(
+                        "w-2",
+                        "write",
+                        serde_json::json!({ "path": "created.txt", "content": "agent made this\n" }),
+                    ),
+                    common::tool_call(
+                        "b-1",
+                        "bash",
+                        serde_json::json!({ "command": "mv movable.txt moved-away.txt" }),
+                    ),
+                ]),
+                // Wiggle `reverted` back to its exact turn-start bytes in
+                // two ordered rounds (same file, no parallel race).
+                common::ScriptedReply::tool_call(
+                    "w-3",
+                    "write",
+                    serde_json::json!({ "path": "reverted.txt", "content": "revert base\nagent\n" }),
+                ),
+                common::ScriptedReply::tool_call(
+                    "w-4",
+                    "write",
+                    serde_json::json!({ "path": "reverted.txt", "content": "revert base\n" }),
+                ),
+                common::ScriptedReply::text("done"),
+            ])
+            .stream_fn(),
+        ),
+        search_backend_resolver: None,
+    })
+    .unwrap();
     register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+    grant_full_access(&engine, "chat-1").await;
 
     // Pre-turn dirt: one file the turn never touches, one it edits, one it
     // edits and reverts to the exact turn-start bytes.
@@ -1915,34 +2009,6 @@ async fn turn_diff_filters_net_changes_on_a_dirty_start() {
     )
     .unwrap();
     complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
-
-    // Agent-like edits: touch `edited`, wiggle `reverted` back to its
-    // turn-start bytes, create a new file, rename a tracked one.
-    std::fs::write(
-        fixture.repo_dir.path().join("edited.txt"),
-        "user base\nagent touched\n",
-    )
-    .unwrap();
-    std::fs::write(
-        fixture.repo_dir.path().join("reverted.txt"),
-        "revert base\nagent\n",
-    )
-    .unwrap();
-    std::fs::write(
-        fixture.repo_dir.path().join("reverted.txt"),
-        "revert base\n",
-    )
-    .unwrap();
-    std::fs::write(
-        fixture.repo_dir.path().join("created.txt"),
-        "agent made this\n",
-    )
-    .unwrap();
-    std::fs::rename(
-        fixture.repo_dir.path().join("movable.txt"),
-        fixture.repo_dir.path().join("moved-away.txt"),
-    )
-    .unwrap();
 
     let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
         .await
@@ -2042,8 +2108,10 @@ async fn turn_file_text_reads_turn_start_content_and_the_workdir() {
 #[tokio::test]
 async fn turn_baseline_patch_rides_the_three_mib_cap() {
     let fixture = Fixture::new();
-    let engine = fixture.engine();
+    let engine = write_turn_engine("README.md", "post-queue edit\n");
     register_space(&engine, &fixture, "space-1").await;
+    create_chat(&engine, "chat-1", "space-1").await;
+    grant_full_access(&engine, "chat-1").await;
 
     // Dirt far past the cap at queue time: the baseline records truncated,
     // and the turn scope still answers.
@@ -2051,19 +2119,16 @@ async fn turn_baseline_patch_rides_the_three_mib_cap() {
     std::fs::write(fixture.repo_dir.path().join("huge.txt"), &huge).unwrap();
     complete_turn(&engine, "chat-1", &fixture.repo_path()).await;
 
-    std::fs::write(
-        fixture.repo_dir.path().join("README.md"),
-        "post-queue edit\n",
-    )
-    .unwrap();
     let diff = turn_diff(&engine, &fixture.repo_path(), "chat-1")
         .await
         .expect("the capped baseline still serves the turn scope");
-    // The still-changed huge file dominates the capped patch, but the
-    // summaries stay complete and the truncation is flagged.
-    assert!(diff.truncated);
-    assert!(diff.files.iter().any(|file| file.path == "huge.txt"));
-    assert!(diff.files.iter().any(|file| file.path == "README.md"));
+    // The turn's own write is the only change: the huge pre-queue file was
+    // never touched by the turn (its truncated-baseline section differs
+    // from the current one, but attribution drops it), and the filtered
+    // patch is small and complete.
+    assert!(!diff.truncated);
+    let paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["README.md"], "{diff:?}");
     assert!(diff.patch.len() <= 4 * 1024 * 1024);
 }
 

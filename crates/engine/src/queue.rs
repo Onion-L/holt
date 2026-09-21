@@ -705,6 +705,7 @@ impl EngineService {
                 &snapshot.cwd,
                 &self.engine_info.device_id,
                 &snapshot.baseline,
+                &snapshot.attribution.snapshot(),
             )
             .await
             .ok()?;

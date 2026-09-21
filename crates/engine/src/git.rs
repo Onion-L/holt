@@ -7,7 +7,7 @@
 //! repositories proceed in parallel.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -392,36 +392,43 @@ impl Git {
     /// The "Latest turn" capture: `HEAD@start → workdir`, net-change
     /// filtered against the turn baseline. Available live while a run is
     /// in flight; re-keys on the CURRENT head so commits during the turn
-    /// refetch.
+    /// refetch. `attributed` narrows the result to the Turn's own write
+    /// set (`None` = no narrowing); without it another chat's concurrent
+    /// work in the same working tree would land in this Turn's scope.
     pub(crate) async fn turn_diff(
         &self,
         repo_path: &str,
         device_id: &str,
         baseline: &TurnBaseline,
+        attributed: Option<&HashSet<String>>,
     ) -> Result<CheckoutDiff, GitFault> {
         let device_id = device_id.to_string();
         let baseline = baseline.clone();
+        let attributed = attributed.cloned();
         self.with_repo(repo_path, move |repo| {
-            turn_capture(&repo, &device_id, &baseline)
+            turn_capture(&repo, &device_id, &baseline, attributed.as_ref())
         })
         .await
     }
 
     /// Per-file text for the turn scope; see [`turn_file_text_blocking`].
-    /// `stale` is computed against a fresh turn recompute.
+    /// `stale` is computed against a fresh turn recompute — filtered by the
+    /// same attribution, so the checksum matches what the UI saw.
     pub(crate) async fn turn_file_text(
         &self,
         repo_path: &str,
         device_id: &str,
         request: &holt_proto::GetCheckoutFileDiffTextRequest,
         baseline: &TurnBaseline,
+        attributed: Option<&HashSet<String>>,
     ) -> Result<holt_proto::CheckoutFileDiffText, GitFault> {
         let device_id = device_id.to_string();
         let request = request.clone();
         let baseline = baseline.clone();
+        let attributed = attributed.cloned();
         self.with_repo(repo_path, move |repo| {
             let mut text = turn_file_text_blocking(&repo, &request, &baseline)?;
-            let current = turn_capture(&repo, &device_id, &baseline)?;
+            let current = turn_capture(&repo, &device_id, &baseline, attributed.as_ref())?;
             text.stale = request.diff_checksum != current.checksum;
             Ok(text)
         })
@@ -433,13 +440,19 @@ impl Git {
     /// card and its Review render. Reuses the turn capture's Git path —
     /// dirty-start net-change filtering, rename detection, and the patch
     /// cap — and re-keys nothing: the caller adds Turn identity and phase.
+    /// `attributed` is the Turn's own write set; files outside it are
+    /// another writer's (another chat in the same working tree, or nothing
+    /// in the Turn ran) and drop out of the card.
     pub(crate) async fn turn_change_capture(
         &self,
         repo_path: &str,
         device_id: &str,
         baseline: &TurnBaseline,
+        attributed: &HashSet<String>,
     ) -> Result<TurnChangeCapture, GitFault> {
-        let diff = self.turn_diff(repo_path, device_id, baseline).await?;
+        let diff = self
+            .turn_diff(repo_path, device_id, baseline, Some(attributed))
+            .await?;
         let mut files: Vec<TurnFileChange> = diff.files.iter().map(turn_file_change).collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(TurnChangeCapture {
@@ -448,6 +461,54 @@ impl Git {
             deletions: diff.deletions,
             truncated: diff.truncated,
         })
+    }
+
+    /// The repo-root-relative form of `path` — the write/edit tools' target
+    /// as the attribution vocabulary, which is the capture's path vocabulary
+    /// (git paths are worktree-root-relative). Accepts absolute paths and
+    /// paths relative to the chat's working directory; `None` when the path
+    /// escapes the work tree or the folder is not a work tree — nothing the
+    /// capture could ever contain.
+    pub(crate) async fn repo_relative(&self, repo_path: &str, path: &str) -> Option<String> {
+        let repo_root = repo_path.to_string();
+        let path = path.to_string();
+        self.with_repo(repo_path, move |repo| -> Result<Option<String>, String> {
+            let Some(workdir) = repo.workdir() else {
+                return Ok(None);
+            };
+            let candidate = Path::new(&path);
+            let absolute = if candidate.is_absolute() {
+                normalize_path(candidate)
+            } else {
+                normalize_path(&Path::new(&repo_root).join(candidate))
+            };
+            // The workdir git reports is a realpath (macOS /var → /private/var
+            // and every other symlink below tmp), while the tool's path rides
+            // the chat's cwd spelling. Resolve through the symlinks — the
+            // target may not exist yet (a write tool creating it), so take
+            // the deepest existing ancestor and re-attach the tail.
+            let Some(resolved) = resolve_existing(&absolute) else {
+                return Ok(None);
+            };
+            Ok(resolved
+                .strip_prefix(workdir)
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/")))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// The attribution scan behind a bash command's before/after window:
+    /// path → current uncommitted patch-section text (untracked included),
+    /// the same shape the net-change filter compares. A failed scan yields
+    /// an empty map — the command then attributes nothing, never wrongly
+    /// everything.
+    pub(crate) async fn changed_sections(&self, repo_path: &str) -> HashMap<String, String> {
+        self.with_repo(repo_path, move |repo| workdir_sections(&repo))
+            .await
+            .unwrap_or_default()
     }
 
     /// The immutable per-file before/after content of a frozen change set
@@ -463,11 +524,13 @@ impl Git {
         repo_path: &str,
         device_id: &str,
         baseline: &TurnBaseline,
+        attributed: &HashSet<String>,
     ) -> Result<TurnChangeFreeze, GitFault> {
         let device_id = device_id.to_string();
         let baseline = baseline.clone();
+        let attributed = attributed.clone();
         self.with_repo(repo_path, move |repo| {
-            let diff = turn_capture(&repo, &device_id, &baseline)?;
+            let diff = turn_capture(&repo, &device_id, &baseline, Some(&attributed))?;
             let mut files: Vec<TurnFileChange> = diff.files.iter().map(turn_file_change).collect();
             files.sort_by(|a, b| a.path.cmp(&b.path));
             let content = files
@@ -1820,10 +1883,80 @@ fn file_side(bytes: Option<Vec<u8>>) -> FileSide {
 /// The "Latest turn" capture (ADR-0003): diff `HEAD@start → workdir with
 /// index`, then keep only the files whose current section differs from the
 /// baseline section — the net change since the Turn began.
+/// The uncommitted change set as section texts: path → patch section,
+/// untracked included — the same shape [`filter_turn_patch`] compares, so
+/// a bash command's before/after maps differ exactly where the command
+/// (or anyone) wrote during its window.
+fn workdir_sections(repo: &Repository) -> Result<HashMap<String, String>, GitFault> {
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| commit.tree().ok());
+    let mut options = git2::DiffOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .show_binary(true);
+    let mut diff = repo
+        .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))
+        .map_err(git_message)
+        .map_err(GitFault::Error)?;
+    let text = diff_patch_text(&mut diff);
+    Ok(split_sections(&text)
+        .into_iter()
+        .map(|section| (section.path, section.text))
+        .collect())
+}
+
+/// Lexical normalization — resolve `.` and `..` without touching the
+/// filesystem: the target may not exist yet (a write tool creating it).
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The symlink-resolved absolute form of `path`: the deepest EXISTING
+/// ancestor is canonicalized, the not-yet-existing tail re-attached. The
+/// write tool's target usually does not exist yet when attribution runs.
+fn resolve_existing(path: &Path) -> Option<PathBuf> {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path.to_path_buf();
+    loop {
+        match std::fs::canonicalize(&current) {
+            Ok(resolved) => {
+                let mut out = resolved;
+                for part in tail.iter().rev() {
+                    out.push(part);
+                }
+                return Some(out);
+            }
+            Err(_) => {
+                let name = current.file_name()?.to_os_string();
+                tail.push(name);
+                if !current.pop() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 fn turn_capture(
     repo: &Repository,
     device_id: &str,
     baseline: &TurnBaseline,
+    attributed: Option<&HashSet<String>>,
 ) -> Result<CheckoutDiff, GitFault> {
     let current_head = repo
         .head()
@@ -1861,8 +1994,29 @@ fn turn_capture(
 
     let mut files = diff_summaries(&mut diff);
     let current_patch = diff_patch_text(&mut diff);
-    let (patch, kept) = filter_turn_patch(&baseline.patch, &current_patch);
+    let (net_patch, kept) = filter_turn_patch(&baseline.patch, &current_patch);
     files.retain(|file| kept.contains(&file.path));
+    // The attribution filter (the second of the two orthogonal filters):
+    // files outside the Turn's own write set are another writer's — a
+    // concurrent chat in the same working tree — and drop out here, ahead
+    // of the totals, so every consumer (card, review, patch, checksum)
+    // sees the same narrowed set.
+    if let Some(attributed) = attributed {
+        files.retain(|file| attributed.contains(&file.path));
+    }
+    // The patch text follows the surviving files: the net patch without the
+    // sections attribution dropped. Section keys are the new-side path, the
+    // same key the file summaries use. Without an attribution set the two
+    // filters coincide — the kept paths are the net filter's own.
+    let keep: HashSet<String> = match attributed {
+        Some(set) => set.clone(),
+        None => kept.iter().cloned().collect(),
+    };
+    let patch: String = split_sections(&net_patch)
+        .into_iter()
+        .filter(|section| keep.contains(&section.path))
+        .map(|section| section.text)
+        .collect();
     let (patch, truncated) = truncate_patch(&patch, MAX_PATCH_BYTES);
 
     let additions: u32 = files.iter().map(|file| file.additions).sum();
@@ -2191,8 +2345,11 @@ fn history_page(
 mod tests {
     use super::{
         MAX_PATCH_BYTES, checkout_identity, classify_status, default_branch, diff_checksum,
-        filter_turn_patch, status_sides, truncate_patch, turn_start_content,
+        filter_turn_patch, normalize_path, resolve_existing, status_sides, truncate_patch,
+        turn_start_content,
     };
+    use git2::Repository;
+    use std::path::Path;
 
     fn names(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
@@ -2206,6 +2363,32 @@ mod tests {
             out.push_str(hunk);
         }
         out
+    }
+
+    #[test]
+    fn repo_relative_resolves_symlinks_and_missing_targets() {
+        // A symlinked root (macOS /var/folders → /private/var/folders) with
+        // a target that does not exist yet — the write tool's usual state.
+        let real = tempfile::TempDir::new().unwrap();
+        let link = tempfile::TempDir::new().unwrap();
+        let link_path = link.path().join("repo");
+        std::os::unix::fs::symlink(real.path(), &link_path).unwrap();
+
+        let repo = Repository::init(real.path()).unwrap();
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        drop(repo);
+
+        // Via the symlinked cwd, target absent.
+        let candidate = normalize_path(&Path::new(&link_path).join("new-file.txt"));
+        let resolved = resolve_existing(&candidate).unwrap();
+        let relative = resolved.strip_prefix(&workdir).unwrap();
+        assert_eq!(relative, std::path::Path::new("new-file.txt"));
+
+        // And a lexical `..` in the mix still lands inside the work tree.
+        let candidate = normalize_path(&Path::new(&link_path).join("sub").join("..").join("b.txt"));
+        let resolved = resolve_existing(&candidate).unwrap();
+        let relative = resolved.strip_prefix(workdir).unwrap();
+        assert_eq!(relative, std::path::Path::new("b.txt"));
     }
 
     #[test]

@@ -573,6 +573,7 @@ mod tests {
             ".",
             true,
             Some(Arc::new(StubBackend::new("Stub", Vec::new()))),
+            None,
         );
         let tool = configured
             .iter()

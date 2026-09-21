@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{ScriptedProvider, ScriptedReply, next_frame, run_prompt, wait_for_requests};
-use futures::StreamExt as _;
+use futures::StreamExt;
 use git2::Repository;
 use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{
@@ -227,8 +227,76 @@ async fn settle_queue(engine: &LocalEngine, chat_id: &str, expect_clean: bool) {
     }
 }
 
+/// The watch's frame waits ride fs-event debounce plus, under a parallel
+/// test suite, real CPU contention — an order of magnitude past the idle
+/// path's pace, so the loops do not share the 10s request WAIT. The frame
+/// reader mirrors `common::next_frame` with this longer budget: FSEvent
+/// stream registration itself (an RPC to the system's fseventsd) has been
+/// observed to stall tens of seconds when watchers are created rapidly.
+const WATCH_FRAME_WAIT: Duration = Duration::from_secs(30);
+
+async fn watch_frame<S>(stream: &mut S) -> serde_json::Value
+where
+    S: StreamExt<Item = serde_json::Value> + Unpin,
+{
+    tokio::time::timeout(WATCH_FRAME_WAIT, stream.next())
+        .await
+        .expect("timed out waiting for a watch frame")
+        .expect("watch stream ended")
+}
+
 fn done_provider() -> ScriptedProvider {
     ScriptedProvider::new((0..8).map(|_| ScriptedReply::text("done")).collect())
+}
+
+/// A provider whose first round executes one `write` tool call and whose
+/// second answers "done": the deterministic "the agent edited a file"
+/// primitive. Only TOOL writes are attributed to the Turn — the change set
+/// is what the Turn's own tools did, not everything the worktree saw — so
+/// every test that means "the agent wrote" must drive the real tool, and
+/// must lift the approval gate first (`grant_full_access`).
+fn write_provider(path: &str, content: &str) -> ScriptedProvider {
+    ScriptedProvider::new(vec![tool_write(path, content), ScriptedReply::text("done")])
+}
+
+/// [`write_provider`]'s first round held back behind a gate: the write has
+/// executed (round one is done), but the Turn is still live — the
+/// deterministic "mid-Turn, after the agent's write" primitive.
+fn gated_write_provider(path: &str, content: &str) -> (ScriptedProvider, Arc<Notify>) {
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        tool_write(path, content),
+        ScriptedReply::gated(gate.clone(), "done"),
+    ]);
+    (provider, gate)
+}
+
+fn tool_write(path: &str, content: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        "w-1",
+        "write",
+        serde_json::json!({ "path": path, "content": content }),
+    )
+}
+
+fn tool_bash(id: &str, command: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(id, "bash", serde_json::json!({ "command": command }))
+}
+
+/// Lift the approval gate so scripted write/bash calls execute instead of
+/// parking behind the permission mode.
+async fn grant_full_access(engine: &LocalEngine, chat_id: &str) {
+    engine
+        .handle(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "setChatPermissionMode",
+                "chatId": chat_id,
+                "mode": "full-access",
+            }),
+        )
+        .await
+        .unwrap();
 }
 
 /// A provider whose single reply is held back until the gate opens — the
@@ -240,7 +308,6 @@ fn gated_provider() -> (ScriptedProvider, Arc<Notify>) {
         gate,
     )
 }
-
 /// Register a git space + chat and configure the provider key.
 async fn setup(fixture: &Fixture, engine: &LocalEngine) {
     register_space(engine, &fixture.repo_path(), "space-1").await;
@@ -381,20 +448,19 @@ async fn a_chat_without_a_recorded_turn_is_an_explicit_error() {
 #[tokio::test]
 async fn a_running_turn_reports_a_live_change_set_and_settles_to_final() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    // Round one writes through the real tool (attributed), round two is
+    // held back so the Turn is still live with the write already in it.
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "edit the file").await;
-    wait_for_requests(&provider, 1).await;
+    // Round one served AND its tool executed; round two is parked at the
+    // provider, holding the Turn live.
+    wait_for_requests(&provider, 2).await;
 
-    // A live Turn with no work yet: an empty, still-moving change set.
-    let live = captured(&engine, "chat-1").await;
-    assert_eq!(live.phase, TurnChangeSetPhase::Live);
-    assert!(live.files.is_empty(), "nothing changed yet: {live:?}");
-
-    // The agent edits a tracked file mid-Turn.
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    // The write is in the live set: it is the Turn's own tool write.
     let live = captured(&engine, "chat-1").await;
     assert_eq!(live.phase, TurnChangeSetPhase::Live);
     assert_eq!(live.files.len(), 1, "{live:?}");
@@ -410,7 +476,8 @@ async fn a_running_turn_reports_a_live_change_set_and_settles_to_final() {
     assert_eq!(final_set.phase, TurnChangeSetPhase::Final);
     assert_eq!(final_set.files, live.files, "the final set is frozen");
 
-    // Later edits do not move the frozen result.
+    // Later edits — the user's own, outside any tool — do not move the
+    // frozen result.
     std::fs::write(fixture.path("README.md"), "hello\nagent edit\nlater\n").unwrap();
     let again = captured(&engine, "chat-1").await;
     assert_eq!(again.files, final_set.files, "final is immutable");
@@ -423,24 +490,24 @@ async fn a_running_turn_reports_a_live_change_set_and_settles_to_final() {
 #[tokio::test]
 async fn a_dirty_start_excludes_untouched_and_net_zero_files() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
-    let engine = fixture.engine(&provider);
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_write("edited.txt", "user base\nagent touched\n"),
+        // Edited then reverted to the exact turn-start bytes: net zero.
+        tool_write("reverted.txt", "revert base\nagent\n"),
+        tool_write("reverted.txt", "revert base\n"),
+        ScriptedReply::text("done"),
+    ]));
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     // Pre-Turn dirt: a file the Turn never touches, one it edits, one it
-    // edits and reverts to the exact turn-start bytes.
+    // edits and reverts to the exact turn-start bytes. External writes
+    // here — they are the baseline the Turn starts from.
     std::fs::write(fixture.path("untouched.txt"), "user was here\n").unwrap();
     std::fs::write(fixture.path("edited.txt"), "user base\n").unwrap();
     std::fs::write(fixture.path("reverted.txt"), "revert base\n").unwrap();
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "touch files").await;
-    wait_for_requests(&provider, 1).await;
-
-    std::fs::write(fixture.path("edited.txt"), "user base\nagent touched\n").unwrap();
-    std::fs::write(fixture.path("reverted.txt"), "revert base\nagent\n").unwrap();
-    std::fs::write(fixture.path("reverted.txt"), "revert base\n").unwrap();
-
-    gate.notify_one();
     settle_queue(&engine, "chat-1", true).await;
 
     let change_set = captured(&engine, "chat-1").await;
@@ -459,22 +526,24 @@ async fn renames_are_paired_and_unpairable_moves_fall_back_to_delete_plus_add() 
     // A changed move: the content is rewritten, so Git cannot pair it and
     // the fallback reports a separate delete and add.
     fixture.commit_files(&[("tiny.txt", "alpha beta gamma delta epsilon\n")]);
-    let (provider, gate) = gated_provider();
-    let engine = fixture.engine(&provider);
+    // The moves ride bash tool calls: the commands' windows attribute their
+    // deltas (rename source+destination, deletion, creation).
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        ScriptedReply::ToolCalls(vec![
+            common::tool_call("b-1", "bash", serde_json::json!({ "command": "mv movable.txt moved-away.txt" })),
+            common::tool_call("b-2", "bash", serde_json::json!({ "command": "rm tiny.txt" })),
+            common::tool_call(
+                "b-3",
+                "bash",
+                serde_json::json!({ "command": "printf 'nothing like the original remains here\\n' > tiny-elsewhere.txt" }),
+            ),
+        ]),
+        ScriptedReply::text("done"),
+    ]));
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "move files").await;
-    wait_for_requests(&provider, 1).await;
-
-    std::fs::rename(fixture.path("movable.txt"), fixture.path("moved-away.txt")).unwrap();
-    std::fs::remove_file(fixture.path("tiny.txt")).unwrap();
-    std::fs::write(
-        fixture.path("tiny-elsewhere.txt"),
-        "nothing like the original remains here\n",
-    )
-    .unwrap();
-
-    gate.notify_one();
     settle_queue(&engine, "chat-1", true).await;
 
     let change_set = captured(&engine, "chat-1").await;
@@ -515,18 +584,15 @@ async fn renames_are_paired_and_unpairable_moves_fall_back_to_delete_plus_add() 
 #[tokio::test]
 async fn binary_changes_keep_their_status_without_line_counts() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
-    let engine = fixture.engine(&provider);
+    // A NUL byte in the content makes the file binary to Git.
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_bash("b-1", "printf 'binary\\000content' > image.bin"),
+        ScriptedReply::text("done"),
+    ]));
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "add a binary").await;
-    wait_for_requests(&provider, 1).await;
-
-    let mut binary = vec![0u8; 32];
-    binary[1] = 1;
-    std::fs::write(fixture.path("image.bin"), &binary).unwrap();
-
-    gate.notify_one();
     settle_queue(&engine, "chat-1", true).await;
 
     let change_set = captured(&engine, "chat-1").await;
@@ -543,17 +609,15 @@ async fn binary_changes_keep_their_status_without_line_counts() {
 #[tokio::test]
 async fn a_new_file_and_a_deleted_file_carry_their_statuses() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
-    let engine = fixture.engine(&provider);
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_write("created.txt", "made by the turn\n"),
+        tool_bash("b-1", "rm movable.txt"),
+        ScriptedReply::text("done"),
+    ]));
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "add and delete").await;
-    wait_for_requests(&provider, 1).await;
-
-    std::fs::write(fixture.path("created.txt"), "made by the turn\n").unwrap();
-    std::fs::remove_file(fixture.path("movable.txt")).unwrap();
-
-    gate.notify_one();
     settle_queue(&engine, "chat-1", true).await;
 
     let change_set = captured(&engine, "chat-1").await;
@@ -580,13 +644,16 @@ async fn a_new_file_and_a_deleted_file_carry_their_statuses() {
 #[tokio::test]
 async fn a_failed_turn_keeps_its_changes_as_final() {
     let fixture = Fixture::new();
-    let provider = ScriptedProvider::new(vec![ScriptedReply::Failed("provider exploded".into())]);
+    // Round one writes through the tool; round two fails the provider.
+    let provider = ScriptedProvider::new(vec![
+        tool_write("partial.txt", "half done\n"),
+        ScriptedReply::Failed("provider exploded".into()),
+    ]);
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "work then fail").await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("partial.txt"), "half done\n").unwrap();
     settle_queue(&engine, "chat-1", false).await;
 
     let change_set = captured(&engine, "chat-1").await;
@@ -605,17 +672,20 @@ async fn an_interrupted_turn_keeps_its_changes_as_final() {
     let fixture = Fixture::new();
     let observed = Arc::new(Notify::new());
     let finish = Arc::new(Notify::new());
-    let provider = ScriptedProvider::new(vec![ScriptedReply::Cancelling {
-        observed: observed.clone(),
-        finish: finish.clone(),
-    }]);
+    let provider = ScriptedProvider::new(vec![
+        tool_write("partial.txt", "half done\n"),
+        ScriptedReply::Cancelling {
+            observed: observed.clone(),
+            finish: finish.clone(),
+        },
+    ]);
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "work then stop").await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("partial.txt"), "half done\n").unwrap();
+    wait_for_requests(&provider, 2).await;
 
     engine
         .handle(
@@ -706,15 +776,131 @@ async fn a_subagent_edit_lands_in_the_parent_turn_change_set() {
 }
 
 // ---------------------------------------------------------------------------
+// Attribution: only the Turn's own tools enter its change set
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn another_chats_concurrent_writes_never_land_in_this_turns_change_set() {
+    // The reported scenario: two chats share one working tree; chat-1
+    // writes files while chat-2 runs a plain turn. Chat-2's change set
+    // must stay empty — the write belongs to chat-1's Turn, not to
+    // everyone whose baseline predates it.
+    let fixture = Fixture::new();
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![])
+        .with_chat_script(
+            "write the file",
+            vec![
+                tool_write("from-chat-1.txt", "chat one was here\n"),
+                ScriptedReply::gated(gate.clone(), "still working"),
+            ],
+        )
+        .with_chat_script("just chat", vec![ScriptedReply::text("done")]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    create_chat(&engine, "chat-2", "space-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "write the file").await;
+    // Wait for the write itself, not just the reply: the tool must have
+    // executed so the file is in the shared tree when chat-2 runs.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture.path("from-chat-1.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("chat-1's write executed");
+
+    // Chat-2's whole turn runs while chat-1's write sits in the tree.
+    run_prompt(&engine, "chat-2", &fixture.repo_path(), "just chat").await;
+    settle_queue(&engine, "chat-2", true).await;
+
+    let idle = captured(&engine, "chat-2").await;
+    assert_eq!(idle.phase, TurnChangeSetPhase::Final);
+    assert!(
+        idle.files.is_empty(),
+        "another chat's write is not this Turn's change: {idle:?}"
+    );
+
+    // And the write still belongs to the chat that made it.
+    let live = captured(&engine, "chat-1").await;
+    assert_eq!(live.phase, TurnChangeSetPhase::Live);
+    assert_eq!(
+        live.files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["from-chat-1.txt"],
+        "{live:?}"
+    );
+
+    gate.notify_one();
+    settle_queue(&engine, "chat-1", true).await;
+    let final_set = captured(&engine, "chat-1").await;
+    assert_eq!(final_set.phase, TurnChangeSetPhase::Final);
+    assert_eq!(final_set.files.len(), 1, "{final_set:?}");
+}
+
+#[tokio::test]
+async fn an_external_edit_during_the_turn_never_enters_the_change_set() {
+    let fixture = Fixture::new();
+    let (provider, gate) = gated_provider();
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "think a while").await;
+    wait_for_requests(&provider, 1).await;
+    // The user (or any other process) edits a tracked file mid-Turn —
+    // outside the Turn's tools, so it is not the Turn's change.
+    std::fs::write(fixture.path("README.md"), "hello\nsomeone else\n").unwrap();
+
+    gate.notify_one();
+    settle_queue(&engine, "chat-1", true).await;
+
+    let change_set = captured(&engine, "chat-1").await;
+    assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+    assert!(
+        change_set.files.is_empty(),
+        "an external edit is not the Turn's: {change_set:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_bash_write_is_attributed_to_the_turn() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![
+        tool_bash("b-1", "printf 'made by a command\\n' > via-bash.txt"),
+        ScriptedReply::text("done"),
+    ]));
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.repo_path(), "run a command").await;
+    settle_queue(&engine, "chat-1", true).await;
+
+    let change_set = captured(&engine, "chat-1").await;
+    let entry = change_set
+        .files
+        .iter()
+        .find(|file| file.path == "via-bash.txt")
+        .expect("the command's write is the Turn's change");
+    assert_eq!(entry.status, TurnFileChangeStatus::Added);
+}
+
+// ---------------------------------------------------------------------------
 // Live stream
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn the_watch_streams_live_frames_then_a_final_frame() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    // Round one writes through the tool; round two parks, keeping the Turn
+    // live while the watch streams.
+    let (provider, gate) = gated_write_provider("README.md", "hello\nlive edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     let RpcReply::Stream(mut stream) = engine
         .handle(
@@ -729,13 +915,12 @@ async fn the_watch_streams_live_frames_then_a_final_frame() {
     // The opening frame is the current state (no Turn yet): nothing to
     // report, so the first frame arrives once the Turn exists.
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "edit live").await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nlive edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
 
-    let live = tokio::time::timeout(Duration::from_secs(10), async {
+    let live = tokio::time::timeout(WATCH_FRAME_WAIT, async {
         loop {
             let frame: TurnChangeSetReply =
-                serde_json::from_value(next_frame(&mut stream).await).unwrap();
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
             if let TurnChangeSetReply::Captured(change_set) = &frame
                 && change_set.phase == TurnChangeSetPhase::Live
                 && change_set.files.iter().any(|file| file.path == "README.md")
@@ -749,10 +934,10 @@ async fn the_watch_streams_live_frames_then_a_final_frame() {
     assert_eq!(live.files[0].status, TurnFileChangeStatus::Modified);
 
     gate.notify_one();
-    let final_frame = tokio::time::timeout(Duration::from_secs(10), async {
+    let final_frame = tokio::time::timeout(WATCH_FRAME_WAIT, async {
         loop {
             let frame: TurnChangeSetReply =
-                serde_json::from_value(next_frame(&mut stream).await).unwrap();
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
             if let TurnChangeSetReply::Captured(change_set) = &frame
                 && change_set.phase == TurnChangeSetPhase::Final
             {
@@ -774,11 +959,15 @@ async fn the_final_frame_survives_an_auto_advanced_next_turn() {
     let first = Arc::new(Notify::new());
     let second = Arc::new(Notify::new());
     let provider = ScriptedProvider::new(vec![
+        // The first Turn writes through the tool, then parks: the write is
+        // already in the tree when the settle happens.
+        tool_write("README.md", "hello\nfirst turn edit\n"),
         ScriptedReply::gated(first.clone(), "first done"),
         ScriptedReply::gated(second.clone(), "second done"),
     ]);
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
 
     let RpcReply::Stream(mut stream) = engine
         .handle(
@@ -793,17 +982,16 @@ async fn the_final_frame_survives_an_auto_advanced_next_turn() {
 
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "first turn").await;
     run_prompt(&engine, "chat-1", &fixture.repo_path(), "second turn").await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nfirst turn edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     first.notify_one();
     // The second Turn is admitted (and replaces the current record) before
     // the final frame is read.
     wait_for_requests(&provider, 2).await;
 
-    let final_frame = tokio::time::timeout(Duration::from_secs(10), async {
+    let final_frame = tokio::time::timeout(WATCH_FRAME_WAIT, async {
         loop {
             let frame: TurnChangeSetReply =
-                serde_json::from_value(next_frame(&mut stream).await).unwrap();
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
             if let TurnChangeSetReply::Captured(change_set) = &frame
                 && change_set.phase == TurnChangeSetPhase::Final
                 && change_set.files.iter().any(|file| file.path == "README.md")
@@ -866,9 +1054,10 @@ async fn await_settled(
 #[tokio::test]
 async fn a_settled_turn_change_set_is_restored_by_message_id_after_a_restart() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -879,8 +1068,7 @@ async fn a_settled_turn_change_set_is_restored_by_message_id_after_a_restart() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     let settled = await_settled(&engine, &mut events).await;
     assert_eq!(settled["messageId"], "m-1");
@@ -919,9 +1107,10 @@ async fn a_settled_turn_change_set_is_restored_by_message_id_after_a_restart() {
 #[tokio::test]
 async fn the_persisted_file_diff_is_immutable_under_later_edits_and_restarts() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -932,8 +1121,7 @@ async fn the_persisted_file_diff_is_immutable_under_later_edits_and_restarts() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     await_settled(&engine, &mut events).await;
     drop(engine);
@@ -969,9 +1157,15 @@ async fn the_persisted_file_diff_is_immutable_under_later_edits_and_restarts() {
 #[tokio::test]
 async fn a_deleted_file_stays_reviewable_from_the_persisted_record() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    // The deletion rides a bash tool call: its window attributes it.
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        tool_bash("b-1", "rm movable.txt"),
+        ScriptedReply::gated(gate.clone(), "done"),
+    ]);
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -982,8 +1176,7 @@ async fn a_deleted_file_stays_reviewable_from_the_persisted_record() {
         "delete a file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::remove_file(fixture.path("movable.txt")).unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     await_settled(&engine, &mut events).await;
     drop(engine);
@@ -1017,9 +1210,15 @@ async fn a_deleted_file_stays_reviewable_from_the_persisted_record() {
 #[tokio::test]
 async fn a_rename_persists_its_pre_move_old_side() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    // An unmodified move Git pairs as a rename, via a bash tool call.
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        tool_bash("b-1", "mv movable.txt moved-away.txt"),
+        ScriptedReply::gated(gate.clone(), "done"),
+    ]);
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -1030,9 +1229,7 @@ async fn a_rename_persists_its_pre_move_old_side() {
         "move a file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    // An unmodified move Git pairs as a rename.
-    std::fs::rename(fixture.path("movable.txt"), fixture.path("moved-away.txt")).unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     await_settled(&engine, &mut events).await;
     drop(engine);
@@ -1067,9 +1264,10 @@ async fn a_rename_persists_its_pre_move_old_side() {
 #[tokio::test]
 async fn history_outlives_the_repository_disappearing() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -1080,8 +1278,7 @@ async fn history_outlives_the_repository_disappearing() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     let settled = await_settled(&engine, &mut events).await;
     let frozen_files = settled["changeSet"]["files"].clone();
@@ -1114,9 +1311,10 @@ async fn history_outlives_the_repository_disappearing() {
 #[tokio::test]
 async fn the_terminal_event_carries_the_final_change_set_after_persistence() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -1127,8 +1325,7 @@ async fn the_terminal_event_carries_the_final_change_set_after_persistence() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
 
     let event = await_settled(&engine, &mut events).await;
@@ -1160,9 +1357,10 @@ async fn a_change_set_persistence_failure_never_fails_the_turn_or_the_event() {
     use std::os::unix::fs::PermissionsExt;
 
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -1173,12 +1371,11 @@ async fn a_change_set_persistence_failure_never_fails_the_turn_or_the_event() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
+    wait_for_requests(&provider, 2).await;
     // Break the turn-changes directory so the durable write cannot land.
     let records = fixture.data_dir.path().join("turn-changes");
     std::fs::create_dir_all(&records).unwrap();
     std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o500)).unwrap();
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
     gate.notify_one();
 
     // The Turn still settles cleanly and its event still publishes — the
@@ -1200,9 +1397,10 @@ async fn a_change_set_persistence_failure_never_fails_the_turn_or_the_event() {
 #[tokio::test]
 async fn deleting_the_chat_removes_its_persisted_change_sets() {
     let fixture = Fixture::new();
-    let (provider, gate) = gated_provider();
+    let (provider, gate) = gated_write_provider("README.md", "hello\nagent edit\n");
     let engine = fixture.engine(&provider);
     setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
     let mut events = subscribe_events(&engine).await;
 
     queue_run(
@@ -1213,8 +1411,7 @@ async fn deleting_the_chat_removes_its_persisted_change_sets() {
         "edit the file",
     )
     .await;
-    wait_for_requests(&provider, 1).await;
-    std::fs::write(fixture.path("README.md"), "hello\nagent edit\n").unwrap();
+    wait_for_requests(&provider, 2).await;
     gate.notify_one();
     await_settled(&engine, &mut events).await;
     assert!(

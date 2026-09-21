@@ -1375,6 +1375,12 @@ pub(crate) struct AgentRun {
     /// The provider adapter the model-setup tools write through. `None` on
     /// subagent runs — the proposal/apply pair is parent-only (ADR-0029).
     pub(crate) providers: Option<Arc<crate::providers::ProviderAdapter>>,
+    /// The Turn's attribution recorder (write-attribution follow-up): the
+    /// tools record their write paths into it; the Turn change set keeps
+    /// only these files. `None` on runs without a Turn — compaction — and
+    /// on Turns admitted without a Git baseline: nothing records, and the
+    /// change set is never captured anyway.
+    pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
 }
@@ -1421,6 +1427,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         search_backend,
         providers,
         stream_fn,
+        attribution,
     } = run;
     // The run's fresh skill catalog: one scan feeds the system-prompt block
     // AND the transcript's SKILL.md read collapsing — both see the same
@@ -1873,8 +1880,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cancel: cancel.clone(),
     });
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
-    let mut tools =
-        crate::tools::execution_tools_for_model(&cwd, allow_images, search_backend.clone());
+    let mut tools = crate::tools::execution_tools_for_model(
+        &cwd,
+        allow_images,
+        search_backend.clone(),
+        attribution.clone(),
+    );
     let current_chat_id = chat
         .child
         .as_ref()
@@ -1922,6 +1933,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             search_backend,
             stream_fn: stream_fn.clone(),
             cancel: cancel.clone(),
+            attribution: attribution.clone(),
         }));
     }
     // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit
