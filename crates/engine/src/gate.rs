@@ -21,9 +21,12 @@ use crate::agent::ChatRuntime;
 
 /// The gate predicate (ADR-0014): tool identity only — no command parsing,
 /// no path confinement, no read-only tier. Every mutating call meets the
-/// chat's gatekeeper regardless of its target.
+/// chat's gatekeeper regardless of its target. MCP tools invert the
+/// predicate (ADR-0034): foreign code carries unknown risk, so every
+/// `mcp__`-prefixed call is presumed mutating — never trusting a server's
+/// own hints about itself.
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "bash")
+    matches!(name, "write" | "edit" | "bash") || name.starts_with("mcp__")
 }
 
 /// Tools whose calls always meet the HUMAN gatekeeper, whatever the chat's
@@ -42,18 +45,28 @@ pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
 
 /// One chat's always-allow grants (ADR-0014): in-memory, session-scoped,
 /// never persisted — cleared on restart. Bash grants match by command
-/// prefix, write/edit grants by exact resolved file path. Checked BEFORE
-/// the gatekeeper, so they hold across mode switches.
+/// prefix, write/edit grants by exact resolved file path, and MCP grants
+/// by the exact two-level `mcp__server__tool` name — nothing broader
+/// (ADR-0034: no server-wide grants). Checked BEFORE the gatekeeper, so
+/// they hold across mode switches.
 #[derive(Default)]
 pub(crate) struct GateGrants {
     bash_prefixes: Vec<String>,
     file_paths: Vec<String>,
+    mcp_tools: Vec<String>,
 }
 
 impl GateGrants {
     /// Record what an always-allow verdict granted: the command's text for
-    /// bash, the resolved absolute path for write/edit.
+    /// bash, the resolved absolute path for write/edit, and the exact
+    /// tool name for MCP.
     pub(crate) fn record(&mut self, tool: &str, arguments: &serde_json::Value, cwd: &str) {
+        if tool.starts_with("mcp__") {
+            if !self.mcp_tools.iter().any(|name| name == tool) {
+                self.mcp_tools.push(tool.to_string());
+            }
+            return;
+        }
         match tool {
             "bash" => {
                 if let Some(command) = arg_str(arguments, "command")
@@ -76,6 +89,11 @@ impl GateGrants {
 
     /// Does a grant pass this call through without asking?
     pub(crate) fn passes(&self, tool: &str, arguments: &serde_json::Value, cwd: &str) -> bool {
+        if tool.starts_with("mcp__") {
+            // Exact two-level name — a sibling tool of the same server
+            // still asks (ADR-0034).
+            return self.mcp_tools.iter().any(|name| name == tool);
+        }
         match tool {
             "bash" => arg_str(arguments, "command").is_some_and(|command| {
                 self.bash_prefixes
@@ -679,9 +697,41 @@ mod tests {
         let GateGrants {
             bash_prefixes,
             file_paths,
+            mcp_tools,
         } = grants;
         assert_eq!(bash_prefixes, ["cargo test"]);
         assert_eq!(file_paths, ["/repo/src/a.rs"]);
+        assert!(mcp_tools.is_empty());
+    }
+
+    #[test]
+    fn mcp_grants_match_the_exact_two_level_name_only() {
+        let mut grants = GateGrants::default();
+        grants.record(
+            "mcp__fixture__echo",
+            &serde_json::json!({ "message": "hi" }),
+            "/repo",
+        );
+        // The exact tool passes — whatever its arguments.
+        assert!(grants.passes(
+            "mcp__fixture__echo",
+            &serde_json::json!({ "message": "other" }),
+            "/repo"
+        ));
+        // A sibling tool of the same server still asks, and so does every
+        // other server — the grant is the exact name, nothing broader.
+        assert!(!grants.passes(
+            "mcp__fixture__fail",
+            &serde_json::json!({ "message": "x" }),
+            "/repo"
+        ));
+        assert!(!grants.passes("mcp__other__echo", &serde_json::json!({}), "/repo"));
+        // A lookalike prefix is not an mcp tool.
+        assert!(!grants.passes("mcp__fixture", &serde_json::json!({}), "/repo"));
+        // Recording twice keeps one grant.
+        grants.record("mcp__fixture__echo", &serde_json::json!({}), "/repo");
+        let GateGrants { mcp_tools, .. } = grants;
+        assert_eq!(mcp_tools, ["mcp__fixture__echo".to_string()]);
     }
 
     #[test]
@@ -730,6 +780,14 @@ mod tests {
         assert!(!is_mutating_tool("Bash"));
         assert!(!is_mutating_tool("bash_safe"));
         assert!(!is_mutating_tool("writefile"));
+        // MCP tools are presumed mutating by prefix (ADR-0034) — foreign
+        // code always meets the gatekeeper in the gating modes.
+        assert!(is_mutating_tool("mcp__fixture__echo"));
+        assert!(is_mutating_tool("mcp__anything"));
+        // A bare lookalike without the prefix is not one.
+        assert!(!is_mutating_tool("mcp_fixture_echo"));
+        assert!(!is_mutating_tool("mcp"));
+        assert!(!is_mutating_tool("pmcp__x__y"));
     }
 
     #[test]
