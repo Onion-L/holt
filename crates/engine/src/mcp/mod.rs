@@ -87,7 +87,13 @@ impl McpPool {
         }
         let mut tools = Vec::new();
         let mut connections = self.connections.lock().await;
-        for (name, server) in self.servers.get() {
+        let definitions = self.servers.get();
+        // Connections for servers that vanished from the config or were
+        // disabled die now — dropping the pool's Arc shuts the child down
+        // (an Arc a running Turn still holds keeps it alive until that
+        // Turn ends, so a mid-Turn disable never kills a tool in use).
+        connections.retain(|name, _| definitions.get(name).is_some_and(|server| server.enabled));
+        for (name, server) in definitions {
             if !server.enabled {
                 continue;
             }
@@ -130,6 +136,11 @@ impl McpPool {
     /// tools, disconnect — never touching the pool's live connections,
     /// never standing watch (ADR-0034).
     pub(crate) async fn probe(&self, name: &str) -> ProbeReport {
+        // Fresh definitions: a hand edit since the last Turn is testable
+        // immediately, and a broken file reports its own error.
+        if let Err(reason) = self.servers.refresh() {
+            return ProbeReport::Failed { reason };
+        }
         let server = self.servers.get().get(name).cloned();
         let Some(server) = server else {
             return ProbeReport::Failed {
@@ -143,13 +154,27 @@ impl McpPool {
         let tools = connection.list_tools().await;
         connection.shutdown().await;
         match tools {
-            Ok(tools) => ProbeReport::Ok {
-                tool_count: tools.len(),
-                tool_names: tools
-                    .into_iter()
-                    .map(|tool| tool.name.to_string())
-                    .collect(),
-            },
+            Ok(tools) => {
+                // The same refusal a Turn's mount applies: an illegal or
+                // overlong name would make the probe report a server the
+                // engine will not mount.
+                if let Some(bad) = tools.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
+                    return ProbeReport::Failed {
+                        reason: format!(
+                            "lists an illegal tool name {:?}; the server is refused \
+                             at connect",
+                            bad.name
+                        ),
+                    };
+                }
+                ProbeReport::Ok {
+                    tool_count: tools.len(),
+                    tool_names: tools
+                        .into_iter()
+                        .map(|tool| tool.name.to_string())
+                        .collect(),
+                }
+            }
             Err(reason) => ProbeReport::Failed { reason },
         }
     }

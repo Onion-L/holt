@@ -346,3 +346,136 @@ async fn hand_edits_land_after_restart_and_live() {
     assert_eq!(server["enabled"], serde_json::json!(true));
     let _ = Path::new("");
 }
+
+/// Disabling (or removing) a server kills its cached child: the marker's
+/// pid goes away after the next Turn prunes the orphan connection.
+#[tokio::test]
+async fn disabling_a_server_shuts_its_child_down() {
+    let fixture = common::Fixture::new();
+    let marker = fixture.data_dir.path().join("fixture-pid");
+    let provider =
+        ScriptedProvider::new(vec![ScriptedReply::text("one"), ScriptedReply::text("two")]);
+    let engine = fixture.engine(&provider);
+    call(
+        &engine,
+        methods::SAVE_MCP_SERVER,
+        serde_json::json!({
+            "name": "fixture",
+            "server": {
+                "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+                "env": { "FIXTURE_MARKER": marker.display().to_string() },
+            }
+        }),
+    )
+    .await;
+    common::setup_ungated_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // Turn one connects; the child writes its pid.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "turn one").await;
+    common::wait_for_transcript_text(&mut transcript, "one").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let pid: i32 = std::fs::read_to_string(&marker)
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("the fixture wrote its pid");
+    #[cfg(unix)]
+    let alive = || unsafe { libc::kill(pid, 0) == 0 };
+
+    // Disable through the upsert; the next Turn prunes the connection and
+    // the child exits.
+    let state = call(
+        &engine,
+        methods::SAVE_MCP_SERVER,
+        serde_json::json!({
+            "name": "fixture",
+            "server": {
+                "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+                "env": { "FIXTURE_MARKER": marker.display().to_string() },
+                "enabled": false,
+            }
+        }),
+    )
+    .await;
+    assert_eq!(state["servers"][0]["enabled"], serde_json::json!(false));
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "turn two").await;
+    common::wait_for_transcript_text(&mut transcript, "two").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    #[cfg(unix)]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the disabled server's child is still running"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// The probe applies the same tool-name refusal a Turn's mount does — a
+/// server listing an illegal name probes as failed, never "ok".
+#[tokio::test]
+async fn the_probe_refuses_servers_with_illegal_tool_names() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = fixture.engine(&provider);
+    call(
+        &engine,
+        methods::SAVE_MCP_SERVER,
+        serde_json::json!({
+            "name": "bad",
+            "server": {
+                "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+                "env": { "FIXTURE_BAD_TOOL_NAME": "1" },
+            }
+        }),
+    )
+    .await;
+    let probe = call(
+        &engine,
+        methods::TEST_MCP_SERVER,
+        serde_json::json!({ "name": "bad" }),
+    )
+    .await;
+    assert_eq!(probe["status"], "failed");
+    assert!(
+        probe["reason"]
+            .as_str()
+            .unwrap()
+            .contains("illegal tool name"),
+        "{probe}"
+    );
+}
+
+/// A hand edit is testable immediately — the probe refreshes the file
+/// instead of answering from a pre-edit definition set.
+#[tokio::test]
+async fn the_probe_sees_hand_edits_immediately() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = fixture.engine(&provider);
+    // Hand-added after startup: no Get has run.
+    std::fs::write(
+        fixture.data_dir.path().join("mcp.json"),
+        serde_json::to_string(&serde_json::json!({
+            "mcpServers": {
+                "hand": {
+                    "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let probe = call(
+        &engine,
+        methods::TEST_MCP_SERVER,
+        serde_json::json!({ "name": "hand" }),
+    )
+    .await;
+    assert_eq!(probe["status"], "ok", "{probe}");
+    assert_eq!(probe["toolCount"], 2);
+}

@@ -2194,10 +2194,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     }
     // The MCP tools (ADR-0034): the Turn-start snapshot — every enabled
     // server's tools join the toolset as `mcp__<server>__<tool>` agent
-    // tools, connecting lazily here and only here. Subagent runs and the
-    // setup surface keep their curated toolsets (a planning Turn's
-    // read-only retain below drops them with everything else off-list).
-    if chat.child.is_none() && !setup_scope {
+    // tools, connecting lazily here and only here. Subagent runs, the
+    // setup surface, and planning Turns (whose read-only retain below
+    // would drop the tools anyway) keep their curated toolsets without
+    // spawning a thing.
+    if chat.child.is_none() && !setup_scope && !plan_mode {
         tools.extend(runtime.mcp.agent_tools().await);
     }
     // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit

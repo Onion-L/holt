@@ -69,3 +69,5 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 png = "0.18"
 tempfile.workspace = true
 git2.workspace = true
+# Process-liveness probes in the MCP lifecycle tests (kill(pid, 0)).
+libc.workspace = true

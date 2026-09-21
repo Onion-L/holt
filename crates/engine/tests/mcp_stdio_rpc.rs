@@ -9,6 +9,7 @@ mod common;
 
 use common::{ScriptedProvider, ScriptedReply};
 use holt_engine::{EngineConfig, LocalEngine};
+use holt_rpc::RpcService;
 use std::path::Path;
 
 fn assemble_unwrapped(
@@ -232,4 +233,48 @@ async fn a_server_that_cannot_start_is_skipped_and_the_turn_proceeds() {
         "toolset: {:?}",
         requests[0].tool_names
     );
+}
+
+/// A planning Turn never queries the pool — its read-only toolset would
+/// drop the tools anyway, so no MCP child may spawn for it.
+#[tokio::test]
+async fn planning_turns_spawn_no_mcp_children() {
+    let fixture = common::Fixture::new();
+    let marker = marker_path(fixture.data_dir.path());
+    write_mcp_config(
+        fixture.data_dir.path(),
+        serde_json::json!({
+            "fixture": fixture_server(serde_json::json!({
+                "env": { "FIXTURE_MARKER": marker }
+            }))
+        }),
+    );
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("planned")]);
+    let engine = fixture.engine(&provider);
+    common::setup_ungated_chat(&engine, "chat-1").await;
+    engine
+        .handle(
+            holt_rpc::methods::ENTER_PLAN_MODE,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap();
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "plan something").await;
+    common::wait_for_transcript_text(&mut transcript, "planned").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // The planning Turn's request carried no MCP tools…
+    let requests = provider.requests();
+    assert!(
+        !requests[0]
+            .tool_names
+            .iter()
+            .any(|name| name.starts_with("mcp__")),
+        "toolset: {:?}",
+        requests[0].tool_names
+    );
+    // …and nothing ever spawned — the marker the fixture touches on start
+    // is absent.
+    assert!(!Path::new(&marker).exists());
 }
