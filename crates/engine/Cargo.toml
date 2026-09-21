@@ -35,6 +35,12 @@ chrono.workspace = true
 tiktoken-rs = "0.7"
 reqwest.workspace = true
 htmd = "0.5"
+# The MCP client (ADR-0034): official SDK, client role only, stdio child
+# transport for now — no server role, no macros, no auth.
+rmcp = { version = "3.4", default-features = false, features = [
+    "client",
+    "transport-child-process",
+] }
 
 # System-trash deletion (ticket 07): the same objc2-foundation the vendored
 # gpui already carries, so the lockfile gains nothing. NSFileManager's

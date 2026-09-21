@@ -345,6 +345,7 @@ mod tests {
             dir.to_path_buf(),
             chats,
             None,
+            crate::mcp::McpPool::load(dir).unwrap(),
         )
     }
 

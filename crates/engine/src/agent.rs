@@ -548,6 +548,10 @@ pub(crate) struct AgentRuntime {
     /// same stall protection. Production leaves it unset (and uses the
     /// guarded `default_stream_fn`).
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
+    /// The app-scoped MCP connection pool (ADR-0034): device-level server
+    /// definitions plus the live connections Turns snapshot tools from.
+    /// Connections start lazily — nothing spawns until a Turn needs tools.
+    pub(crate) mcp: crate::mcp::McpPool,
 }
 
 impl AgentRuntime {
@@ -596,6 +600,7 @@ impl AgentRuntime {
         data_dir: PathBuf,
         chats: Vec<Chat>,
         stream_fn: Option<pi_core::agent::types::StreamFn>,
+        mcp: crate::mcp::McpPool,
     ) -> Self {
         let chats_value = serde_json::to_value(&chats).unwrap_or_else(|_| serde_json::json!([]));
         let (chats_tx, _) = watch::channel(chats_value);
@@ -619,6 +624,7 @@ impl AgentRuntime {
             // `default_stream_fn`, so the two guards cover them all exactly
             // once.
             stream_fn: stream_fn.map(|raw| guard_stream_fn(raw, STREAM_IDLE_TIMEOUT)),
+            mcp,
         }
     }
 
@@ -2186,6 +2192,14 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             attribution: attribution.clone(),
         }));
     }
+    // The MCP tools (ADR-0034): the Turn-start snapshot — every enabled
+    // server's tools join the toolset as `mcp__<server>__<tool>` agent
+    // tools, connecting lazily here and only here. Subagent runs and the
+    // setup surface keep their curated toolsets (a planning Turn's
+    // read-only retain below drops them with everything else off-list).
+    if chat.child.is_none() && !setup_scope {
+        tools.extend(runtime.mcp.agent_tools().await);
+    }
     // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit
     // convention appended to the system prompt and the toolset cut down to
     // the read-only exploration surface. The plan itself is ordinary
@@ -2650,6 +2664,7 @@ mod tests {
             dir.path().to_path_buf(),
             vec![session_chat("chat-1")],
             None,
+            crate::mcp::McpPool::load(dir.path()).unwrap(),
         );
         runtime.set_session("chat-1", SessionStatus::Working);
         let first = runtime.sessions.read().unwrap()[0].started_at.unwrap();
@@ -2677,6 +2692,7 @@ mod tests {
             dir.path().to_path_buf(),
             vec![session_chat("chat-1")],
             None,
+            crate::mcp::McpPool::load(dir.path()).unwrap(),
         ));
         runtime.set_session("chat-1", SessionStatus::Working);
         let before = runtime.sessions.read().unwrap()[0].updated_at;
@@ -3184,6 +3200,7 @@ mod tests {
             dir.clone(),
             Vec::new(),
             None,
+            crate::mcp::McpPool::load(&dir).unwrap(),
         );
         let chat = runtime.chat("chat-1");
         chat.transcript.write().unwrap().push(SessionMessageEntry {
@@ -3211,6 +3228,7 @@ mod tests {
             dir.clone(),
             Vec::new(),
             None,
+            crate::mcp::McpPool::load(&dir).unwrap(),
         );
         let restored = restarted.chat("chat-1");
         let transcript = restored.transcript.read().unwrap();
@@ -3230,6 +3248,7 @@ mod tests {
             dir.clone(),
             Vec::new(),
             None,
+            crate::mcp::McpPool::load(&dir).unwrap(),
         );
         assert_eq!(again.chat("chat-1").transcript.read().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();

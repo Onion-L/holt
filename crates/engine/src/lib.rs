@@ -38,6 +38,7 @@ pub mod instance_lock;
 mod jev;
 mod jev_settings;
 mod local_fs;
+mod mcp;
 mod mode_default;
 mod path_search;
 mod plan_mode;
@@ -207,6 +208,7 @@ impl LocalEngine {
             config.data_dir.clone(),
             load_chats(&config.data_dir)?,
             config.stream_fn.clone(),
+            crate::mcp::McpPool::load(&config.data_dir)?,
         ));
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
