@@ -98,6 +98,19 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   consumes the connection yet — the `jev-review` permission mode it
   served was removed (ADR-0026 → 0027); future Jev-powered features
   mount from here.
+- MCP servers (ADR-0034): `GetMcpSettings` (every definition in the flat
+  hand-editable `mcpServers` entry shape — name, transport fields, enabled,
+  timeouts, filters — plus any file-level `validationError` from a hand
+  edit that landed since startup; a broken file keeps the last-good set),
+  `SaveMcpServer` (`{name, server}` — a strict upsert: the `[A-Za-z0-9_-]`
+  name rule and the same strict parse a hand-edited file would face, then
+  an atomic 0600 write and a dropped cached connection so the next Turn
+  serves the new definition), `RemoveMcpServer` (`{name}`), and
+  `TestMcpServer` (`{name}` — an on-demand probe that connects, lists
+  tools, reports `{status, toolCount, toolNames}` or `{status: failed,
+  reason}`, and disconnects, for both transports). No standing status
+  watch: on-demand probing is what keeps startup lazy. The pool behind
+  the quartet is described with the run loop below.
 - Permission modes (ADR-0014): a chat's mode rides its `ChatConfig`
   (`permissionMode`, kebab-case tiers; stored sandbox-era values remap on
   read). `Mutate setChatPermissionMode` (`{chatId, mode}`) switches a chat —
@@ -483,6 +496,27 @@ the user-configured backend — resolved once per Turn admission, absent from
 the toolset (not erroring) when none is configured. Neither enters the
 ADR-0014 gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
+Main-chat runs also mount the MCP tools (ADR-0034): the engine owns an
+app-scoped, lazily-started pool of MCP connections (stdio children and
+Streamable HTTP endpoints) over the device-level `mcp.json` definition
+set, and at Turn start every enabled server's `tools/list` entries join
+the toolset as ordinary agent tools named `mcp__<server>__<tool>`
+(description capped at 2 KB, input schema passed through, results joined
+and capped at 100k characters, pagination followed under a 100-page
+ceiling). Connections start only here — app startup spawns nothing — and
+a server that fails to start, connect within its `startupTimeoutMs`
+(default 10 s), or answer its list is skipped for that Turn with a log
+line and retried the same lazy way on the next one; `tools/call` forwards
+under the server's `toolTimeoutMs` (default 60 s), and a dead connection
+settles its calls as error results the model reads. Every `mcp__` call
+is presumed mutating by prefix: confirm-changes pauses it behind the
+ordinary Approval, auto-review's model pass judges it, full-access passes
+it, and an always-allow records the exact two-level name as a session
+grant. Subagent runs, planning Turns, and the model-setup chat mount no
+MCP tools; MCP calls render on the existing unknown-tool transcript
+part. The child environment is sanitized (credential-shaped variables
+stripped unless the server's `env` sets them) and config values expand
+`${VAR}`/`${VAR:-default}` at run time.
 Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
 planning Turns excepted, since they run the read-only toolset. The model
 setup surface (ADR-0030) lives in its own chat, not here: normal chats
@@ -541,8 +575,11 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
 - `images/` — Holt-managed pasted pixels.
 - Per-feature settings records: `provider-credentials.json`,
   `provider-store.json`, `provider-settings.json`, `title-settings.json`,
-  `web-search.json`, `permission-mode-default.json` — each with its own
-  atomic-write and failure policy as described above.
+  `web-search.json`, `permission-mode-default.json`, `mcp.json` (the MCP
+  server definitions, ADR-0034: strict `mcpServers` map, credentials
+  pattern — 0600, atomic replace, malformed or unknown-key files fail
+  startup loudly) — each with its own atomic-write and failure policy as
+  described above.
 - `device-id` (plain text), `engine.lock` (the single-instance lock), `logs/`,
   and the child `results/*.txt` summaries — the only non-JSON artifacts.
 

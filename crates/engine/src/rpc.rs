@@ -1757,6 +1757,119 @@ impl EngineService {
         RpcReply::value(&self.jev_state())
     }
 
+    /// The MCP settings view (ADR-0034): every definition — flat,
+    /// camelCase, exactly the hand-editable `mcpServers` entry shape —
+    /// plus any file-level validation error from a hand edit that landed
+    /// since startup (a broken file keeps the last-good set).
+    async fn mcp_settings_state(&self) -> serde_json::Value {
+        let validation_error = self.runtime.mcp.refresh_error();
+        let servers: Vec<serde_json::Value> = self
+            .runtime
+            .mcp
+            .definitions()
+            .into_iter()
+            .map(|(name, server)| {
+                let mut value = crate::mcp::config::server_to_value(&server);
+                let object = value.as_object_mut().unwrap();
+                object.insert("name".into(), serde_json::json!(name));
+                // The UI view carries the shared fields explicitly, even
+                // when the file form omits defaults.
+                object.insert("enabled".into(), serde_json::json!(server.enabled));
+                object.insert(
+                    "startupTimeoutMs".into(),
+                    serde_json::json!(server.startup_timeout_ms),
+                );
+                object.insert(
+                    "toolTimeoutMs".into(),
+                    serde_json::json!(server.tool_timeout_ms),
+                );
+                object.insert(
+                    "enabledTools".into(),
+                    serde_json::json!(server.enabled_tools),
+                );
+                object.insert(
+                    "disabledTools".into(),
+                    serde_json::json!(server.disabled_tools),
+                );
+                value
+            })
+            .collect();
+        serde_json::json!({
+            "servers": servers,
+            "validationError": validation_error,
+        })
+    }
+
+    /// `SaveMcpServer` — the strict upsert. The name must satisfy
+    /// `[A-Za-z0-9_-]` (the two-level tool naming never becomes
+    /// ambiguous) and the definition survives the same strict parse a
+    /// hand-edited file would; the write is atomic under the credentials
+    /// pattern, and the server's cached connection is dropped so the
+    /// next Turn serves the new definition.
+    async fn save_mcp_server(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let name = required_string(&params, "name")?;
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(RpcError::BadParams(format!(
+                "invalid mcp server name {name:?}: names use [A-Za-z0-9_-] only"
+            )));
+        }
+        let definition = params
+            .get("server")
+            .cloned()
+            .ok_or_else(|| RpcError::BadParams("server is required".into()))?;
+        let server =
+            crate::mcp::config::parse_server(name, &definition).map_err(RpcError::BadParams)?;
+        let mut servers = self.runtime.mcp.definitions();
+        servers.insert(name.to_string(), server);
+        self.runtime
+            .mcp
+            .store()
+            .save(servers)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.mcp.invalidate(name).await;
+        RpcReply::value(&self.mcp_settings_state().await)
+    }
+
+    /// `RemoveMcpServer` — delete one definition (its cached connection
+    /// dies with it).
+    async fn remove_mcp_server(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let name = required_string(&params, "name")?;
+        let mut servers = self.runtime.mcp.definitions();
+        if servers.remove(name).is_none() {
+            return Err(RpcError::BadParams(format!("unknown mcp server {name:?}")));
+        }
+        self.runtime
+            .mcp
+            .store()
+            .save(servers)
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.mcp.invalidate(name).await;
+        RpcReply::value(&self.mcp_settings_state().await)
+    }
+
+    /// `TestMcpServer` — the probe reply: status, tool count and names,
+    /// or the failure reason. Reads the current definitions without
+    /// disturbing the pool's live connections.
+    async fn mcp_probe_reply(&self, name: &str) -> serde_json::Value {
+        match self.runtime.mcp.probe(name).await {
+            crate::mcp::ProbeReport::Ok {
+                tool_count,
+                tool_names,
+            } => serde_json::json!({
+                "status": "ok",
+                "toolCount": tool_count,
+                "toolNames": tool_names,
+            }),
+            crate::mcp::ProbeReport::Failed { reason } => {
+                serde_json::json!({ "status": "failed", "reason": reason })
+            }
+        }
+    }
+
     async fn save_web_search_settings(
         &self,
         params: serde_json::Value,
@@ -2769,6 +2882,17 @@ impl RpcService for EngineService {
                     .remove()
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))
+            }
+            // MCP servers (ADR-0034): the Settings quartet — get with
+            // validation feedback, strict upsert, remove, and the
+            // on-demand probe. No standing watch: probing on demand is
+            // what keeps startup lazy.
+            methods::GET_MCP_SETTINGS => RpcReply::value(&self.mcp_settings_state().await),
+            methods::SAVE_MCP_SERVER => self.save_mcp_server(params).await,
+            methods::REMOVE_MCP_SERVER => self.remove_mcp_server(params).await,
+            methods::TEST_MCP_SERVER => {
+                let name = required_string(&params, "name")?;
+                RpcReply::value(&self.mcp_probe_reply(name).await)
             }
             // The composer's slash menu (ADR-0011/0025): the commands this
             // backend intercepts itself.

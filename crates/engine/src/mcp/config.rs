@@ -7,7 +7,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -219,6 +219,76 @@ pick one transport"
     }
 }
 
+/// Serialize one server back to its flat entry shape — defaults omitted,
+/// non-defaults explicit (the hand-editable round-trip form).
+pub(crate) fn server_to_value(server: &McpServer) -> serde_json::Value {
+    let mut value = match &server.transport {
+        ServerTransport::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
+            let mut value = serde_json::json!({ "command": command });
+            let object = value.as_object_mut().unwrap();
+            if !args.is_empty() {
+                object.insert("args".into(), serde_json::json!(args));
+            }
+            if !env.is_empty() {
+                object.insert("env".into(), serde_json::json!(env));
+            }
+            if let Some(cwd) = cwd {
+                object.insert("cwd".into(), serde_json::json!(cwd));
+            }
+            value
+        }
+        ServerTransport::Http {
+            url,
+            headers,
+            bearer_token_env_var,
+        } => {
+            let mut value = serde_json::json!({ "url": url });
+            let object = value.as_object_mut().unwrap();
+            if !headers.is_empty() {
+                object.insert("headers".into(), serde_json::json!(headers));
+            }
+            if let Some(var) = bearer_token_env_var {
+                object.insert("bearerTokenEnvVar".into(), serde_json::json!(var));
+            }
+            value
+        }
+    };
+    let object = value.as_object_mut().unwrap();
+    if !server.enabled {
+        object.insert("enabled".into(), serde_json::json!(false));
+    }
+    if server.startup_timeout_ms != DEFAULT_STARTUP_TIMEOUT_MS {
+        object.insert(
+            "startupTimeoutMs".into(),
+            serde_json::json!(server.startup_timeout_ms),
+        );
+    }
+    if server.tool_timeout_ms != DEFAULT_TOOL_TIMEOUT_MS {
+        object.insert(
+            "toolTimeoutMs".into(),
+            serde_json::json!(server.tool_timeout_ms),
+        );
+    }
+    if !server.enabled_tools.is_empty() {
+        object.insert(
+            "enabledTools".into(),
+            serde_json::json!(server.enabled_tools),
+        );
+    }
+    if !server.disabled_tools.is_empty() {
+        object.insert(
+            "disabledTools".into(),
+            serde_json::json!(server.disabled_tools),
+        );
+    }
+    value
+}
+
 /// Parse the whole file: `{ "mcpServers": { ... } }`, unknown top-level
 /// keys rejected, each entry strictly parsed with its name in the error.
 pub(crate) fn parse_file(bytes: &[u8]) -> Result<BTreeMap<String, McpServer>, String> {
@@ -252,6 +322,7 @@ pub(crate) fn parse_file(bytes: &[u8]) -> Result<BTreeMap<String, McpServer>, St
 /// Settings RPC quartet (ticket 07) writes through the same store.
 #[derive(Clone, Debug)]
 pub(crate) struct McpStore {
+    path: PathBuf,
     servers: Arc<RwLock<BTreeMap<String, McpServer>>>,
 }
 
@@ -277,18 +348,96 @@ impl McpStore {
             Err(error) => return Err(error.into()),
         };
         Ok(Self {
+            path,
             servers: Arc::new(RwLock::new(servers)),
         })
     }
 
-    /// The current definitions — the pool reads this fresh at every Turn
-    /// start, so a hand edit lands from the next Turn.
+    /// The current (last-good) definitions.
     pub(crate) fn get(&self) -> BTreeMap<String, McpServer> {
         self.servers
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
+
+    /// Re-read the file: a hand edit while holt runs lands here, so a
+    /// Turn started later serves it. A file that went bad keeps the
+    /// last-good set and returns the validation error — the Settings
+    /// page surfaces it without the engine losing its working set.
+    pub(crate) fn refresh(&self) -> Result<(), String> {
+        let servers = match std::fs::read(&self.path) {
+            Ok(bytes) => parse_file(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(error.to_string()),
+        };
+        *self
+            .servers
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = servers;
+        Ok(())
+    }
+
+    /// Replace the definitions and persist atomically (credentials
+    /// pattern: tmp + rename, 0600). Rolls the in-memory state back if
+    /// the write fails.
+    pub(crate) fn save(&self, servers: BTreeMap<String, McpServer>) -> Result<(), EngineError> {
+        let mut guard = self
+            .servers
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = guard.clone();
+        *guard = servers;
+        if let Err(error) = persist(&self.path, &guard) {
+            *guard = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+fn persist(path: &Path, servers: &BTreeMap<String, McpServer>) -> Result<(), EngineError> {
+    let mut file = serde_json::Map::new();
+    let entries: serde_json::Map<String, serde_json::Value> = servers
+        .iter()
+        .map(|(name, server)| (name.clone(), server_to_value(server)))
+        .collect();
+    file.insert("mcpServers".into(), serde_json::Value::Object(entries));
+    let bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(file))
+        .map_err(|error| EngineError::Other(error.to_string()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| EngineError::Other("mcp config path has no parent".into()))?;
+    let temp = parent.join(format!(".{FILE_NAME}.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(|error| {
+        EngineError::Other(format!(
+            "could not save mcp config {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(unix)]
@@ -565,6 +714,76 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("my server"), "{error}");
         assert!(error.contains("[A-Za-z0-9_-]"), "{error}");
+    }
+
+    #[test]
+    fn save_round_trips_through_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = McpStore::load(dir.path()).unwrap();
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "example".into(),
+            parse_server(
+                "example",
+                &serde_json::json!({
+                    "command": "npx",
+                    "args": ["-y", "server"],
+                    "cwd": "/tmp",
+                    "toolTimeoutMs": 5000,
+                    "disabledTools": ["noisy"]
+                }),
+            )
+            .unwrap(),
+        );
+        store.save(servers).unwrap();
+        // The reload parses the written file — round-trip proof at the
+        // file seam, defaults omitted on the wire.
+        let reloaded = McpStore::load(dir.path()).unwrap().get();
+        let server = reloaded.get("example").unwrap();
+        assert_eq!(server.tool_timeout_ms, 5000);
+        assert_eq!(server.disabled_tools, vec!["noisy".to_string()]);
+        assert_eq!(
+            server.transport,
+            ServerTransport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "server".into()],
+                env: BTreeMap::new(),
+                cwd: Some("/tmp".into()),
+            }
+        );
+        assert!(
+            !std::fs::read_to_string(dir.path().join(FILE_NAME))
+                .unwrap()
+                .contains("startupTimeoutMs")
+        );
+    }
+
+    #[test]
+    fn refresh_picks_up_hand_edits_and_keeps_last_good_on_breakage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = McpStore::load(dir.path()).unwrap();
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "one".into(),
+            parse_server("one", &serde_json::json!({ "command": "x" })).unwrap(),
+        );
+        store.save(servers).unwrap();
+        // A hand edit lands.
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_string(&serde_json::json!({
+                "mcpServers": { "two": { "command": "y" } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        store.refresh().unwrap();
+        assert!(store.get().contains_key("two"));
+        // A broken edit keeps the last-good set and reports the error.
+        std::fs::write(dir.path().join(FILE_NAME), b"{broken").unwrap();
+        let error = store.refresh().unwrap_err();
+        assert!(error.contains("mcp.json"), "{error}");
+        assert!(store.get().contains_key("two"));
     }
 
     #[test]

@@ -119,6 +119,10 @@ pub mod methods {
     pub const SAVE_JEV_SETTINGS: &str = "SaveJevSettings";
     pub const REVEAL_JEV_KEY: &str = "RevealJevKey";
     pub const REMOVE_JEV_SETTINGS: &str = "RemoveJevSettings";
+    pub const GET_MCP_SETTINGS: &str = "GetMcpSettings";
+    pub const SAVE_MCP_SERVER: &str = "SaveMcpServer";
+    pub const REMOVE_MCP_SERVER: &str = "RemoveMcpServer";
+    pub const TEST_MCP_SERVER: &str = "TestMcpServer";
     pub const LIST_COMMANDS: &str = "ListCommands";
     /// The skills catalog (ADR-0005): one fresh scan of the chat's three
     /// skill roots. Params `{cwd?}` — the project root derives from it;

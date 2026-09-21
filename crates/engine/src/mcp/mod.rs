@@ -74,9 +74,17 @@ impl McpPool {
 
     /// The Turn-start snapshot (ADR-0034): every enabled server's listed
     /// tools, wrapped as standard agent tools. Called once per Turn
-    /// admission by main-chat runs; the definition set is read fresh, so
-    /// a hand-edited config lands from the next Turn.
+    /// admission by main-chat runs. The file is refreshed first — a hand
+    /// edit while holt runs lands from the next Turn; a broken one keeps
+    /// the last-good set (logged).
     pub(crate) async fn agent_tools(&self) -> Vec<AgentTool> {
+        if let Err(error) = self.servers.refresh() {
+            tracing::warn!(
+                target: "holt::mcp",
+                %error,
+                "mcp config failed to reload; keeping the last-good servers"
+            );
+        }
         let mut tools = Vec::new();
         let mut connections = self.connections.lock().await;
         for (name, server) in self.servers.get() {
@@ -116,6 +124,58 @@ impl McpPool {
             );
         }
         tools
+    }
+
+    /// One on-demand probe (the Settings Test action): connect, list
+    /// tools, disconnect — never touching the pool's live connections,
+    /// never standing watch (ADR-0034).
+    pub(crate) async fn probe(&self, name: &str) -> ProbeReport {
+        let server = self.servers.get().get(name).cloned();
+        let Some(server) = server else {
+            return ProbeReport::Failed {
+                reason: format!("unknown mcp server {name:?}"),
+            };
+        };
+        let connection = match connect(&server).await {
+            Ok(connection) => connection,
+            Err(reason) => return ProbeReport::Failed { reason },
+        };
+        let tools = connection.list_tools().await;
+        connection.shutdown().await;
+        match tools {
+            Ok(tools) => ProbeReport::Ok {
+                tool_count: tools.len(),
+                tool_names: tools
+                    .into_iter()
+                    .map(|tool| tool.name.to_string())
+                    .collect(),
+            },
+            Err(reason) => ProbeReport::Failed { reason },
+        }
+    }
+
+    /// Drop one server's cached connection (the upsert/remove paths): the
+    /// next Turn reconnects — or not — under the new definition.
+    pub(crate) async fn invalidate(&self, name: &str) {
+        self.connections.lock().await.remove(name);
+    }
+
+    /// The last-good definitions (the Settings view's source).
+    pub(crate) fn definitions(&self) -> BTreeMap<String, McpServer> {
+        self.servers.get()
+    }
+
+    /// The store behind the pool — the Settings quartet persists through
+    /// it.
+    pub(crate) fn store(&self) -> &McpStore {
+        &self.servers
+    }
+
+    /// Re-read the file, returning any validation error (the Settings
+    /// page's file-level feedback) while the pool keeps the last-good
+    /// set.
+    pub(crate) fn refresh_error(&self) -> Option<String> {
+        self.servers.refresh().err()
     }
 }
 
@@ -233,6 +293,14 @@ impl LiveServer {
                 "mcp tool {name:?} returned an unsupported result shape"
             )),
         }
+    }
+
+    /// Cancel the service and wait for its transport to wind down — the
+    /// probe path's clean disconnect.
+    async fn shutdown(self) {
+        let cancel = self.service.cancellation_token();
+        cancel.cancel();
+        let _ = self.service.waiting().await;
     }
 }
 
@@ -507,4 +575,16 @@ mod tests {
         assert!(!tool_name_is_legal("bad name"));
         assert!(!tool_name_is_legal("bad/name"));
     }
+}
+
+/// What a probe learned about one server.
+#[derive(Debug)]
+pub(crate) enum ProbeReport {
+    Ok {
+        tool_count: usize,
+        tool_names: Vec<String>,
+    },
+    Failed {
+        reason: String,
+    },
 }
