@@ -250,16 +250,7 @@ fn done_provider() -> ScriptedProvider {
 }
 
 /// A provider whose first round executes one `write` tool call and whose
-/// second answers "done": the deterministic "the agent edited a file"
-/// primitive. Only TOOL writes are attributed to the Turn — the change set
-/// is what the Turn's own tools did, not everything the worktree saw — so
-/// every test that means "the agent wrote" must drive the real tool, and
-/// must lift the approval gate first (`grant_full_access`).
-fn write_provider(path: &str, content: &str) -> ScriptedProvider {
-    ScriptedProvider::new(vec![tool_write(path, content), ScriptedReply::text("done")])
-}
-
-/// [`write_provider`]'s first round held back behind a gate: the write has
+/// second round is held back behind a gate: the write has
 /// executed (round one is done), but the Turn is still live — the
 /// deterministic "mid-Turn, after the agent's write" primitive.
 fn gated_write_provider(path: &str, content: &str) -> (ScriptedProvider, Arc<Notify>) {
