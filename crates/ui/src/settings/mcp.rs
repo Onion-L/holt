@@ -866,15 +866,18 @@ impl McpPage {
             Some(ProbeView::Ok { tool_count, .. }) => {
                 let count = *tool_count;
                 let action_name = name.clone();
+                let badge_theme = theme.clone();
+                // The pill itself is the click target — a wrapper's hover
+                // wash would paint under the pill's own background and
+                // never show.
                 row = row.child(
-                    div()
+                    widgets::badge_active(theme, format!("✓ {count} tools"))
                         .id(SharedString::from(format!("mcp-test-{name}")))
-                        .flex_none()
                         .cursor_pointer()
+                        .hover(move |style| style.bg(badge_theme.success.opacity(0.25)))
                         .on_click(cx.listener(move |page, _, _, cx| {
                             page.probe(cx, action_name.clone());
-                        }))
-                        .child(widgets::badge_active(theme, format!("✓ {count} tools"))),
+                        })),
                 );
             }
             _ => {
