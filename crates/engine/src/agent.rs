@@ -1146,6 +1146,11 @@ fn record_mid_turn_compaction(
 /// means the connection is gone, and without a deadline a main Turn or a
 /// child agent stays `streaming` until an application restart.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Give a cancelled provider a short window to emit its own terminal abort
+/// event before the engine synthesizes one. Providers use that event to finish
+/// transport-specific cleanup; the bound keeps cancellation from hanging when
+/// a transport ignores its signal.
+const STREAM_CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The built-in provider transport: the compat stream over the resolved
 /// model, behind the stream idle watchdog. Tests inject their own through
@@ -1181,6 +1186,7 @@ fn guard_stream_fn(
             let mut child_options = options.cloned().unwrap_or_default();
             let child = CancellationToken::new();
             child_options.base.base.signal = Some(child.clone());
+            let upstream = raw(model, context, Some(&child_options))?;
             if let Some(parent) = parent.clone() {
                 let linked = child.clone();
                 tokio::spawn(async move {
@@ -1190,7 +1196,6 @@ fn guard_stream_fn(
                     }
                 });
             }
-            let upstream = raw(model, context, Some(&child_options))?;
             let output = create_assistant_message_event_stream();
             let fallback = AssistantMessage {
                 api: model.api.clone(),
@@ -1241,11 +1246,7 @@ async fn forward_with_idle_watchdog(
                 // the transport's own abort event wins the race instead, it
                 // was already forwarded below and this branch never runs.
                 child.cancel();
-                output.push(synthetic_terminal(
-                    partial.unwrap_or_else(|| fallback.clone()),
-                    StopReason::Aborted,
-                    "Request was aborted",
-                ));
+                finish_cancelled_stream(upstream, output, partial, fallback).await;
                 return;
             }
             event = tokio::time::timeout(idle, upstream.next()) => match event {
@@ -1291,6 +1292,47 @@ async fn forward_with_idle_watchdog(
             return;
         }
         seen_event = true;
+    }
+}
+
+/// Let a cancelled provider finish its own abort handshake, but never wait
+/// indefinitely for a transport that ignores cancellation.
+async fn finish_cancelled_stream(
+    upstream: AssistantMessageEventStream,
+    output: AssistantMessageEventStream,
+    mut partial: Option<AssistantMessage>,
+    fallback: AssistantMessage,
+) {
+    let settle = tokio::time::sleep(STREAM_CANCEL_SETTLE_TIMEOUT);
+    tokio::pin!(settle);
+    loop {
+        let event = tokio::select! {
+            event = upstream.next() => event,
+            _ = &mut settle => {
+                output.push(synthetic_terminal(
+                    partial.unwrap_or_else(|| fallback.clone()),
+                    StopReason::Aborted,
+                    "Request was aborted",
+                ));
+                return;
+            }
+        };
+        let Some(event) = event else {
+            output.push(synthetic_terminal(
+                partial.unwrap_or_else(|| fallback.clone()),
+                StopReason::Aborted,
+                "Request was aborted",
+            ));
+            return;
+        };
+        let terminal = event.is_terminal();
+        if !terminal && let Some(message) = stream_event_partial(&event) {
+            partial = Some(message.clone());
+        }
+        output.push(event);
+        if terminal {
+            return;
+        }
     }
 }
 
