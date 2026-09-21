@@ -26,6 +26,9 @@
 //!   `nextCursor` (ticket 05's pagination).
 //! - `FIXTURE_BAD_TOOL_NAME`: list a tool with an illegal name
 //!   (ticket 05's connect-time refusal).
+//! - `FIXTURE_WRITE_CWD` / `FIXTURE_ENV_DUMP`: diagnostic paths — write
+//!   the process's working directory / sorted environment to disk, the
+//!   observable surface for ticket 06's cwd and sanitization rules.
 //!
 //! stdout carries protocol messages only; diagnostics go to stderr.
 
@@ -37,6 +40,19 @@ use std::{
 fn main() {
     if let Ok(marker) = std::env::var("FIXTURE_MARKER") {
         let _ = std::fs::write(&marker, std::process::id().to_string());
+    }
+    if let Ok(path) = std::env::var("FIXTURE_WRITE_CWD") {
+        let cwd = std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let _ = std::fs::write(&path, cwd);
+    }
+    if let Ok(path) = std::env::var("FIXTURE_ENV_DUMP") {
+        let mut vars: Vec<String> = std::env::vars()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        vars.sort();
+        let _ = std::fs::write(&path, vars.join("\n"));
     }
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {

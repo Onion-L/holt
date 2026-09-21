@@ -12,7 +12,12 @@
 
 pub(crate) mod config;
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use futures::future::BoxFuture;
 use pi_core::{
@@ -34,6 +39,22 @@ use tokio_util::sync::CancellationToken;
 
 use crate::EngineError;
 use config::{McpServer, McpStore, ServerTransport};
+
+/// Expand one config value at run time, logging any variable that stayed
+/// literal (ADR-0034: a missing variable is visible, never silently
+/// empty).
+fn expand(value: &str) -> String {
+    let (expanded, missing) = config::expand_env(value);
+    if !missing.is_empty() {
+        tracing::warn!(
+            target: "holt::mcp",
+            missing = %missing.join(", "),
+            value = %value,
+            "mcp config references unset environment variables; kept literally"
+        );
+    }
+    expanded
+}
 
 /// The app-scoped connection pool. One instance lives on the runtime for
 /// the whole engine; connections start lazily (nothing spawns at app
@@ -90,6 +111,7 @@ impl McpPool {
             };
             tools.extend(
                 list.into_iter()
+                    .filter(|tool| server.allows_tool(&tool.name))
                     .map(|tool| wrap_server_tool(&name, tool, &connection)),
             );
         }
@@ -218,9 +240,11 @@ fn service_error(error: &ServiceError) -> String {
     format!("mcp server error: {error}")
 }
 
-/// Connect one server per its definition. The startup timeout bounds the
-/// initialize handshake; expansion and environment sanitization ride the
-/// config layer (ticket 06).
+/// Connect one server per its definition. Config values expand here —
+/// run time, never stored — and a stdio child inherits a sanitized
+/// environment (credential-shaped variables stripped unless the server's
+/// own `env` sets them, ADR-0034). The startup timeout bounds the
+/// initialize handshake.
 async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     let timeout = Duration::from_millis(server.startup_timeout_ms);
     let tool_timeout = Duration::from_millis(server.tool_timeout_ms);
@@ -231,8 +255,20 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
             env,
             cwd,
         } => {
-            let mut process = tokio::process::Command::new(command);
-            process.args(args).envs(env);
+            let command = expand(command);
+            let args = args.iter().map(|arg| expand(arg)).collect::<Vec<_>>();
+            let env = env
+                .iter()
+                .map(|(name, value)| (name.clone(), expand(value)))
+                .collect::<BTreeMap<_, _>>();
+            // The child's working directory is the server's own `cwd` or
+            // Holt's process cwd — never the chat's working directory
+            // (ADR-0034): server behavior must not change with whichever
+            // chat runs first.
+            let cwd = cwd.as_deref().map(expand);
+            let sanitized = config::sanitize_child_env(&env);
+            let mut process = tokio::process::Command::new(&command);
+            process.args(&args).env_clear().envs(&sanitized);
             if let Some(cwd) = cwd {
                 process.current_dir(cwd);
             }
@@ -252,11 +288,12 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
             headers,
             bearer_token_env_var,
         } => {
+            let url = expand(url);
             let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone());
             for (name, value) in headers {
                 let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                     .map_err(|error| format!("header name {name:?} is invalid: {error}"))?;
-                let value = reqwest::header::HeaderValue::from_str(value)
+                let value = reqwest::header::HeaderValue::from_str(&expand(value))
                     .map_err(|error| format!("header {name:?} value is invalid: {error}"))?;
                 config.custom_headers.insert(name, value);
             }

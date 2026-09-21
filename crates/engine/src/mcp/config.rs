@@ -64,6 +64,19 @@ fn default_tool_timeout_ms() -> u64 {
     DEFAULT_TOOL_TIMEOUT_MS
 }
 
+/// Does this server's filter set mount `tool` (ADR-0034)? An empty
+/// `enabledTools` mounts everything; a non-empty one mounts only its
+/// entries; `disabledTools` always wins — the safer reading when both
+/// mention a tool.
+impl McpServer {
+    pub(crate) fn allows_tool(&self, tool: &str) -> bool {
+        if self.disabled_tools.iter().any(|name| name == tool) {
+            return false;
+        }
+        self.enabled_tools.is_empty() || self.enabled_tools.iter().any(|name| name == tool)
+    }
+}
+
 /// The fields each transport accepts — the strictness set for the
 /// entry-level parse (shared fields included).
 fn transport_keys(transport: &ServerTransport) -> Vec<&'static str> {
@@ -305,6 +318,74 @@ fn ensure_private_permissions(
     Ok(())
 }
 
+/// Expand `${VAR}` and `${VAR:-default}` against the live environment
+/// (ADR-0034): config values are stored unexpanded and resolved at run
+/// time — connect time for the pool. An unset variable with a default
+/// uses the default; an unset variable without one keeps the literal
+/// (and joins the returned missing list, which the caller logs as a
+/// warning — a missing variable must be visible, never silently empty).
+/// A set-but-empty variable counts as unset, matching `:-` shell
+/// semantics.
+pub(crate) fn expand_env(value: &str) -> (String, Vec<String>) {
+    let mut expanded = String::with_capacity(value.len());
+    let mut missing = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            // An unterminated `${` is plain text.
+            expanded.push_str(&rest[start..]);
+            return (expanded, missing);
+        };
+        let token = &after[..end];
+        let (name, default) = match token.split_once(":-") {
+            Some((name, default)) => (name, Some(default)),
+            None => (token, None),
+        };
+        let resolved = std::env::var(name).ok().filter(|value| !value.is_empty());
+        match resolved.as_deref().or(default) {
+            Some(value) => expanded.push_str(value),
+            None => {
+                expanded.push_str(&rest[start..start + 2 + end + 1]);
+                missing.push(name.to_string());
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    (expanded, missing)
+}
+
+/// The credential-shaped name fragments stripped from a stdio child's
+/// inherited environment (ADR-0034): an arbitrary server binary must not
+/// read host credentials by default. Matched case-insensitively anywhere
+/// in the variable name.
+const CREDENTIAL_SHAPES: [&str; 5] = ["TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH"];
+
+pub(crate) fn is_credential_shaped(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    CREDENTIAL_SHAPES.iter().any(|shape| upper.contains(shape))
+}
+
+/// The stdio child's environment: Holt's own, minus credential-shaped
+/// variables, plus the server's `env` block verbatim — explicitly setting
+/// one is the opt-in that passes a credential through (ADR-0034).
+pub(crate) fn sanitize_child_env(
+    explicit: &BTreeMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    for (name, value) in std::env::vars() {
+        if !is_credential_shaped(&name) {
+            env.insert(name, value);
+        }
+    }
+    for (name, value) in explicit {
+        env.insert(name.clone(), value.clone());
+    }
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +399,69 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = McpStore::load(dir.path()).unwrap();
         assert!(store.get().is_empty());
+    }
+
+    #[test]
+    fn expansion_resolves_defaults_and_keeps_missing_literals() {
+        unsafe {
+            std::env::set_var("HOLT_MCP_EXPAND_SET", "resolved");
+            std::env::remove_var("HOLT_MCP_EXPAND_UNSET");
+            std::env::set_var("HOLT_MCP_EXPAND_EMPTY", "");
+        }
+        // Set resolves.
+        assert_eq!(
+            expand_env("pre-${HOLT_MCP_EXPAND_SET}-post").0,
+            "pre-resolved-post"
+        );
+        // Unset with a default uses it; empty counts as unset.
+        assert_eq!(
+            expand_env("${HOLT_MCP_EXPAND_UNSET:-fallback}").0,
+            "fallback"
+        );
+        assert_eq!(
+            expand_env("${HOLT_MCP_EXPAND_EMPTY:-fallback}").0,
+            "fallback"
+        );
+        // Unset without a default keeps the literal and reports the miss.
+        let (value, missing) = expand_env("keep-${HOLT_MCP_EXPAND_UNSET}-literal");
+        assert_eq!(value, "keep-${HOLT_MCP_EXPAND_UNSET}-literal");
+        assert_eq!(missing, vec!["HOLT_MCP_EXPAND_UNSET".to_string()]);
+        // Multiple references and no-variable text pass through.
+        let (value, missing) = expand_env("$HOME ${HOLT_MCP_EXPAND_SET} ${HOLT_MCP_EXPAND_SET}");
+        assert_eq!(value, "$HOME resolved resolved");
+        assert!(missing.is_empty());
+        // An unterminated `${` is plain text.
+        assert_eq!(expand_env("a ${ b").0, "a ${ b");
+        // A default containing `:` splits only on the first `:-`.
+        assert_eq!(
+            expand_env("${HOLT_MCP_EXPAND_UNSET:-http://x/y}").0,
+            "http://x/y"
+        );
+    }
+
+    #[test]
+    fn credential_shaped_names_strip_unless_explicitly_set() {
+        for stripped in [
+            "MY_TOKEN",
+            "GITHUB_TOKEN",
+            "API_KEY",
+            "SSH_AUTH_SOCK",
+            "DB_PASSWORD",
+            "CLIENT_SECRET",
+            "lowercase_token",
+            "TOKENIZER_PATH",
+        ] {
+            assert!(is_credential_shaped(stripped), "{stripped} must strip");
+        }
+        for kept in ["PATH", "HOME", "LANG", "TMPDIR", "SHELL", "USER"] {
+            assert!(!is_credential_shaped(kept), "{kept} must survive");
+        }
+        let explicit: BTreeMap<String, String> =
+            [("MY_TOKEN".to_string(), "granted".to_string())].into();
+        let env = sanitize_child_env(&explicit);
+        // An explicit set is the opt-in: the value passes untouched.
+        assert_eq!(env.get("MY_TOKEN").map(String::as_str), Some("granted"));
+        assert!(env.contains_key("PATH"));
     }
 
     #[test]
