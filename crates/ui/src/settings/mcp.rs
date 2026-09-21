@@ -28,6 +28,8 @@ use crate::{
 struct McpServerView {
     name: String,
     enabled: bool,
+    startup_timeout_ms: u64,
+    tool_timeout_ms: u64,
     command: Option<String>,
     url: Option<String>,
     args: Vec<String>,
@@ -82,6 +84,16 @@ impl McpServerView {
                 .get("enabled")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
+            // The Get view always carries the shared fields explicitly;
+            // defaults fill in for older replies.
+            startup_timeout_ms: value
+                .get("startupTimeoutMs")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(10_000),
+            tool_timeout_ms: value
+                .get("toolTimeoutMs")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(60_000),
             command: str_field("command"),
             url: str_field("url"),
             args: list_field("args"),
@@ -121,6 +133,18 @@ impl McpServerView {
         }
         if !self.enabled {
             payload.insert("enabled".into(), serde_json::json!(false));
+        }
+        if self.startup_timeout_ms != 10_000 {
+            payload.insert(
+                "startupTimeoutMs".into(),
+                serde_json::json!(self.startup_timeout_ms),
+            );
+        }
+        if self.tool_timeout_ms != 60_000 {
+            payload.insert(
+                "toolTimeoutMs".into(),
+                serde_json::json!(self.tool_timeout_ms),
+            );
         }
         if !self.enabled_tools.is_empty() {
             payload.insert("enabledTools".into(), serde_json::json!(self.enabled_tools));
@@ -255,6 +279,8 @@ struct McpEditor {
     url: Entity<ComposerInput>,
     headers: Entity<ComposerInput>,
     bearer: Entity<ComposerInput>,
+    startup_timeout: Entity<ComposerInput>,
+    tool_timeout: Entity<ComposerInput>,
     enabled: bool,
     /// The last save's failure, shown inline until the form changes.
     error: Option<String>,
@@ -581,6 +607,26 @@ impl McpPage {
                 );
                 input
             }),
+            startup_timeout: cx.new(|cx| {
+                let mut input = ComposerInput::new("10000", cx);
+                input.set_text(
+                    server
+                        .map(|server| server.startup_timeout_ms.to_string())
+                        .unwrap_or_else(|| "10000".into()),
+                    cx,
+                );
+                input
+            }),
+            tool_timeout: cx.new(|cx| {
+                let mut input = ComposerInput::new("60000", cx);
+                input.set_text(
+                    server
+                        .map(|server| server.tool_timeout_ms.to_string())
+                        .unwrap_or_else(|| "60000".into()),
+                    cx,
+                );
+                input
+            }),
             enabled: server.map(|server| server.enabled).unwrap_or(true),
             error: None,
         };
@@ -603,9 +649,19 @@ impl McpPage {
                 "Names use [A-Za-z0-9_-] — the name rides every mcp__name__tool.".to_string(),
             );
         }
+        let parse_ms = |input: &Entity<ComposerInput>, default: u64| -> Result<u64, String> {
+            let text = input.read(cx).text().trim().to_string();
+            if text.is_empty() {
+                return Ok(default);
+            }
+            text.parse::<u64>()
+                .map_err(|_| format!("{text:?} is not a timeout in milliseconds"))
+        };
         let mut server = McpServerView {
             name: name.clone(),
             enabled: editor.enabled,
+            startup_timeout_ms: parse_ms(&editor.startup_timeout, 10_000)?,
+            tool_timeout_ms: parse_ms(&editor.tool_timeout, 60_000)?,
             ..Default::default()
         };
         match editor.transport {
@@ -1000,13 +1056,35 @@ impl McpPage {
                     .child(widgets::field_label(theme, "Transport"))
                     .child(transport_row),
             );
+            let timeout_row =
+                |left: (&str, &Entity<ComposerInput>), right: (&str, &Entity<ComposerInput>)| {
+                    div()
+                        .flex()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Self::dialog_field(theme, left.0, left.1)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Self::dialog_field(theme, right.0, right.1)),
+                        )
+                };
             match transport {
                 EditorTransport::Stdio => {
                     form = form
                         .child(Self::dialog_field(theme, "Command", &editor.command))
                         .child(Self::dialog_field(theme, "Arguments", &editor.args))
                         .child(Self::dialog_field(theme, "Environment", &editor.env))
-                        .child(Self::dialog_field(theme, "Working directory", &editor.cwd));
+                        .child(Self::dialog_field(theme, "Working directory", &editor.cwd))
+                        .child(timeout_row(
+                            ("Startup timeout (ms)", &editor.startup_timeout),
+                            ("Call timeout (ms)", &editor.tool_timeout),
+                        ));
                 }
                 EditorTransport::Http => {
                     form = form
@@ -1016,6 +1094,10 @@ impl McpPage {
                             theme,
                             "Bearer token env var",
                             &editor.bearer,
+                        ))
+                        .child(timeout_row(
+                            ("Startup timeout (ms)", &editor.startup_timeout),
+                            ("Call timeout (ms)", &editor.tool_timeout),
                         ));
                 }
             }
@@ -1223,6 +1305,9 @@ mod tests {
         assert_eq!(view.disabled_tools, vec!["noisy"]);
         assert_eq!(view.transport_summary(), "npx -y server");
         assert!(!view.is_http());
+        // Older replies without the fields fall back to the defaults.
+        assert_eq!(view.startup_timeout_ms, 10_000);
+        assert_eq!(view.tool_timeout_ms, 60_000);
 
         let view = server(serde_json::json!({
             "name": "remote",
@@ -1233,6 +1318,19 @@ mod tests {
         assert!(view.is_http());
         assert_eq!(view.transport_summary(), "https://example.com/mcp");
         assert_eq!(view.bearer_token_env_var.as_deref(), Some("TOKEN_VAR"));
+
+        // Timeouts parse and survive a payload round trip.
+        let view = server(serde_json::json!({
+            "name": "slow",
+            "command": "x",
+            "startupTimeoutMs": 60000,
+            "toolTimeoutMs": 120000,
+        }));
+        assert_eq!(view.startup_timeout_ms, 60_000);
+        assert_eq!(view.tool_timeout_ms, 120_000);
+        let payload = view.to_payload();
+        assert_eq!(payload["startupTimeoutMs"], 60000);
+        assert_eq!(payload["toolTimeoutMs"], 120000);
     }
 
     #[test]
