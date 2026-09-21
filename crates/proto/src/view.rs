@@ -179,7 +179,7 @@ mod gate_tests {
             input: None,
         });
         assert_eq!(label, "MCP");
-        assert_eq!(detail, "DashboardIcons 【suggest_icon】");
+        assert_eq!(detail, "DashboardIcons suggest_icon");
         // Single-word and underscored server names too.
         let (label, detail) = tool_chip_content(&ToolCall::Mcp {
             server: "github".into(),
@@ -187,7 +187,7 @@ mod gate_tests {
             input: None,
         });
         assert_eq!(label, "MCP");
-        assert_eq!(detail, "Github 【get_readme】");
+        assert_eq!(detail, "Github get_readme");
     }
 
     #[test]
@@ -404,7 +404,7 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
                     }
                 })
                 .collect();
-            ("MCP", format!("{display} 【{tool}】"))
+            ("MCP", format!("{display} {tool}"))
         }
         // Subagent spawns decode as Unknown named "Agent[: <description>]"
         // (every native driver's convention): label them "Agent" with the
