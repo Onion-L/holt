@@ -151,31 +151,41 @@ impl McpPool {
             Ok(connection) => connection,
             Err(reason) => return ProbeReport::Failed { reason },
         };
-        let tools = connection.list_tools().await;
-        connection.shutdown().await;
-        match tools {
-            Ok(tools) => {
-                // The same refusal a Turn's mount applies: an illegal or
-                // overlong name would make the probe report a server the
-                // engine will not mount.
-                if let Some(bad) = tools.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
-                    return ProbeReport::Failed {
-                        reason: format!(
-                            "lists an illegal tool name {:?}; the server is refused \
-                             at connect",
-                            bad.name
-                        ),
-                    };
-                }
-                ProbeReport::Ok {
-                    tool_count: tools.len(),
-                    tool_names: tools
-                        .into_iter()
-                        .map(|tool| tool.name.to_string())
-                        .collect(),
-                }
+        // The listing rides the same budget as the handshake: a server
+        // that answers initialize but hangs on tools/list must fail the
+        // probe, not park the Settings row on "Testing…" forever.
+        let startup = Duration::from_millis(server.startup_timeout_ms);
+        let tools = match tokio::time::timeout(startup, connection.list_tools()).await {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(error)) => {
+                connection.shutdown().await;
+                return ProbeReport::Failed { reason: error };
             }
-            Err(reason) => ProbeReport::Failed { reason },
+            Err(_) => {
+                connection.shutdown().await;
+                return ProbeReport::Failed {
+                    reason: "listing tools exceeded the startup timeout".into(),
+                };
+            }
+        };
+        connection.shutdown().await;
+        // The same refusal a Turn's mount applies: an illegal or overlong
+        // name would make the probe report a server the engine will not
+        // mount.
+        if let Some(bad) = tools.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
+            return ProbeReport::Failed {
+                reason: format!(
+                    "lists an illegal tool name {:?}; the server is refused at connect",
+                    bad.name
+                ),
+            };
+        }
+        ProbeReport::Ok {
+            tool_count: tools.len(),
+            tool_names: tools
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
         }
     }
 

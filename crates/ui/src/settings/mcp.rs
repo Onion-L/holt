@@ -241,8 +241,13 @@ fn parse_import(text: &str) -> Result<Vec<(String, McpServerView)>, String> {
 #[derive(Debug, Clone)]
 enum ProbeView {
     Running,
-    Ok { tool_count: usize },
-    Failed { reason: String },
+    Ok {
+        tool_count: usize,
+        at: std::time::Instant,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// Which transport the editor dialog is filling.
@@ -353,7 +358,7 @@ impl McpPage {
         cx: &mut Context<Self>,
         method: &'static str,
         params: serde_json::Value,
-        then: impl FnOnce(&mut Self, serde_json::Value) + 'static,
+        then: impl FnOnce(&mut Self, serde_json::Value, &mut Context<Self>) + 'static,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.servers = Loadable::Error("Engine not connected".into());
@@ -363,7 +368,7 @@ impl McpPage {
             let result = engine.client().call(method, params).await;
             this.update(cx, |page, cx| {
                 match result {
-                    Ok(value) => then(page, value),
+                    Ok(value) => then(page, value, cx),
                     Err(holt_rpc::RpcError::UnknownMethod(_)) => {
                         page.servers = Loadable::Error(
                             "MCP servers aren't available — the engine doesn't support \
@@ -391,7 +396,7 @@ impl McpPage {
             cx,
             methods::GET_MCP_SETTINGS,
             serde_json::json!({}),
-            |page, value| {
+            |page, value, _cx| {
                 page.apply_state(value);
             },
         );
@@ -402,7 +407,7 @@ impl McpPage {
             cx,
             methods::SAVE_MCP_SERVER,
             serde_json::json!({ "name": name, "server": server.to_payload() }),
-            |page, value| {
+            |page, value, _cx| {
                 page.editor = None;
                 page.confirm_remove = None;
                 page.apply_state(value);
@@ -415,7 +420,7 @@ impl McpPage {
             cx,
             methods::REMOVE_MCP_SERVER,
             serde_json::json!({ "name": name }),
-            |page, value| {
+            |page, value, _cx| {
                 page.editor = None;
                 page.confirm_remove = None;
                 page.apply_state(value);
@@ -464,10 +469,11 @@ impl McpPage {
             cx,
             methods::TEST_MCP_SERVER,
             serde_json::json!({ "name": name }),
-            move |page, value| {
+            move |page, value, cx| {
                 let view = if value["status"] == "ok" {
                     ProbeView::Ok {
                         tool_count: value["toolCount"].as_u64().unwrap_or(0) as usize,
+                        at: std::time::Instant::now(),
                     }
                 } else {
                     ProbeView::Failed {
@@ -477,7 +483,29 @@ impl McpPage {
                             .to_string(),
                     }
                 };
-                page.probe.insert(name, view);
+                let succeeded = matches!(view, ProbeView::Ok { .. });
+                page.probe.insert(name.clone(), view);
+                cx.notify();
+                // The ✓ pill is a transient confirmation: back to Test
+                // after a few seconds. The landing time guards against a
+                // stale timer wiping a fresher re-test's result.
+                if succeeded {
+                    let revert = name.clone();
+                    page.tasks.push(cx.spawn(async move |this, cx| {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        this.update(cx, |page, cx| {
+                            if matches!(
+                                page.probe.get(&revert),
+                                Some(ProbeView::Ok { at, .. })
+                                    if at.elapsed() >= std::time::Duration::from_secs(5)
+                            ) {
+                                page.probe.remove(&revert);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }));
+                }
             },
         );
     }
@@ -829,7 +857,7 @@ impl McpPage {
                         .child("Testing…"),
                 );
             }
-            Some(ProbeView::Ok { tool_count }) => {
+            Some(ProbeView::Ok { tool_count, .. }) => {
                 let count = *tool_count;
                 let action_name = name.clone();
                 row = row.child(
