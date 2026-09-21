@@ -1250,6 +1250,7 @@ impl Transcript {
                     {
                         window.focus(&input.focus_handle(cx), cx);
                     }
+                    let editing = inline_editor.is_some();
                     let bubble_child = if let Some(input) = inline_editor {
                         div()
                             .w_full()
@@ -1284,26 +1285,67 @@ impl Transcript {
                         }
                     };
 
-                    // `min_w_0` is load-bearing: gpui text answers min/max-content
-                    // probes with its UNWRAPPED width, so without it the bubble's
-                    // automatic min-size is the full single-line width — the flex
-                    // item can't shrink, `justify_end` pushes the overflow off the
-                    // left edge, and long prompts render as one clipped line
-                    // instead of wrapping inside the 80% column cap.
+                    // `min_w_0` is load-bearing on BOTH the wrapper column (the
+                    // justify_end row's flex item) and the bubble inside it: gpui
+                    // text answers min/max-content probes with its UNWRAPPED width,
+                    // so without it the automatic min-size is the full single-line
+                    // width — the flex item can't shrink, `justify_end` pushes the
+                    // overflow off the left edge, and long prompts render as one
+                    // clipped line instead of wrapping inside the 80% column cap.
+                    let bubble = div()
+                        .min_w_0()
+                        .max_w(px(MAX_CONTENT_WIDTH * 0.8))
+                        .bg(crate::theme::user_bubble_bg())
+                        .rounded(px(Theme::BUBBLE_RADIUS))
+                        .px(px(16.0))
+                        .py(px(10.0))
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .line_height(crate::typography::ui_rems(22.0))
+                        .text_color(theme.text)
+                        .when(pending, |el| el.opacity(0.65))
+                        .child(bubble_child);
                     column = column.child(
                         div().w_full().flex().justify_end().child(
                             div()
                                 .min_w_0()
-                                .max_w(px(MAX_CONTENT_WIDTH * 0.8))
-                                .bg(crate::theme::user_bubble_bg())
-                                .rounded(px(Theme::BUBBLE_RADIUS))
-                                .px(px(16.0))
-                                .py(px(10.0))
-                                .text_size(crate::typography::ui_rems(14.0))
-                                .line_height(crate::typography::ui_rems(22.0))
-                                .text_color(theme.text)
-                                .when(pending, |el| el.opacity(0.65))
-                                .child(bubble_child),
+                                .flex()
+                                .flex_col()
+                                .items_end()
+                                .child(bubble)
+                                .when(editing, |el| {
+                                    el.child(
+                                        div()
+                                            .pt(px(6.0))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(
+                                                crate::popover::btn_ghost(
+                                                    &theme,
+                                                    "Cancel",
+                                                    format!("edit-cancel-hover-{}", row.id),
+                                                )
+                                                .id(SharedString::from(format!(
+                                                    "edit-cancel-{}",
+                                                    row.id
+                                                )))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.cancel_message_edit(cx)
+                                                })),
+                                            )
+                                            .child(
+                                                crate::popover::btn_primary(&theme, "Send")
+                                                    .id(SharedString::from(format!(
+                                                        "edit-send-{}",
+                                                        row.id
+                                                    )))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.submit_message_edit(cx)
+                                                    })),
+                                            ),
+                                    )
+                                }),
                         ),
                     );
                 }
