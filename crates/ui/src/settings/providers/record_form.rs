@@ -63,7 +63,7 @@ pub(super) fn record_api_dropdown(
                         format!("record-api-row-{dialect}"),
                     )
                     .id(SharedString::from(format!("record-api-{dialect}")))
-                    .debug_selector(move || selector.clone().into())
+                    .debug_selector(move || selector.clone())
                     .on_click(
                         cx.listener(move |page, _, _, cx| page.pick_record_api(picked.clone(), cx)),
                     )

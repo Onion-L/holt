@@ -1880,7 +1880,7 @@ mod tests {
             checkout_id: None,
             source_context: None,
             config: Some(holt_proto::ChatConfig {
-                provider: holt_proto::ProviderId(provider.into()),
+                provider: holt_proto::ProviderId(provider),
                 model: model.into(),
                 reasoning: None,
                 model_options: Default::default(),
@@ -2287,7 +2287,7 @@ mod tests {
         );
         assert_eq!(
             harness.engine.deleted_chats.lock().unwrap().as_slice(),
-            &[first.clone()],
+            std::slice::from_ref(&first),
             "closing the dialog deletes the session's chat"
         );
 

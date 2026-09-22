@@ -396,7 +396,7 @@ impl Render for ProvidersPage {
                     .child(
                         widgets::flat_row()
                             .id(("provider-row", index))
-                            .debug_selector(move || format!("provider-row-{index}").into())
+                            .debug_selector(move || format!("provider-row-{index}"))
                             .cursor_pointer()
                             .px(px(8.0))
                             .rounded(px(8.0))
