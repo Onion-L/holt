@@ -2923,6 +2923,7 @@ impl RpcService for EngineService {
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
                 { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" },
+                { "name": "init", "description": "Generate or update AGENTS.md for this repository" },
                 { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task]" }
             ])),
             // The skills catalog (ADR-0005): fresh per call — the

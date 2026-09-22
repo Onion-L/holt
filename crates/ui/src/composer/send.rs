@@ -141,6 +141,12 @@ impl Composer {
                 cx.notify();
                 return;
             }
+            super::slash::Parsed::MalformedInit => {
+                self.failure = Some("Usage: /init (no arguments)".into());
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
             // A skill switched off in Settings → Skills is refused even when
             // typed out in full — disabled means unusable, not just hidden.
             super::slash::Parsed::Skill { name, .. }
@@ -288,6 +294,14 @@ impl Composer {
             // path (references, stashes, echo) applies untouched.
             slash = super::slash::Parsed::Plain;
             plan_enter = true;
+        } else if matches!(slash, super::slash::Parsed::Init) {
+            // `/init`: the queued message's prompt is the bundled template
+            // (codex's `include_str!` shape) — the directive itself never
+            // reaches the model, and a failed send restores `/init`, never
+            // the template body.
+            restore_text = Some(text.clone());
+            text = super::slash::INIT_PROMPT.to_string();
+            slash = super::slash::Parsed::Plain;
         } else {
             restore_text = None;
         }
@@ -1001,6 +1015,18 @@ mod tests {
         assert_eq!(
             failure_restore_text(&parsed, "/plan redesign the ingest pipeline".into()),
             Some("/plan redesign the ingest pipeline".into())
+        );
+    }
+
+    #[test]
+    fn a_failed_init_restores_the_command_not_the_template() {
+        // `/init`'s queued prompt is the bundled template; the failure
+        // hand-back is the typed command, so a retry re-enters the send
+        // path instead of editing a wall of template text.
+        let parsed = slash::parse("/init");
+        assert_eq!(
+            failure_restore_text(&parsed, "/init".into()),
+            Some("/init".into())
         );
     }
 

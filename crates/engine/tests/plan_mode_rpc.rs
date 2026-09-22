@@ -302,4 +302,10 @@ async fn the_command_catalog_advertises_plan() {
         serde_json::json!("[task]"),
         "the catalog advertises the bare /plan and /plan <task> forms only"
     );
+    // `/init` rides the same catalog: a plain command, no argument form.
+    let init = commands
+        .iter()
+        .find(|command| command["name"] == "init")
+        .expect("the catalog advertises /init");
+    assert!(init.get("inputHint").is_none());
 }

@@ -721,16 +721,19 @@ impl Composer {
         // The title is the fill: `/compact` for a command, `/skill <name>`
         // for a skill — ready for extra instructions and submit.
         let title = candidate.title();
-        // `/compact` takes no arguments, so a selection sends it right
-        // away instead of staging it in the input for review; anything
-        // else (skills, argument-taking commands) still fills.
+        // `/compact` and `/init` take no arguments, so a selection sends
+        // them right away instead of staging one in the input for review;
+        // anything else (skills, argument-taking commands) still fills.
         let plan_now = matches!(
             super::slash::parse(&title),
             super::slash::Parsed::Plan {
                 action: super::slash::PlanAction::Enter
             }
         );
-        let send_now = matches!(super::slash::parse(&title), super::slash::Parsed::Compact);
+        let send_now = matches!(
+            super::slash::parse(&title),
+            super::slash::Parsed::Compact | super::slash::Parsed::Init
+        );
         self.reset_slash(None, cx);
         if plan_now {
             self.input.update(cx, |input, cx| {

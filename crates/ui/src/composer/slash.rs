@@ -6,6 +6,12 @@
 
 use holt_proto::{SkillListing, SkillRoot, SlashCommand};
 
+/// The prompt `/init` submits as an ordinary message (the codex/opencode
+/// shape): the composer swaps the directive for this template at send time,
+/// and the agent explores the workspace with its regular tools and writes
+/// AGENTS.md itself. Bundled, never read from the filesystem.
+pub(crate) const INIT_PROMPT: &str = include_str!("init_prompt.md");
+
 /// What the composer learned from one input string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
@@ -28,6 +34,12 @@ pub(crate) enum Parsed {
     /// `/plan [<task>]` — intercepted; the raw directive never becomes
     /// prompt text (ADR-0025).
     Plan { action: PlanAction },
+    /// `/init` — intercepted; the send path swaps it for [`INIT_PROMPT`]
+    /// and queues that as an ordinary message.
+    Init,
+    /// `/init` with arguments — still intercepted, with the usage message
+    /// for the composer to surface.
+    MalformedInit,
 }
 
 /// One `/plan` form (ADR-0025).
@@ -61,7 +73,7 @@ pub(crate) enum SlashCandidate {
 impl SlashCandidate {
     /// What accepting fills into the composer: `/skill <name>` for a skill
     /// — ready for extra instructions and submit — `/name` for a command
-    /// (`/compact` submits on accept; there is nothing to edit).
+    /// (`/compact` and `/init` submit on accept; there is nothing to edit).
     pub(crate) fn title(&self) -> String {
         match self {
             SlashCandidate::Skill { name, .. } => format!("/skill {name}"),
@@ -206,7 +218,7 @@ fn parse_compact(text: &str) -> Parsed {
 /// directives stay ordinary text.
 fn parse_plan(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/plan") else {
-        return Parsed::Plain;
+        return parse_init(text);
     };
     if rest.is_empty() || rest.trim().is_empty() {
         return Parsed::Plan {
@@ -221,6 +233,21 @@ fn parse_plan(text: &str) -> Parsed {
     Parsed::Plan {
         action: PlanAction::Task(rest.to_string()),
     }
+}
+
+/// `/init` takes no arguments (same shape as `/compact`);
+/// `/initialize`-style longer words stay plain text.
+fn parse_init(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/init") else {
+        return Parsed::Plain;
+    };
+    if rest.is_empty() || rest.trim().is_empty() {
+        return Parsed::Init;
+    }
+    if rest.starts_with(char::is_whitespace) {
+        return Parsed::MalformedInit;
+    }
+    Parsed::Plain
 }
 
 #[cfg(test)]
@@ -300,6 +327,18 @@ mod tests {
         assert_eq!(parse("/plans status"), Parsed::Plain);
         assert_eq!(parse("please /plan off"), Parsed::Plain);
         assert_eq!(parse(""), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_init_and_refuses_arguments() {
+        assert_eq!(parse("/init"), Parsed::Init);
+        assert_eq!(parse("  /init  "), Parsed::Init);
+        // Arguments are refused — still intercepted, usage surfaced.
+        assert_eq!(parse("/init deeper on tests"), Parsed::MalformedInit);
+        // Longer words stay ordinary text.
+        assert_eq!(parse("/initialize"), Parsed::Plain);
+        // Mid-text directives stay ordinary text.
+        assert_eq!(parse("please /init"), Parsed::Plain);
     }
 
     #[test]
