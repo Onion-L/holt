@@ -4,8 +4,9 @@
 //! line and range switcher; the Total tokens hero with the model
 //! toggle chips beside it; the Daily usage stacked bar chart; the six
 //! metric tiles; the year-long Activity heatmap; and the By model /
-//! By project Breakdown donut, which folds its list to the top five
-//! rows plus an "Others" remainder until the reader opens it.
+//! By project Breakdown donut, which folds its list to the top four
+//! rows plus an "Others" row — the row itself, not a switch beside it,
+//! opens the tail it groups.
 //! Everything on the page is read-only: the only controls that touch
 //! the engine reload the same aggregate, and the legibility state —
 //! the chart legend's visibility toggles and fold, the Breakdown's
@@ -582,10 +583,58 @@ struct BreakdownEntry {
 /// The Breakdown's fold threshold: past this many entries the tail
 /// collapses into one "Others" row, so a long model list never stretches
 /// the card.
-const BREAKDOWN_VISIBLE: usize = 5;
+const BREAKDOWN_VISIBLE: usize = 4;
 /// The folded tail's fixed name — one synthetic entry standing in for
 /// every row past [`BREAKDOWN_VISIBLE`].
 const BREAKDOWN_OTHERS: &str = "Others";
+
+/// How the card is drawn from the entries the active tab folded: the
+/// donut's slices and the tail the Others slice groups.
+#[derive(Debug, Clone, Default)]
+struct BreakdownFold {
+    /// What the donut draws and the legend lists: the top
+    /// [`BREAKDOWN_VISIBLE`] entries, plus one Others entry standing in
+    /// for the tail when there is one.
+    slices: Vec<BreakdownEntry>,
+    /// The entries the Others slice groups, in engine order. Empty when
+    /// the reply is short enough to print whole — then the last slice is
+    /// a real entry and no row folds anything.
+    tail: Vec<BreakdownEntry>,
+}
+
+impl BreakdownFold {
+    /// The Others slice's index, when the fold has a tail to group.
+    fn others(&self) -> Option<usize> {
+        (!self.tail.is_empty()).then(|| self.slices.len() - 1)
+    }
+}
+
+/// How one legend row reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BreakdownRowKind {
+    /// A slice of the donut, in its own color.
+    Slice,
+    /// The fold's disclosure: the Others slice's row, which folds and
+    /// unfolds the tail under itself.
+    Others,
+    /// A tail entry itemized under the Others row: indented, in the
+    /// group's own gray.
+    Child,
+}
+
+impl BreakdownRowKind {
+    fn is_child(self) -> bool {
+        matches!(self, Self::Child)
+    }
+}
+
+/// One legend row's place in the card: the id it is addressed by, the
+/// donut slice it speaks for, and the shape it reads in.
+struct BreakdownRow {
+    id: String,
+    slice: usize,
+    kind: BreakdownRowKind,
+}
 
 /// Fold the active tab's rows once per render. Zero-total rows drop out —
 /// a slice and a legend row for nothing would both read as a glitch.
@@ -642,30 +691,39 @@ fn fold_breakdown(
     }
 }
 
-/// The rows the card actually draws: the top [`BREAKDOWN_VISIBLE`]
-/// entries as-is, with the rest summed into one muted "Others" row while
-/// the fold is closed. The donut and the legend share this one list, so a
-/// hovered row index means the same slice in both, and the ring's shares
-/// stay true — the fold groups slices, it never drops them. An expanded
-/// fold, or a list short enough to fit, prints every entry.
-fn breakdown_rows(
-    entries: &[BreakdownEntry],
-    expanded: bool,
-    theme: &Theme,
-) -> Vec<BreakdownEntry> {
-    if expanded || entries.len() <= BREAKDOWN_VISIBLE {
-        return entries.to_vec();
+/// The rows the card draws: the top [`BREAKDOWN_VISIBLE`] entries as-is,
+/// with the rest summed into one muted "Others" slice and kept beside it
+/// as the tail that slice groups. The donut and the legend share the
+/// slices, so a hovered row index means the same slice in both, and the
+/// ring's shares stay true — the fold groups slices, it never drops them,
+/// and it never changes the ring's shape: opening the fold itemizes the
+/// tail in the legend, the donut draws the same slices either way.
+fn breakdown_fold(entries: &[BreakdownEntry], theme: &Theme) -> BreakdownFold {
+    if entries.len() <= BREAKDOWN_VISIBLE {
+        return BreakdownFold {
+            slices: entries.to_vec(),
+            tail: Vec::new(),
+        };
     }
-    let mut rows = entries[..BREAKDOWN_VISIBLE].to_vec();
-    rows.push(BreakdownEntry {
-        color: theme.text_faint,
+    let mut slices = entries[..BREAKDOWN_VISIBLE].to_vec();
+    // The tail keeps the group's own color: an itemized row is part of the
+    // Others slice, and a rank hue there would point at a slice that
+    // doesn't exist.
+    let color = theme.text_faint;
+    let tail: Vec<BreakdownEntry> = entries[BREAKDOWN_VISIBLE..]
+        .iter()
+        .cloned()
+        .map(|mut entry| {
+            entry.color = color;
+            entry
+        })
+        .collect();
+    slices.push(BreakdownEntry {
+        color,
         name: BREAKDOWN_OTHERS.to_string(),
-        tokens: entries[BREAKDOWN_VISIBLE..]
-            .iter()
-            .map(|entry| entry.tokens)
-            .sum(),
+        tokens: tail.iter().map(|entry| entry.tokens).sum(),
     });
-    rows
+    BreakdownFold { slices, tail }
 }
 
 /// The legend's integer share, rounded like the reference chart — tiny
@@ -693,10 +751,10 @@ pub struct UsagePage {
     /// survives a reload: the tab is a view preference, and flipping back
     /// to By model on every refresh would fight the reader.
     breakdown_tab: BreakdownTab,
-    /// The Breakdown legend's fold: closed shows the top
-    /// [`BREAKDOWN_VISIBLE`] rows plus the "Others" remainder, open shows
-    /// every row. Ephemeral like the chart legend's fold — a reload
-    /// re-folds it.
+    /// The Breakdown legend's fold: closed prints the top
+    /// [`BREAKDOWN_VISIBLE`] rows plus the Others row, open itemizes the
+    /// tail under that row. Ephemeral like the chart legend's fold — a
+    /// reload re-folds it.
     breakdown_expanded: bool,
     /// The hovered Breakdown legend row — dims the donut's other slices
     /// and swaps the center readout to that entry. Cleared on tab switch
@@ -1688,7 +1746,7 @@ impl UsagePage {
     /// legend lists the same order with integer share percentages and
     /// compact counts. Model entries carry the same color dot as their
     /// chart counterparts. Past [`BREAKDOWN_VISIBLE`] rows the tail folds
-    /// into one "Others" entry with a quiet disclosure under the list,
+    /// into the Others slice, whose own legend row is the disclosure —
     /// closed by default.
     fn render_breakdown(
         &self,
@@ -1698,7 +1756,7 @@ impl UsagePage {
         let theme = Theme::of(cx).clone();
         let summary = fold_summary(reply);
         let entries = fold_breakdown(reply, &summary, self.breakdown_tab, &theme);
-        let rows = breakdown_rows(&entries, self.breakdown_expanded, &theme);
+        let fold = breakdown_fold(&entries, &theme);
         let grand: u64 = entries.iter().map(|entry| entry.tokens).sum();
         let body = if grand == 0 {
             div()
@@ -1721,21 +1779,12 @@ impl UsagePage {
                 .border_color(theme.border)
                 .p(px(24.0))
                 .child(self.donut_block(
-                    &rows,
+                    &fold.slices,
                     grand,
-                    self.hover_slice.filter(|hover| *hover < rows.len()),
+                    self.hover_slice.filter(|hover| *hover < fold.slices.len()),
                     &theme,
                 ))
-                .child(self.donut_legend(&rows, grand, &theme, cx).when(
-                    entries.len() > BREAKDOWN_VISIBLE,
-                    |legend| {
-                        legend.child(self.breakdown_fold_chip(
-                            entries.len() - BREAKDOWN_VISIBLE,
-                            &theme,
-                            cx,
-                        ))
-                    },
-                ))
+                .child(self.breakdown_legend(&fold, grand, &theme, cx))
                 .into_any_element()
         };
         div()
@@ -1820,134 +1869,190 @@ impl UsagePage {
 
     /// The legend: one row per entry — dot, name, integer share on the
     /// first line; the compact count indented under the name on the
-    /// second; a hairline between rows, none after the last. The caller
-    /// hands in the already-folded rows, so the count in the last row is
-    /// the fold's own. Hovering a row washes it, dims the donut down to
-    /// its slice, and swaps the center readout to that entry.
-    fn donut_legend(
+    /// second; a hairline between rows, none after the last. A tail ends
+    /// the list with the Others row, whose own rows itemize under it
+    /// while the fold is open. Hovering a row washes it, dims the donut
+    /// down to its slice, and swaps the center readout to that entry.
+    fn breakdown_legend(
         &self,
-        entries: &[BreakdownEntry],
+        fold: &BreakdownFold,
         grand: u64,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        div()
-            .flex_1()
-            .min_w_0()
+        let others = fold.others();
+        let mut legend = div().flex_1().min_w_0().flex().flex_col();
+        for (index, entry) in fold.slices.iter().enumerate() {
+            let kind = if others == Some(index) {
+                BreakdownRowKind::Others
+            } else {
+                BreakdownRowKind::Slice
+            };
+            // The Others row keeps its hairline while its tail is
+            // itemized below it; every other row's rule separates it from
+            // the row under it, and the list's own last row carries none.
+            let rule = index + 1 < fold.slices.len()
+                || (kind == BreakdownRowKind::Others && self.breakdown_expanded);
+            let row = BreakdownRow {
+                id: format!("usage-breakdown-row-{index}"),
+                slice: index,
+                kind,
+            };
+            legend = legend.child(self.ruled(
+                self.breakdown_row(&row, entry, grand, theme, cx),
+                rule,
+                theme,
+            ));
+        }
+        if self.breakdown_expanded {
+            for (index, entry) in fold.tail.iter().enumerate() {
+                let row = BreakdownRow {
+                    id: format!("usage-breakdown-child-{index}"),
+                    slice: others.unwrap_or_default(),
+                    kind: BreakdownRowKind::Child,
+                };
+                legend = legend.child(self.ruled(
+                    self.breakdown_row(&row, entry, grand, theme, cx),
+                    index + 1 < fold.tail.len(),
+                    theme,
+                ));
+            }
+        }
+        legend
+    }
+
+    /// Hang the row's hairline under it: every row but the list's last
+    /// carries one.
+    fn ruled(
+        &self,
+        row: gpui::Stateful<gpui::Div>,
+        rule: bool,
+        theme: &Theme,
+    ) -> gpui::Stateful<gpui::Div> {
+        if rule {
+            row.border_b_1().border_color(theme.border)
+        } else {
+            row
+        }
+    }
+
+    /// One legend row: dot, name, integer share on the first line; the
+    /// compact count indented under the name on the second. Hovering
+    /// washes the row, dims the donut down to the row's slice and swaps
+    /// the center readout to that entry. The Others row is also the
+    /// fold's control: it carries the caret and takes the click, and the
+    /// rows it folds ([`BreakdownRowKind::Child`]) are indented under it.
+    fn breakdown_row(
+        &self,
+        row: &BreakdownRow,
+        entry: &BreakdownEntry,
+        grand: u64,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let id = row.id.clone();
+        let slice = row.slice;
+        let is_others = row.kind == BreakdownRowKind::Others;
+        let indent = if row.kind.is_child() { 19.0 } else { 0.0 };
+        let caret = if self.breakdown_expanded {
+            icons::ALT_ARROW_DOWN
+        } else {
+            icons::ALT_ARROW_RIGHT
+        };
+        let debug_id = id.clone();
+        let row = div()
+            .id(SharedString::from(id))
+            .debug_selector(move || debug_id)
             .flex()
             .flex_col()
-            .children(entries.iter().enumerate().map(|(index, entry)| {
+            .gap(px(4.0))
+            .py(px(12.0))
+            // The hover wash rides a slightly padded pill whose negative
+            // margins cancel the padding, keeping the hairline grid and
+            // text alignment untouched.
+            .rounded(px(6.0))
+            .px(px(8.0))
+            .mx(px(-8.0))
+            .cursor_default()
+            .hover(|row| row.bg(theme.ink(0.04)))
+            .on_hover(cx.listener(move |page, hovered: &bool, _, cx| {
+                if *hovered {
+                    page.hover_slice = Some(slice);
+                } else if page.hover_slice == Some(slice) {
+                    page.hover_slice = None;
+                }
+                cx.notify();
+            }))
+            .child(
                 div()
-                    .id(SharedString::from(format!("usage-breakdown-row-{index}")))
-                    .debug_selector(move || format!("usage-breakdown-row-{index}"))
                     .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .py(px(12.0))
-                    // The hover wash rides a slightly padded pill whose
-                    // negative margins cancel the padding, keeping the
-                    // hairline grid and text alignment untouched.
-                    .rounded(px(6.0))
-                    .px(px(8.0))
-                    .mx(px(-8.0))
-                    .cursor_default()
-                    .hover(|row| row.bg(theme.ink(0.04)))
-                    .on_hover(cx.listener(move |page, hovered: &bool, _, cx| {
-                        if *hovered {
-                            page.hover_slice = Some(index);
-                        } else if page.hover_slice == Some(index) {
-                            page.hover_slice = None;
-                        }
-                        cx.notify();
-                    }))
-                    .when(index + 1 < entries.len(), |row| {
-                        row.border_b_1().border_color(theme.border)
-                    })
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .pl(px(indent))
                     .child(
                         div()
+                            .flex_none()
+                            .size(px(9.0))
+                            .rounded_full()
+                            .bg(entry.color),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(10.0))
+                            .gap(px(6.0))
                             .child(
                                 div()
-                                    .flex_none()
-                                    .size(px(9.0))
-                                    .rounded_full()
-                                    .bg(entry.color),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
                                     .min_w_0()
                                     .truncate()
                                     .text_size(crate::typography::ui_rems(12.5))
                                     .text_color(theme.text)
                                     .child(SharedString::from(entry.name.clone())),
                             )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(format!(
-                                        "{}%",
-                                        breakdown_percent(entry.tokens, grand)
-                                    ))),
-                            ),
+                            // The Others row's fold caret rides after the
+                            // name, so the dot and share columns stay on
+                            // the other rows' grid.
+                            .when(is_others, |name| {
+                                name.child(
+                                    icons::icon(caret)
+                                        .flex_none()
+                                        .size(px(11.0))
+                                        .text_color(theme.text_faint),
+                                )
+                            }),
                     )
                     .child(
                         div()
-                            .pl(px(19.0))
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .text_color(theme.text_faint)
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(12.5))
+                            .text_color(theme.text_muted)
                             .child(SharedString::from(format!(
-                                "{} tokens",
-                                compact_tokens(entry.tokens)
+                                "{}%",
+                                breakdown_percent(entry.tokens, grand)
                             ))),
-                    )
-            }))
-    }
-
-    /// The legend's fold disclosure: "+N more" while the tail rides in
-    /// the Others entry, "Show less" once every row prints — the chart
-    /// legend's chip shape, under the list it folds.
-    fn breakdown_fold_chip(
-        &self,
-        folded: usize,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let (tag, label) = if self.breakdown_expanded {
-            ("less", "Show less".to_string())
-        } else {
-            ("more", format!("+{folded} more"))
-        };
-        div()
-            .id(SharedString::from(format!("usage-breakdown-{tag}")))
-            .debug_selector(move || format!("usage-breakdown-{tag}"))
-            .flex_none()
-            .mt(px(10.0))
-            .h(px(20.0))
-            .px(px(8.0))
-            // The rows' padding trick: the label lines up with the names
-            // above it while the hover wash gets breathing room.
-            .mx(px(-8.0))
-            .flex()
-            .items_center()
-            .rounded(px(5.0))
-            .text_size(crate::typography::ui_rems(11.5))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|chip| chip.text_color(theme.text).bg(theme.ink(0.05)))
-            .on_click(cx.listener(|page, _, _, cx| {
-                page.breakdown_expanded = !page.breakdown_expanded;
-                // The fold changes which entry an index names.
-                page.hover_slice = None;
-                cx.notify();
-            }))
-            .child(label)
+                    ),
+            )
+            .child(
+                div()
+                    .pl(px(19.0 + indent))
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from(format!(
+                        "{} tokens",
+                        compact_tokens(entry.tokens)
+                    ))),
+            );
+        if !is_others {
+            return row;
+        }
+        row.cursor_pointer().on_click(cx.listener(|page, _, _, cx| {
+            page.breakdown_expanded = !page.breakdown_expanded;
+            cx.notify();
+        }))
     }
 
     /// One of the two section segments — the range switcher's shape.
@@ -3234,9 +3339,9 @@ mod tests {
         Scripted::Ok(breakdown_reply_json())
     }
 
-    /// Seven model rows — past the five-row fold — over nothing else: the
+    /// Seven model rows — past the four-row fold — over nothing else: the
     /// fold's own fixture. Totals run 700 down to 100, so the folded tail
-    /// (the last two rows) sums to 300.
+    /// (the last three rows) sums to 600.
     fn folded_breakdown_reply_json() -> serde_json::Value {
         let models: Vec<serde_json::Value> = (1..=7)
             .map(|rank| {
@@ -3264,18 +3369,22 @@ mod tests {
     }
 
     #[test]
-    fn the_breakdown_folds_its_tail_into_one_others_row() {
+    fn the_breakdown_folds_its_tail_into_one_others_slice() {
         let reply = decode_reply(folded_breakdown_reply_json());
         let summary = fold_summary(&reply);
         let theme = Theme::default();
         let entries = fold_breakdown(&reply, &summary, BreakdownTab::Models, &theme);
         assert_eq!(entries.len(), 7);
 
-        // Closed: the top five in engine order, then one Others row
-        // carrying the folded tail — the ring keeps its true shares
-        // because nothing leaves the list.
-        let folded = breakdown_rows(&entries, false, &theme);
-        let names: Vec<&str> = folded.iter().map(|entry| entry.name.as_str()).collect();
+        // The top four in engine order, then one Others slice carrying the
+        // tail — the ring keeps its true shares because nothing leaves the
+        // list, and the tail's own gray is the slice's.
+        let fold = breakdown_fold(&entries, &theme);
+        let names: Vec<&str> = fold
+            .slices
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
         assert_eq!(
             names,
             [
@@ -3283,27 +3392,37 @@ mod tests {
                 "openai/gpt-2",
                 "openai/gpt-3",
                 "openai/gpt-4",
-                "openai/gpt-5",
                 BREAKDOWN_OTHERS
             ]
         );
-        assert_eq!(folded[5].tokens, 300, "the tail's own sum");
+        assert_eq!(fold.slices[4].tokens, 600, "the tail's own sum");
+        assert_eq!(fold.others(), Some(4), "the Others row's own slice");
         assert_eq!(
-            folded.iter().map(|entry| entry.tokens).sum::<u64>(),
+            fold.tail
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["openai/gpt-5", "openai/gpt-6", "openai/gpt-7"],
+            "the tail stays in engine order"
+        );
+        assert!(
+            fold.tail
+                .iter()
+                .all(|entry| entry.color == fold.slices[4].color),
+            "an itemized row wears the group's own gray, not a rank hue"
+        );
+        assert_eq!(
+            fold.slices.iter().map(|entry| entry.tokens).sum::<u64>(),
             entries.iter().map(|entry| entry.tokens).sum::<u64>(),
             "the fold groups slices, it never drops them"
         );
 
-        // Open: every entry on its own row, no Others.
-        let expanded = breakdown_rows(&entries, true, &theme);
-        assert_eq!(expanded.len(), 7);
-        assert!(expanded.iter().all(|entry| entry.name != BREAKDOWN_OTHERS));
-
-        // A list that already fits folds to itself, and the five-row
-        // boundary is inclusive.
-        let fits = breakdown_rows(&entries[..BREAKDOWN_VISIBLE], false, &theme);
-        assert_eq!(fits.len(), BREAKDOWN_VISIBLE);
-        assert!(fits.iter().all(|entry| entry.name != BREAKDOWN_OTHERS));
+        // A short reply prints whole: no Others row, no tail, so nothing
+        // folds — the boundary is inclusive.
+        let fits = breakdown_fold(&entries[..BREAKDOWN_VISIBLE], &theme);
+        assert_eq!(fits.slices.len(), BREAKDOWN_VISIBLE);
+        assert_eq!(fits.others(), None);
+        assert!(fits.tail.is_empty());
     }
 
     #[test]
@@ -3393,43 +3512,57 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_breakdown_opens_folded_at_five_rows(cx: &mut gpui::TestAppContext) {
+    fn the_breakdown_opens_folded_under_its_others_row(cx: &mut gpui::TestAppContext) {
         let mut harness = harness(cx, vec![], Scripted::Ok(folded_breakdown_reply_json()));
 
-        // Closed by default: the five biggest models, the tail behind the
-        // Others row (row index 5), and the disclosure under the list —
-        // the seventh row does not exist until the reader asks for it.
-        assert!(harness.present("usage-breakdown-row-4"));
-        assert!(harness.present("usage-breakdown-row-5"), "the Others row");
-        assert!(!harness.present("usage-breakdown-row-6"));
-        assert!(harness.present("usage-breakdown-more"));
-        assert!(!harness.present("usage-breakdown-less"));
-        let last = harness.bounds("usage-breakdown-row-5");
-        let chip = harness.bounds("usage-breakdown-more");
-        assert!(
-            last.origin.y < chip.origin.y,
-            "the switch rides under the rows it folds"
-        );
+        // Closed by default: the four biggest models, then the Others row
+        // that groups the rest — the tail itself is not on the page, and
+        // no card in the reply is short enough to need a fold.
+        assert!(harness.present("usage-breakdown-row-3"));
+        assert!(harness.present("usage-breakdown-row-4"), "the Others row");
+        assert!(!harness.present("usage-breakdown-child-0"));
 
-        // The switch sits past the test window's fold (1080px tall), so
-        // the viewport grows before anything is clicked.
+        // The Others row IS the disclosure: the switch sits past the test
+        // window's fold (1080px tall), so the viewport grows before any
+        // click, then the click itemizes the tail under it.
         harness
             .visual
             .simulate_resize(gpui::size(px(1920.0), px(1600.0)));
         harness.pump();
-
-        // Opening prints every entry and swaps the switch's label.
-        harness.click("usage-breakdown-more");
+        harness.click("usage-breakdown-row-4");
         harness.pump();
-        assert!(harness.present("usage-breakdown-row-6"));
-        assert!(harness.present("usage-breakdown-less"));
-        assert!(!harness.present("usage-breakdown-more"));
+        assert!(harness.present("usage-breakdown-child-0"));
+        assert!(harness.present("usage-breakdown-child-2"));
+        let others = harness.bounds("usage-breakdown-row-4");
+        let child = harness.bounds("usage-breakdown-child-0");
+        assert!(
+            others.origin.y < child.origin.y,
+            "the tail itemizes under the row that groups it"
+        );
+        assert_eq!(
+            child.origin.x, others.origin.x,
+            "a grouped row is the list's own row shape, not a nested panel"
+        );
 
-        // Closing folds the tail back into the Others row.
-        harness.click("usage-breakdown-less");
+        // Clicking the row again folds the tail back away.
+        harness.click("usage-breakdown-row-4");
         harness.pump();
-        assert!(!harness.present("usage-breakdown-row-6"));
-        assert!(harness.present("usage-breakdown-more"));
+        assert!(!harness.present("usage-breakdown-child-0"));
+
+        // Grouped or not, every row of the group speaks for the Others
+        // slice: hovering an itemized row dims the ring to it.
+        harness.click("usage-breakdown-row-4");
+        harness.pump();
+        let child = harness.bounds("usage-breakdown-child-1");
+        harness
+            .visual
+            .simulate_mouse_move(child.center(), None, Default::default());
+        harness.repaint();
+        assert_eq!(
+            harness.visual.read(|cx| harness.page.read(cx).hover_slice),
+            Some(4),
+            "an itemized row points at the slice that groups it"
+        );
     }
 
     #[gpui::test]
