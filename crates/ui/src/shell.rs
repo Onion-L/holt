@@ -2542,6 +2542,12 @@ impl Shell {
         let has_selection = self.state.read(cx).selected_chat.is_some();
         let has_spaces = !self.state.read(cx).spaces.is_empty();
         let no_project = self.state.read(cx).no_project;
+        // Frost signal: only a selected chat with transcript content frosts
+        // the backdrop — the canvas and fresh chats read the picture sharp.
+        let chat_frosted = has_selection && {
+            let state = self.state.read(cx);
+            !state.transcript.is_empty()
+        };
 
         // Content outlet: selected chat → transcript; nothing selected → a
         // bare canvas (the composer stack carries the affordances); no spaces
@@ -2665,8 +2671,13 @@ impl Shell {
             // The optional backdrop picture (settings → Appearance): painted
             // first, so transcript, glass chrome, and composer all composite
             // above it. It owns the whole column — the empty canvas reads the
-            // same picture as the transcript.
-            .children(crate::chat_backdrop::element(&theme_owned, cx))
+            // same picture as the transcript. The picture stays sharp on an
+            // empty chat and frosts once the conversation has content.
+            .children(crate::chat_backdrop::element(
+                &theme_owned,
+                chat_frosted,
+                cx,
+            ))
             .child(
                 // Full-height underlay: the transcript viewport spans the
                 // whole column, scrolling UNDER the titlebar above and the

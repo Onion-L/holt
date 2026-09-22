@@ -415,13 +415,18 @@ impl Render for AppearancePage {
             .map(str::trim)
             .filter(|path| !path.is_empty());
         let dark = !theme.appearance.is_light();
-        if let Some(path) =
-            configured.filter(|path| crate::chat_backdrop::cached(path, dark).is_none())
+        // The preview shows the frosted variant — what the column reads like
+        // once the conversation is underway.
+        let backdrop_blur = crate::chat_backdrop::FROST_SIGMA;
+        if let Some(path) = configured
+            .filter(|path| crate::chat_backdrop::cached(path, dark, backdrop_blur).is_none())
         {
-            crate::chat_backdrop::preload(path, dark, cx);
+            crate::chat_backdrop::preload(path, dark, backdrop_blur, cx);
         }
-        let loaded = configured.and_then(|path| crate::chat_backdrop::cached(path, dark));
-        let decode_failed = configured.is_some_and(|path| crate::chat_backdrop::failed(path, dark));
+        let loaded =
+            configured.and_then(|path| crate::chat_backdrop::cached(path, dark, backdrop_blur));
+        let decode_failed =
+            configured.is_some_and(|path| crate::chat_backdrop::failed(path, dark, backdrop_blur));
         let loading = configured.is_some() && loaded.is_none() && !decode_failed;
         // Path-editing focus: clicking away commits (blur), and Enter hides
         // the field — drop its stranded focus so keystrokes don't fall into

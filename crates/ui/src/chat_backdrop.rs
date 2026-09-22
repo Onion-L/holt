@@ -1,9 +1,12 @@
-//! The chat column's optional backdrop: a local image washed under the
-//! conversation (settings → Appearance → Chat backdrop).
+//! The chat column's optional backdrop: a local image frosted and washed
+//! under the conversation (settings → Appearance → Chat backdrop).
 //!
-//! The picture reads at the top of the pane and sinks into the theme surface
-//! toward the bottom, so the transcript's glass bubbles and text always land
-//! on a known tone. Two recipes carry that:
+//! The decode keeps the picture sharp, and [`element`]'s `frosted` flag —
+//! on once the conversation has content — fades a frost-decoded variant
+//! over it, melting text-scale detail into soft tone; an empty chat reads
+//! the picture clean. The wash then sinks the stack into the theme
+//! surface toward the bottom, so the transcript's glass bubbles and text
+//! always land on a known tone. Two recipes carry that:
 //!
 //! - a two-half vertical wash (clear-ish at the top, near-opaque surface at
 //!   the bottom — [`gpui::linear_gradient`] takes exactly two stops, so the
@@ -33,6 +36,7 @@ use gpui::{
     AnyElement, App, Div, Hsla, ObjectFit, RenderImage, SharedString, div, img, prelude::*,
 };
 
+use crate::motion::{AnimationExt, MotionSpec};
 use crate::theme::Theme;
 
 /// Decode ceiling: the GPU cover-scales from here; larger sources only cost
@@ -40,13 +44,26 @@ use crate::theme::Theme;
 const MAX_EDGE: u32 = 2048;
 /// Allocation ceiling for a hostile header, mirroring `images.rs`.
 const DECODE_MAX_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
-/// Session cache cap. One pane shows one picture; slack covers appearance
-/// switches and edits without ever re-decoding on a repaint.
-const CACHE_CAP: usize = 4;
+/// Session cache cap. One pane shows one picture at two frost variants;
+/// slack covers appearance switches and edits without ever re-decoding on a
+/// repaint.
+const CACHE_CAP: usize = 6;
 /// Dark mode blends saturation toward luma by this much at load.
 const DARK_DESATURATE: f32 = 0.25;
 /// Thumbnail edge the mean luma is measured on.
 const LUMA_SAMPLE_EDGE: u32 = 64;
+/// Gaussian sigma of the frost pass. Decodes are capped at [`MAX_EDGE`], so a
+/// fixed sigma frosts every source the same: it melts text-scale detail while
+/// the scene's larger shapes stay recognizable. `fast_blur` because
+/// `imageops::blur`'s separable path runs ~5× slower yet delivers a visibly
+/// weaker frost at the same sigma.
+pub(crate) const FROST_SIGMA: f32 = 12.0;
+/// The empty-chat decode: the picture unblurred. Both variants decode up
+/// front so the frost transition never waits on a decode.
+const SHARP_SIGMA: f32 = 0.0;
+/// The frost's entrance. A full-column tone change reads slower than the
+/// chrome fades (cf. [`crate::motion::FADE_QUICK]).
+const FROST: MotionSpec = MotionSpec::new(320, crate::motion::EASE_OUT_EXPO);
 
 /// A decoded, appearance-treated backdrop plus its measured mean luma.
 pub struct LoadedImage {
@@ -55,10 +72,23 @@ pub struct LoadedImage {
     pub luminance: f32,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Key {
     path: String,
     dark: bool,
+    /// Sigma the frost ran with (rounded — the cache never re-decodes for a
+    /// sub-pixel sigma change).
+    blur: u32,
+}
+
+/// The key for `path`/`dark`/`blur`: the blur component is integral sigma
+/// (inputs are the [`SHARP_SIGMA`]/[`FROST_SIGMA`] consts).
+fn cache_key(path: &str, dark: bool, blur: f32) -> Key {
+    Key {
+        path: path.to_owned(),
+        dark,
+        blur: blur.round() as u32,
+    }
 }
 
 #[derive(Default)]
@@ -74,14 +104,14 @@ fn cache() -> &'static Mutex<BackdropCache> {
     CACHE.get_or_init(|| Mutex::new(BackdropCache::default()))
 }
 
-/// The cached backdrop for `path` under `dark`, if decoded this session.
-/// Lookup refreshes recency.
-pub fn cached(path: &str, dark: bool) -> Option<Arc<LoadedImage>> {
+/// The cached backdrop for `path` under `dark` at `blur`, if decoded this
+/// session. Lookup refreshes recency.
+pub fn cached(path: &str, dark: bool, blur: f32) -> Option<Arc<LoadedImage>> {
     let mut cache = cache().lock().unwrap();
     let ix = cache
         .entries
         .iter()
-        .position(|(key, _)| key.path == path && key.dark == dark)?;
+        .position(|(key, _)| *key == cache_key(path, dark, blur))?;
     let entry = cache.entries.remove(ix);
     cache.entries.push(entry.clone());
     Some(entry.1)
@@ -101,24 +131,19 @@ pub fn is_supported_file(path: &Path) -> bool {
         })
 }
 
-/// Has a decode for `path` under `dark` already failed this session? The
-/// settings page surfaces this — a file that exists but will never paint.
-pub fn failed(path: &str, dark: bool) -> bool {
+/// Has a decode for `path` under `dark` at `blur` already failed this
+/// session? The settings page surfaces this — a file that exists but will
+/// never paint.
+pub fn failed(path: &str, dark: bool, blur: f32) -> bool {
     let cache = cache().lock().unwrap();
-    cache
-        .failed
-        .iter()
-        .any(|key| key.path == path && key.dark == dark)
+    cache.failed.contains(&cache_key(path, dark, blur))
 }
 
-/// Kick one background decode for `path` if none is running. Completion
-/// refreshes the windows, so callers that render from [`cached`] repaint into
-/// the picture without owning any state.
-pub fn preload(path: &str, dark: bool, cx: &mut App) {
-    let key = Key {
-        path: path.to_owned(),
-        dark,
-    };
+/// Kick one background decode for `path` at `blur` if none is running.
+/// Completion refreshes the windows, so callers that render from [`cached`]
+/// repaint into the picture without owning any state.
+pub fn preload(path: &str, dark: bool, blur: f32, cx: &mut App) {
+    let key = cache_key(path, dark, blur);
     {
         let mut cache = cache().lock().unwrap();
         if cache.pending.contains(&key)
@@ -133,7 +158,7 @@ pub fn preload(path: &str, dark: bool, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
-            .spawn(async move { load_file(expanded, dark) })
+            .spawn(async move { load_file(expanded, dark, blur) })
             .await;
         cx.update(|cx| {
             let mut cache = cache().lock().unwrap();
@@ -173,30 +198,69 @@ pub fn expand_path(path: &str) -> PathBuf {
 }
 
 /// The backdrop element for the chat column, or `None` when unset or still
-/// loading (a miss starts the load). Painted as the column's first child, so
+/// loading (a miss starts the load). `frosted` marks a conversation with
+/// content: the frost-decoded variant fades in over the sharp one; an empty
+/// chat reads the picture clean. Painted as the column's first child, so
 /// transcript, glass chrome, and composer all composite above it.
-pub fn element(theme: &Theme, cx: &mut App) -> Option<AnyElement> {
+pub fn element(theme: &Theme, frosted: bool, cx: &mut App) -> Option<AnyElement> {
     let (path, presence) = crate::settings::chat_backdrop(cx);
     let path = path.as_deref()?.trim();
     if path.is_empty() {
         return None;
     }
     let dark = !theme.appearance.is_light();
-    let Some(loaded) = cached(path, dark) else {
-        preload(path, dark, cx);
-        return None;
-    };
-    let wash = wash(presence, loaded.luminance, theme.surface.l);
+    // Both variants decode up front, so the frost transition never waits on
+    // a decode; whichever lands first paints alone.
+    let sharp = cached(path, dark, SHARP_SIGMA);
+    let frost = cached(path, dark, FROST_SIGMA);
+    if sharp.is_none() {
+        preload(path, dark, SHARP_SIGMA, cx);
+    }
+    if frost.is_none() {
+        preload(path, dark, FROST_SIGMA, cx);
+    }
+    let base = sharp.as_ref().or(frost.as_ref())?;
+    // Mean luma is blur-invariant, so either variant feeds the wash.
+    let wash = wash(
+        presence,
+        frost.as_ref().or(sharp.as_ref()).unwrap_or(base).luminance,
+        theme.surface.l,
+    );
     Some(
         // Opacity-only fade: `fade_in`'s rise sets `relative` + `top` every
         // frame, which would stomp this layer's absolute positioning and
         // collapse it to zero height (the picture never painted).
         crate::motion::fade_quick(
             fade_id(path, dark),
-            paint_layers(loaded.image.clone(), theme.surface, wash),
+            div()
+                .absolute()
+                .inset_0()
+                .child(image_layer(base.image.clone()))
+                .when(frosted, |stack| match frost {
+                    Some(loaded) => stack.child(frost_layer(loaded.image.clone())),
+                    None => stack,
+                })
+                .child(wash_layers(theme.surface, wash)),
         )
         .into_any_element(),
     )
+}
+
+/// The frost variant fading in over the sharp base. Opacity-only, like the
+/// outer `fade_quick` (absolute layers). Clearing the conversation unmounts
+/// the layer — the snap back to sharp rides the canvas swap.
+fn frost_layer(image: Arc<RenderImage>) -> AnyElement {
+    image_layer(image)
+        .with_animation("backdrop-frost", FROST.animation(), |el, t| el.opacity(t))
+        .into_any_element()
+}
+
+/// The picture alone, absolutely positioned (the frost stacks a second one).
+fn image_layer(image: Arc<RenderImage>) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .child(img(image).w_full().h_full().object_fit(ObjectFit::Cover))
 }
 
 /// The picture plus wash, absolutely positioned — shared by the live pane and
@@ -204,28 +268,31 @@ pub fn element(theme: &Theme, cx: &mut App) -> Option<AnyElement> {
 /// vertical sink is painted: the side edges stay honest (user direction —
 /// feathers read as grime on both light and dark surfaces).
 pub(crate) fn paint_layers(image: Arc<RenderImage>, surface: Hsla, wash: Wash) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .child(image_layer(image))
+        .child(wash_layers(surface, wash))
+}
+
+/// The two-half vertical wash, above every picture layer.
+fn wash_layers(surface: Hsla, wash: Wash) -> Div {
     let stop = |alpha: f32, at: f32| gpui::linear_color_stop(surface.opacity(alpha), at);
     div()
         .absolute()
         .inset_0()
-        .child(img(image).w_full().h_full().object_fit(ObjectFit::Cover))
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .flex_col()
-                .child(div().flex_1().bg(gpui::linear_gradient(
-                    180.0,
-                    stop(wash.top, 0.0),
-                    stop(wash.mid, 1.0),
-                )))
-                .child(div().flex_1().bg(gpui::linear_gradient(
-                    180.0,
-                    stop(wash.mid, 0.0),
-                    stop(wash.bottom, 1.0),
-                ))),
-        )
+        .flex()
+        .flex_col()
+        .child(div().flex_1().bg(gpui::linear_gradient(
+            180.0,
+            stop(wash.top, 0.0),
+            stop(wash.mid, 1.0),
+        )))
+        .child(div().flex_1().bg(gpui::linear_gradient(
+            180.0,
+            stop(wash.mid, 0.0),
+            stop(wash.bottom, 1.0),
+        )))
 }
 
 /// Wash alphas at the top / mid / bottom of the column.
@@ -261,7 +328,7 @@ fn fade_id(path: &str, dark: bool) -> SharedString {
     SharedString::from(format!("chat-backdrop-{:016x}", hasher.finish()))
 }
 
-fn load_file(path: PathBuf, dark: bool) -> Result<LoadedImage, String> {
+fn load_file(path: PathBuf, dark: bool, blur: f32) -> Result<LoadedImage, String> {
     let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -279,6 +346,13 @@ fn load_file(path: PathBuf, dark: bool) -> Result<LoadedImage, String> {
         let width = ((rgba.width() as f32 * scale).max(1.0)) as u32;
         let height = ((rgba.height() as f32 * scale).max(1.0)) as u32;
         rgba = image::imageops::thumbnail(&rgba, width, height);
+    }
+    // Frost: the transcript composites straight onto this picture, so sharp
+    // detail must not survive the decode (fully opaque pixels — the alpha
+    // premultiplication `fast_blur` assumes is a no-op here). Sigma 0 keeps
+    // the decode sharp; `fast_blur` would panic at 0.
+    if blur > 0.0 {
+        rgba = image::imageops::fast_blur(&rgba, blur);
     }
     if dark {
         desaturate(&mut rgba, DARK_DESATURATE);
@@ -364,6 +438,32 @@ mod tests {
     }
 
     #[test]
+    fn frost_blur_melts_detail_but_keeps_the_tone() {
+        let mut image = image::RgbaImage::new(64, 64);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let v = if (x / 4 + y / 4) % 2 == 0 { 255 } else { 0 };
+            *pixel = image::Rgba([v, v, v, 255]);
+        }
+        let spread = |img: &image::RgbaImage| {
+            let mut lo = u8::MAX;
+            let mut hi = 0;
+            for p in img.pixels() {
+                lo = lo.min(p.0[0]);
+                hi = hi.max(p.0[0]);
+            }
+            i32::from(hi - lo)
+        };
+        let before = mean_luminance(&image);
+        let blurred = image::imageops::fast_blur(&image, FROST_SIGMA);
+        assert!(
+            spread(&blurred) * 4 < spread(&image),
+            "{}",
+            spread(&blurred)
+        );
+        assert!((before - mean_luminance(&blurred)).abs() < 0.02);
+    }
+
+    #[test]
     fn mean_luminance_reads_a_uniform_field() {
         let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([128, 128, 128, 255]));
         let luma = mean_luminance(&image);
@@ -397,13 +497,20 @@ mod tests {
     #[test]
     fn failed_marks_a_path_per_appearance() {
         let path = "definitely-unique-failed-backdrop-test-path.png";
-        cache().lock().unwrap().failed.push(Key {
-            path: path.into(),
-            dark: true,
-        });
-        assert!(failed(path, true));
-        assert!(!failed(path, false));
-        assert!(!failed("definitely-unique-other-path.png", true));
+        cache()
+            .lock()
+            .unwrap()
+            .failed
+            .push(cache_key(path, true, FROST_SIGMA));
+        assert!(failed(path, true, FROST_SIGMA));
+        assert!(!failed(path, false, FROST_SIGMA));
+        // The sharp variant decodes independently.
+        assert!(!failed(path, true, SHARP_SIGMA));
+        assert!(!failed(
+            "definitely-unique-other-path.png",
+            true,
+            FROST_SIGMA
+        ));
         cache()
             .lock()
             .unwrap()
@@ -436,11 +543,13 @@ mod tests {
         assert_eq!(loaded.chat_backdrop_path.as_deref(), Some("~/wall.png"));
         assert!((loaded.chat_backdrop_presence - 0.95).abs() < 1e-4);
 
-        // A file written before the feature existed loads with the default.
-        let mut legacy = crate::settings::UiSettings::default();
-        legacy.chat_backdrop_path = None;
-        legacy.chat_backdrop_presence = 0.5;
-        legacy.save(dir.path()).unwrap();
+        // A file written before a field existed loads with the default —
+        // the blur key is simply absent from the JSON.
+        std::fs::write(
+            dir.path().join("ui-settings.json"),
+            r#"{"chatBackdropPath": null, "chatBackdropPresence": 0.5}"#,
+        )
+        .unwrap();
         let loaded = crate::settings::UiSettings::load(dir.path());
         assert_eq!(loaded.chat_backdrop_path, None);
         assert!((loaded.chat_backdrop_presence - 0.5).abs() < 1e-4);
