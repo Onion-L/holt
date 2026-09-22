@@ -1013,6 +1013,110 @@ mod tests {
         );
     }
 
+    /// A panic inside the run future must not weld the chat shut (seen in
+    /// the wild: the driver task died, `driver_running` never reset, and
+    /// every later Stop landed on a task that no longer exists). The queue
+    /// settles the Turn as a failure, and the driver stays alive — the next
+    /// Continue runs the next message to its own settle.
+    #[tokio::test]
+    async fn a_panicking_run_settles_the_queue_and_keeps_the_driver_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let stream_fn: pi_core::agent::types::StreamFn =
+            Arc::new(|_, _, _| panic!("injected provider panic"));
+        let config = EngineConfig {
+            data_dir: dir.path().into(),
+            personal_skills_dir: None,
+            stream_fn: Some(stream_fn),
+            search_backend_resolver: None,
+        };
+        let engine = LocalEngine::assemble(&config).unwrap();
+        engine
+            .handle(
+                methods::SAVE_PROVIDER_KEY,
+                serde_json::json!({"providerId": "minimax", "key": "secret"}),
+            )
+            .await
+            .unwrap();
+        let run = |id: String| {
+            serde_json::json!({
+                "chatId": "chat-1",
+                "command": {
+                    "kind": "run",
+                    "messageId": id,
+                    "request": {
+                        "prompt": "hello",
+                        "provider": "minimax",
+                        "model": "minimax/MiniMax-M2.7",
+                        "reasoning": null,
+                        "modelOptions": {},
+                        "cwd": dir.path(),
+                        "sandbox": "workspace-write"
+                    }
+                }
+            })
+        };
+        engine
+            .handle(methods::QUEUE_COMMAND, run("message-1".into()))
+            .await
+            .unwrap();
+        let chat = engine.service.runtime.chat("chat-1");
+        let mut watch = chat.queue.lock().unwrap().tx.subscribe();
+        // The panicked Turn settles as a failure: paused, with a queue-level
+        // error carrying the panic detail, and no pending work left.
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if watch.borrow()["paused"] == true {
+                    break;
+                }
+                watch.changed().await.unwrap();
+            }
+        })
+        .await;
+        if settled.is_err() {
+            panic!(
+                "queue never paused; last frame: {:?}",
+                watch.borrow().clone()
+            );
+        }
+        let frame = watch.borrow().clone();
+        assert!(
+            frame["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("internal error"),
+            "unexpected queue frame: {frame}"
+        );
+        assert!(frame["pending"].as_array().unwrap().is_empty());
+
+        // The driver must still be alive: Continue runs the next message to
+        // its own (panicking) settle instead of parking it forever.
+        engine
+            .handle(methods::QUEUE_COMMAND, run("message-2".into()))
+            .await
+            .unwrap();
+        engine
+            .handle(
+                methods::CONTINUE_MESSAGE_QUEUE,
+                serde_json::json!({"chatId": "chat-1"}),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let queue = watch.borrow().clone();
+                if queue["paused"] == true
+                    && queue["activeMessageId"].is_null()
+                    && queue["pending"].as_array().unwrap().is_empty()
+                {
+                    break;
+                }
+                watch.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     /// A `/skill` submit with a name no root answers fails the RPC (the
     /// composer keeps its draft); a resolvable name enqueues. The queue
     /// never sees the unresolvable one, so nothing parks at the head.

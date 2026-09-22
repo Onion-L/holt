@@ -5,10 +5,12 @@
 use std::{
     collections::HashSet,
     io::Write,
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
 
+use futures::FutureExt as _;
 use holt_doc::MessagePart;
 use holt_proto::{MessageQueue, PendingKind, PendingMessage, RunRequest, SessionStatus};
 use holt_rpc::{RpcError, turns::TurnTerminalEvent};
@@ -762,235 +764,302 @@ impl EngineService {
                 };
                 let kind = message.kind;
                 let heartbeat_stop = CancellationToken::new();
-                let heartbeat = tokio::spawn(crate::agent::heartbeat_session(
+                let mut heartbeat = tokio::spawn(crate::agent::heartbeat_session(
                     service.runtime.clone(),
                     worker_chat.chat_id.clone(),
                     heartbeat_stop.clone(),
                 ));
                 worker_chat.track_task(&heartbeat);
-                let outcome = match kind {
-                    PendingKind::Compact => DriverOutcome::Settled(
-                        service
-                            .run_queued_compaction(&worker_chat, &message, &cancel)
-                            .await,
-                    ),
-                    PendingKind::Ordinary | PendingKind::Skill => {
-                        // A queued skill resolves against a fresh catalog
-                        // at admission (rule 16) — the race backstop behind
-                        // the submit-time check in the RPC handler: a skill
-                        // deleted after submission retains the pending item
-                        // with an error and pauses the queue BEFORE any Turn
-                        // is created.
-                        let skill = if kind == PendingKind::Skill {
-                            let name = message.skill_name.clone().unwrap_or_default();
-                            match service
-                                .skills
-                                .resolve(Some(&message.request.cwd), &name)
-                                .await
-                            {
-                                Some(skill) => Ok(Some(skill)),
-                                // Cancel-aware like the start_turn error path
-                                // below: a Steer/Stop that landed during the
-                                // scan settles quietly.
-                                None if cancel.is_cancelled() => Err((false, None)),
-                                None => Err((false, Some(format!("unknown skill: {name}")))),
-                            }
-                        } else {
-                            Ok(None)
-                        };
-                        match skill {
-                            Err(outcome) => DriverOutcome::Settled(outcome),
-                            Ok(skill) => {
-                                let prompt = message.request.prompt.clone();
-                                let prepared = service
-                                    .start_turn(
-                                        &worker_chat.chat_id,
-                                        worker_chat.clone(),
-                                        message.request,
-                                        message.message_id,
-                                        vec![MessagePart::Text {
-                                            id: "t0".into(),
-                                            text: prompt.clone(),
-                                        }],
-                                        prompt.clone(),
-                                        prompt.clone(),
-                                        None,
-                                        Some(prompt),
-                                        cancel.clone(),
-                                        true,
-                                        skill,
-                                    )
-                                    .await;
-                                match prepared {
-                                    Ok(run) => DriverOutcome::Turn(run_agent_command(run).await),
-                                    Err(error) => DriverOutcome::Settled((
-                                        false,
-                                        (!cancel.is_cancelled()).then(|| error.to_string()),
-                                    )),
+                let picked = picked_id.clone();
+                // A panic anywhere in one iteration must not weld the chat
+                // shut: the spawned driver task would die silently,
+                // `driver_running` would never reset, and every later Stop
+                // or submit would land on a task that no longer exists.
+                // Catch it, settle the Turn as a failure, and let the loop
+                // exit through the ordinary paused/empty head path.
+                let iteration = AssertUnwindSafe(async {
+                    let outcome = match kind {
+                        PendingKind::Compact => DriverOutcome::Settled(
+                            service
+                                .run_queued_compaction(&worker_chat, &message, &cancel)
+                                .await,
+                        ),
+                        PendingKind::Ordinary | PendingKind::Skill => {
+                            // A queued skill resolves against a fresh catalog
+                            // at admission (rule 16) — the race backstop behind
+                            // the submit-time check in the RPC handler: a skill
+                            // deleted after submission retains the pending item
+                            // with an error and pauses the queue BEFORE any Turn
+                            // is created.
+                            let skill = if kind == PendingKind::Skill {
+                                let name = message.skill_name.clone().unwrap_or_default();
+                                match service
+                                    .skills
+                                    .resolve(Some(&message.request.cwd), &name)
+                                    .await
+                                {
+                                    Some(skill) => Ok(Some(skill)),
+                                    // Cancel-aware like the start_turn error path
+                                    // below: a Steer/Stop that landed during the
+                                    // scan settles quietly.
+                                    None if cancel.is_cancelled() => Err((false, None)),
+                                    None => Err((false, Some(format!("unknown skill: {name}")))),
+                                }
+                            } else {
+                                Ok(None)
+                            };
+                            match skill {
+                                Err(outcome) => DriverOutcome::Settled(outcome),
+                                Ok(skill) => {
+                                    let prompt = message.request.prompt.clone();
+                                    let prepared = service
+                                        .start_turn(
+                                            &worker_chat.chat_id,
+                                            worker_chat.clone(),
+                                            message.request,
+                                            message.message_id,
+                                            vec![MessagePart::Text {
+                                                id: "t0".into(),
+                                                text: prompt.clone(),
+                                            }],
+                                            prompt.clone(),
+                                            prompt.clone(),
+                                            None,
+                                            Some(prompt),
+                                            cancel.clone(),
+                                            true,
+                                            skill,
+                                        )
+                                        .await;
+                                    match prepared {
+                                        Ok(run) => {
+                                            DriverOutcome::Turn(run_agent_command(run).await)
+                                        }
+                                        Err(error) => DriverOutcome::Settled((
+                                            false,
+                                            (!cancel.is_cancelled()).then(|| error.to_string()),
+                                        )),
+                                    }
                                 }
                             }
                         }
-                    }
-                };
-                // A failed Turn pauses the queue without a queue-level error,
-                // as before — its reason rides only the terminal event's
-                // internal diagnostic field.
-                let (success, error, turn_end) = match outcome {
-                    DriverOutcome::Turn(end) => (
-                        matches!(end, crate::agent::TurnEnd::Succeeded),
-                        None,
-                        Some(end),
-                    ),
-                    DriverOutcome::Settled((success, error)) => (success, error, None),
-                };
-                // Wait for the heartbeat to stop before publishing the final
-                // status so a last tick cannot revive an idle session.
-                heartbeat_stop.cancel();
-                let _ = heartbeat.await;
-                let started = worker_chat
-                    .queue
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .record
-                    .started
-                    .is_some();
-                let persistence_error = worker_chat
-                    .persistence_error
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                let settled = {
-                    let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                    *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    // The iteration settles the queue only if the picked head
-                    // reached its admission checkpoint. A delete that removed it
-                    // mid-prep leaves no run to finish: keep the winning
-                    // mutation's state and consider the next head directly.
-                    let vanished = !started
-                        && queue
-                            .record
-                            .pending
-                            .iter()
-                            .all(|m| m.message_id != picked_id);
-                    if !vanished && !worker_chat.is_removed() && !queue.unreadable {
-                        // The real Turn is over before its settled queue
-                        // becomes observable (ADR-0024): freeze the change
-                        // set's phase first, so no reader sees an idle queue
-                        // beside a live change set. The captured content
-                        // follows in `finish`.
-                        if turn_end.is_some() {
-                            service
-                                .turn_changes
-                                .settle(&worker_chat.chat_id, &picked_id);
+                    };
+                    // A failed Turn pauses the queue without a queue-level error,
+                    // as before — its reason rides only the terminal event's
+                    // internal diagnostic field.
+                    let (success, error, turn_end) = match outcome {
+                        DriverOutcome::Turn(end) => (
+                            matches!(end, crate::agent::TurnEnd::Succeeded),
+                            None,
+                            Some(end),
+                        ),
+                        DriverOutcome::Settled((success, error)) => (success, error, None),
+                    };
+                    // Wait for the heartbeat to stop before publishing the final
+                    // status so a last tick cannot revive an idle session.
+                    heartbeat_stop.cancel();
+                    let _ = (&mut heartbeat).await;
+                    let started = worker_chat
+                        .queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .record
+                        .started
+                        .is_some();
+                    let persistence_error = worker_chat
+                        .persistence_error
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let settled = {
+                        let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        // The iteration settles the queue only if the picked head
+                        // reached its admission checkpoint. A delete that removed it
+                        // mid-prep leaves no run to finish: keep the winning
+                        // mutation's state and consider the next head directly.
+                        let vanished = !started
+                            && queue
+                                .record
+                                .pending
+                                .iter()
+                                .all(|m| m.message_id != picked_id);
+                        if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                            // The real Turn is over before its settled queue
+                            // becomes observable (ADR-0024): freeze the change
+                            // set's phase first, so no reader sees an idle queue
+                            // beside a live change set. The captured content
+                            // follows in `finish`.
+                            if turn_end.is_some() {
+                                service
+                                    .turn_changes
+                                    .settle(&worker_chat.chat_id, &picked_id);
+                            }
+                            // Stop already changed the pause state. A subsequent
+                            // Continue must survive the canceled Turn's cleanup.
+                            Some(queue.finish(
+                                (success || cancel.is_cancelled()) && persistence_error.is_none(),
+                                persistence_error.clone().or(error),
+                            ))
+                        } else {
+                            None
                         }
-                        // Stop already changed the pause state. A subsequent
-                        // Continue must survive the canceled Turn's cleanup.
-                        Some(queue.finish(
-                            (success || cancel.is_cancelled()) && persistence_error.is_none(),
-                            persistence_error.clone().or(error),
-                        ))
+                        // The guard is not `Send`: it drops here, before the
+                        // change-set capture below awaits.
+                    };
+                    if started {
+                        // A failed or interrupted Compaction settles Idle like a
+                        // successful one: it was never a Turn, so there is no
+                        // errored Turn to report — the pause and the Transcript
+                        // notice carry the failure.
+                        service.runtime.set_session(
+                            &worker_chat.chat_id,
+                            if kind == PendingKind::Compact || success || cancel.is_cancelled() {
+                                SessionStatus::Idle
+                            } else {
+                                SessionStatus::Errored
+                            },
+                        );
+                    }
+                    // A settled real Turn freezes its final change set now,
+                    // whether or not the terminal event's durable gate below
+                    // passes. A capture failure never fails the Turn.
+                    let final_change_set = if turn_end.is_some() && settled.is_some() {
+                        // The frozen set persists before anything publishes it
+                        // (ADR-0024 ticket 02): the terminal event carries a
+                        // change set only once its record is durable, so
+                        // history survives restarts and later edits. Also
+                        // best-effort — a failed write costs the payload, never
+                        // the Turn.
+                        service
+                            .settle_turn_change_set(&worker_chat.chat_id, &picked_id)
+                            .await
                     } else {
                         None
-                    }
-                    // The guard is not `Send`: it drops here, before the
-                    // change-set capture below awaits.
-                };
-                if started {
-                    // A failed or interrupted Compaction settles Idle like a
-                    // successful one: it was never a Turn, so there is no
-                    // errored Turn to report — the pause and the Transcript
-                    // notice carry the failure.
-                    service.runtime.set_session(
-                        &worker_chat.chat_id,
-                        if kind == PendingKind::Compact || success || cancel.is_cancelled() {
-                            SessionStatus::Idle
-                        } else {
-                            SessionStatus::Errored
-                        },
-                    );
-                }
-                // A settled real Turn freezes its final change set now,
-                // whether or not the terminal event's durable gate below
-                // passes. A capture failure never fails the Turn.
-                let final_change_set = if turn_end.is_some() && settled.is_some() {
-                    // The frozen set persists before anything publishes it
-                    // (ADR-0024 ticket 02): the terminal event carries a
-                    // change set only once its record is durable, so
-                    // history survives restarts and later edits. Also
-                    // best-effort — a failed write costs the payload, never
-                    // the Turn.
-                    service
-                        .settle_turn_change_set(&worker_chat.chat_id, &picked_id)
-                        .await
-                } else {
-                    None
-                };
-                // The usage ledger settles with the Turn: the round-trips
-                // buffered while it ran land as ONE batch append, stamped
-                // with the Turn's message id and outcome — after queue
-                // completion, fire-and-forget like the change set, never
-                // Turn correctness.
-                if let Some(end) = &turn_end {
-                    crate::usage::settle_turn(
-                        &worker_chat,
-                        &picked_id,
-                        crate::usage::TurnOutcome::of(end),
-                    );
-                }
-                // The Turn terminal event (ADR-0019): exactly one per real
-                // main-chat Turn, only AFTER Transcript and History settled
-                // and queue completion was durably recorded. A completion
-                // that could not be persisted keeps the queue/session error
-                // and emits nothing; failed conversation writes likewise
-                // leave the durable prerequisite false. Publishing is
-                // fire-and-forget — a closed or lagging consumer changes
-                // nothing about the settled Turn or the next queued item.
-                // When a change-set watcher holds the chat, the settled
-                // Turn's card must land before the queued message that
-                // follows: arm the signal the watcher fires once the final
-                // frame is out, and hold the next Turn on it after the
-                // terminal event publishes. With no watcher attached there
-                // is nobody to order against — nothing arms, and the queue
-                // drains without the grace.
-                let mut final_signal = None;
-                if let Some(end) = turn_end
-                    && matches!(settled, Some(Ok(())))
-                    && persistence_error.is_none()
-                {
-                    final_signal = service
-                        .turn_changes
-                        .arm_final_signal(&worker_chat.chat_id, &picked_id)
-                        .map(|signal| (signal, picked_id.clone()));
-                    let (outcome, reason) = match end {
-                        TurnEnd::Succeeded => (holt_rpc::turns::TurnOutcome::Succeeded, None),
-                        TurnEnd::Failed { reason } => {
-                            (holt_rpc::turns::TurnOutcome::Failed, Some(reason))
-                        }
-                        TurnEnd::Interrupted => (holt_rpc::turns::TurnOutcome::Interrupted, None),
                     };
-                    service.turn_events.publish(TurnTerminalEvent {
-                        event_id: uuid::Uuid::new_v4().to_string(),
-                        chat_id: worker_chat.chat_id.clone(),
-                        message_id: picked_id,
-                        outcome,
-                        finished_at: chrono::Utc::now().timestamp_millis(),
-                        internal_reason: reason,
-                        change_set: final_change_set,
-                    });
-                }
-                // Hold the next queued Turn until the settled card is on its
-                // way to the UI. The signal fires once a watcher emitted the
-                // final frame; the bounded grace only ever covers a watcher
-                // that lagged or died mid-emit.
-                if let Some((signal, message_id)) = final_signal {
-                    let _ = tokio::time::timeout(FINAL_FRAME_WATCH_GRACE, signal.notified()).await;
-                    service
-                        .turn_changes
-                        .clear_final_signal(&worker_chat.chat_id, &message_id);
+                    // The usage ledger settles with the Turn: the round-trips
+                    // buffered while it ran land as ONE batch append, stamped
+                    // with the Turn's message id and outcome — after queue
+                    // completion, fire-and-forget like the change set, never
+                    // Turn correctness.
+                    if let Some(end) = &turn_end {
+                        crate::usage::settle_turn(
+                            &worker_chat,
+                            &picked_id,
+                            crate::usage::TurnOutcome::of(end),
+                        );
+                    }
+                    // The Turn terminal event (ADR-0019): exactly one per real
+                    // main-chat Turn, only AFTER Transcript and History settled
+                    // and queue completion was durably recorded. A completion
+                    // that could not be persisted keeps the queue/session error
+                    // and emits nothing; failed conversation writes likewise
+                    // leave the durable prerequisite false. Publishing is
+                    // fire-and-forget — a closed or lagging consumer changes
+                    // nothing about the settled Turn or the next queued item.
+                    // When a change-set watcher holds the chat, the settled
+                    // Turn's card must land before the queued message that
+                    // follows: arm the signal the watcher fires once the final
+                    // frame is out, and hold the next Turn on it after the
+                    // terminal event publishes. With no watcher attached there
+                    // is nobody to order against — nothing arms, and the queue
+                    // drains without the grace.
+                    let mut final_signal = None;
+                    if let Some(end) = turn_end
+                        && matches!(settled, Some(Ok(())))
+                        && persistence_error.is_none()
+                    {
+                        final_signal = service
+                            .turn_changes
+                            .arm_final_signal(&worker_chat.chat_id, &picked_id)
+                            .map(|signal| (signal, picked_id.clone()));
+                        let (outcome, reason) = match end {
+                            TurnEnd::Succeeded => (holt_rpc::turns::TurnOutcome::Succeeded, None),
+                            TurnEnd::Failed { reason } => {
+                                (holt_rpc::turns::TurnOutcome::Failed, Some(reason))
+                            }
+                            TurnEnd::Interrupted => {
+                                (holt_rpc::turns::TurnOutcome::Interrupted, None)
+                            }
+                        };
+                        service.turn_events.publish(TurnTerminalEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            chat_id: worker_chat.chat_id.clone(),
+                            message_id: picked_id,
+                            outcome,
+                            finished_at: chrono::Utc::now().timestamp_millis(),
+                            internal_reason: reason,
+                            change_set: final_change_set,
+                        });
+                    }
+                    // Hold the next queued Turn until the settled card is on its
+                    // way to the UI. The signal fires once a watcher emitted the
+                    // final frame; the bounded grace only ever covers a watcher
+                    // that lagged or died mid-emit.
+                    if let Some((signal, message_id)) = final_signal {
+                        let _ =
+                            tokio::time::timeout(FINAL_FRAME_WATCH_GRACE, signal.notified()).await;
+                        service
+                            .turn_changes
+                            .clear_final_signal(&worker_chat.chat_id, &message_id);
+                    }
+                });
+                if let Err(payload) = iteration.catch_unwind().await {
+                    let detail = panic_detail(&payload);
+                    tracing::error!(
+                        target: "holt::queue",
+                        chat_id = %worker_chat.chat_id,
+                        message_id = %picked,
+                        detail = %detail,
+                        "queue driver iteration panicked; settling the Turn as failed"
+                    );
+                    // The unwound iteration may have died before its own
+                    // heartbeat stop; cancel and join are idempotent.
+                    heartbeat_stop.cancel();
+                    let _ = (&mut heartbeat).await;
+                    let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                    *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    let started = queue.record.started.is_some();
+                    let vanished =
+                        !started && queue.record.pending.iter().all(|m| m.message_id != picked);
+                    if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                        let persistence_error = worker_chat
+                            .persistence_error
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone();
+                        let _ = queue.finish(
+                            false,
+                            persistence_error.or(Some(format!("internal error: {detail}"))),
+                        );
+                    }
+                    drop(queue);
+                    if started {
+                        service.runtime.set_session(
+                            &worker_chat.chat_id,
+                            if kind == PendingKind::Compact || cancel.is_cancelled() {
+                                SessionStatus::Idle
+                            } else {
+                                SessionStatus::Errored
+                            },
+                        );
+                    }
                 }
             }
         });
         chat.track_task(&task);
+    }
+}
+
+/// Recover a panic payload's text for the settle path. The GUI app discards
+/// stderr, so without this a driver panic leaves no trace anywhere.
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
