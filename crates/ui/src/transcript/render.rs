@@ -20,7 +20,7 @@ use holt_proto::ToolCall;
 use holt_proto::TurnChangeSet;
 use holt_proto::TurnFileChange;
 use holt_proto::TurnFileChangeStatus;
-use holt_proto::view::tool_chip_content;
+use holt_proto::view::tool_chip_content_in;
 
 use super::model::{
     Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
@@ -1856,6 +1856,14 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut fold = self.folds.get(row_id).copied().unwrap_or_default();
+        // Path-bearing chip details render cwd-relative when the path is under
+        // the chat's working directory (the absolute prefix is noise in a
+        // 12px detail slot). None for pinned subagent docs — they aren't chat
+        // rows, so those chips keep absolute paths.
+        let chip_cwd = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| self.state.read(cx).chat_row(id).and_then(|c| c.cwd.clone()));
         // Agent/spawn chips never fold: they are their own row, always open,
         // no "Called N tools" header — a running subagent stays visible.
         let collapses = tool_group_collapses(tools);
@@ -2170,13 +2178,21 @@ impl Transcript {
                         collapses,
                         theme,
                         cx.entity_id(),
+                        chip_cwd.as_deref(),
                         cx,
                     );
                 }
                 let detail = details[ix].clone();
                 let invocation = invocations[ix].clone();
                 if detail.is_none() && invocation.is_none() {
-                    return tool_chip(tool, collapses, theme, cx.entity_id(), cx);
+                    return tool_chip(
+                        tool,
+                        collapses,
+                        theme,
+                        cx.entity_id(),
+                        chip_cwd.as_deref(),
+                        cx,
+                    );
                 }
                 let affordance = affordances[ix].clone();
                 // Card heights come from the precomputed metrics — the same
@@ -2243,7 +2259,14 @@ impl Transcript {
                                 group.toggled_at = Some(Instant::now());
                                 cx.notify();
                             }))
-                            .child(chip_header(tool, open, theme, cx.entity_id(), cx)),
+                            .child(chip_header(
+                                tool,
+                                open,
+                                theme,
+                                cx.entity_id(),
+                                chip_cwd.as_deref(),
+                                cx,
+                            )),
                     );
                 // The body stays mounted while the close tween shrinks over it.
                 // Invocation first (what was asked), then output/diff (what
@@ -3101,12 +3124,13 @@ fn chip_header_row(
     trail: Option<ChipTrail>,
     theme: &Theme,
     view: gpui::EntityId,
+    cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> gpui::Div {
     let (label, detail) = if tool.is_thought {
         ("Thought process", String::new())
     } else {
-        tool_chip_content(&tool.call)
+        tool_chip_content_in(&tool.call, cwd)
     };
     let subagent_type = match &tool.call {
         ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. }
@@ -3322,9 +3346,17 @@ fn chip_header(
     open: bool,
     theme: &Theme,
     view: gpui::EntityId,
+    cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> gpui::Div {
-    chip_header_row(tool, Some(ChipTrail::Chevron { open }), theme, view, cx)
+    chip_header_row(
+        tool,
+        Some(ChipTrail::Chevron { open }),
+        theme,
+        view,
+        cwd,
+        cx,
+    )
 }
 
 /// Max chars a subagent tab title keeps. The strip chip is fixed-width and
@@ -3395,6 +3427,7 @@ fn tool_chip(
     rail: bool,
     theme: &Theme,
     view: gpui::EntityId,
+    cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> AnyElement {
     div()
@@ -3420,7 +3453,7 @@ fn tool_chip(
                 .min_w_0()
                 .flex_1()
                 .overflow_hidden()
-                .child(chip_header_row(tool, None, theme, view, cx)),
+                .child(chip_header_row(tool, None, theme, view, cwd, cx)),
         )
         .into_any_element()
 }
@@ -3430,6 +3463,7 @@ fn tool_chip(
 /// slot). No accordion — an inline body would only repeat the subagent's own
 /// transcript. The group guide rail is omitted for agent-only rows (no
 /// collapse header for it to hang from).
+#[allow(clippy::too_many_arguments)]
 fn subagent_chip(
     tool: &ToolItem,
     id: SharedString,
@@ -3437,6 +3471,7 @@ fn subagent_chip(
     rail: bool,
     theme: &Theme,
     view: gpui::EntityId,
+    cwd: Option<&str>,
     cx: &mut gpui::App,
 ) -> AnyElement {
     div()
@@ -3474,6 +3509,7 @@ fn subagent_chip(
                     Some(ChipTrail::OpenArrow),
                     theme,
                     view,
+                    cwd,
                     cx,
                 )),
         )
@@ -3618,6 +3654,7 @@ impl Render for Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holt_proto::view::tool_chip_content;
 
     #[gpui::test]
     fn nested_compaction_scroll_does_not_move_transcript_list(cx: &mut gpui::TestAppContext) {

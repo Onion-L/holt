@@ -171,6 +171,78 @@ mod gate_tests {
     use super::*;
 
     #[test]
+    fn paths_under_cwd_render_relative_others_verbatim() {
+        let cwd = Some("/Users/onion/workbench/holt");
+        assert_eq!(
+            display_path("/Users/onion/workbench/holt/CONTEXT.md", cwd),
+            "CONTEXT.md"
+        );
+        assert_eq!(
+            display_path("/Users/onion/workbench/holt/docs/adr", cwd),
+            "docs/adr"
+        );
+        // The root itself, with and without a trailing slash.
+        assert_eq!(display_path("/Users/onion/workbench/holt", cwd), ".");
+        assert_eq!(display_path("/Users/onion/workbench/holt/", cwd), ".");
+        // Trailing slash on the cwd matches the same subtree.
+        assert_eq!(
+            display_path(
+                "/Users/onion/workbench/holt/x",
+                Some("/Users/onion/workbench/holt/")
+            ),
+            "x"
+        );
+        // Outside the workspace, or no cwd known: unchanged.
+        assert_eq!(
+            display_path("/Users/onion/.agents/skills/x/SKILL.md", cwd),
+            "/Users/onion/.agents/skills/x/SKILL.md"
+        );
+        assert_eq!(
+            display_path("/Users/onion/workbench/holt2/y", cwd),
+            "/Users/onion/workbench/holt2/y"
+        );
+        assert_eq!(display_path("/tmp/x", None), "/tmp/x");
+        // A sibling sharing the cwd as a byte prefix must not strip.
+        assert_eq!(display_path("/a/bc", Some("/a/b")), "/a/bc");
+    }
+
+    #[test]
+    fn cwd_aware_chip_details_render_relative_paths() {
+        use crate::ToolCall;
+        let cwd = Some("/w/holt");
+        let (label, detail) = tool_chip_content_in(
+            &ToolCall::ReadFile {
+                path: "/w/holt/CONTEXT.md".into(),
+            },
+            cwd,
+        );
+        assert_eq!((label, detail.as_str()), ("Read", "CONTEXT.md"));
+        let (_, detail) = tool_chip_content_in(
+            &ToolCall::ListDir {
+                path: Some("/w/holt/docs".into()),
+            },
+            cwd,
+        );
+        assert_eq!(detail, "docs");
+        let (_, detail) = tool_chip_content_in(
+            &ToolCall::Search {
+                pattern: "foo".into(),
+                path: Some("/w/holt/docs".into()),
+            },
+            cwd,
+        );
+        assert_eq!(detail, "foo in docs");
+        // No cwd: the absolute path stays.
+        let (_, detail) = tool_chip_content_in(
+            &ToolCall::ReadFile {
+                path: "/w/holt/CONTEXT.md".into(),
+            },
+            None,
+        );
+        assert_eq!(detail, "/w/holt/CONTEXT.md");
+    }
+
+    #[test]
     fn mcp_chips_read_as_display_names_not_raw_two_level_names() {
         use crate::ToolCall;
         let (label, detail) = tool_chip_content(&ToolCall::Mcp {
@@ -354,35 +426,82 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// Display form of a tool-call path: a path under `cwd` renders cwd-relative
+/// (`docs/adr`, or `.` for the root itself), anything else verbatim. The
+/// match is a plain string prefix on purpose — tool paths come straight from
+/// the agent, which builds them from the chat's own cwd — and a non-match
+/// (path outside the workspace, or `cwd` unknown) just keeps the absolute.
+pub fn display_path(path: &str, cwd: Option<&str>) -> String {
+    let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
+        return path.to_string();
+    };
+    let cwd = cwd.trim_end_matches('/');
+    if cwd.is_empty() {
+        // Root cwd: every absolute path is under it.
+        let rel = path.trim_start_matches('/');
+        return if rel.is_empty() {
+            ".".into()
+        } else {
+            rel.into()
+        };
+    }
+    if path == cwd {
+        return ".".to_string();
+    }
+    if path.len() > cwd.len() && path.starts_with(cwd) && path.as_bytes()[cwd.len()] == b'/' {
+        let rel = &path[cwd.len() + 1..];
+        return if rel.is_empty() {
+            ".".into()
+        } else {
+            rel.into()
+        };
+    }
+    path.to_string()
+}
+
 /// Per-kind chip label + one-line detail. Labels match holt's `describeTool`
 /// (tool-chip.tsx) exactly, so the two viewports name a tool identically.
 pub fn tool_chip_content(call: &crate::ToolCall) -> (&'static str, String) {
-    let (label, detail) = tool_chip_content_raw(call);
+    tool_chip_content_in(call, None)
+}
+
+/// [`tool_chip_content`] with the chat's cwd: path-bearing details render
+/// cwd-relative (see [`display_path`]). Row fingerprints keep hashing the
+/// cwd-less variant — the hash stays a pure function of the entry, and a
+/// chat's cwd never changes under it.
+pub fn tool_chip_content_in(call: &crate::ToolCall, cwd: Option<&str>) -> (&'static str, String) {
+    let (label, detail) = tool_chip_content_raw(call, cwd);
     (label, single_line(&detail))
 }
 
-fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
+fn tool_chip_content_raw(call: &crate::ToolCall, cwd: Option<&str>) -> (&'static str, String) {
     use crate::ToolCall;
     match call {
         ToolCall::Exec { command } => ("Run", command.clone()),
-        ToolCall::ReadFile { path } => ("Read", path.clone()),
+        ToolCall::ReadFile { path } => ("Read", display_path(path, cwd)),
         ToolCall::ReadChat { chat_id, title } => (
             "Read chat",
             title.clone().unwrap_or_else(|| chat_id.clone()),
         ),
-        ToolCall::WriteFile { path, .. } => ("Write", path.clone()),
-        ToolCall::EditFile { path, .. } => ("Edit", path.clone()),
-        ToolCall::ApplyPatch { path } => {
-            ("Patch", path.clone().unwrap_or_else(|| "workspace".into()))
-        }
+        ToolCall::WriteFile { path, .. } => ("Write", display_path(path, cwd)),
+        ToolCall::EditFile { path, .. } => ("Edit", display_path(path, cwd)),
+        ToolCall::ApplyPatch { path } => (
+            "Patch",
+            path.as_deref()
+                .map_or_else(|| "workspace".to_string(), |path| display_path(path, cwd)),
+        ),
         ToolCall::Search { pattern, path } => (
             "Search",
             match path {
-                Some(path) => format!("{pattern} in {path}"),
+                Some(path) => format!("{pattern} in {}", display_path(path, cwd)),
                 None => pattern.clone(),
             },
         ),
-        ToolCall::ListDir { path } => ("List", path.clone().unwrap_or_else(|| ".".to_string())),
+        ToolCall::ListDir { path } => (
+            "List",
+            path.as_deref()
+                .map_or_else(|| ".".to_string(), |path| display_path(path, cwd)),
+        ),
         ToolCall::Glob { pattern } => ("Glob", pattern.clone()),
         ToolCall::WebFetch { url, .. } => ("Fetch", url.clone()),
         ToolCall::WebSearch { query } => ("Web", query.clone()),
