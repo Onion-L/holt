@@ -3885,7 +3885,7 @@ mod tests {
                 tool: "issues".into(),
                 input: None
             }),
-            ("MCP", "gh · issues".to_string())
+            ("MCP", "Gh issues".to_string())
         );
         let todo = ToolCall::Todo {
             items: vec![
