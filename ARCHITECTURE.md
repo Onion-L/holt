@@ -566,17 +566,19 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
 - `chats.json`, `spaces.json` — the chat and space lists, whole-file atomic
   replace under the runtime's registry lock.
 - `transcripts/<chatId>.jsonl` — one chat document's rendered transcript as
-  an append-only log (ADR-0032): a version header, then one
-  `SessionMessageEntry` per line. An entry lands at its completion
-  boundaries — the admitted user entry, each completed assistant message,
-  each resolved tool call, a gate stamp (a pause point), and the run's
-  terminal settle — and a later line with the same id replaces its earlier
-  one (post-run chip settles). Stream deltas never touch disk; a replay
-  collapses upserts into one entry per id. Pre-0032
-  `transcripts/<chatId>.json` whole-file snapshots are the replay base for
-  chats that predate the log and are never written again. Subagent
-  documents live under `subagents/<parentChatId>/` with the same layout;
-  finished child summaries go to `subagents/<parentChatId>/results/`.
+  an append-only log (ADR-0032): a version header, then self-describing
+  records. A full `SessionMessageEntry` line is an entry's first landing,
+  its terminal settle, and every post-run chip re-append (a later full line
+  with the same id replaces its earlier one); a run's streaming completions
+  land incrementally — a `parts` line carries an entry's new tail parts, a
+  `part` line backfills one resolved tool call in place. The full line is the replay's self-heal anchor: incremental lines
+  that don't fit are dropped. Stream deltas never touch disk; a replay
+  collapses the log into one entry per id, each byte of part content
+  written once. Pre-0032 `transcripts/<chatId>.json` whole-file snapshots
+  are the replay base for chats that predate the log and are never written
+  again. Subagent documents live under `subagents/<parentChatId>/` with the
+  same layout; finished child summaries go to
+  `subagents/<parentChatId>/results/`.
 - `history/<chatId>.jsonl` — the model-facing History, append-only, one record
   per line (ADR-0010). The transcript log and the History share the chat's
   own persistence lock; one chat's disk writes never serialize against

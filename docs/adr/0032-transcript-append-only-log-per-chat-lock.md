@@ -4,6 +4,22 @@
 - Date: 2026-09-12
 - Scope: `crates/engine` persistence (`store.rs`, `agent.rs`, `rpc.rs`)
 
+Amendment (2026-09-22): a streaming run's per-round and per-tool landings
+are incremental lines, not whole-entry re-appends. Beside the full entry
+line the log gains two kinds: a `parts` line carrying an entry's new tail
+parts, and a `part` line backfilling one resolved tool call in place. The full entry line remains the first landing, the
+terminal settle, and every post-run re-append, and is the replay's
+self-heal anchor: an incremental line that doesn't fit (a stale offset, an
+out-of-range index, an unknown entry) is dropped. The write cost of a run
+is the parts it produced — linear — instead of the entry size per completed
+unit, which re-serialized the whole entry every time and grew quadratic
+with the turn (measured ≈130× on a real session: 85 MB on disk for a
+647 KB terminal entry). No version bump, no migration: readers predating a
+line kind skip it, and old logs replay unchanged. `ChatRuntime` tracks each
+entry's on-disk part count as the incremental writers' anchor; a whole-log
+rewrite (`rewrite_transcript`) clears it, so the next persist re-anchors
+with a full line.
+
 ## Context
 
 Through ADR-0031 the transcript persisted as a whole-file snapshot:
@@ -62,7 +78,9 @@ tolerant reader that treats a truncated trailing line as absent.
 
 - A streaming run's disk traffic drops from O(session) per 120 ms to one
   entry line per completed unit — bounded by the current turn's size, not
-  the session's.
+  the session's. (As whole-entry re-appends that bound proved quadratic in
+  the turn; the 2026-09-22 amendment makes the streaming landings
+  incremental and the cost linear.)
 - Concurrent chats (parallel subagents, a second chat while one streams) no
   longer contend on any shared persistence lock.
 - Crash semantics: the replayed transcript keeps every completed round of an

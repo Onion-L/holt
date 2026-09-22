@@ -5,7 +5,7 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use holt_doc::SessionMessageEntry;
+use holt_doc::{MessagePart, SessionMessageEntry};
 use holt_proto::{Chat, Space};
 
 use crate::EngineError;
@@ -83,11 +83,13 @@ pub(crate) fn transcript_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf>
 }
 
 /// Per-chat transcript file (append-only JSONL, ADR-0032): a version
-/// header line, then one entry per line. An entry line is a full
-/// `SessionMessageEntry`; a line whose id matches an earlier line replaces
-/// it (post-run chip settles), otherwise it appends. Entries land only in
-/// terminal shape — a run's live entry streams in memory and is written
-/// once at settle — so the write cost is one entry, never the session.
+/// header line, then one record per line. A record is either a full
+/// `SessionMessageEntry` (an entry line whose id matches an earlier line
+/// replaces it, otherwise it appends) or one of the incremental settle
+/// lines — an entry's tail parts, or one part backfilled in place — that
+/// put a streaming run's completed units on disk without re-appending the
+/// whole entry. Every completed unit lands the moment it completes; each
+/// byte of part content is therefore written once.
 pub(crate) fn transcript_log_path(data_dir: &Path, chat_id: &str) -> Option<PathBuf> {
     if !id_is_path_safe(chat_id) {
         return None;
@@ -102,13 +104,40 @@ pub(crate) fn transcript_log_path(data_dir: &Path, chat_id: &str) -> Option<Path
 /// The transcript log's format version, carried by the header line.
 const TRANSCRIPT_VERSION: u32 = 1;
 
-/// One JSONL line: `{"kind":"entry","entry":{…SessionMessageEntry…}}`. The
-/// adjacent-tag shape keeps lines self-describing for the tolerant reader
-/// below; later line kinds can be added without a version bump.
+/// One JSONL line. `Entry` is the full-snapshot upsert — an entry's first
+/// landing, its terminal settle, a post-run chip re-append — and the
+/// replay's self-heal anchor. `Parts` appends a run entry's tail parts;
+/// `Part` backfills one resolved tool call in place. The adjacent-tag shape keeps lines self-describing for the
+/// tolerant reader below; later line kinds can be added without a version
+/// bump, and a reader that predates a kind skips the line.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "entry", rename_all = "camelCase")]
 enum TranscriptLine {
-    Entry(SessionMessageEntry),
+    Entry(Box<SessionMessageEntry>),
+    Parts(TranscriptParts),
+    Part(TranscriptPart),
+}
+
+/// The `Parts` line's body: one entry's new tail parts, starting at `from`
+/// — the entry's part count when the line was written. Replay splices only
+/// when `from` still matches, so a stale or out-of-order line is dropped.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptParts {
+    id: String,
+    from: usize,
+    parts: Vec<MessagePart>,
+}
+
+/// The `Part` line's body: one part's current shape, addressed by its
+/// index. Indices are stable because an entry's parts grow, never shrink
+/// (ADR-0011).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptPart {
+    id: String,
+    index: usize,
+    part: Box<MessagePart>,
 }
 
 /// Append one entry line, creating the file (header first) when the chat
@@ -125,18 +154,72 @@ pub(crate) fn append_transcript_entry(
     let Some(path) = transcript_log_path(data_dir, chat_id) else {
         return Ok(());
     };
+    let mut file = open_transcript_log(&path)?;
+    write_line(&mut file, &TranscriptLine::Entry(Box::new(entry.clone())))
+}
+
+/// Append one entry's new tail parts (the per-round completed-message
+/// settle): the `parts` line carries `entry.parts[from..]`.
+pub(crate) fn append_transcript_parts(
+    data_dir: &Path,
+    chat_id: &str,
+    entry_id: &str,
+    from: usize,
+    tail: &[MessagePart],
+) -> std::io::Result<()> {
+    let Some(path) = transcript_log_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    let mut file = open_transcript_log(&path)?;
+    write_line(
+        &mut file,
+        &TranscriptLine::Parts(TranscriptParts {
+            id: entry_id.to_string(),
+            from,
+            parts: tail.to_vec(),
+        }),
+    )
+}
+
+/// Append one resolved tool call's current shape as a `part` line — the
+/// per-tool settle's in-place backfill.
+pub(crate) fn append_transcript_part(
+    data_dir: &Path,
+    chat_id: &str,
+    entry_id: &str,
+    index: usize,
+    part: &MessagePart,
+) -> std::io::Result<()> {
+    let Some(path) = transcript_log_path(data_dir, chat_id) else {
+        return Ok(());
+    };
+    let mut file = open_transcript_log(&path)?;
+    write_line(
+        &mut file,
+        &TranscriptLine::Part(TranscriptPart {
+            id: entry_id.to_string(),
+            index,
+            part: Box::new(part.clone()),
+        }),
+    )
+}
+
+/// Open the log for appending, creating it header-first when the chat has
+/// no transcript log yet. Same shape and crash semantics as the History
+/// record (ADR-0010): a crash between create and the header write leaves a
+/// zero-byte file that must not collect headerless lines, and a partial
+/// trailing record is isolated from every later append.
+fn open_transcript_log(path: &Path) -> std::io::Result<std::fs::File> {
     let dir = path
         .parent()
         .expect("transcript log path has a parent")
         .to_path_buf();
     std::fs::create_dir_all(&dir)?;
-    let line = serde_json::to_string(&TranscriptLine::Entry(entry.clone()))
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
-        .open(&path)?;
+        .open(path)?;
     if file.metadata()?.len() == 0 {
         let header = serde_json::json!({ "version": TRANSCRIPT_VERSION });
         writeln!(file, "{header}")?;
@@ -148,6 +231,12 @@ pub(crate) fn append_transcript_entry(
             file.write_all(b"\n")?;
         }
     }
+    Ok(file)
+}
+
+fn write_line<T: serde::Serialize>(file: &mut std::fs::File, value: &T) -> std::io::Result<()> {
+    let line =
+        serde_json::to_string(value).map_err(|error| std::io::Error::other(error.to_string()))?;
     writeln!(file, "{line}")
 }
 
@@ -173,7 +262,7 @@ pub(crate) fn rewrite_transcript(
         let header = serde_json::json!({ "version": TRANSCRIPT_VERSION });
         writeln!(file, "{header}")?;
         for entry in entries {
-            let line = serde_json::to_string(&TranscriptLine::Entry(entry.clone()))
+            let line = serde_json::to_string(&TranscriptLine::Entry(Box::new(entry.clone())))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             writeln!(file, "{line}")?;
         }
@@ -191,18 +280,43 @@ pub(crate) fn rewrite_transcript(
     result
 }
 
-/// Replay one log line onto the transcript: an id that already exists
-/// replaces its earlier line (a post-run settle), a new id appends.
+/// Replay one log line onto the transcript. A full entry line upserts by
+/// id (a post-run settle replaces, a new id appends) and re-anchors the
+/// entry wholesale. An incremental line attaches to the entry it names and
+/// is dropped when it doesn't fit — a stale `from`, an out-of-range
+/// index, or a missing entry — so the next full entry line self-heals
+/// around whatever a crash or a downgrade skipped.
 fn replay_transcript_line(transcript: &mut Vec<SessionMessageEntry>, line: &str) {
-    let Ok(TranscriptLine::Entry(entry)) = serde_json::from_str(line) else {
+    let Ok(parsed) = serde_json::from_str::<TranscriptLine>(line) else {
         return;
     };
-    match transcript
-        .iter()
-        .position(|existing| existing.id == entry.id)
-    {
-        Some(at) => transcript[at] = entry,
-        None => transcript.push(entry),
+    match parsed {
+        TranscriptLine::Entry(entry) => {
+            let entry = *entry;
+            match transcript
+                .iter()
+                .position(|existing| existing.id == entry.id)
+            {
+                Some(at) => transcript[at] = entry,
+                None => transcript.push(entry),
+            }
+        }
+        TranscriptLine::Parts(tail) => {
+            let Some(entry) = transcript.iter_mut().find(|e| e.id == tail.id) else {
+                return;
+            };
+            if tail.from == entry.parts.len() {
+                entry.parts.extend(tail.parts);
+            }
+        }
+        TranscriptLine::Part(backfill) => {
+            let Some(entry) = transcript.iter_mut().find(|e| e.id == backfill.id) else {
+                return;
+            };
+            if let Some(slot) = entry.parts.get_mut(backfill.index) {
+                *slot = *backfill.part;
+            }
+        }
     }
 }
 
@@ -297,6 +411,13 @@ mod tests {
         dir.join("transcripts").join(format!("{chat_id}.jsonl"))
     }
 
+    fn text_part(id: &str, text: &str) -> MessagePart {
+        MessagePart::Text {
+            id: id.into(),
+            text: text.into(),
+        }
+    }
+
     #[test]
     fn appended_entries_round_trip_and_unsafe_ids_write_nothing() {
         let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
@@ -377,6 +498,73 @@ mod tests {
         delete_transcript(&dir, "chat-1");
         assert!(!transcript_exists(&dir, "chat-1"));
         assert!(load_transcript(&dir, "chat-1").unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incremental_lines_replay_onto_their_entry() {
+        let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
+        let mut run = entry("m1");
+        run.parts = vec![text_part("p0", "early"), text_part("p1", "round one")];
+        append_transcript_entry(&dir, "chat-1", &run).expect("append");
+        // A later round appends its tail, then a settle backfills p0.
+        append_transcript_parts(&dir, "chat-1", "m1", 2, &[text_part("p2", "round two")])
+            .expect("append parts");
+        append_transcript_part(&dir, "chat-1", "m1", 0, &text_part("p0", "settled"))
+            .expect("append part");
+        run.parts[0] = text_part("p0", "settled");
+        run.parts.push(text_part("p2", "round two"));
+        assert_eq!(load_transcript(&dir, "chat-1").expect("load"), vec![run]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn misfit_incremental_lines_are_dropped() {
+        let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
+        let mut run = entry("m1");
+        run.parts = vec![text_part("p0", "kept")];
+        append_transcript_entry(&dir, "chat-1", &run).expect("append");
+        // A stale `from` (would duplicate or gap), an out-of-range index,
+        // and lines naming an entry that does not exist: all dropped.
+        append_transcript_parts(&dir, "chat-1", "m1", 0, &[text_part("x", "dup")])
+            .expect("append parts");
+        append_transcript_parts(&dir, "chat-1", "m1", 2, &[text_part("x", "gap")])
+            .expect("append parts");
+        append_transcript_part(&dir, "chat-1", "m1", 5, &text_part("x", "far"))
+            .expect("append part");
+        append_transcript_parts(&dir, "chat-1", "ghost", 0, &[text_part("x", "lost")])
+            .expect("append parts");
+        append_transcript_part(&dir, "chat-1", "ghost", 0, &text_part("x", "lost"))
+            .expect("append part");
+        assert_eq!(load_transcript(&dir, "chat-1").expect("load"), vec![run]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_full_entry_line_re_anchors_after_incremental_lines() {
+        let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
+        let mut run = entry("m1");
+        run.parts = vec![text_part("p0", "a"), text_part("p1", "b")];
+        append_transcript_entry(&dir, "chat-1", &run).expect("append");
+        append_transcript_parts(&dir, "chat-1", "m1", 2, &[text_part("p2", "c")])
+            .expect("append parts");
+        // A terminal or post-run settle re-appends the whole entry: replay
+        // replaces it wholesale, however far the incremental lines got.
+        run.parts.truncate(1);
+        run.status = Some(holt_doc::MessageStatus::Complete);
+        append_transcript_entry(&dir, "chat-1", &run).expect("append");
+        assert_eq!(load_transcript(&dir, "chat-1").expect("load"), vec![run]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incremental_appends_respect_the_path_safety_rule() {
+        let dir = std::env::temp_dir().join(format!("holt-transcript-{}", uuid::Uuid::new_v4()));
+        append_transcript_parts(&dir, "../escape", "m1", 0, &[text_part("x", "y")])
+            .expect("append skipped");
+        append_transcript_part(&dir, "../escape", "m1", 0, &text_part("x", "y"))
+            .expect("append skipped");
+        assert!(!dir.join("transcripts").join("escape.jsonl").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

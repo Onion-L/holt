@@ -36,7 +36,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::history::CompactionRecord;
 use crate::store::{
-    append_transcript_entry, delete_transcript, load_transcript, transcript_exists,
+    append_transcript_entry, append_transcript_part, append_transcript_parts, delete_transcript,
+    load_transcript, transcript_exists,
 };
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
@@ -122,6 +123,14 @@ pub(crate) struct ChatRuntime {
     pub(crate) driver_running: std::sync::atomic::AtomicBool,
     pub(crate) tasks: Mutex<Vec<tokio::task::AbortHandle>>,
     pub(crate) persistence_error: Mutex<Option<String>>,
+    /// Entry id → the part count this process believes is on disk for that
+    /// entry — the anchor the incremental settle lines offset from
+    /// (ADR-0032). Absent means the entry's next persist is a full line:
+    /// the load-time state, so the first write re-anchors any load-time
+    /// settles, and the state after a whole-log rewrite clears it. Full
+    /// line lands move the anchor; failed appends leave it (disk never got
+    /// the line).
+    pub(crate) persisted_parts: Mutex<HashMap<String, usize>>,
     pub(crate) transcript: RwLock<Vec<SessionMessageEntry>>,
     pub(crate) history: RwLock<Vec<AgentMessage>>,
     pub(crate) transcript_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
@@ -208,6 +217,7 @@ impl ChatRuntime {
             driver_running: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             persistence_error: Mutex::new(None),
+            persisted_parts: Mutex::new(HashMap::new()),
             transcript: RwLock::new(Vec::new()),
             history: RwLock::new(Vec::new()),
             transcript_tx,
@@ -413,6 +423,7 @@ impl ChatRuntime {
             driver_running: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             persistence_error: Mutex::new(None),
+            persisted_parts: Mutex::new(HashMap::new()),
             transcript: RwLock::new(transcript),
             history: RwLock::new(history),
             transcript_tx,
@@ -439,8 +450,8 @@ impl ChatRuntime {
 
     /// Broadcast the live transcript to the watch (and a subagent's chip
     /// into its parent) — pure memory, no disk. Live mutations stream here
-    /// at their own cadence; the record grows only through
-    /// [`Self::persist_entry`] (ADR-0032).
+    /// at their own cadence; the record grows only through the `persist_*`
+    /// writers (ADR-0032).
     pub(crate) fn publish(&self) {
         let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
         self.transcript_tx
@@ -451,10 +462,11 @@ impl ChatRuntime {
         }
     }
 
-    /// Append one entry to the transcript log (upsert by id) and publish.
-    /// The write cost is one entry, never the session: a run's entry lands
-    /// here once, in its terminal shape; post-run settles (approval chips,
-    /// plan cards) re-append the entry they changed. A failed append stops
+    /// Append the entry to the transcript log as one full line (upsert by
+    /// id) and publish. The write cost is one entry, and the line is the
+    /// replay's self-heal anchor; a run's streaming settles (completed
+    /// rounds, resolved tool calls) use the incremental writers below so a
+    /// growing entry is never re-appended whole. A failed append stops
     /// subsequent admission (the live Turn still settles); a removed chat
     /// must not recreate its persisted records.
     pub(crate) fn persist_entry(&self, entry_id: &str) {
@@ -464,17 +476,156 @@ impl ChatRuntime {
             let appended = transcript
                 .iter()
                 .find(|entry| entry.id == entry_id)
-                .map(|entry| append_transcript_entry(&self.data_dir, &self.chat_id, entry));
+                .map(|entry| {
+                    (
+                        entry.parts.len(),
+                        append_transcript_entry(&self.data_dir, &self.chat_id, entry),
+                    )
+                });
             drop(transcript);
-            if let Some(Err(error)) = appended {
+            self.record_persistence(entry_id, appended);
+        }
+        drop(_persistence);
+        self.publish();
+    }
+
+    /// Append the run entry's not-yet-persisted tail parts (a `parts`
+    /// line) and publish — the per-round completed-message settle. The
+    /// entry's first landing is a full line; later rounds append only what
+    /// is new, so a run's disk traffic is the parts it produced, never the
+    /// entry size per round.
+    pub(crate) fn persist_entry_tail(&self, entry_id: &str) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.chat_id.is_empty() && !self.is_removed() {
+            let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let appended = transcript
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .map(|entry| {
+                    let landed = match self
+                        .persisted_parts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(entry_id)
+                        .copied()
+                    {
+                        // A known anchor and the entry only grew
+                        // (ADR-0011): append the tail.
+                        Some(from) if from <= entry.parts.len() => {
+                            if from == entry.parts.len() {
+                                Ok(())
+                            } else {
+                                append_transcript_parts(
+                                    &self.data_dir,
+                                    &self.chat_id,
+                                    entry_id,
+                                    from,
+                                    &entry.parts[from..],
+                                )
+                            }
+                        }
+                        // Never landed, or shrank (it must not): the full
+                        // line re-anchors.
+                        _ => append_transcript_entry(&self.data_dir, &self.chat_id, entry),
+                    };
+                    (entry.parts.len(), landed)
+                });
+            drop(transcript);
+            self.record_persistence(entry_id, appended);
+        }
+        drop(_persistence);
+        self.publish();
+    }
+
+    /// Persist one completed tool call and publish: the entry's
+    /// unpersisted tail parts (the round's new parts, a `parts` line),
+    /// then — when the settled tool part predates that tail — a `part`
+    /// line carrying the result in place. The completed unit (ADR-0032
+    /// mirrors ADR-0010's per-message granularity) is these small lines
+    /// instead of a whole-entry re-append, so a crash mid-Turn keeps every
+    /// finished round without quadratic rewrite.
+    pub(crate) fn persist_tool_result(&self, entry_id: &str, tool_index: usize) {
+        let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.chat_id.is_empty() && !self.is_removed() {
+            let transcript = self.transcript.read().unwrap_or_else(|e| e.into_inner());
+            let appended = transcript
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .map(|entry| {
+                    let persisted = self
+                        .persisted_parts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(entry_id)
+                        .copied();
+                    let landed = match persisted {
+                        Some(from) if from <= entry.parts.len() => {
+                            let mut landed = Ok(());
+                            if from < entry.parts.len() {
+                                landed = append_transcript_parts(
+                                    &self.data_dir,
+                                    &self.chat_id,
+                                    entry_id,
+                                    from,
+                                    &entry.parts[from..],
+                                );
+                            }
+                            // A tool part before the tail is not carried by
+                            // the parts line — backfill it by index. One
+                            // inside the tail already landed in its settled
+                            // shape.
+                            if landed.is_ok() && tool_index < from {
+                                landed = append_transcript_part(
+                                    &self.data_dir,
+                                    &self.chat_id,
+                                    entry_id,
+                                    tool_index,
+                                    &entry.parts[tool_index],
+                                );
+                            }
+                            landed
+                        }
+                        _ => append_transcript_entry(&self.data_dir, &self.chat_id, entry),
+                    };
+                    (entry.parts.len(), landed)
+                });
+            drop(transcript);
+            self.record_persistence(entry_id, appended);
+        }
+        drop(_persistence);
+        self.publish();
+    }
+
+    /// The shared tail of every persist path: a landed line moves the
+    /// entry's on-disk anchor to its current part count; a failed append
+    /// leaves the anchor (disk never got the line) and stops subsequent
+    /// admission.
+    fn record_persistence(&self, entry_id: &str, appended: Option<(usize, std::io::Result<()>)>) {
+        match appended {
+            Some((len, Ok(()))) => {
+                self.persisted_parts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(entry_id.to_string(), len);
+            }
+            Some((_, Err(error))) => {
                 *self
                     .persistence_error
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(error.to_string());
             }
+            None => {}
         }
-        drop(_persistence);
-        self.publish();
+    }
+
+    /// Forget the on-disk anchors — the log was rewritten whole (the
+    /// Last-message edit path), so every entry's next persist is a full
+    /// line again.
+    pub(crate) fn clear_persisted_parts(&self) {
+        self.persisted_parts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     pub(crate) fn is_removed(&self) -> bool {
@@ -1022,20 +1173,23 @@ fn resolve_tool_part(
     subagent_usage: Option<u64>,
 ) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let mut changed = Vec::new();
+    let mut changed: Option<(String, usize)> = None;
     for entry in transcript.iter_mut() {
-        let hit = entry
-            .parts
-            .iter_mut()
-            .find(|part| matches!(part, MessagePart::Tool { id, .. } if id == tool_call_id));
-        if let Some(MessagePart::Tool {
-            call,
-            resolved,
-            is_error: part_error,
-            output: part_output,
-            subagent_usage: usage_slot,
-            ..
-        }) = hit
+        let hit =
+            entry.parts.iter_mut().enumerate().find(
+                |(_, part)| matches!(part, MessagePart::Tool { id, .. } if id == tool_call_id),
+            );
+        if let Some((
+            tool_index,
+            MessagePart::Tool {
+                call,
+                resolved,
+                is_error: part_error,
+                output: part_output,
+                subagent_usage: usage_slot,
+                ..
+            },
+        )) = hit
         {
             *resolved = true;
             *part_error = is_error;
@@ -1046,18 +1200,19 @@ fn resolve_tool_part(
             if let TranscriptToolCall::ReadChat { title, .. } = call {
                 *title = read_chat_title.map(str::to_owned);
             }
-            changed.push(entry.id.clone());
+            changed = Some((entry.id.clone(), tool_index));
         }
-        if !changed.is_empty() {
+        if changed.is_some() {
             break;
         }
     }
     drop(transcript);
     // A completed tool call is a completed unit (ADR-0032 mirrors
-    // ADR-0010's per-message granularity): the entry re-appends now, so a
-    // crash mid-Turn keeps every finished round on disk.
-    for entry_id in changed {
-        chat.persist_entry(&entry_id);
+    // ADR-0010's per-message granularity): the round's new parts and the
+    // result line land now, so a crash mid-Turn keeps every finished round
+    // on disk — incrementally, not as a whole-entry re-append.
+    if let Some((entry_id, tool_index)) = changed {
+        chat.persist_tool_result(&entry_id, tool_index);
     }
 }
 
@@ -1876,10 +2031,11 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         true,
                     );
                     // A completed message is a completed unit (ADR-0032):
-                    // the entry lands here even while the run continues, so
-                    // a crash mid-Turn keeps every finished round — and an
-                    // approval paused behind a tool call — on disk.
-                    chat.persist_entry(&run_entry);
+                    // its new parts land here even while the run continues,
+                    // so a crash mid-Turn keeps every finished round — and
+                    // an approval paused behind a tool call — on disk. The
+                    // tail append, not a whole-entry re-append.
+                    chat.persist_entry_tail(&run_entry);
                     // The completed round-trip's usage joins the running
                     // Turn's pending batch (the usage ledger): captured on
                     // the raw message, before the History repair below
@@ -3367,6 +3523,133 @@ mod tests {
         assert!(*resolved);
         assert!(*is_error);
         assert_eq!(output.as_deref(), Some("boom"));
+    }
+
+    fn tool_part(id: &str, output: Option<String>) -> MessagePart {
+        MessagePart::Tool {
+            id: id.into(),
+            call: TranscriptToolCall::Exec {
+                command: "sleep 1".into(),
+            },
+            is_error: false,
+            resolved: output.is_some(),
+            output,
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+            subagent_usage: None,
+            gate: None,
+        }
+    }
+
+    #[test]
+    fn completed_rounds_land_incremental_lines_not_whole_reappends() {
+        let dir = std::env::temp_dir().join(format!("holt-agent-{}", uuid::Uuid::new_v4()));
+        let mut chat = ChatRuntime::new();
+        chat.data_dir = dir.clone();
+        chat.chat_id = "chat-1".into();
+        chat.transcript.write().unwrap().push(SessionMessageEntry {
+            id: "run-1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![tool_part("call-9", None)],
+            created_at: 0,
+            device_id: "device".into(),
+            status: Some(MessageStatus::Streaming),
+            continuation_of: None,
+        });
+        // The run entry's first landing is a full line.
+        chat.persist_entry("run-1");
+        // The tool settles: a part line, not a second full entry.
+        resolve_tool_part(&chat, "call-9", false, Some("out".into()), None, None);
+        // A later round appends a part: a parts line.
+        chat.transcript.write().unwrap()[0]
+            .parts
+            .push(MessagePart::Text {
+                id: "t1".into(),
+                text: "done".into(),
+            });
+        chat.persist_entry_tail("run-1");
+
+        let lines = std::fs::read_to_string(dir.join("transcripts/chat-1.jsonl")).unwrap();
+        let kinds: Vec<String> = lines
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(kinds, ["entry", "part", "parts"]);
+
+        let loaded = load_transcript(&dir, "chat-1").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].parts.len(), 2);
+        assert!(matches!(
+            &loaded[0].parts[0],
+            MessagePart::Tool {
+                resolved: true,
+                output: Some(output),
+                ..
+            } if output == "out"
+        ));
+        assert!(matches!(
+            &loaded[0].parts[1],
+            MessagePart::Text { text, .. } if text == "done"
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_tail_persist_for_an_unlanded_entry_lands_a_full_line() {
+        let dir = std::env::temp_dir().join(format!("holt-agent-{}", uuid::Uuid::new_v4()));
+        let mut chat = ChatRuntime::new();
+        chat.data_dir = dir.clone();
+        chat.chat_id = "chat-1".into();
+        chat.transcript.write().unwrap().push(SessionMessageEntry {
+            id: "run-1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "round one".into(),
+            }],
+            created_at: 0,
+            device_id: "device".into(),
+            status: Some(MessageStatus::Streaming),
+            continuation_of: None,
+        });
+        // No anchor yet: the tail persist falls back to the full line.
+        chat.persist_entry_tail("run-1");
+        chat.transcript.write().unwrap()[0]
+            .parts
+            .push(MessagePart::Text {
+                id: "t1".into(),
+                text: "round two".into(),
+            });
+        chat.persist_entry_tail("run-1");
+
+        let lines = std::fs::read_to_string(dir.join("transcripts/chat-1.jsonl")).unwrap();
+        let kinds: Vec<String> = lines
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(kinds, ["entry", "parts"]);
+
+        let loaded = load_transcript(&dir, "chat-1").unwrap();
+        assert_eq!(loaded[0].parts.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

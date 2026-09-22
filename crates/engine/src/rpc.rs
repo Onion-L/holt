@@ -1328,6 +1328,9 @@ impl EngineService {
         }
         drop(history);
         *chat.transcript.write().unwrap_or_else(|e| e.into_inner()) = entries;
+        // The log was rewritten whole: the incremental writers' anchors are
+        // gone, so every entry's next persist is a full line again.
+        chat.clear_persisted_parts();
         chat.publish();
 
         // Requeue outside the queue lock: the failure path re-locks the
