@@ -46,6 +46,7 @@ pub mod provider_settings;
 mod provider_store;
 pub mod providers;
 mod queue;
+mod retry_events;
 mod rpc;
 mod shell_env;
 mod skills;

@@ -2462,6 +2462,31 @@ impl RpcService for EngineService {
                 );
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
+            methods::WATCH_TURN_RETRY => {
+                let stream = futures::stream::unfold(
+                    self.runtime.retry_events.subscribe(),
+                    |mut receiver| async move {
+                        loop {
+                            match receiver.recv().await {
+                                Ok(notice) => match serde_json::to_value(&notice) {
+                                    Ok(value) => return Some((value, receiver)),
+                                    Err(_) => continue,
+                                },
+                                // A lagging subscriber drops what it missed —
+                                // a consumer failure, never a run failure —
+                                // and keeps receiving new notices.
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    return None;
+                                }
+                            }
+                        }
+                    },
+                );
+                Ok(RpcReply::Stream(Box::pin(stream)))
+            }
             methods::CONTINUE_MESSAGE_QUEUE => {
                 let chat_id = required_string(&params, "chatId")?;
                 if !crate::store::id_is_path_safe(chat_id) {

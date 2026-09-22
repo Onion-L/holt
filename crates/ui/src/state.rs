@@ -32,6 +32,7 @@ use holt_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, EngineInfo,
     Session, Space, WorkspaceScope,
 };
+use holt_rpc::retries::TurnRetryNotice;
 use holt_rpc::{RpcClient, RpcError, memory_client, methods};
 
 use crate::change_requests::{
@@ -241,6 +242,12 @@ pub struct AppState {
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
     pub transcript_replayed: bool,
+    /// Live provider-retry notice (WatchTurnRetry): the selected chat's
+    /// live Turn is backing off a transient provider failure before its
+    /// next attempt. Transient UI state only — never persisted, cleared as
+    /// soon as transcript frames resume (the retry is producing again or
+    /// the Turn settled). Rendered as a chip under the streaming entry.
+    pub turn_retry: Option<TurnRetryNotice>,
     /// Identifies the active primary transcript subscription. The selected
     /// chat id alone cannot distinguish an old A watcher from a new A watcher
     /// after an A -> B -> A switch.
@@ -310,6 +317,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             transcript_replayed: false,
+            turn_retry: None,
             transcript_watch_generation: 0,
             message_queue: None,
             message_queue_task: None,
@@ -448,6 +456,16 @@ impl AppState {
 
     pub fn apply_connectivity(&mut self, connectivity: holt_proto::Connectivity) {
         self.connectivity = connectivity;
+    }
+
+    /// One scheduled provider retry arrived for a chat's live Turn. Stored
+    /// only when it belongs to the selected chat — a notice for a background
+    /// chat must not flash its chip after the user switches to it late;
+    /// apply_transcript_frame drops the notice when frames resume.
+    pub fn apply_turn_retry(&mut self, notice: TurnRetryNotice) {
+        if Some(&notice.chat_id) == self.selected_chat.as_ref() {
+            self.turn_retry = Some(notice);
+        }
     }
 
     /// Is this chat's delivery path degraded — will a send QUEUE rather than
@@ -601,6 +619,10 @@ impl AppState {
         if is_reset {
             self.transcript_replayed = true;
         }
+        // Frames resumed, so any live retry is over: the request is
+        // producing again, or the Turn settled (its error/status frame is
+        // this frame). Stale chips must never outlive the failure.
+        self.turn_retry = None;
         if let Some(chat_id) = self.selected_chat.as_deref()
             && let Some(echoes) = self.echoes.get_mut(chat_id)
         {
@@ -1065,6 +1087,12 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_CONNECTIVITY,
                 AppState::apply_connectivity,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_TURN_RETRY,
+                AppState::apply_turn_retry,
             ),
             spawn_watch(
                 cx,

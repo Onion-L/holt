@@ -337,6 +337,19 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   tagged by Chat id; a click retracts the banner, activates Holt (reopening
   the main window when none is open), and selects the Chat when it still
   exists, and marking a Chat seen retracts its banner — all best-effort.
+- Provider-retry notices: `WatchTurnRetry` emits one typed
+  `TurnRetryNotice` (`holt_rpc::retries` — `chatId`, `attempt` 1-based,
+  `maxRetries`, `delayMs`, `retryAtMs`, `error`) each time a chat's live
+  Turn schedules a provider retry, published from the `on_retry` callback
+  mounted on every engine-owned request (pi-core-rs request-layer retry:
+  budget 5, SDK-shaped retryable set — 408/409/429/5xx/network — with
+  retry-after-aware backoff). The stream is live-only — no synthetic
+  initial notice, no persistence or replay across restart — and consumers
+  must drop the notice when transcript frames resume. Turn-scoped
+  compaction publishes under the same chat; Title tasks, the gate
+  reviewer, and manual `/compact` retry silently with the same budget.
+  The UI renders the latest notice for the selected chat as a transient
+  chip under the streaming entry, never persisted into the transcript.
 - Mutations: `Mutate` — the served ops are `createSpace`, `createChat`,
   `renameChat`, `setChatConfig`, `setChatPermissionMode`, `setChatArchived`,
   `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,

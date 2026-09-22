@@ -1471,6 +1471,12 @@ impl Transcript {
                 }
             },
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
+            RowKind::RetryChip {
+                attempt,
+                max_retries,
+                delay_secs,
+                error,
+            } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, cx)
@@ -2571,6 +2577,80 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
                         .flex_1()
                         .text_color(theme.text.opacity(0.8))
                         .child(message),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The transcript retry chip (WatchTurnRetry): the streaming entry's
+/// provider request hit a transient failure and is backing off. Same shape
+/// as the ErrorChip but in the warning wash — it reports a recoverable
+/// pause, not a verdict — with a small spinner standing in for the retry
+/// clock. The chip only exists while the stream is quiet: transcript frames
+/// resume it away.
+fn retry_chip(
+    attempt: u32,
+    max_retries: u32,
+    delay_secs: u64,
+    error: SharedString,
+    theme: &Theme,
+) -> AnyElement {
+    let warning_muted = theme.warning_muted;
+    let warning = theme.warning;
+    div()
+        .py(px(4.0))
+        .w_full()
+        .child(
+            div()
+                .min_h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(warning.opacity(0.16))
+                .bg(warning.opacity(0.05))
+                .px(px(8.0))
+                .py(px(7.0))
+                .text_size(px(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(20.0))
+                        .rounded(px(6.0))
+                        .bg(warning.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(crate::icons::REFRESH)
+                                .size(px(12.0))
+                                .text_color(warning_muted.opacity(0.8)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(warning_muted.opacity(0.9))
+                        .child(SharedString::from(format!(
+                            "Retrying · attempt {attempt}/{max_retries}"
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text.opacity(0.6))
+                        .child(SharedString::from(format!("in {delay_secs}s"))),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_color(theme.text.opacity(0.8))
+                        .child(error),
                 ),
         )
         .into_any_element()

@@ -14,6 +14,7 @@ use holt_doc::{
 };
 use holt_proto::ToolCall;
 use holt_proto::view::{single_line, tool_chip_content};
+use holt_rpc::retries::TurnRetryNotice;
 
 use super::markdown::thought_lines;
 use super::tool::{OUTPUT_DETAIL_MAX_LINES, ToolDetail, call_block, tool_detail};
@@ -285,6 +286,21 @@ pub enum RowKind {
     /// ticket 04.
     TurnChangeCard {
         change_set: Arc<holt_proto::TurnChangeSet>,
+    },
+    /// A live provider-retry chip (WatchTurnRetry): the streaming entry's
+    /// provider request hit a transient failure and is backing off before
+    /// the next attempt. Appended under the streaming entry's rows, riding
+    /// app state (never the doc): the chip vanishes when transcript frames
+    /// resume, leaving no trace in the record.
+    RetryChip {
+        /// 1-based number of the retry about to run.
+        attempt: u32,
+        /// The configured retry budget.
+        max_retries: u32,
+        /// Seconds until the retry fires (the engine-stamped backoff).
+        delay_secs: u64,
+        /// The provider error that triggered the retry.
+        error: SharedString,
     },
 }
 
@@ -1051,6 +1067,27 @@ pub fn turn_change_row(
         turn_start: false,
         kind: RowKind::TurnChangeCard {
             change_set: Arc::new(change_set.clone()),
+        },
+        entry_id,
+        timestamp: None,
+        copy_text: None,
+    }
+}
+
+/// The live provider-retry chip row under a streaming entry. Keyed by entry
+/// (the streaming reply it interrupts) with the attempt in the id, so each
+/// scheduled retry replaces the previous chip row via the ordinary version
+/// diff.
+pub fn retry_chip_row(entry_id: SharedString, notice: &TurnRetryNotice) -> Row {
+    Row {
+        id: SharedString::from(format!("{entry_id}#retry{}", notice.attempt)),
+        version: notice.retry_at_ms as u64,
+        turn_start: false,
+        kind: RowKind::RetryChip {
+            attempt: notice.attempt,
+            max_retries: notice.max_retries,
+            delay_secs: notice.delay_ms.div_ceil(1000),
+            error: notice.error.clone().into(),
         },
         entry_id,
         timestamp: None,
@@ -2010,6 +2047,39 @@ mod tests {
             vec![text_part("t0", ""), text_part("t1", "   ")],
         );
         assert!(rows_for_entry(&entry, false, &mut parse).is_empty());
+    }
+
+    /// The retry chip row keys per attempt under the streaming entry and
+    /// versions by retry time, so each scheduled retry resplices the chip.
+    #[test]
+    fn retry_chip_row_carries_the_notice_and_versions_its_content() {
+        let notice = holt_rpc::retries::TurnRetryNotice {
+            chat_id: "chat-1".into(),
+            attempt: 2,
+            max_retries: 5,
+            delay_ms: 1500,
+            retry_at_ms: 1234,
+            error: "connection reset by peer".into(),
+        };
+        let row = retry_chip_row("m-9".into(), &notice);
+        assert_eq!(row.id, "m-9#retry2");
+        assert_eq!(row.entry_id, "m-9");
+        assert!(!row.turn_start);
+        assert_eq!(row.version, 1234);
+        match row.kind {
+            RowKind::RetryChip {
+                attempt,
+                max_retries,
+                delay_secs,
+                error,
+            } => {
+                assert_eq!(attempt, 2);
+                assert_eq!(max_retries, 5);
+                assert_eq!(delay_secs, 2); // 1500 ms rounds up so the chip never reads "in 0s"
+                assert_eq!(&*error, "connection reset by peer");
+            }
+            _ => panic!("wrong row kind"),
+        }
     }
 
     /// A card row carries the Turn's change set, never opens a turn gap, and

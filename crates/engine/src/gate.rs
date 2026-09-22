@@ -270,6 +270,8 @@ async fn run_review_pass(
     options.base.max_tokens = Some(256);
     options.base.base.api_key = Some(review.api_key.clone());
     options.base.base.signal = Some(cancel.clone());
+    // Background reviewer: retries transient provider failures, silently.
+    options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
     let context = pi_core::ai::types::Context {
         system_prompt: Some(review_system_prompt(cwd)),
         messages: vec![pi_core::ai::types::Message::User(

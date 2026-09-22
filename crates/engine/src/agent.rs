@@ -552,6 +552,9 @@ pub(crate) struct AgentRuntime {
     /// definitions plus the live connections Turns snapshot tools from.
     /// Connections start lazily — nothing spawns until a Turn needs tools.
     pub(crate) mcp: crate::mcp::McpPool,
+    /// Live provider-retry notices: the run path's `on_retry` callback fans
+    /// out here; `WatchTurnRetry` subscribes.
+    pub(crate) retry_events: crate::retry_events::RetryEvents,
 }
 
 impl AgentRuntime {
@@ -625,6 +628,7 @@ impl AgentRuntime {
             // once.
             stream_fn: stream_fn.map(|raw| guard_stream_fn(raw, STREAM_IDLE_TIMEOUT)),
             mcp,
+            retry_events: crate::retry_events::RetryEvents::new(),
         }
     }
 
@@ -1672,6 +1676,31 @@ fn explorer_tool_allowed(name: &str) -> bool {
     crate::plan_mode::read_only_tool_allowed(name)
 }
 
+/// The retry budget for every engine-owned provider request (Turns,
+/// compaction, title tasks, the gate reviewer): transient transport/HTTP
+/// failures retry at the request layer with pi-core-rs' SDK-shaped policy
+/// (408/409/429/5xx/network, retry-after aware, exponential backoff).
+pub(crate) const PROVIDER_MAX_RETRIES: u32 = 5;
+
+/// Build the `on_retry` callback that fans one scheduled provider retry out
+/// to `WatchTurnRetry` subscribers. Publishing never fails the run: a send
+/// with no subscriber is a no-op.
+fn on_retry_callback(
+    retry_events: crate::retry_events::RetryEvents,
+    chat_id: String,
+) -> pi_core::ai::types::OnRetryCallback {
+    Arc::new(move |attempt, max_retries, delay_ms, error| {
+        retry_events.publish(holt_rpc::retries::TurnRetryNotice {
+            chat_id: chat_id.clone(),
+            attempt,
+            max_retries,
+            delay_ms,
+            retry_at_ms: Utc::now().timestamp_millis() + delay_ms as i64,
+            error: error.to_string(),
+        });
+    })
+}
+
 pub(crate) fn run_agent_command(run: AgentRun) -> futures::future::BoxFuture<'static, TurnEnd> {
     Box::pin(run_agent_command_inner(run))
 }
@@ -1956,6 +1985,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // the persisted flag. Either way this is never a Turn: no
     // source-context stamping, no turn-diff baseline reset, no status
     // change.
+    let turn_on_retry = on_retry_callback(runtime.retry_events.clone(), chat_id.clone());
     let overflow_recovery = chat.child.is_none() && runtime.take_compact_before_next_turn(&chat_id);
     // The summary responses bill into the Turn's usage batch (a child run's
     // compaction books nothing here — its delegation's metered transport
@@ -1972,6 +2002,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             holt_doc::parts::CompactionTrigger::AfterOverflow,
             Some(&cancel),
             &compaction_meter,
+            Some(turn_on_retry.clone()),
         )
         .await
     } else {
@@ -1983,6 +2014,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             holt_doc::parts::CompactionTrigger::Automatic,
             Some(&cancel),
             &compaction_meter,
+            Some(turn_on_retry.clone()),
         )
         .await
     };
@@ -2040,6 +2072,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         ..Default::default()
     };
     stream_options.base.base.api_key = Some(api_key.clone());
+    // Transient provider failures retry at the request layer (pi-core-rs
+    // SDK-shaped policy: 408/409/429/5xx/network, retry-after aware). The
+    // retry is invisible to the loop, so the on_retry callback fans each
+    // scheduled attempt out to `WatchTurnRetry` for the UI's chip.
+    stream_options.base.base.max_retries = Some(PROVIDER_MAX_RETRIES);
+    stream_options.base.base.on_retry = Some(turn_on_retry.clone());
     // Long (1h) prompt-cache retention: runs routinely idle past the 5m TTL
     // (long tool executions, the user reviewing a diff), and a cold restart
     // re-pays the whole context while the 1h premium lands only on each
@@ -2060,6 +2098,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     let hook_base = Arc::clone(&run_base);
     let hook_base_parts = Arc::clone(&base_parts);
     let hook_cancel = cancel.clone();
+    let hook_on_retry = turn_on_retry.clone();
     let prepare_next_turn: pi_core::agent::types::PrepareNextTurnFn = Arc::new(
         move |last_turn: pi_core::agent::types::PrepareNextTurnContext| {
             let chat = hook_chat.clone();
@@ -2070,6 +2109,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             let base_parts = Arc::clone(&hook_base_parts);
             let device_id = hook_device_id.clone();
             let cancel = hook_cancel.clone();
+            let on_retry = hook_on_retry.clone();
             Box::pin(async move {
                 let pre_run_len = base.lock().unwrap_or_else(|e| e.into_inner()).history.len();
                 if !crate::compaction::needed(&last_turn.context.messages, &model) {
@@ -2088,6 +2128,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                     holt_doc::parts::CompactionTrigger::Automatic,
                     Some(&cancel),
                     &compaction_meter,
+                    Some(on_retry),
                 )
                 .await
                 {

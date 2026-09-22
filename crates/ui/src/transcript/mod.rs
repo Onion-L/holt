@@ -101,7 +101,7 @@ pub use markdown::{ParseOutcome, parse_for_row};
 use model::entry_fingerprint;
 pub use model::{
     Row, RowKind, ToolItem, UserSkill, diff_rows, format_skill_title, format_timestamp,
-    rows_for_entry, top_gap_for, turn_change_row,
+    retry_chip_row, rows_for_entry, top_gap_for, turn_change_row,
 };
 
 mod render;
@@ -1512,7 +1512,7 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let (selected, entries, echoes, replay, turn_change_sets) = {
+        let (selected, entries, echoes, replay, turn_change_sets, turn_retry) = {
             let s = self.state.read(cx);
             match &self.doc_override {
                 // Pinned to a subagent doc: `selected` equals `chat_id` by
@@ -1526,6 +1526,8 @@ impl Transcript {
                     Vec::new(),
                     TranscriptReplayState::Populated,
                     HashMap::new(),
+                    // Subagent docs are read-only snapshots: no retry chip.
+                    None,
                 ),
                 None => {
                     let replay = if !s.transcript_replayed {
@@ -1541,6 +1543,7 @@ impl Transcript {
                         s.pending_echoes().to_vec(),
                         replay,
                         s.turn_change_sets.clone(),
+                        s.turn_retry.clone(),
                     )
                 }
             }
@@ -1643,6 +1646,17 @@ impl Transcript {
                 && change_set.phase == holt_proto::TurnChangeSetPhase::Final
             {
                 new_rows.push(turn_change_row(id, entry.id.clone().into(), change_set));
+            }
+            // The live retry chip closes the STREAMING entry: it rides app
+            // state (never the doc) and only draws while the entry is still
+            // streaming and the notice matches this chat — a settled entry
+            // or a stale notice for another chat draws nothing.
+            if turn_ends
+                && entry.status == Some(holt_doc::MessageStatus::Streaming)
+                && let Some(notice) = turn_retry.as_ref()
+                && Some(&notice.chat_id) == self.chat_id.as_ref()
+            {
+                new_rows.push(retry_chip_row(entry.id.clone().into(), notice));
             }
         }
         for echo in &echoes {

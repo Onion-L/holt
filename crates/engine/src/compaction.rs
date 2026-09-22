@@ -73,6 +73,7 @@ pub(crate) fn has_compactable_content(history: &[AgentMessage]) -> bool {
 
 /// Compact `history` through `stream_fn` when the upstream threshold rule
 /// fires (the automatic placements). Returns `None` when it does not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn compact(
     history: &[AgentMessage],
     model: &Model,
@@ -81,11 +82,15 @@ pub(crate) async fn compact(
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
+    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
 ) -> Result<Option<CompactionOutcome>, String> {
     if !needed(history, model) {
         return Ok(None);
     }
-    compact_now(history, model, stream_fn, api_key, trigger, signal, meter).await
+    compact_now(
+        history, model, stream_fn, api_key, trigger, signal, meter, on_retry,
+    )
+    .await
 }
 
 /// Compact `history` unconditionally (the manual `/compact` path — the
@@ -97,6 +102,7 @@ pub(crate) async fn compact(
 /// custom messages become compaction entries whose embedded tail is empty
 /// — the messages that follow them in the flat list ARE the tail); the
 /// summarization itself operates on plain message vectors.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn compact_now(
     history: &[AgentMessage],
     model: &Model,
@@ -105,6 +111,7 @@ pub(crate) async fn compact_now(
     trigger: holt_doc::parts::CompactionTrigger,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
+    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
 ) -> Result<Option<CompactionOutcome>, String> {
     let Some(preparation) =
         compaction::prepare_compaction(&flat_entries(history), DEFAULT_COMPACTION_SETTINGS)
@@ -138,6 +145,7 @@ pub(crate) async fn compact_now(
                 api_key,
                 signal,
                 meter,
+                on_retry.clone(),
             )
             .await?
         };
@@ -148,6 +156,7 @@ pub(crate) async fn compact_now(
             api_key,
             signal,
             meter,
+            on_retry.clone(),
         )
         .await?;
         format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
@@ -160,6 +169,7 @@ pub(crate) async fn compact_now(
             api_key,
             signal,
             meter,
+            on_retry,
         )
         .await?
     };
@@ -187,6 +197,7 @@ pub(crate) async fn compact_now(
 
 /// One summary request through the injected stream function — upstream
 /// `generate_summary`'s prompt and options, minus its model registry.
+#[allow(clippy::too_many_arguments)]
 async fn summarize(
     messages_to_summarize: &[AgentMessage],
     previous_summary: Option<&str>,
@@ -195,6 +206,7 @@ async fn summarize(
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
+    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let base_prompt = if previous_summary.is_some() {
         UPDATE_SUMMARIZATION_PROMPT
@@ -209,11 +221,15 @@ async fn summarize(
         ));
     }
     prompt.push_str(base_prompt);
-    complete_summary(&prompt, model, stream_fn, api_key, signal, meter, 0.8).await
+    complete_summary(
+        &prompt, model, stream_fn, api_key, signal, meter, 0.8, on_retry,
+    )
+    .await
 }
 
 /// The split-turn prefix request — upstream `generate_turn_prefix_summary`
 /// through the same seam.
+#[allow(clippy::too_many_arguments)]
 async fn summarize_turn_prefix(
     messages: &[AgentMessage],
     model: &Model,
@@ -221,17 +237,22 @@ async fn summarize_turn_prefix(
     api_key: &str,
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
+    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let conversation = serialize_conversation(&convert_to_llm(messages.to_vec()));
     let prompt = format!(
         "<conversation>\n{conversation}\n</conversation>\n\n{}",
         TURN_PREFIX_SUMMARIZATION_PROMPT
     );
-    complete_summary(&prompt, model, stream_fn, api_key, signal, meter, 0.5).await
+    complete_summary(
+        &prompt, model, stream_fn, api_key, signal, meter, 0.5, on_retry,
+    )
+    .await
 }
 
 /// Run one summary completion and return its text. `max_tokens_factor`
 /// mirrors upstream: a fraction of the reserve, capped by the model.
+#[allow(clippy::too_many_arguments)]
 async fn complete_summary(
     prompt: &str,
     model: &Model,
@@ -240,6 +261,7 @@ async fn complete_summary(
     signal: Option<&tokio_util::sync::CancellationToken>,
     meter: CompactionMeter<'_>,
     max_tokens_factor: f64,
+    on_retry: Option<pi_core::ai::types::OnRetryCallback>,
 ) -> Result<String, String> {
     let max_tokens =
         (max_tokens_factor * DEFAULT_COMPACTION_SETTINGS.reserve_tokens as f64).floor() as u64;
@@ -263,6 +285,11 @@ async fn complete_summary(
         ..Default::default()
     };
     options.base.base.api_key = Some(api_key.to_string());
+    // Same request-layer retry budget as the Turn itself; `on_retry` is the
+    // Turn's callback for Turn-scoped compaction, `None` for the silent
+    // manual path.
+    options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
+    options.base.base.on_retry = on_retry;
     let context = Context {
         system_prompt: Some(compaction::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
         messages: vec![Message::User(UserMessage {

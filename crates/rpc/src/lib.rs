@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 mod client;
 pub mod images;
+pub mod retries;
 mod server;
 pub mod terminals;
 pub mod turns;
@@ -156,6 +157,14 @@ pub mod methods {
     /// persistence or replay across restart — a subscriber sees only Turns
     /// that finish after it subscribed.
     pub const WATCH_TURN_TERMINAL_EVENTS: &str = "WatchTurnTerminalEvents";
+    /// Live provider-retry notices: one `holt_rpc::retries::TurnRetryNotice`
+    /// each time a chat's live Turn schedules a provider retry (transient
+    /// transport/HTTP failure, backoff before the next attempt). Published
+    /// from inside the provider retry loop while the Turn is still running.
+    /// No params, no synthetic initial event, no persistence or replay — a
+    /// subscriber sees only retries scheduled after it subscribed, and a
+    /// stale notice is dropped when transcript frames resume.
+    pub const WATCH_TURN_RETRY: &str = "WatchTurnRetry";
     /// Resume automatic queue execution after Stop, failure, or restart.
     /// Params `{chatId}`; replies with the accepted `MessageQueue` snapshot.
     pub const CONTINUE_MESSAGE_QUEUE: &str = "ContinueMessageQueue";

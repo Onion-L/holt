@@ -641,6 +641,8 @@ impl EngineService {
             holt_doc::parts::CompactionTrigger::Manual,
             Some(cancel),
             &compaction_meter,
+            // The manual path stays silent: no live chip outside a Turn.
+            None,
         )
         .await;
         match outcome {

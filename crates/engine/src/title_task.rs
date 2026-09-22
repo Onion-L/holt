@@ -125,6 +125,9 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
         ..Default::default()
     };
     options.base.base.api_key = Some(spec.api_key.clone());
+    // Background task: retries transient provider failures, silently (no
+    // live chip — the user is not watching a title being minted).
+    options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
     let context = Context {
         system_prompt: Some(title_system_prompt(&spec.instruction)),
         messages: vec![Message::User(UserMessage {
