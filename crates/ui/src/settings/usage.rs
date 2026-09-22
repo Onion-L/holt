@@ -4,12 +4,15 @@
 //! line and range switcher; the Total tokens hero with the model
 //! toggle chips beside it; the Daily usage stacked bar chart; the six
 //! metric tiles; the year-long Activity heatmap; and the By model /
-//! By project Breakdown donut. Everything on the page is read-only:
-//! the only controls reload the same aggregate, and the legend's
-//! visibility toggles and fold are ephemeral page state — a reload
-//! resets them. Reloads never blank the page: a range switch or
-//! refresh dims the stale view under a header spinner until the fresh
-//! reply lands; only a first load drops to skeletons.
+//! By project Breakdown donut, which folds its list to the top five
+//! rows plus an "Others" remainder until the reader opens it.
+//! Everything on the page is read-only: the only controls that touch
+//! the engine reload the same aggregate, and the legibility state —
+//! the chart legend's visibility toggles and fold, the Breakdown's
+//! fold — is ephemeral page state that a reload resets. Reloads never
+//! blank the page: a range switch or refresh dims the stale view under
+//! a header spinner until the fresh reply lands; only a first load
+//! drops to skeletons.
 //!
 //! The chart is gpui self-drawn over the shared day axis: one bar per
 //! day, the visible models stacked bottom-to-top in rank order with a
@@ -569,11 +572,20 @@ const DONUT_MIN_SLIVER: f32 = 0.02;
 
 /// One legend/donut entry of the Breakdown card: the engine's
 /// total-descending order, colors from the chart's rank palette.
+#[derive(Debug, Clone)]
 struct BreakdownEntry {
     color: Hsla,
     name: String,
     tokens: u64,
 }
+
+/// The Breakdown's fold threshold: past this many entries the tail
+/// collapses into one "Others" row, so a long model list never stretches
+/// the card.
+const BREAKDOWN_VISIBLE: usize = 5;
+/// The folded tail's fixed name — one synthetic entry standing in for
+/// every row past [`BREAKDOWN_VISIBLE`].
+const BREAKDOWN_OTHERS: &str = "Others";
 
 /// Fold the active tab's rows once per render. Zero-total rows drop out —
 /// a slice and a legend row for nothing would both read as a glitch.
@@ -630,6 +642,32 @@ fn fold_breakdown(
     }
 }
 
+/// The rows the card actually draws: the top [`BREAKDOWN_VISIBLE`]
+/// entries as-is, with the rest summed into one muted "Others" row while
+/// the fold is closed. The donut and the legend share this one list, so a
+/// hovered row index means the same slice in both, and the ring's shares
+/// stay true — the fold groups slices, it never drops them. An expanded
+/// fold, or a list short enough to fit, prints every entry.
+fn breakdown_rows(
+    entries: &[BreakdownEntry],
+    expanded: bool,
+    theme: &Theme,
+) -> Vec<BreakdownEntry> {
+    if expanded || entries.len() <= BREAKDOWN_VISIBLE {
+        return entries.to_vec();
+    }
+    let mut rows = entries[..BREAKDOWN_VISIBLE].to_vec();
+    rows.push(BreakdownEntry {
+        color: theme.text_faint,
+        name: BREAKDOWN_OTHERS.to_string(),
+        tokens: entries[BREAKDOWN_VISIBLE..]
+            .iter()
+            .map(|entry| entry.tokens)
+            .sum(),
+    });
+    rows
+}
+
 /// The legend's integer share, rounded like the reference chart — tiny
 /// shares read as "0%", never a decimal.
 fn breakdown_percent(tokens: u64, grand: u64) -> u64 {
@@ -655,6 +693,11 @@ pub struct UsagePage {
     /// survives a reload: the tab is a view preference, and flipping back
     /// to By model on every refresh would fight the reader.
     breakdown_tab: BreakdownTab,
+    /// The Breakdown legend's fold: closed shows the top
+    /// [`BREAKDOWN_VISIBLE`] rows plus the "Others" remainder, open shows
+    /// every row. Ephemeral like the chart legend's fold — a reload
+    /// re-folds it.
+    breakdown_expanded: bool,
     /// The hovered Breakdown legend row — dims the donut's other slices
     /// and swaps the center readout to that entry. Cleared on tab switch
     /// (the index means a different entry there).
@@ -683,6 +726,7 @@ impl UsagePage {
             hidden: BTreeSet::new(),
             legend_expanded: false,
             breakdown_tab: BreakdownTab::default(),
+            breakdown_expanded: false,
             hover_slice: None,
             hover_day: None,
             reloading: false,
@@ -720,6 +764,7 @@ impl UsagePage {
                 page.loaded_days = days;
                 page.hidden.clear();
                 page.legend_expanded = false;
+                page.breakdown_expanded = false;
                 page.stats = match result {
                     Ok(value) => serde_json::from_value(value)
                         .map(Loadable::Ready)
@@ -1642,7 +1687,9 @@ impl UsagePage {
     /// descending, the donut draws them clockwise from 12 o'clock and the
     /// legend lists the same order with integer share percentages and
     /// compact counts. Model entries carry the same color dot as their
-    /// chart counterparts.
+    /// chart counterparts. Past [`BREAKDOWN_VISIBLE`] rows the tail folds
+    /// into one "Others" entry with a quiet disclosure under the list,
+    /// closed by default.
     fn render_breakdown(
         &self,
         reply: &UsageStatsReply,
@@ -1651,6 +1698,7 @@ impl UsagePage {
         let theme = Theme::of(cx).clone();
         let summary = fold_summary(reply);
         let entries = fold_breakdown(reply, &summary, self.breakdown_tab, &theme);
+        let rows = breakdown_rows(&entries, self.breakdown_expanded, &theme);
         let grand: u64 = entries.iter().map(|entry| entry.tokens).sum();
         let body = if grand == 0 {
             div()
@@ -1673,12 +1721,21 @@ impl UsagePage {
                 .border_color(theme.border)
                 .p(px(24.0))
                 .child(self.donut_block(
-                    &entries,
+                    &rows,
                     grand,
-                    self.hover_slice.filter(|hover| *hover < entries.len()),
+                    self.hover_slice.filter(|hover| *hover < rows.len()),
                     &theme,
                 ))
-                .child(self.donut_legend(&entries, grand, &theme, cx))
+                .child(self.donut_legend(&rows, grand, &theme, cx).when(
+                    entries.len() > BREAKDOWN_VISIBLE,
+                    |legend| {
+                        legend.child(self.breakdown_fold_chip(
+                            entries.len() - BREAKDOWN_VISIBLE,
+                            &theme,
+                            cx,
+                        ))
+                    },
+                ))
                 .into_any_element()
         };
         div()
@@ -1763,9 +1820,10 @@ impl UsagePage {
 
     /// The legend: one row per entry — dot, name, integer share on the
     /// first line; the compact count indented under the name on the
-    /// second; a hairline between rows, none after the last. Hovering a
-    /// row washes it, dims the donut down to its slice, and swaps the
-    /// center readout to that entry.
+    /// second; a hairline between rows, none after the last. The caller
+    /// hands in the already-folded rows, so the count in the last row is
+    /// the fold's own. Hovering a row washes it, dims the donut down to
+    /// its slice, and swaps the center readout to that entry.
     fn donut_legend(
         &self,
         entries: &[BreakdownEntry],
@@ -1849,6 +1907,47 @@ impl UsagePage {
                             ))),
                     )
             }))
+    }
+
+    /// The legend's fold disclosure: "+N more" while the tail rides in
+    /// the Others entry, "Show less" once every row prints — the chart
+    /// legend's chip shape, under the list it folds.
+    fn breakdown_fold_chip(
+        &self,
+        folded: usize,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (tag, label) = if self.breakdown_expanded {
+            ("less", "Show less".to_string())
+        } else {
+            ("more", format!("+{folded} more"))
+        };
+        div()
+            .id(SharedString::from(format!("usage-breakdown-{tag}")))
+            .debug_selector(move || format!("usage-breakdown-{tag}"))
+            .flex_none()
+            .mt(px(10.0))
+            .h(px(20.0))
+            .px(px(8.0))
+            // The rows' padding trick: the label lines up with the names
+            // above it while the hover wash gets breathing room.
+            .mx(px(-8.0))
+            .flex()
+            .items_center()
+            .rounded(px(5.0))
+            .text_size(crate::typography::ui_rems(11.5))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|chip| chip.text_color(theme.text).bg(theme.ink(0.05)))
+            .on_click(cx.listener(|page, _, _, cx| {
+                page.breakdown_expanded = !page.breakdown_expanded;
+                // The fold changes which entry an index names.
+                page.hover_slice = None;
+                cx.notify();
+            }))
+            .child(label)
     }
 
     /// One of the two section segments — the range switcher's shape.
@@ -3135,6 +3234,78 @@ mod tests {
         Scripted::Ok(breakdown_reply_json())
     }
 
+    /// Seven model rows — past the five-row fold — over nothing else: the
+    /// fold's own fixture. Totals run 700 down to 100, so the folded tail
+    /// (the last two rows) sums to 300.
+    fn folded_breakdown_reply_json() -> serde_json::Value {
+        let models: Vec<serde_json::Value> = (1..=7)
+            .map(|rank| {
+                serde_json::json!({
+                    "provider": "openai",
+                    "model": format!("gpt-{rank}"),
+                    "input": (8 - rank) * 100,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "total": (8 - rank) * 100,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "chatCount": 7,
+            "days": 30,
+            "totals": {
+                "input": 2800, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                "cacheHit": 0.0, "activeDays": 7,
+            },
+            "models": [], "heatmap": [],
+            "byModel": models,
+            "byProject": [],
+        })
+    }
+
+    #[test]
+    fn the_breakdown_folds_its_tail_into_one_others_row() {
+        let reply = decode_reply(folded_breakdown_reply_json());
+        let summary = fold_summary(&reply);
+        let theme = Theme::default();
+        let entries = fold_breakdown(&reply, &summary, BreakdownTab::Models, &theme);
+        assert_eq!(entries.len(), 7);
+
+        // Closed: the top five in engine order, then one Others row
+        // carrying the folded tail — the ring keeps its true shares
+        // because nothing leaves the list.
+        let folded = breakdown_rows(&entries, false, &theme);
+        let names: Vec<&str> = folded.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "openai/gpt-1",
+                "openai/gpt-2",
+                "openai/gpt-3",
+                "openai/gpt-4",
+                "openai/gpt-5",
+                BREAKDOWN_OTHERS
+            ]
+        );
+        assert_eq!(folded[5].tokens, 300, "the tail's own sum");
+        assert_eq!(
+            folded.iter().map(|entry| entry.tokens).sum::<u64>(),
+            entries.iter().map(|entry| entry.tokens).sum::<u64>(),
+            "the fold groups slices, it never drops them"
+        );
+
+        // Open: every entry on its own row, no Others.
+        let expanded = breakdown_rows(&entries, true, &theme);
+        assert_eq!(expanded.len(), 7);
+        assert!(expanded.iter().all(|entry| entry.name != BREAKDOWN_OTHERS));
+
+        // A list that already fits folds to itself, and the five-row
+        // boundary is inclusive.
+        let fits = breakdown_rows(&entries[..BREAKDOWN_VISIBLE], false, &theme);
+        assert_eq!(fits.len(), BREAKDOWN_VISIBLE);
+        assert!(fits.iter().all(|entry| entry.name != BREAKDOWN_OTHERS));
+    }
+
     #[test]
     fn deleted_chat_subtotals_sum_to_the_group_entry() {
         let reply = decode_reply(breakdown_reply_json());
@@ -3219,6 +3390,46 @@ mod tests {
             "deleted chats row"
         );
         assert!(harness.present("usage-breakdown-row-3"), "long path row");
+    }
+
+    #[gpui::test]
+    fn the_breakdown_opens_folded_at_five_rows(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, vec![], Scripted::Ok(folded_breakdown_reply_json()));
+
+        // Closed by default: the five biggest models, the tail behind the
+        // Others row (row index 5), and the disclosure under the list —
+        // the seventh row does not exist until the reader asks for it.
+        assert!(harness.present("usage-breakdown-row-4"));
+        assert!(harness.present("usage-breakdown-row-5"), "the Others row");
+        assert!(!harness.present("usage-breakdown-row-6"));
+        assert!(harness.present("usage-breakdown-more"));
+        assert!(!harness.present("usage-breakdown-less"));
+        let last = harness.bounds("usage-breakdown-row-5");
+        let chip = harness.bounds("usage-breakdown-more");
+        assert!(
+            last.origin.y < chip.origin.y,
+            "the switch rides under the rows it folds"
+        );
+
+        // The switch sits past the test window's fold (1080px tall), so
+        // the viewport grows before anything is clicked.
+        harness
+            .visual
+            .simulate_resize(gpui::size(px(1920.0), px(1600.0)));
+        harness.pump();
+
+        // Opening prints every entry and swaps the switch's label.
+        harness.click("usage-breakdown-more");
+        harness.pump();
+        assert!(harness.present("usage-breakdown-row-6"));
+        assert!(harness.present("usage-breakdown-less"));
+        assert!(!harness.present("usage-breakdown-more"));
+
+        // Closing folds the tail back into the Others row.
+        harness.click("usage-breakdown-less");
+        harness.pump();
+        assert!(!harness.present("usage-breakdown-row-6"));
+        assert!(harness.present("usage-breakdown-more"));
     }
 
     #[gpui::test]
