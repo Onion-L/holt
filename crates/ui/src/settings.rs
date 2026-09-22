@@ -107,6 +107,22 @@ pub fn current(cx: &App) -> UiSettings {
         .unwrap_or_default()
 }
 
+/// The chat backdrop config without cloning the whole store — the shell
+/// render reads this every frame.
+pub fn chat_backdrop(cx: &App) -> (Option<String>, f32) {
+    match cx.try_global::<SettingsStore>() {
+        Some(store) => (
+            store.current.chat_backdrop_path.clone(),
+            store.current.chat_backdrop_presence,
+        ),
+        None => (None, default_chat_backdrop_presence()),
+    }
+}
+
+fn default_chat_backdrop_presence() -> f32 {
+    0.5
+}
+
 pub fn update(policy: SavePolicy, cx: &mut App, mutate: impl FnOnce(&mut UiSettings)) -> bool {
     let Some(store) = cx.try_global::<SettingsStore>() else {
         return false;
@@ -309,6 +325,14 @@ pub struct UiSettings {
     pub accent: holt_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
     pub surface: holt_theme::SurfacePreference,
+    /// Optional chat backdrop: the raw text from the Appearance field (may be
+    /// a `~/...` form; expanded at use). `None`/empty keeps the column plain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_backdrop_path: Option<String>,
+    /// How much of the backdrop survives at the top of the column (0..1).
+    /// The bottom always sinks into the surface; see `chat_backdrop::wash`.
+    #[serde(default = "default_chat_backdrop_presence")]
+    pub chat_backdrop_presence: f32,
     /// Skills switched off on the Skills settings page: hidden from the `/`
     /// menu and refused on a typed `/skill` invocation. Names are
     /// catalog-unique (nearest root wins on collisions), so the bare name is
@@ -358,6 +382,8 @@ impl Default for UiSettings {
             completion_notification_sound: true,
             accent: holt_theme::AccentSelection::default(),
             surface: holt_theme::SurfacePreference::default(),
+            chat_backdrop_path: None,
+            chat_backdrop_presence: default_chat_backdrop_presence(),
             disabled_skills: Vec::new(),
             file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
@@ -818,6 +844,12 @@ impl UiSettings {
             TERMINAL_ABS_MAX_HEIGHT,
             TERMINAL_DEFAULT_HEIGHT,
         );
+        self.chat_backdrop_presence = clamp_or(
+            self.chat_backdrop_presence,
+            0.05,
+            0.95,
+            default_chat_backdrop_presence(),
+        );
         self.ui_font_size = self.ui_font_size.normalized();
         self.keymap.heal_jump_slots();
         self
@@ -1039,6 +1071,8 @@ mod tests {
             right_pane_open: true,
             file_tree_width: FILE_TREE_DEFAULT,
             external_app: "Zed".into(),
+            chat_backdrop_path: Some("~/wall.png".into()),
+            chat_backdrop_presence: 0.75,
             terminal_height: 320.0,
             terminal_open: true,
             keymap: KeymapConfig {

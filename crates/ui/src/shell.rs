@@ -2662,6 +2662,11 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
+            // The optional backdrop picture (settings → Appearance): painted
+            // first, so transcript, glass chrome, and composer all composite
+            // above it. It owns the whole column — the empty canvas reads the
+            // same picture as the transcript.
+            .children(crate::chat_backdrop::element(&theme_owned, cx))
             .child(
                 // Full-height underlay: the transcript viewport spans the
                 // whole column, scrolling UNDER the titlebar above and the
