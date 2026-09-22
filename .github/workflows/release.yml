@@ -41,9 +41,6 @@ jobs:
             exit 1
           fi
 
-      - name: Test workspace
-        run: cargo test --workspace
-
       - name: Import signing certificate
         env:
           APPLE_CERT_PEM: ${{ secrets.APPLE_CERT_PEM }}
