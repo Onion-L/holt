@@ -15,6 +15,7 @@ pub mod rebuild;
 pub mod registry;
 pub mod registry_contract;
 pub mod schema;
+pub mod skill_mention;
 pub mod transcript_delta;
 pub mod workspace;
 
@@ -25,5 +26,6 @@ pub use rebuild::*;
 pub use registry::*;
 pub use registry_contract::*;
 pub use schema::*;
+pub use skill_mention::*;
 pub use transcript_delta::*;
 pub use workspace::*;
