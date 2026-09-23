@@ -494,6 +494,10 @@ pub struct SentMentionSpan {
     pub is_dir: bool,
     /// A skill mention chip (accent styling, click opens the `SKILL.md`).
     pub is_skill: bool,
+    /// The chip token's byte range in the RAW message text — the canonical
+    /// Markdown a selection copy yields (ADR-0035). Plain text outside
+    /// chips is identical in display and raw.
+    pub raw_range: Range<usize>,
 }
 
 /// Submission conversion: every mention link becomes its readable absolute
@@ -543,6 +547,7 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
             )),
             is_dir: link.is_dir,
             is_skill: false,
+            raw_range: link.range.clone(),
         })
         .collect();
     spans.extend(
@@ -554,6 +559,7 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
                 path: SharedString::from(link.path.clone()),
                 is_dir: false,
                 is_skill: true,
+                raw_range: link.range.clone(),
             }),
     );
     spans.sort_by_key(|span| span.range.start);

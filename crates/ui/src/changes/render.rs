@@ -1356,7 +1356,7 @@ fn diff_line_row(
     let underlay = gpui::canvas(
         |_, _, _| (),
         move |_, _, window, _| {
-            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme);
+            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme, None);
         },
     )
     .absolute()
@@ -1491,7 +1491,7 @@ fn split_line_cell(
     let underlay = gpui::canvas(
         |_, _, _| (),
         move |_, _, window, _| {
-            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme);
+            render::paint_text_selection(window, &sel_key, &sel_text, &layout, &sel_theme, None);
         },
     )
     .absolute()

@@ -814,8 +814,7 @@ impl Transcript {
         text: &SharedString,
         mentions: &Arc<Vec<crate::composer::SentMentionSpan>>,
         theme: &Theme,
-        image_open: ImageOpen,
-        skill_open: Option<SkillOpen>,
+        clicks: BubbleClicks,
     ) -> AnyElement {
         let open_url = (!skill.file.is_empty())
             .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
@@ -845,8 +844,7 @@ impl Transcript {
             Arc::new(mentions),
             Some(chip),
             theme,
-            Some(image_open),
-            skill_open,
+            clicks,
         )
     }
 
@@ -1156,6 +1154,7 @@ impl Transcript {
         let inner: AnyElement = match &row.kind {
             RowKind::User {
                 text,
+                raw,
                 mentions,
                 attachments,
                 badges,
@@ -1165,6 +1164,7 @@ impl Transcript {
                 let attachments = attachments.clone();
                 let badges = badges.clone();
                 let text = text.clone();
+                let raw = raw.clone();
                 let mentions = mentions.clone();
                 let skill = skill.clone();
                 let pending = *pending;
@@ -1215,6 +1215,16 @@ impl Transcript {
                         })
                         .ok();
                 });
+                // Chip-projected bubbles copy canonical Markdown: the raw
+                // body plus a display→raw chip table (ADR-0035).
+                let copy_map =
+                    (!mentions.is_empty()).then(|| crate::markdown::selection::CopyMap {
+                        raw: raw.to_string(),
+                        chips: mentions
+                            .iter()
+                            .map(|span| (span.range.clone(), span.raw_range.clone()))
+                            .collect(),
+                    });
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
                 // HStack); image-only sends show no bubble at all.
@@ -1281,24 +1291,17 @@ impl Transcript {
                             .child(input)
                             .into_any_element()
                     } else {
+                        let clicks = BubbleClicks {
+                            image_open: Some(image_open),
+                            skill_open: Some(skill_open),
+                            copy_map,
+                        };
                         match skill {
                             Some(skill) => self.render_user_skill(
-                                &row.id,
-                                &skill,
-                                &text,
-                                &mentions,
-                                &theme,
-                                image_open.clone(),
-                                Some(skill_open.clone()),
+                                &row.id, &skill, &text, &mentions, &theme, clicks,
                             ),
                             None => user_bubble_text_with_chip(
-                                &row.id,
-                                text,
-                                mentions,
-                                None,
-                                &theme,
-                                Some(image_open),
-                                Some(skill_open),
+                                &row.id, text, mentions, None, &theme, clicks,
                             )
                             .into_any_element(),
                         }
@@ -2447,14 +2450,21 @@ enum BubbleLinkKind {
     Url,
 }
 
+/// The user bubble's click-through and copy behavior: the image lightbox,
+/// the skill file-open event, and the raw-copy map for chip-projected text.
+struct BubbleClicks {
+    image_open: Option<ImageOpen>,
+    skill_open: Option<SkillOpen>,
+    copy_map: Option<crate::markdown::selection::CopyMap>,
+}
+
 fn user_bubble_text_with_chip(
     row_id: &SharedString,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
     skill: Option<SkillChipRun>,
     theme: &Theme,
-    image_open: Option<ImageOpen>,
-    skill_open: Option<SkillOpen>,
+    clicks: BubbleClicks,
 ) -> AnyElement {
     // Split runs at chip boundaries (spans are in order): body text keeps the
     // sans font, mention chips read as inline code, skill chips read in the
@@ -2541,12 +2551,12 @@ fn user_bubble_text_with_chip(
                     let (_, path, kind) = &links[index];
                     match kind {
                         BubbleLinkKind::Image => {
-                            if let Some(open) = &image_open {
+                            if let Some(open) = &clicks.image_open {
                                 open(path, window, cx);
                             }
                         }
                         BubbleLinkKind::SkillFile => {
-                            if let Some(open) = &skill_open {
+                            if let Some(open) = &clicks.skill_open {
                                 open(path, window, cx);
                             }
                         }
@@ -2582,7 +2592,14 @@ fn user_bubble_text_with_chip(
                 let color = if span.is_skill { skill_wash } else { wash };
                 paint(window, &span.range, color);
             }
-            render::paint_text_selection(window, &sel_key, &text, &layout, &sel_theme);
+            render::paint_text_selection(
+                window,
+                &sel_key,
+                &text,
+                &layout,
+                &sel_theme,
+                clicks.copy_map.as_ref(),
+            );
         },
     )
     .absolute()

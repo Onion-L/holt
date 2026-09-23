@@ -195,6 +195,9 @@ pub enum RowKind {
         /// prompt carries file mentions this is the *projected* display text —
         /// chip labels in place of the raw Markdown links.
         text: SharedString,
+        /// The pre-projection body the display text came from: the raw side
+        /// of the selection copy map, so Cmd+C yields canonical Markdown.
+        raw: SharedString,
         /// File-mention chips over `text`, in display-byte terms. Computed
         /// once per entry change in [`rows_for_entry`] (rows are cached by
         /// fingerprint), never per frame. Empty for ordinary prompts.
@@ -575,20 +578,24 @@ pub fn rows_for_entry(
         // Legacy holt-file: mentions project first; new inline path
         // references (quoted absolute paths inside the composed text)
         // collapse to the same chips. Both are pure over the text, so the
-        // raw-length row version below stays a valid cache/diff key.
+        // raw-length row version below stays a valid cache/diff key. `raw`
+        // (the pre-projection body) rides the row so copy yields the
+        // canonical Markdown, never the displayed chip labels.
         let (text, mentions) = match crate::composer::sent_mention_display(&body) {
             Some((display, spans)) => (display, spans),
             None => match crate::path_refs::sent_reference_display(&body) {
                 Some((display, spans)) => (display, spans),
-                None => (body, Vec::new()),
+                None => (body.clone(), Vec::new()),
             },
         };
-        let copy_text = match (&skill, !text.trim().is_empty()) {
+        // The hover strip copies what was SENT: raw body for ordinary rows,
+        // the legacy directive shape for legacy skill-chip rows.
+        let copy_text = match (&skill, !body.trim().is_empty()) {
             (Some(skill), true) => {
-                Some(SharedString::from(format!("/skill {} {text}", skill.name)))
+                Some(SharedString::from(format!("/skill {} {body}", skill.name)))
             }
             (Some(skill), false) => Some(SharedString::from(format!("/skill {}", skill.name))),
-            (None, true) => Some(SharedString::from(text.clone())),
+            (None, true) => Some(SharedString::from(body.clone())),
             (None, false) => None,
         };
         let skill_fp = skill.as_ref().map_or(0, |s| {
@@ -603,6 +610,8 @@ pub fn rows_for_entry(
                 turn_start: true,
                 kind: RowKind::User {
                     text: text.into(),
+                    // The pre-projection body: the copy map's raw side.
+                    raw: SharedString::from(body),
                     mentions: Arc::new(mentions),
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),

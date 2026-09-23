@@ -26,6 +26,51 @@ pub struct Span {
     /// The element's full flat text (copy source, snapshotted at drag time
     /// so copy still works after the element scrolls out of the registry).
     pub text: String,
+    /// Raw-copy projection: elements whose display text hides chips (skill
+    /// and file mentions) copy the CANONICAL Markdown slice instead of the
+    /// displayed labels. `None` copies `text` verbatim.
+    pub copy: Option<(String, Range<usize>)>,
+}
+
+/// The raw↔display mapping for one element whose display text projects
+/// chips. Plain display segments between chips are byte-identical to raw;
+/// only the chip boxes differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyMap {
+    /// The element's raw (canonical) text.
+    pub raw: String,
+    /// `(display range, raw range)` per chip, ascending.
+    pub chips: Vec<(Range<usize>, Range<usize>)>,
+}
+
+impl CopyMap {
+    /// Map a display byte offset to a raw byte offset. Plain segments
+    /// translate 1:1; offsets inside a chip snap to the nearer chip edge
+    /// (mirroring the composer's `display_to_raw`).
+    pub fn to_raw(&self, display: usize) -> usize {
+        let mut raw_at = 0usize;
+        let mut display_prev = 0usize;
+        for (display_range, raw_range) in &self.chips {
+            if display <= display_range.start {
+                return raw_at + (display - display_prev);
+            }
+            if display < display_range.end {
+                return if display - display_range.start < display_range.len() / 2 {
+                    raw_range.start
+                } else {
+                    raw_range.end
+                };
+            }
+            raw_at = raw_range.end;
+            display_prev = display_range.end;
+        }
+        raw_at + (display - display_prev)
+    }
+
+    /// The raw range a display selection covers.
+    pub fn raw_range(&self, display: Range<usize>) -> Range<usize> {
+        self.to_raw(display.start)..self.to_raw(display.end)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -67,6 +112,7 @@ pub fn resolve_spans(elements: &[(&str, &str)], a: (usize, usize), b: (usize, us
                 key: (*key).to_string(),
                 range: from..to,
                 text: (*text).to_string(),
+                copy: None,
             });
         }
     }
@@ -85,7 +131,13 @@ pub fn begin(key: &str, ix: usize) {
 }
 
 /// Begin with an immediate span (double/triple click inside one element).
-pub fn begin_with_span(key: &str, text: &str, range: Range<usize>) {
+/// `copy` rides the span when the element's display projects chips.
+pub fn begin_with_span(
+    key: &str,
+    text: &str,
+    range: Range<usize>,
+    copy: Option<(String, Range<usize>)>,
+) {
     *state().lock().unwrap() = Some(MdSelection {
         anchor_key: key.to_string(),
         anchor_ix: range.start,
@@ -95,6 +147,7 @@ pub fn begin_with_span(key: &str, text: &str, range: Range<usize>) {
             key: key.to_string(),
             range,
             text: text.to_string(),
+            copy,
         }],
     });
 }
@@ -272,9 +325,28 @@ fn join_spans(spans: &[Span]) -> String {
     spans
         .iter()
         .filter(|s| !s.range.is_empty())
-        .map(|s| &s.text[s.range.clone()])
+        .map(|s| match &s.copy {
+            // Chip-projected elements copy their canonical Markdown slice.
+            Some((raw, raw_range)) => raw[raw_range.clone()].to_string(),
+            None => s.text[s.range.clone()].to_string(),
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Attach raw-copy projections to the resolved spans: one map per element
+/// whose display text projects chips (called by the registry owner right
+/// after `update_drag`, while the frame's registry is still at hand).
+pub fn attach_copy_maps(maps: &std::collections::HashMap<String, CopyMap>) {
+    let mut guard = state().lock().unwrap();
+    let Some(sel) = guard.as_mut() else {
+        return;
+    };
+    for span in &mut sel.spans {
+        if let Some(map) = maps.get(&span.key) {
+            span.copy = Some((map.raw.clone(), map.raw_range(span.range.clone())));
+        }
+    }
 }
 
 /// Word range around `ix` for double-click selection: an alphanumeric/`_`
@@ -415,9 +487,52 @@ mod tests {
     #[test]
     fn double_click_span() {
         let _state = state_lock();
-        begin_with_span("p1", "hello world", 6..11);
+        begin_with_span("p1", "hello world", 6..11, None);
         assert_eq!(wash_range("p1"), Some(6..11));
         assert_eq!(end_drag("p1").as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn chip_projected_elements_copy_their_raw_markdown() {
+        let _state = state_lock();
+        // Display "see ␣@composer.rs␣ now" hides the raw link form; the chip
+        // box (display 4..20) maps to raw 4..44.
+        let map = CopyMap {
+            raw: "see [composer.rs](holt-file:src/composer.rs) now".into(),
+            chips: vec![(4..20, 4..44)],
+        };
+        begin_with_span(
+            "p1",
+            "see \u{a0}@composer.rs\u{a0} now",
+            0..24,
+            Some((map.raw.clone(), map.raw_range(0..24))),
+        );
+        assert_eq!(
+            end_drag("p1").as_deref(),
+            Some("see [composer.rs](holt-file:src/composer.rs) now")
+        );
+    }
+
+    #[test]
+    fn copy_map_offsets_track_chip_lengths() {
+        let map = CopyMap {
+            raw: "aa [x](long-target) bb [y](t) cc".into(),
+            chips: vec![(3..6, 3..19), (10..13, 23..29)],
+        };
+        // Plain prefixes translate 1:1…
+        assert_eq!(map.to_raw(0), 0);
+        assert_eq!(map.to_raw(3), 3);
+        // …offsets inside a chip snap to the nearer edge…
+        assert_eq!(map.to_raw(4), 19);
+        assert_eq!(map.to_raw(5), 19);
+        // …plain middles account for both chips' growth…
+        assert_eq!(map.to_raw(6), 19);
+        assert_eq!(map.to_raw(8), 21);
+        assert_eq!(map.to_raw(10), 23);
+        // …and the tail maps past every chip.
+        assert_eq!(map.to_raw(13), 29);
+        assert_eq!(map.to_raw(16), 32);
+        assert_eq!(map.raw_range(13..16), 29..32);
     }
 
     #[test]

@@ -304,6 +304,7 @@ pub fn sent_reference_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>
             path: SharedString::from(path.clone()),
             is_dir: path.ends_with('/'),
             is_skill: false,
+            raw_range: range.clone(),
         });
         at = range.end;
     }

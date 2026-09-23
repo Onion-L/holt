@@ -792,9 +792,10 @@ fn flat_text_element(
                     key: sel_key.clone(),
                     text: flat_text.clone(),
                     layout: layout.clone(),
+                    copy: None,
                 })
             });
-            register_selection_listeners(window, &sel_key, &flat_text, &layout);
+            register_selection_listeners(window, &sel_key, &flat_text, &layout, None);
         },
     )
     .absolute()
@@ -825,6 +826,7 @@ pub(crate) fn paint_text_selection(
     text: &SharedString,
     layout: &gpui::TextLayout,
     theme: &Theme,
+    copy: Option<&super::selection::CopyMap>,
 ) {
     if let Some(range) = super::selection::wash_range(key) {
         for rect in range_rects(layout, &range, 0.0, 0.0) {
@@ -843,9 +845,10 @@ pub(crate) fn paint_text_selection(
             key: key.clone(),
             text: text.clone(),
             layout: layout.clone(),
+            copy: copy.cloned(),
         })
     });
-    register_selection_listeners(window, key, text, layout);
+    register_selection_listeners(window, key, text, layout, copy);
 }
 
 /// One painted text element, registered per frame in document order — the
@@ -855,6 +858,9 @@ struct RegEntry {
     key: std::sync::Arc<str>,
     text: SharedString,
     layout: gpui::TextLayout,
+    /// Raw-copy projection for chip-projected elements (mentions); `None`
+    /// copies the flat display text.
+    copy: Option<super::selection::CopyMap>,
 }
 
 thread_local! {
@@ -915,7 +921,15 @@ fn resolve_drag(head: (usize, usize)) -> bool {
             .iter()
             .map(|e| (e.key.as_ref(), e.text.as_ref()))
             .collect();
-        super::selection::update_drag(&elements, head)
+        let changed = super::selection::update_drag(&elements, head);
+        // Chip-projected elements carry their raw-copy maps into the
+        // resolved spans, so copy yields canonical Markdown.
+        let maps: std::collections::HashMap<String, super::selection::CopyMap> = reg
+            .iter()
+            .filter_map(|e| e.copy.clone().map(|copy| (e.key.to_string(), copy)))
+            .collect();
+        super::selection::attach_copy_maps(&maps);
+        changed
     })
 }
 
@@ -937,10 +951,12 @@ fn register_selection_listeners(
     key: &std::sync::Arc<str>,
     text: &SharedString,
     layout: &gpui::TextLayout,
+    copy: Option<&super::selection::CopyMap>,
 ) {
     use gpui::{DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
     {
         let (key, text, layout) = (key.clone(), text.clone(), layout.clone());
+        let copy = copy.cloned();
         window.on_mouse_event(move |e: &MouseDownEvent, phase, window, _cx| {
             if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
                 return;
@@ -952,10 +968,16 @@ fn register_selection_listeners(
                 match e.click_count {
                     2 => {
                         let range = super::selection::word_range(&text, ix);
-                        super::selection::begin_with_span(&key, &text, range);
+                        let raw = copy
+                            .as_ref()
+                            .map(|map| (map.raw.clone(), map.raw_range(range.clone())));
+                        super::selection::begin_with_span(&key, &text, range, raw);
                     }
                     n if n >= 3 => {
-                        super::selection::begin_with_span(&key, &text, 0..text.len());
+                        let raw = copy
+                            .as_ref()
+                            .map(|map| (map.raw.clone(), map.raw_range(0..text.len())));
+                        super::selection::begin_with_span(&key, &text, 0..text.len(), raw);
                     }
                     _ => super::selection::begin(&key, ix),
                 }
