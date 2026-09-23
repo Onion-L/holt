@@ -170,7 +170,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal
   `~/.agents/skills`, holt `<data_dir>/skills` — returning invocable
-  entries with source root, shadowed entries, and load diagnostics).
+  entries with source root and absolute file, shadowed entries, and load
+  diagnostics; the composer's `/` menu inserts a skill as the linked
+  mention `[$name](SKILL.md path)`, ADR-0035).
   `ListModels` rows carry `contextWindow`: builtin rows and live model
   records report the catalog's real window, bare custom-id rows null (the
   only window the engine holds for them is the cloned template's guess),
@@ -262,14 +264,18 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   exposes `on_should_quit` so native quit can await that decision.
 - Message queue: `WatchMessageQueue` (`MessageQueue` snapshots
   per chat) and `ContinueMessageQueue` (`{chatId}`, replies with a snapshot).
-  `QueueCommand run`/`invokeSkill`/`compact` acknowledge durable acceptance
+  `QueueCommand run`/`compact` acknowledge durable acceptance
   by `messageId`; the same identity is deduplicated across pending, started,
   and completed work, including after restart. Pending items are typed
-  (`PendingKind`): an ordinary message or a skill invocation starts its own
-  Turn, a manual Compaction shares the channel without one (ADR-0011).
+  (`PendingKind`): an ordinary message starts its own Turn (inline `$` skill
+  mentions resolve at admission, ADR-0035), a manual Compaction shares the
+  channel without one (ADR-0011); the retired `invokeSkill` command and
+  `Skill` pending kind survive only as deserializable legacy — the UI sends
+  mentions inside ordinary prompts, and `Queue::load` migrates persisted
+  Skill items into mention text.
   `EditQueuedMessage` (`{chatId, messageId, prompt}`) rewrites only the one
-  editable field — an ordinary message's body or a skill invocation's extra
-  instructions; identity, position, kind, and the captured model settings
+  editable field — the message body (skill mentions ride it verbatim);
+  identity, position, kind, and the captured model settings
   are the queue's, and a pending Compaction has no editable field — and
   `DeleteQueuedMessage` (`{chatId, messageId}`) removes one, preserving the
   order of the rest. Both acknowledge only after the queue file is durably
@@ -277,8 +283,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   instead of touching the active Turn. `EditLastMessage`
   (`{chatId, messageId, prompt}`) applies only to the latest user Transcript
   entry: submission cancels the active Turn, prunes that Turn's later
-  Transcript and History, preserves the message identity and skill/path
-  payload, and queues a replacement ahead of remaining work using the
+  Transcript and History, preserves the message identity, and queues a
+  replacement ahead of remaining work using the
   current chat settings. Existing workspace side effects and usage remain;
   a stale message id is rejected.
   instead of touching the active Turn. Admission errors arrive through the
