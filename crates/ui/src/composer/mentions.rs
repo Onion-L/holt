@@ -191,14 +191,10 @@ pub(crate) fn skill_mention_names(text: &str) -> Vec<String> {
 /// bytes).
 const MASK_CHAR: char = '•';
 
-/// How a skill chip's label renders in projected text: the composer keeps
-/// the `$` sigil (`$name`); the transcript bubble drops it in favor of the
-/// painted icon glyph (icon gutter + bare name).
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SkillChipLabel {
-    Sigil,
-    Name,
-}
+/// How a skill chip's label renders in projected text — everywhere the
+/// same now: icon gutter + bare name (the `$` sigil is never displayed;
+/// the icon carries the identity).
+const SKILL_CHIP_GUTTER_PADS: usize = 4;
 
 /// One chip source in a projection pass: a linked skill mention or a file
 /// mention, ordered by raw position.
@@ -304,10 +300,6 @@ impl TextProjection {
     }
 
     pub(super) fn new(raw: &str) -> Self {
-        Self::with_skill_label(raw, SkillChipLabel::Sigil)
-    }
-
-    pub(super) fn with_skill_label(raw: &str, skill_label: SkillChipLabel) -> Self {
         let skills = skill_links(raw);
         let mut links = file_mention_links(raw);
         // The two grammars cannot parse the same span, but a degenerate
@@ -342,21 +334,13 @@ impl TextProjection {
             projection.display.push_str(MENTION_SIDE_PAD);
             match &chip {
                 Chip::Skill(link) => {
-                    // The composer chip keeps the `$` sigil; the transcript
-                    // style reserves an extra gutter for the painted icon
-                    // glyph instead. Only NBSPs here — every character must
-                    // exist in Geist (exotic whitespace collapsed a chip
-                    // once already).
-                    if skill_label == SkillChipLabel::Name {
-                        // Wide gutter NBSPs for the painted icon glyph (the
-                        // menu rows' 15px cube, roughly text-sized here).
+                    // The label is the bare name over a wide icon-gutter —
+                    // the `$` sigil is never displayed; the painted icon
+                    // glyph carries the identity. Only NBSPs here — every
+                    // character must exist in Geist (exotic whitespace
+                    // collapsed a chip once already).
+                    for _ in 0..SKILL_CHIP_GUTTER_PADS {
                         projection.display.push_str(MENTION_SIDE_PAD);
-                        projection.display.push_str(MENTION_SIDE_PAD);
-                        projection.display.push_str(MENTION_SIDE_PAD);
-                        projection.display.push_str(MENTION_SIDE_PAD);
-                    }
-                    if skill_label == SkillChipLabel::Sigil {
-                        projection.display.push('$');
                     }
                     for ch in link.name.chars() {
                         projection
@@ -559,7 +543,7 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
     if !raw.contains(FILE_MENTION_SCHEME) && !raw.contains("[$") {
         return None;
     }
-    let projection = TextProjection::with_skill_label(raw, SkillChipLabel::Name);
+    let projection = TextProjection::new(raw);
     if projection.mentions.is_empty() && projection.skills.is_empty() {
         return None;
     }
@@ -781,7 +765,10 @@ mod tests {
         let projection = TextProjection::new(raw);
         let (link, chip) = &projection.skills[0];
         assert_eq!(link.name, "grill");
-        assert_eq!(&projection.display[chip.clone()], "\u{00A0}$grill\u{00A0}");
+        assert_eq!(
+            &projection.display[chip.clone()],
+            "\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}grill\u{a0}"
+        );
         // The chip is atomic: offsets inside it snap to its raw boundaries.
         assert_eq!(projection.display_to_raw(chip.start + 1), link.range.start);
         assert_eq!(projection.display_to_raw(chip.end - 1), link.range.end);

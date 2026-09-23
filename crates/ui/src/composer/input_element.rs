@@ -57,6 +57,9 @@ impl Render for MentionPathTooltip {
 pub(super) struct ComposerTextPrepaint {
     cursor: Option<PaintQuad>,
     mention_quads: Vec<PaintQuad>,
+    /// Window-space bounds for each skill chip's identity glyph (the `/`
+    /// menu's cube), painted in the label's gutter.
+    skill_icons: Vec<Bounds<Pixels>>,
     mention_hits: Vec<MentionHit>,
     selection_quads: Vec<PaintQuad>,
     /// Completion preview: window-space origin of the end-of-text caret plus
@@ -136,10 +139,25 @@ impl gpui::Element for ComposerTextElement {
         let mention_color = Theme::of(cx).code_wash;
         // Skill chips sit on the accent wash, matching their accent label.
         let skill_color = Theme::of(cx).accent_wash;
+        let mut skill_icons = Vec::new();
 
         let mut mention_quads = Vec::new();
         let mut mention_hits = Vec::new();
         for (_, display) in &input.projection.skills {
+            // The icon rides the label's gutter NBSPs, on the chip's FIRST
+            // line only (a wrapped chip keeps its glyph at its head).
+            if let Some(local_bounds) = input.bounds_for_display_range(display.clone()).first() {
+                let icon = px(12.0);
+                let chip_top = origin.y + local_bounds.origin.y + px(2.0);
+                let chip_height = local_bounds.size.height - px(4.0);
+                skill_icons.push(Bounds::new(
+                    point(
+                        origin.x + local_bounds.origin.x + px(2.5),
+                        chip_top + (chip_height - icon) / 2.0,
+                    ),
+                    size(icon, icon),
+                ));
+            }
             for local_bounds in input.bounds_for_display_range(display.clone()) {
                 let chip_bounds = Bounds::new(
                     point(
@@ -296,6 +314,7 @@ impl gpui::Element for ComposerTextElement {
         ComposerTextPrepaint {
             cursor,
             mention_quads,
+            skill_icons,
             mention_hits,
             selection_quads,
             ghost,
@@ -342,6 +361,19 @@ impl gpui::Element for ComposerTextElement {
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for quad in prepaint.mention_quads.drain(..) {
                 window.paint_quad(quad);
+            }
+            let accent = Theme::of(cx).accent;
+            for icon_bounds in prepaint.skill_icons.drain(..) {
+                // Best-effort paint: a failed SVG rasterization must not take
+                // down the input's paint phase.
+                let _ = window.paint_svg(
+                    icon_bounds,
+                    crate::icons::CUBE.into(),
+                    None,
+                    gpui::TransformationMatrix::unit(),
+                    accent,
+                    cx,
+                );
             }
             for quad in prepaint.selection_quads.drain(..) {
                 window.paint_quad(quad);
