@@ -331,15 +331,31 @@ impl ChatRuntime {
                         .iter()
                         .any(|entry| entry.id == started.message.message_id)
                     {
+                        // Legacy started skill items keep their kind for this
+                        // recovery (load-time migration touches pending only);
+                        // their echo is the mention text the new admission
+                        // path understands. The skill's source file is not
+                        // re-resolved on load.
                         let parts = if is_skill {
-                            // The skill's source file is not re-resolved on
-                            // load: the chip shows the name, like a pending
-                            // echo would.
-                            crate::skills::user_entry_parts(
-                                started.message.skill_name.clone().unwrap_or_default(),
-                                String::new(),
-                                started.message.extra_instructions.clone(),
-                            )
+                            let mut parts = vec![MessagePart::Text {
+                                id: "t0".into(),
+                                text: format!(
+                                    "${}",
+                                    started.message.skill_name.clone().unwrap_or_default()
+                                ),
+                            }];
+                            if let Some(extra) = started
+                                .message
+                                .extra_instructions
+                                .clone()
+                                .filter(|extra| !extra.trim().is_empty())
+                            {
+                                parts.push(MessagePart::Text {
+                                    id: "t1".into(),
+                                    text: extra,
+                                });
+                            }
+                            parts
                         } else {
                             vec![MessagePart::Text {
                                 id: "t0".into(),
@@ -1779,10 +1795,11 @@ pub(crate) struct AgentRun {
     pub(crate) cancel: CancellationToken,
     /// Root resolution for the run's skill listing (ADR-0005/0006).
     pub(crate) skills: crate::skills::Skills,
-    /// A `/skill` invocation's chip (with the `<skill>` block the model
-    /// received), seeded as the FIRST part of the run's entry — the agent
-    /// reply opens with the invocation, ahead of any thinking.
-    pub(crate) invocation: Option<MessagePart>,
+    /// The admission-resolved inline skill mentions' chips (ADR-0035), each
+    /// carrying the `<skill>` block the model received — seeded as the
+    /// FIRST parts of the run's entry, so the agent reply opens with what
+    /// it was told to follow, ahead of any thinking.
+    pub(crate) invocation: Vec<MessagePart>,
     /// The Turn's permission-mode snapshot (ADR-0014), taken at acceptance:
     /// switches mid-Turn leave the running Turn under its original mode.
     pub(crate) permission_mode: PermissionMode,

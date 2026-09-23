@@ -101,9 +101,8 @@ fn skill(root: &std::path::Path, name: &str, body: &str) {
     .unwrap();
 }
 
-/// Queue an `invokeSkill` command exactly as the composer serializes it:
-/// the path references ride inside `extraInstructions`, the request prompt
-/// stays empty.
+/// Queue an ordinary run whose prompt carries the inline skill mention and
+/// the paths it references — the composer's serialization since ADR-0035.
 async fn invoke_skill(
     engine: &holt_engine::LocalEngine,
     cwd: &str,
@@ -111,18 +110,17 @@ async fn invoke_skill(
     extra: &str,
     message_id: &str,
 ) {
+    let prompt = format!("${name}\n\n{extra}");
     engine
         .handle(
             methods::QUEUE_COMMAND,
             json!({
                 "chatId": "chat-1",
                 "command": {
-                    "kind": "invokeSkill",
-                    "name": name,
-                    "extraInstructions": extra,
+                    "kind": "run",
                     "messageId": message_id,
                     "request": {
-                        "prompt": "",
+                        "prompt": prompt,
                         "provider": "openai",
                         "model": "openai/gpt-5.4",
                         "reasoning": "high",
@@ -196,12 +194,13 @@ mod path_references {
         let extra = "refactor \"/abs/a.rs\"\n\nReferenced paths:\n- \"/abs/dir/\"";
         invoke_skill(&engine, &fixture.cwd(), "grill", extra, "m-skill").await;
 
-        // Pending: the extra instructions carry the paths, the request
-        // prompt itself rides empty.
+        // Pending: the mention and the paths ride the prompt text.
         let state = queue_state(&engine).await;
-        assert_eq!(state["pending"][0]["kind"], "skill");
-        assert_eq!(state["pending"][0]["extraInstructions"], extra);
-        assert_eq!(state["pending"][0]["request"]["prompt"], "");
+        assert_eq!(state["pending"][0]["kind"], "ordinary");
+        assert_eq!(
+            state["pending"][0]["request"]["prompt"],
+            format!("$grill\n\n{extra}")
+        );
 
         gate.notify_one();
         wait_drained(&engine).await;

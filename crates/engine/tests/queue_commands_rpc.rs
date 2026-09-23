@@ -99,7 +99,9 @@ async fn queue_run(engine: &holt_engine::LocalEngine, cwd: &str, message_id: &st
     .await;
 }
 
-/// Queue an `invokeSkill` command exactly as the composer serializes it.
+/// Queue an ordinary run whose prompt carries the inline skill mention —
+/// the composer's serialization since ADR-0035 (the dedicated invokeSkill
+/// command is retired).
 async fn invoke_skill(
     engine: &holt_engine::LocalEngine,
     cwd: &str,
@@ -107,17 +109,12 @@ async fn invoke_skill(
     extra: Option<&str>,
     message_id: &str,
 ) {
-    queue_command(
-        engine,
-        json!({
-            "kind": "invokeSkill",
-            "name": name,
-            "extraInstructions": extra,
-            "messageId": message_id,
-            "request": request("", cwd),
-        }),
-    )
-    .await;
+    let mut prompt = format!("${name}");
+    if let Some(extra) = extra {
+        prompt.push_str("\n\n");
+        prompt.push_str(extra);
+    }
+    queue_run(engine, cwd, message_id, &prompt).await;
 }
 
 async fn queue_compact(engine: &holt_engine::LocalEngine, cwd: &str, message_id: &str) {
@@ -149,13 +146,20 @@ fn user_entry_count(snapshot: &serde_json::Value) -> usize {
         .count()
 }
 
-/// User entries whose opening part is a skill chip (`{"kind":"skill",…}`).
-fn user_skill_entry_count(snapshot: &serde_json::Value) -> usize {
+/// Agent entries seeded with an invocation chip (`{"kind":"skill",…}`)
+/// — since ADR-0035 the chip rides the AGENT entry; user entries carry the
+/// raw mention text.
+fn agent_skill_chip_count(snapshot: &serde_json::Value) -> usize {
     snapshot["reset"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|entry| entry["role"] == "user" && entry["parts"][0]["kind"] == json!("skill"))
+        .filter(|entry| {
+            entry["role"] == "assistant"
+                && entry["parts"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["kind"] == json!("skill")))
+        })
         .count()
 }
 
@@ -195,10 +199,10 @@ async fn mixed_items_serialize_through_one_channel_in_submission_order() {
             .iter()
             .map(|item| item["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["skill", "ordinary", "compact"]
+        ["ordinary", "ordinary", "compact"]
     );
-    assert_eq!(pending[0]["skillName"], "grill");
-    assert_eq!(pending[0]["extraInstructions"], "focus on data");
+    // The mention rides the prompt text — nothing is frozen at submission.
+    assert_eq!(pending[0]["request"]["prompt"], "$grill\n\nfocus on data");
     // Nothing pending has entered the Transcript.
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
     assert_eq!(user_entry_count(&transcript), 1);
@@ -215,7 +219,11 @@ async fn mixed_items_serialize_through_one_channel_in_submission_order() {
         "{skill_prompt}"
     );
     assert!(skill_prompt.contains("GRILL-BODY"), "{skill_prompt}");
-    assert!(skill_prompt.ends_with("focus on data"), "{skill_prompt}");
+    // The message text rides verbatim after the injected block.
+    assert!(
+        skill_prompt.ends_with("$grill\n\nfocus on data"),
+        "{skill_prompt}"
+    );
     assert!(!skill_prompt.contains("/skill grill"), "{skill_prompt}");
     assert_eq!(user_text(&requests[2]), "B");
     // Compaction got only its summary request: no tools, no `/compact`.
@@ -226,7 +234,9 @@ async fn mixed_items_serialize_through_one_channel_in_submission_order() {
     // One user entry per Turn-starting item; Compaction echoed nothing.
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
     assert_eq!(user_entry_count(&transcript), 3);
-    assert_eq!(user_skill_entry_count(&transcript), 1);
+    // The invocation chip rides the AGENT entry (ADR-0035), never the user
+    // entry — the bubble keeps the raw mention text.
+    assert_eq!(agent_skill_chip_count(&transcript), 1);
     let transcript = transcript.to_string();
     assert!(transcript.contains("compactionDivider"), "{transcript}");
     assert!(transcript.contains("\"manual\""), "{transcript}");
@@ -279,52 +289,35 @@ async fn a_changed_skill_is_resolved_at_execution_with_captured_configuration() 
 }
 
 #[tokio::test]
-async fn a_skill_deleted_before_admission_retains_the_head_and_continue_admits_after_repair() {
+async fn a_deleted_skill_mention_runs_as_plain_text() {
     let fixture = Fixture::new();
     skill(fixture.personal_dir.path(), "grill", "GRILL-BODY");
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::gated(gate.clone(), "answer A"),
-        ScriptedReply::text("skill answer"),
+        ScriptedReply::text("plain answer"),
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "A").await;
     common::wait_for_requests(&provider, 1).await;
 
-    // The submit-time check passes; the item is enqueued while the Turn is
-    // still running. The catalog is scanned fresh at admission, so deleting
-    // the skill now retains the pending item with an error and pauses the
-    // queue BEFORE any Turn exists.
+    // The mention is enqueued, then the skill vanishes before admission.
+    // An unresolved mention is ordinary text — no error, no retained item:
+    // the Turn runs with the literal message (ADR-0035).
     invoke_skill(&engine, &fixture.cwd(), "grill", None, "m-skill").await;
     std::fs::remove_dir_all(fixture.personal_dir.path().join("grill")).unwrap();
     gate.notify_one();
-    let state = wait_for_queue(&engine, |q| q["paused"] == true).await;
-    assert_eq!(state["pending"][0]["messageId"], "m-skill");
-    assert_eq!(state["pending"][0]["kind"], "skill");
-    assert!(
-        state["pending"][0]["error"]
-            .as_str()
-            .unwrap()
-            .contains("unknown skill"),
-        "{state}"
-    );
-    assert_eq!(provider.requests().len(), 1, "no Turn was created");
-    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
-    assert_eq!(user_entry_count(&transcript), 1);
-
-    // Restoring the skill and continuing admits that same item.
-    skill(fixture.personal_dir.path(), "grill", "GRILL-BODY");
-    engine
-        .handle(methods::CONTINUE_MESSAGE_QUEUE, json!({"chatId":"chat-1"}))
-        .await
-        .unwrap();
     wait_drained(&engine).await;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(user_text(&requests[1]).contains("GRILL-BODY"));
-    let transcript = common::transcript_snapshot(&engine, "chat-1").await;
-    assert_eq!(user_skill_entry_count(&transcript), 1);
+    assert_eq!(requests.len(), 2, "the Turn ran with the literal text");
+    assert_eq!(user_text(&requests[1]), "$grill");
+    let state = queue_state(&engine).await;
+    assert_eq!(state["pending"], json!([]));
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(!transcript.contains("GRILL-BODY"), "{transcript}");
 }
 
 // -- pending-item actions per kind ----------------------------------------------
@@ -351,10 +344,11 @@ async fn a_skill_edit_changes_only_the_extra_instructions() {
     )
     .await;
 
+    // The edit replaces the whole body — the mention included.
     let RpcReply::Value(snapshot) = engine
         .handle(
             methods::EDIT_QUEUED_MESSAGE,
-            json!({"chatId":"chat-1","messageId":"m-skill","prompt":"new focus"}),
+            json!({"chatId":"chat-1","messageId":"m-skill","prompt":"$grill\nnew focus"}),
         )
         .await
         .unwrap()
@@ -362,18 +356,18 @@ async fn a_skill_edit_changes_only_the_extra_instructions() {
         panic!("expected a mutation reply")
     };
     let item = &snapshot["pending"][0];
-    assert_eq!(item["kind"], "skill");
-    assert_eq!(item["skillName"], "grill");
-    assert_eq!(item["extraInstructions"], "new focus");
+    assert_eq!(item["kind"], "ordinary");
+    assert_eq!(item["request"]["prompt"], "$grill\nnew focus");
     assert_eq!(item["request"]["model"], "openai/gpt-5.4");
     assert_eq!(item["request"]["reasoning"], "high");
 
     gate.notify_one();
     wait_drained(&engine).await;
     let prompt = user_text(&provider.requests()[1]);
+    assert!(prompt.contains("GRILL-BODY"), "{prompt}");
     assert!(prompt.ends_with("new focus"), "{prompt}");
     assert!(!prompt.contains("old focus"), "{prompt}");
-    // The transcript entry shows the chip and the edited extra, once.
+    // The transcript entry shows the edited body once.
     let transcript = common::transcript_snapshot(&engine, "chat-1")
         .await
         .to_string();
@@ -464,7 +458,7 @@ async fn run_now_promotes_a_pending_skill_without_duplication() {
     assert_eq!(user_text(&requests[2]), "B");
     let transcript = common::transcript_snapshot(&engine, "chat-1").await;
     assert_eq!(
-        user_skill_entry_count(&transcript),
+        agent_skill_chip_count(&transcript),
         1,
         "the promoted skill produced exactly one invocation entry"
     );
@@ -543,7 +537,7 @@ async fn restart_restores_mixed_items_paused_in_submission_order() {
     engine
         .handle(
             methods::EDIT_QUEUED_MESSAGE,
-            json!({"chatId":"chat-1","messageId":"m-skill","prompt":"edited focus"}),
+            json!({"chatId":"chat-1","messageId":"m-skill","prompt":"$grill\n\nedited focus"}),
         )
         .await
         .unwrap();
@@ -572,9 +566,9 @@ async fn restart_restores_mixed_items_paused_in_submission_order() {
             .iter()
             .map(|item| item["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["skill", "ordinary", "compact"]
+        ["ordinary", "ordinary", "compact"]
     );
-    assert_eq!(pending[0]["extraInstructions"], "edited focus");
+    assert_eq!(pending[0]["request"]["prompt"], "$grill\n\nedited focus");
     assert_eq!(pending[0]["request"]["model"], "openai/gpt-5.4");
     assert_eq!(provider.requests().len(), 1, "restart executes nothing");
 

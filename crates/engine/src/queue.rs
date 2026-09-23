@@ -102,6 +102,53 @@ impl Queue {
                 Some(format!("Could not read the message queue: {error}")),
             ),
         };
+        // Legacy `/skill` items ride the ordinary flow since inline mentions
+        // (ADR-0035): migrate at load so nothing downstream — the queue
+        // panel, the driver, the edit surface — ever sees a fresh Skill
+        // item. The prompt becomes the mention text the admission path
+        // resolves (`$name`, extra instructions after); a skill deleted in
+        // the meantime just stays text, matching live mentions. Started
+        // legacy items keep their kind for restart recovery, which knows
+        // the old shapes.
+        if error.is_none() {
+            let mut migrated = false;
+            record.pending.retain_mut(|item| {
+                if item.kind != PendingKind::Skill {
+                    return true;
+                }
+                migrated = true;
+                let name = item.skill_name.take().unwrap_or_default();
+                let extra = item.extra_instructions.take().unwrap_or_default();
+                item.kind = PendingKind::Ordinary;
+                if name.is_empty() {
+                    // A corrupted record carries nothing resolvable — drop
+                    // it rather than queue an empty message.
+                    return !extra.trim().is_empty();
+                }
+                item.request.prompt = if extra.trim().is_empty() {
+                    format!("${name}")
+                } else {
+                    format!("${name}\n\n{extra}")
+                };
+                true
+            });
+            if migrated {
+                // A throwaway channel — commit never publishes; only the
+                // record write matters here.
+                let (tx, _) = watch::channel(serde_json::Value::Null);
+                let mut queue = Self {
+                    record,
+                    path: path.clone(),
+                    unreadable: false,
+                    error: None,
+                    tx,
+                };
+                if let Err(err) = queue.commit(queue.record.clone()) {
+                    tracing::warn!(target: "holt::queue", %err, "legacy skill queue migration could not persist; it will re-run on next load");
+                }
+                record = queue.record;
+            }
+        }
         record.paused |= !record.pending.is_empty() || record.started.is_some() || error.is_some();
         if record.started.is_none() && error.is_none() {
             // A saved file's stale pause must not resurrect on an empty,
@@ -336,11 +383,11 @@ impl Queue {
         })
     }
 
-    /// Change the one editable field of a pending item: an ordinary
-    /// message's body, or a skill invocation's extra instructions. Identity,
-    /// position, kind, and the captured model settings are the queue's — an
-    /// item that already started is no longer editable, and a pending manual
-    /// Compaction has no editable field at all (delete and resubmit instead).
+    /// Change the one editable field of a pending item: the message body.
+    /// Identity, position, kind, and the captured model settings are the
+    /// queue's — an item that already started is no longer editable, and a
+    /// pending manual Compaction has no editable field at all (delete and
+    /// resubmit instead).
     pub fn edit(&mut self, message_id: &str, prompt: String) -> Result<(), RpcError> {
         let mut next = self.record.clone();
         let Some(item) = next
@@ -351,14 +398,13 @@ impl Queue {
             return Err(self.mutation_refusal(message_id));
         };
         match item.kind {
-            PendingKind::Ordinary => {
+            // Pending Skill items no longer exist (load-time migration,
+            // ADR-0035); the arm edits the body like an ordinary message.
+            PendingKind::Ordinary | PendingKind::Skill => {
                 if prompt.trim().is_empty() {
                     return Err(RpcError::BadParams("prompt must not be empty".into()));
                 }
                 item.request.prompt = prompt;
-            }
-            PendingKind::Skill => {
-                item.extra_instructions = (!prompt.trim().is_empty()).then_some(prompt);
             }
             PendingKind::Compact => {
                 return Err(RpcError::Failed(
@@ -785,62 +831,34 @@ impl EngineService {
                                 .await,
                         ),
                         PendingKind::Ordinary | PendingKind::Skill => {
-                            // A queued skill resolves against a fresh catalog
-                            // at admission (rule 16) — the race backstop behind
-                            // the submit-time check in the RPC handler: a skill
-                            // deleted after submission retains the pending item
-                            // with an error and pauses the queue BEFORE any Turn
-                            // is created.
-                            let skill = if kind == PendingKind::Skill {
-                                let name = message.skill_name.clone().unwrap_or_default();
-                                match service
-                                    .skills
-                                    .resolve(Some(&message.request.cwd), &name)
-                                    .await
-                                {
-                                    Some(skill) => Ok(Some(skill)),
-                                    // Cancel-aware like the start_turn error path
-                                    // below: a Steer/Stop that landed during the
-                                    // scan settles quietly.
-                                    None if cancel.is_cancelled() => Err((false, None)),
-                                    None => Err((false, Some(format!("unknown skill: {name}")))),
-                                }
-                            } else {
-                                Ok(None)
-                            };
-                            match skill {
-                                Err(outcome) => DriverOutcome::Settled(outcome),
-                                Ok(skill) => {
-                                    let prompt = message.request.prompt.clone();
-                                    let prepared = service
-                                        .start_turn(
-                                            &worker_chat.chat_id,
-                                            worker_chat.clone(),
-                                            message.request,
-                                            message.message_id,
-                                            vec![MessagePart::Text {
-                                                id: "t0".into(),
-                                                text: prompt.clone(),
-                                            }],
-                                            prompt.clone(),
-                                            prompt.clone(),
-                                            None,
-                                            Some(prompt),
-                                            cancel.clone(),
-                                            true,
-                                            skill,
-                                        )
-                                        .await;
-                                    match prepared {
-                                        Ok(run) => {
-                                            DriverOutcome::Turn(run_agent_command(run).await)
-                                        }
-                                        Err(error) => DriverOutcome::Settled((
-                                            false,
-                                            (!cancel.is_cancelled()).then(|| error.to_string()),
-                                        )),
-                                    }
-                                }
+                            // Pending Skill items no longer exist (load-time
+                            // migration, ADR-0035); the arm stays for the
+                            // enum. The prompt's inline mentions resolve at
+                            // admission inside `start_turn`.
+                            let prompt = message.request.prompt.clone();
+                            let prepared = service
+                                .start_turn(
+                                    &worker_chat.chat_id,
+                                    worker_chat.clone(),
+                                    message.request,
+                                    message.message_id,
+                                    vec![MessagePart::Text {
+                                        id: "t0".into(),
+                                        text: prompt.clone(),
+                                    }],
+                                    prompt.clone(),
+                                    prompt.clone(),
+                                    Some(prompt),
+                                    cancel.clone(),
+                                    true,
+                                )
+                                .await;
+                            match prepared {
+                                Ok(run) => DriverOutcome::Turn(run_agent_command(run).await),
+                                Err(error) => DriverOutcome::Settled((
+                                    false,
+                                    (!cancel.is_cancelled()).then(|| error.to_string()),
+                                )),
                             }
                         }
                     };
@@ -1497,24 +1515,22 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_edit_changes_only_the_extra_instructions() {
-        let (mut queue, _dir) = queue_with_typed();
-        let before = queue.record.pending[0].clone();
-        queue
-            .edit("m-skill", "different focus".into())
-            .expect("edit skill");
-        let after = &queue.record.pending[0];
-        assert_eq!(after.extra_instructions.as_deref(), Some("different focus"));
-        assert_eq!(after.kind, PendingKind::Skill);
-        assert_eq!(after.skill_name.as_deref(), Some("grill"));
-        assert_eq!(after.message_id, before.message_id);
-        assert_eq!(after.submitted_at, before.submitted_at);
-        assert_eq!(after.request.model, before.request.model);
-        // Clearing the extra instructions is a valid edit.
-        queue.edit("m-skill", "  ".into()).expect("clear extra");
-        assert_eq!(queue.record.pending[0].extra_instructions, None);
-        // The prompt stays the queue's, never the editor's.
-        assert_eq!(queue.record.pending[0].request.prompt, "");
+    fn a_legacy_skill_item_migrates_into_a_mention_on_load() {
+        let (queue, dir) = queue_with_typed();
+        // The in-memory record still holds the legacy shape; loading
+        // migrates it — the prompt becomes the mention text the new
+        // admission path resolves (ADR-0035).
+        let reloaded = Queue::load(dir.path(), "chat-1");
+        assert_eq!(reloaded.record.pending.len(), 2);
+        let skill = &reloaded.record.pending[0];
+        assert_eq!(skill.kind, PendingKind::Ordinary);
+        assert_eq!(skill.skill_name, None);
+        assert_eq!(skill.extra_instructions, None);
+        assert_eq!(skill.request.prompt, "$grill\n\nfocus on the data layer");
+        // The compaction item passes through untouched.
+        assert_eq!(reloaded.record.pending[1].kind, PendingKind::Compact);
+        assert!(reloaded.record.paused, "a non-empty queue restores paused");
+        let _ = queue;
     }
 
     #[test]
@@ -1542,21 +1558,5 @@ mod tests {
         let (mut queue, _dir) = queue_with_typed();
         queue.promote("m-skill").expect("promote skill");
         assert_eq!(queue.record.priority, vec!["m-skill".to_string()]);
-    }
-
-    #[test]
-    fn typed_items_survive_a_reload() {
-        let (mut queue, dir) = queue_with_typed();
-        queue
-            .edit("m-skill", "edited extra".into())
-            .expect("edit skill");
-        let reloaded = Queue::load(dir.path(), "chat-1");
-        assert_eq!(reloaded.record.pending.len(), 2);
-        let skill = &reloaded.record.pending[0];
-        assert_eq!(skill.kind, PendingKind::Skill);
-        assert_eq!(skill.skill_name.as_deref(), Some("grill"));
-        assert_eq!(skill.extra_instructions.as_deref(), Some("edited extra"));
-        assert_eq!(reloaded.record.pending[1].kind, PendingKind::Compact);
-        assert!(reloaded.record.paused, "a non-empty queue restores paused");
     }
 }

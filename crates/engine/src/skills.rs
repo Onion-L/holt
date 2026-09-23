@@ -32,14 +32,16 @@ struct RootScan {
 }
 
 /// A full catalog scan: the precedence winners plus everything the Settings
-/// page explains — shadowed losers and load diagnostics.
+/// page explains — shadowed losers and load diagnostics. Shadowed entries
+/// keep their full [`Skill`] so a path-authoritative mention can still reach
+/// the exact file it points at (a linked mention bypasses shadowing).
 #[derive(Default)]
 pub(crate) struct Catalog {
     /// Valid, unshadowed skills in root-precedence order — the invocable
-    /// set the system-prompt block, `/` menu, and invocations resolve
-    /// against.
+    /// set the system-prompt block, `/` menu, and name resolutions
+    /// resolve against.
     pub(crate) winners: Vec<(Skill, SkillRoot)>,
-    shadowed: Vec<ShadowedSkillEntry>,
+    shadowed: Vec<(Skill, SkillRoot)>,
     invalid: Vec<InvalidSkillEntry>,
 }
 
@@ -58,9 +60,36 @@ impl Catalog {
                     disable_model_invocation: skill.disable_model_invocation.unwrap_or(false),
                 })
                 .collect(),
-            shadowed: self.shadowed.clone(),
+            shadowed: self
+                .shadowed
+                .iter()
+                .map(|(skill, root)| ShadowedSkillEntry {
+                    name: skill.name.clone(),
+                    file: skill.file_path.clone(),
+                    root: *root,
+                    shadowed_by: self
+                        .winners
+                        .iter()
+                        .find(|(won, _)| won.name == skill.name)
+                        .map(|(_, won_root)| *won_root)
+                        .unwrap_or(SkillRoot::Project),
+                })
+                .collect(),
             invalid: self.invalid.clone(),
         }
+    }
+
+    /// Resolve one exact `SKILL.md` path against the scan — winners first,
+    /// then shadowed entries. This is the linked-mention lookup: the path is
+    /// authoritative, so the skill the link points at wins over any
+    /// same-name skill in a nearer root.
+    fn by_path(&self, path: &Path) -> Option<&Skill> {
+        let wanted = path.to_string_lossy();
+        self.winners
+            .iter()
+            .chain(self.shadowed.iter())
+            .find(|(skill, _)| skill.file_path == wanted)
+            .map(|(skill, _)| skill)
     }
 }
 
@@ -214,51 +243,98 @@ impl Skills {
         assemble_catalog(scans)
     }
 
-    /// Resolve one invocable skill by name against a fresh scan: valid,
-    /// unshadowed winners only — shadowed and invalid entries are as good
-    /// as absent to an invocation.
-    pub(crate) async fn resolve(&self, cwd: Option<&str>, name: &str) -> Option<Skill> {
-        self.catalog(cwd)
-            .await
+    /// Resolve one inline mention (ADR-0035): the linked form's path is
+    /// authoritative — exact file match against winners AND shadowed
+    /// entries (`~` and relative paths expand against the chat's working
+    /// directory first) — falling back to a name lookup against the
+    /// invocable winners (shadowed and invalid entries are as good as
+    /// absent to a name). The bare `$name` form resolves by name alone.
+    pub(crate) async fn resolve_mention(
+        &self,
+        cwd: Option<&str>,
+        mention: &holt_doc::SkillMention,
+    ) -> Option<Skill> {
+        let catalog = self.catalog(cwd).await;
+        if let Some(path) = &mention.path {
+            let path = expand_home(path);
+            let path = match (Path::new(&path).is_absolute(), cwd) {
+                (false, Some(cwd)) => Path::new(cwd).join(&path),
+                _ => PathBuf::from(&path),
+            };
+            if let Some(skill) = catalog.by_path(&path) {
+                return Some(skill.clone());
+            }
+        }
+        catalog
             .winners
             .into_iter()
-            .find(|(skill, _)| skill.name == name)
+            .find(|(skill, _)| skill.name == mention.name)
             .map(|(skill, _)| skill)
     }
+
+    /// Rewrite a user prompt for the model: every resolved mention's
+    /// `<skill>` block is prepended (blocks joined by a blank line, the
+    /// message text after them, verbatim); unresolved mentions stay ordinary
+    /// text. The returned chips ride the AGENT entry so the transcript
+    /// shows exactly what was injected. Skipped entirely when the text
+    /// holds no `$` — the common prompt never pays for a catalog scan.
+    pub(crate) async fn resolve_prompt_mentions(
+        &self,
+        cwd: &str,
+        text: &str,
+    ) -> (String, Vec<holt_doc::MessagePart>) {
+        if !text.contains('$') {
+            return (text.to_string(), Vec::new());
+        }
+        let mentions = holt_doc::skill_mentions(text);
+        if mentions.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+        let mut blocks: Vec<String> = Vec::new();
+        let mut chips: Vec<holt_doc::MessagePart> = Vec::new();
+        for mention in mentions {
+            let Some(skill) = self.resolve_mention(Some(cwd), &mention).await else {
+                continue;
+            };
+            // The model-visible prompt of a mention hit: the upstream
+            // `<skill>` block — full content with its relative-path-resolve
+            // declaration. No host-side argument substitution (ADR-0006).
+            let block = invocation_prompt(&skill, None);
+            blocks.push(block.clone());
+            chips.push(holt_doc::MessagePart::Skill {
+                id: format!("s{}", chips.len()),
+                name: skill.name.clone(),
+                file: skill.file_path.clone(),
+                content: Some(block),
+            });
+        }
+        if blocks.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+        (format!("{}\n\n{text}", blocks.join("\n\n")), chips)
+    }
+}
+
+/// `~` at the start of a mention path expands against `HOME`; anything else
+/// passes through untouched.
+fn expand_home(path: &str) -> String {
+    path.strip_prefix("~/")
+        .map(|rest| {
+            std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| Path::new(&home).join(rest).to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string())
+        })
+        .unwrap_or_else(|| path.to_string())
 }
 
 /// The model-visible prompt of a `/skill` invocation: the upstream
 /// `<skill>` block — full content with its relative-path-resolve
-/// declaration — plus any extra instructions verbatim. No host-side
-/// argument substitution (ADR-0006).
+/// declaration — plus any extra instructions verbatim. Still the legacy
+/// pending-item admission shape; inline mentions reuse the block through
+/// [`Self::resolve_prompt_mentions`].
 pub(crate) fn invocation_prompt(skill: &Skill, extra_instructions: Option<&str>) -> String {
     format_skill_invocation(skill, extra_instructions)
-}
-
-/// The transcript user entry of a skill invocation: the compact chip
-/// (name plus source pointer; the `<skill>` block rides the AGENT entry
-/// instead) followed by any extra instructions verbatim.
-///
-/// Shared by Turn admission and restart recovery, which passes an empty
-/// `file`. The catalog is not re-scanned on load.
-pub(crate) fn user_entry_parts(
-    name: String,
-    file: String,
-    extra_instructions: Option<String>,
-) -> Vec<holt_doc::MessagePart> {
-    let mut parts = vec![holt_doc::MessagePart::Skill {
-        id: "t0".into(),
-        name,
-        file,
-        content: None,
-    }];
-    if let Some(extra) = extra_instructions.filter(|extra| !extra.trim().is_empty()) {
-        parts.push(holt_doc::MessagePart::Text {
-            id: "t1".into(),
-            text: extra,
-        });
-    }
-    parts
 }
 
 /// Group the per-root scans into the catalog: a skill the loader flagged
@@ -267,7 +343,7 @@ pub(crate) fn user_entry_parts(
 /// their own so the Settings page can show them.
 fn assemble_catalog(scans: Vec<RootScan>) -> Catalog {
     let mut winners: Vec<(Skill, SkillRoot)> = Vec::new();
-    let mut shadowed: Vec<ShadowedSkillEntry> = Vec::new();
+    let mut shadowed: Vec<(Skill, SkillRoot)> = Vec::new();
     let mut invalid: Vec<InvalidSkillEntry> = Vec::new();
 
     for RootScan {
@@ -293,19 +369,11 @@ fn assemble_catalog(scans: Vec<RootScan>) -> Catalog {
             }
             // Nearest root wins: roots arrive in precedence order, so the
             // first root to claim a name keeps it; later same-names are
-            // shadowed by that winner.
-            match winners
-                .iter()
-                .find(|(won, _)| won.name == skill.name)
-                .map(|(_, won_root)| *won_root)
-            {
-                Some(won_root) => shadowed.push(ShadowedSkillEntry {
-                    name: skill.name.clone(),
-                    file: skill.file_path.clone(),
-                    root,
-                    shadowed_by: won_root,
-                }),
-                None => winners.push((skill, root)),
+            // shadowed by that winner (kept in full for path resolution).
+            if winners.iter().any(|(won, _)| won.name == skill.name) {
+                shadowed.push((skill, root));
+            } else {
+                winners.push((skill, root));
             }
         }
         // Diagnostics left after the skill pass belong to entries that never
@@ -376,7 +444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_answers_only_invocable_winners() {
+    async fn mentions_resolve_path_first_name_fallback() {
         let base = tempfile::tempdir().unwrap();
         let personal = base.path().join("personal");
         skill_in(
@@ -389,7 +457,7 @@ mod tests {
         let project = base.path().join("project");
         let project_skills = project.join(".agents").join("skills");
         std::fs::create_dir_all(&project_skills).unwrap();
-        skill_in(
+        let shadowed_file = skill_in(
             &project_skills,
             "near",
             "name: near\ndescription: Nearer.\n",
@@ -405,10 +473,68 @@ mod tests {
 
         let skills = Skills::new(&base.path().join("data"), Some(&personal));
         let cwd = project.to_string_lossy().into_owned();
-        let resolved = skills.resolve(Some(&cwd), "near").await.unwrap();
+        let bare = |name: &str| holt_doc::SkillMention {
+            name: name.into(),
+            path: None,
+            range: 0..0,
+        };
+        // A bare name resolves to the winner…
+        let resolved = skills
+            .resolve_mention(Some(&cwd), &bare("near"))
+            .await
+            .unwrap();
         assert!(resolved.file_path.contains("project"));
-        assert!(skills.resolve(Some(&cwd), "busted").await.is_none());
-        assert!(skills.resolve(Some(&cwd), "absent").await.is_none());
+        // …while a linked form pointing at the SHADOWED file gets exactly
+        // that file — the path is authoritative (ADR-0035).
+        let linked = holt_doc::SkillMention {
+            name: "near".into(),
+            path: Some(shadowed_file.clone()),
+            range: 0..0,
+        };
+        let resolved = skills.resolve_mention(Some(&cwd), &linked).await.unwrap();
+        assert_eq!(resolved.file_path, shadowed_file);
+        // Invalid and absent names stay unresolved even via link fallback.
+        assert!(
+            skills
+                .resolve_mention(Some(&cwd), &bare("busted"))
+                .await
+                .is_none()
+        );
+        assert!(
+            skills
+                .resolve_mention(Some(&cwd), &bare("absent"))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_mentions_prepend_blocks_and_keep_text_verbatim() {
+        let base = tempfile::tempdir().unwrap();
+        let personal = base.path().join("personal");
+        let file = skill_in(
+            &personal,
+            "grill",
+            "name: grill\ndescription: Grill a plan.\n",
+            "SECRET INSTRUCTIONS",
+        );
+        let skills = Skills::new(&base.path().join("data"), Some(&personal));
+        let text = format!("[$grill]({file}) focus on the data layer, and $100 stays literal");
+        let (prompt, chips) = skills.resolve_prompt_mentions("/nowhere", &text).await;
+        assert!(prompt.starts_with("<skill name=\"grill\""));
+        assert!(prompt.ends_with("focus on the data layer, and $100 stays literal"));
+        assert_eq!(chips.len(), 1);
+        assert!(matches!(
+            &chips[0],
+            holt_doc::MessagePart::Skill { file: chip_file, .. }
+                if chip_file == &file
+        ));
+        // No mention resolves → the text is returned untouched, no chips.
+        let (prompt, chips) = skills
+            .resolve_prompt_mentions("/nowhere", "just $absent here")
+            .await;
+        assert_eq!(prompt, "just $absent here");
+        assert!(chips.is_empty());
     }
 
     #[test]

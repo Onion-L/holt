@@ -185,12 +185,10 @@ async fn a_skill_invocation_turn_publishes_its_own_succeeded_event() {
             json!({
                 "chatId": "chat-1",
                 "command": {
-                    "kind": "invokeSkill",
-                    "name": "grill",
-                    "extraInstructions": "focus on the data layer",
+                    "kind": "run",
                     "messageId": "m-skill",
                     "request": {
-                        "prompt": "",
+                        "prompt": "$grill\n\nfocus on the data layer",
                         "provider": "openai",
                         "model": "openai/gpt-5.4",
                         "reasoning": null,

@@ -427,7 +427,7 @@ async fn execute(
                 timestamp: chrono::Utc::now().timestamp_millis(),
                 cancel: cancel.clone(),
                 skills: d.skills,
-                invocation: None,
+                invocation: Vec::new(),
                 permission_mode: d.permission_mode,
                 plan_mode: false,
                 setup_scope: false,

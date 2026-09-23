@@ -1117,11 +1117,11 @@ mod tests {
         .unwrap();
     }
 
-    /// A `/skill` submit with a name no root answers fails the RPC (the
-    /// composer keeps its draft); a resolvable name enqueues. The queue
-    /// never sees the unresolvable one, so nothing parks at the head.
+    /// The retired invokeSkill command is refused outright (ADR-0035):
+    /// skills ride ordinary messages as inline `$` mentions, so nothing
+    /// parks at the queue head through this path.
     #[tokio::test]
-    async fn invoke_skill_unknown_name_fails_fast_without_queueing() {
+    async fn invoke_skill_command_is_retired_without_touching_the_queue() {
         let dir = tempfile::tempdir().unwrap();
         let personal = dir.path().join("personal");
         std::fs::create_dir_all(personal.join("grill")).unwrap();
@@ -1159,15 +1159,17 @@ mod tests {
             })
         };
 
-        let unknown = engine
-            .handle(methods::QUEUE_COMMAND, invoke("message-1", "ninini"))
+        // The dedicated command is retired (ADR-0035): skills ride ordinary
+        // messages as inline `$` mentions, so ANY invokeSkill payload —
+        // known name included — is refused. The queue watch is the
+        // observable state: nothing pending, not paused.
+        let known = engine
+            .handle(methods::QUEUE_COMMAND, invoke("message-2", "grill"))
             .await;
-        let Err(error) = unknown else {
-            panic!("an unknown skill name must fail the RPC");
+        let Err(error) = known else {
+            panic!("the retired invokeSkill command must fail the RPC");
         };
-        assert!(error.to_string().contains("unknown skill: ninini"));
-        // The queue watch is the observable state: nothing pending, not
-        // paused — a rejected submit never touches the queue.
+        assert!(error.to_string().contains("inline $ mentions"), "{error}");
         let chat = engine.service.runtime.chat("chat-1");
         let watch = chat
             .queue
@@ -1178,16 +1180,6 @@ mod tests {
         let state = watch.borrow();
         assert_eq!(state["pending"].as_array().map(Vec::len), Some(0));
         assert_ne!(state["paused"], true);
-        drop(state);
-        drop(chat);
-
-        // A resolvable name passes the gate and enqueues (the run itself
-        // then fails on the unconfigured provider — the pre-existing
-        // admission behavior, not this check).
-        let known = engine
-            .handle(methods::QUEUE_COMMAND, invoke("message-2", "grill"))
-            .await;
-        assert!(known.is_ok());
         drop(engine);
     }
 

@@ -663,49 +663,13 @@ impl EngineService {
             } => {
                 self.enqueue_run(chat, request, message_id)?;
             }
-            SessionCommandPayload::InvokeSkill {
-                request,
-                name,
-                extra_instructions,
-                message_id,
-            } => {
-                if message_id.trim().is_empty() || name.trim().is_empty() {
-                    return Err(RpcError::BadParams(
-                        "messageId and skill name must not be empty".into(),
-                    ));
-                }
-                // A name no root catalog answers is a typo — deterministic
-                // on every retry — so fail the RPC instead of parking an
-                // unrecoverable item at the queue head: the composer keeps
-                // its draft (the UI clears only on Ok) and the queue stays
-                // unblocked. The admission-time resolve (rule 16) remains
-                // the backstop for the submit-to-admit race: a skill deleted
-                // after this check still settles as a retained, retriable
-                // pending item.
-                if self
-                    .skills
-                    .resolve(Some(request.cwd.as_str()), &name)
-                    .await
-                    .is_none()
-                {
-                    return Err(RpcError::Failed(format!("unknown skill: {name}")));
-                }
-                {
-                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                    if chat.is_removed() {
-                        return Err(RpcError::Failed("chat was deleted".into()));
-                    }
-                    let attended = Self::attended_send(&chat, &queue);
-                    queue.enqueue(
-                        request,
-                        message_id,
-                        PendingKind::Skill,
-                        Some(name),
-                        extra_instructions,
-                        attended,
-                    )?;
-                }
-                self.kick_queue(chat);
+            // The dedicated skill invocation command is retired (ADR-0035):
+            // skills ride ordinary messages as inline `$` mentions. The
+            // payload stays deserializable for old command ledgers.
+            SessionCommandPayload::InvokeSkill { .. } => {
+                return Err(RpcError::Failed(
+                    "skill invocations are inline $ mentions now — send the text as an ordinary message".into(),
+                ));
             }
             SessionCommandPayload::Steer {
                 prompt,
@@ -772,14 +736,13 @@ impl EngineService {
     }
 
     /// Accept and launch one queued Turn — the driver's tail for ordinary
-    /// messages and skill invocations. `parts` is the transcript user entry
-    /// (prompt text or skill chip), `preview` the sidebar/title text,
-    /// `prompt` the model-visible text, and `invocation` the chip seeded at
-    /// the head of the run's own entry (skill invocations only). For a
-    /// queued skill the caller resolves the skill against a fresh catalog
-    /// and passes it as `resolved_skill`; the admission checkpoint then
-    /// rebuilds all of the above from the item the queue holds NOW, so an
-    /// edit of the extra instructions that landed mid-pick wins.
+    /// messages. `parts` is the transcript user entry (the prompt text),
+    /// `preview` the sidebar/title text, `prompt` the model-visible text —
+    /// rebuilt at the admission checkpoint from the item the queue holds
+    /// NOW, so an edit that landed mid-pick wins. Inline `$` skill mentions
+    /// resolve here too (ADR-0035): every resolved mention's `<skill>` block
+    /// is prepended to the prompt and seeded as the head of the run's own
+    /// entry.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn start_turn(
         &self,
@@ -790,11 +753,9 @@ impl EngineService {
         mut parts: Vec<MessagePart>,
         mut preview: String,
         mut prompt: String,
-        mut invocation: Option<MessagePart>,
         mut title_prompt: Option<String>,
         cancel: CancellationToken,
         queued: bool,
-        resolved_skill: Option<pi_core::agent::harness::types::Skill>,
     ) -> Result<AgentRun, RpcError> {
         if let Some(error) = chat
             .persistence_error
@@ -839,6 +800,7 @@ impl EngineService {
         // comes back so an edit that landed between the queue pick and this
         // checkpoint wins — the Turn is built from the body the queue holds
         // now, not from the pick-time snapshot.
+        let mut invocation: Vec<MessagePart> = Vec::new();
         if queued {
             let admitted = {
                 let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -848,7 +810,9 @@ impl EngineService {
                 queue.start(&message_id, timestamp)?
             };
             match admitted.message.kind {
-                PendingKind::Ordinary => {
+                PendingKind::Ordinary | PendingKind::Skill => {
+                    // Pending Skill items no longer exist (load-time
+                    // migration, ADR-0035); the arm stays for the enum.
                     let current = admitted.message.request.prompt;
                     if current != prompt {
                         prompt = current.clone();
@@ -860,42 +824,16 @@ impl EngineService {
                         }];
                         title_prompt = Some(current);
                     }
-                }
-                PendingKind::Skill => {
-                    let skill = resolved_skill
-                        .as_ref()
-                        .expect("a queued skill Turn resolves its skill at admission");
-                    let extra = admitted
-                        .message
-                        .extra_instructions
-                        .filter(|extra| !extra.trim().is_empty());
-                    let block = crate::skills::invocation_prompt(skill, None);
-                    prompt = crate::skills::invocation_prompt(skill, extra.as_deref());
-                    preview = format!(
-                        "/skill {}",
-                        admitted
-                            .message
-                            .skill_name
-                            .as_deref()
-                            .unwrap_or(&skill.name)
-                    );
-                    // The user entry keeps the compact chip (name + source
-                    // pointer); the `<skill>` block rides the AGENT entry's
-                    // opening chip instead — the reply opens with what the
-                    // model was told to follow, ahead of any thinking. The
-                    // raw `/skill` directive never appears anywhere.
-                    parts = crate::skills::user_entry_parts(
-                        skill.name.clone(),
-                        skill.file_path.clone(),
-                        extra,
-                    );
-                    invocation = Some(MessagePart::Skill {
-                        id: "s0".into(),
-                        name: skill.name.clone(),
-                        file: skill.file_path.clone(),
-                        content: Some(block),
-                    });
-                    title_prompt = None;
+                    // Inline mentions resolve against a fresh catalog at
+                    // admission: resolved `<skill>` blocks prepend the
+                    // model-visible prompt and seed the run entry's opening
+                    // chips; unresolved mentions stay ordinary text.
+                    let (model_prompt, chips) = self
+                        .skills
+                        .resolve_prompt_mentions(&request.cwd, &prompt)
+                        .await;
+                    prompt = model_prompt;
+                    invocation = chips;
                 }
                 // Manual Compaction is admitted by the driver itself — it
                 // never becomes a Turn (ADR-0011).
@@ -1157,7 +1095,7 @@ impl EngineService {
         }
         let chat = self.runtime.chat(chat_id);
 
-        let (target_index, target, skill) = {
+        let (target_index, target) = {
             let transcript = chat.transcript.read().unwrap_or_else(|e| e.into_inner());
             let Some((index, target)) = transcript
                 .iter()
@@ -1172,14 +1110,13 @@ impl EngineService {
                     "only the latest user message can be edited".into(),
                 ));
             }
-            let skill = target.parts.iter().find_map(|part| match part {
-                MessagePart::Skill { name, file, .. } => Some((name.clone(), file.clone())),
-                _ => None,
-            });
-            (index, target.clone(), skill)
+            (index, target.clone())
         };
 
-        let (request, kind, skill_name, extra_instructions, attended) = {
+        // Edits are ordinary messages now — skill mentions in the new text
+        // resolve at admission like any send (ADR-0035). A legacy Skill-part
+        // entry edits the same way; its replacement is the typed text.
+        let (request, attended) = {
             let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
             let row = chats
                 .iter()
@@ -1194,11 +1131,7 @@ impl EngineService {
                 .clone()
                 .ok_or_else(|| RpcError::Failed("chat has no working directory".into()))?;
             let request = RunRequest {
-                prompt: if skill.is_some() {
-                    String::new()
-                } else {
-                    prompt.clone()
-                },
+                prompt: prompt.clone(),
                 provider: config.provider,
                 model: config.model,
                 reasoning: config.reasoning,
@@ -1209,22 +1142,11 @@ impl EngineService {
                 attachments: Vec::new(),
                 worktree: None,
             };
-            let extra = skill.as_ref().map(|_| prompt.clone());
             let attended = {
                 let queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 queue.paused()
             };
-            (
-                request,
-                if skill.is_some() {
-                    PendingKind::Skill
-                } else {
-                    PendingKind::Ordinary
-                },
-                skill.as_ref().map(|(name, _)| name.clone()),
-                extra,
-                attended,
-            )
+            (request, attended)
         };
 
         // Pause before cancelling so a pending item cannot be admitted while
@@ -1265,30 +1187,22 @@ impl EngineService {
                 ));
             }
             let mut replacement = latest.clone();
-            if let Some((name, file)) = skill.as_ref() {
-                replacement.parts = crate::skills::user_entry_parts(
-                    name.clone(),
-                    file.clone(),
-                    Some(prompt.clone()),
-                );
-            } else {
-                let mut replaced = false;
-                for part in &mut replacement.parts {
-                    if let MessagePart::Text { text, .. } = part {
-                        if !replaced {
-                            *text = prompt.clone();
-                            replaced = true;
-                        } else {
-                            *text = String::new();
-                        }
+            let mut replaced = false;
+            for part in &mut replacement.parts {
+                if let MessagePart::Text { text, .. } = part {
+                    if !replaced {
+                        *text = prompt.clone();
+                        replaced = true;
+                    } else {
+                        *text = String::new();
                     }
                 }
-                if !replaced {
-                    replacement.parts.push(MessagePart::Text {
-                        id: "t0".into(),
-                        text: prompt.clone(),
-                    });
-                }
+            }
+            if !replaced {
+                replacement.parts.push(MessagePart::Text {
+                    id: "t0".into(),
+                    text: prompt.clone(),
+                });
             }
             let mut entries = transcript[..=latest_index].to_vec();
             entries[latest_index] = replacement.clone();
@@ -1340,9 +1254,9 @@ impl EngineService {
             queue.enqueue_replacement(
                 request,
                 message_id.to_string(),
-                kind,
-                skill_name,
-                extra_instructions,
+                PendingKind::Ordinary,
+                None,
+                None,
                 attended,
             )
         };
