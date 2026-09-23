@@ -348,7 +348,10 @@ impl TextProjection {
                     // exist in Geist (exotic whitespace collapsed a chip
                     // once already).
                     if skill_label == SkillChipLabel::Name {
-                        // Extra gutter NBSPs for the painted icon glyph.
+                        // Wide gutter NBSPs for the painted icon glyph (the
+                        // menu rows' 15px cube, roughly text-sized here).
+                        projection.display.push_str(MENTION_SIDE_PAD);
+                        projection.display.push_str(MENTION_SIDE_PAD);
                         projection.display.push_str(MENTION_SIDE_PAD);
                         projection.display.push_str(MENTION_SIDE_PAD);
                     }
@@ -848,7 +851,7 @@ mod tests {
         // The bubble label is the bare name over the icon gutter — no sigil.
         assert_eq!(
             &display[spans[0].range.clone()],
-            "\u{a0}\u{a0}\u{a0}security-audit\u{a0}"
+            "\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}security-audit\u{a0}"
         );
         assert!(spans[0].is_skill);
         assert!(!spans[0].is_dir);

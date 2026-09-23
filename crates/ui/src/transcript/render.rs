@@ -2591,22 +2591,20 @@ fn user_bubble_text_with_chip(
             for span in mentions.iter() {
                 let color = if span.is_skill { skill_wash } else { wash };
                 paint(window, &span.range, color);
-                // Skill chips lead with the skill identity glyph, inside the
-                // label's gutter NBSPs (the display text itself is the bare
-                // name — ADR-0035).
+                // Skill chips lead with the skill identity glyph — the same
+                // cube the `/` menu rows show, at text-matching size — inside
+                // the label's gutter NBSPs (the display text itself is the
+                // bare name — ADR-0035).
                 if span.is_skill
                     && let Some(rect) = render::range_rects(&layout, &span.range, 0.0, 2.0)
                         .first()
                         .copied()
                 {
-                    let icon = px(10.0);
-                    // Best-effort paint: a failed SVG rasterization must not
-                    // take down the row's underlay (same fire-and-forget as
-                    // every paint-phase call in a canvas).
+                    let icon = px(14.0);
                     let _ = window.paint_svg(
                         Bounds::new(
                             point(
-                                rect.origin.x + px(3.0),
+                                rect.origin.x + px(2.5),
                                 rect.origin.y + (rect.size.height - icon) / 2.0,
                             ),
                             size(icon, icon),
