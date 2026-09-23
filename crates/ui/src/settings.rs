@@ -334,7 +334,7 @@ pub struct UiSettings {
     #[serde(default = "default_chat_backdrop_presence")]
     pub chat_backdrop_presence: f32,
     /// Skills switched off on the Skills settings page: hidden from the `/`
-    /// menu and refused on a typed `/skill` invocation. Names are
+    /// menu, and a `$` mention naming one is refused at submit. Names are
     /// catalog-unique (nearest root wins on collisions), so the bare name is
     /// the identity. Device-local.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

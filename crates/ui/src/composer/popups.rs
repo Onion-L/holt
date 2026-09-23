@@ -62,7 +62,7 @@ fn reset_scroll_offset(scroll: &gpui::ScrollHandle) {
 /// range ends at the CARET, not at the command word's end: text that
 /// followed the `/` (a `/` typed ahead of existing prose) was never typed
 /// as the command, survives the fill, and reads as the directive's extra
-/// instructions (`/skill <name> <kept text>`).
+/// instructions (`/compact <kept text>`).
 fn slash_token(text: &str, cursor: usize) -> Option<MentionToken> {
     if cursor > text.len() || !text.is_char_boundary(cursor) || !text.starts_with('/') {
         return None;
@@ -718,8 +718,9 @@ impl Composer {
         else {
             return;
         };
-        // The title is the fill: `/compact` for a command, `/skill <name>`
-        // for a skill — ready for extra instructions and submit.
+        // The title is the fill: `/compact` for a command, the linked
+        // skill mention for a skill (ADR-0035) — ready for instructions
+        // and submit.
         let title = candidate.title();
         // `/compact` and `/init` take no arguments, so a selection sends
         // them right away instead of staging one in the input for review;
@@ -1163,6 +1164,7 @@ mod tests {
         SlashCandidate::Skill {
             name: name.into(),
             description: String::new(),
+            file: format!("/roots/{name}/SKILL.md"),
             root: holt_proto::SkillRoot::Personal,
         }
     }

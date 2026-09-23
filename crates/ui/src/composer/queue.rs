@@ -157,12 +157,12 @@ impl Composer {
         }));
     }
 
-    /// Start editing a pending item's one editable field — an ordinary
-    /// message's body, or a skill invocation's extra instructions. The
-    /// captured model, the kind, and the position belong to the queue and
-    /// are not offered here.
+    /// Start editing a pending item's one editable field: the message body
+    /// (skill mentions ride it verbatim since ADR-0035). The captured
+    /// model, the kind, and the position belong to the queue and are not
+    /// offered here.
     pub(super) fn open_queue_edit(&mut self, message_id: &str, cx: &mut Context<Self>) {
-        let (kind, body) = {
+        let body = {
             let state = self.state.read(cx);
             let Some(item) = state.message_queue.as_ref().and_then(|queue| {
                 queue
@@ -172,21 +172,18 @@ impl Composer {
             }) else {
                 return;
             };
-            let body = match item.kind {
-                holt_proto::PendingKind::Skill => {
-                    item.extra_instructions.clone().unwrap_or_default()
+            match item.kind {
+                // Pending Skill items no longer exist (load-time migration,
+                // ADR-0035); the arm stays for the enum.
+                holt_proto::PendingKind::Ordinary | holt_proto::PendingKind::Skill => {
+                    item.request.prompt.clone()
                 }
-                holt_proto::PendingKind::Ordinary => item.request.prompt.clone(),
                 // A pending Compaction has no edit affordance — never open
                 // an editor against its (unused) prompt.
                 holt_proto::PendingKind::Compact => return,
-            };
-            (item.kind, body)
+            }
         };
-        let placeholder = match kind {
-            holt_proto::PendingKind::Skill => "Edit the extra instructions",
-            _ => "Edit the queued message",
-        };
+        let placeholder = "Edit the queued message";
         let input = cx.new(|cx| ComposerInput::new(placeholder, cx));
         input.update(cx, |input, cx| input.set_text(body.clone(), cx));
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| {
@@ -467,16 +464,12 @@ impl Composer {
                             .map(|ix| {
                                 let item = &pending[ix];
                                 // Typed rows (ticket 04): the command kind
-                                // leads, never a raw slash directive or the
-                                // engine-formatted skill body.
+                                // leads, never a raw slash directive. The
+                                // prompt text rides verbatim — inline skill
+                                // mentions included (ADR-0035).
                                 let title = match item.kind {
-                                    holt_proto::PendingKind::Ordinary => {
-                                        item.request.prompt.clone()
-                                    }
-                                    holt_proto::PendingKind::Skill => format!(
-                                        "/skill {}",
-                                        item.skill_name.as_deref().unwrap_or_default()
-                                    ),
+                                    holt_proto::PendingKind::Ordinary
+                                    | holt_proto::PendingKind::Skill => item.request.prompt.clone(),
                                     holt_proto::PendingKind::Compact => "/compact".to_string(),
                                 };
                                 let editing =

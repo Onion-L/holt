@@ -125,16 +125,24 @@ impl Composer {
             return;
         }
         // Slash commands are handled by the composer itself (ADR-0006):
-        // a recognized-but-nameless `/skill` never reaches the prompt
-        // path — surface the usage instead. Same for `/compact` with
-        // arguments (ADR-0011 — it takes none).
+        // `/compact` with arguments never reaches the prompt path (ADR-0011
+        // — it takes none). Skills are not a directive anymore (ADR-0035):
+        // inline `$` mentions ride ordinary sends.
+        // A skill switched off in Settings → Skills is refused even when
+        // typed out in full — disabled means unusable, not just hidden.
+        // (The check runs on the raw text, directive or not.)
+        let disabled_hit = super::mentions::skill_mention_names(&text)
+            .into_iter()
+            .find(|name| crate::settings::current(cx).disabled_skills.contains(name));
+        if let Some(name) = disabled_hit {
+            self.failure = Some(
+                format!("Skill \"{name}\" is disabled — re-enable it in Settings → Skills").into(),
+            );
+            self.failure_key = None;
+            cx.notify();
+            return;
+        }
         match super::slash::parse(&text) {
-            super::slash::Parsed::Malformed => {
-                self.failure = Some("Usage: /skill <name> [extra instructions]".into());
-                self.failure_key = None;
-                cx.notify();
-                return;
-            }
             super::slash::Parsed::MalformedCompact => {
                 self.failure = Some("Usage: /compact (no arguments)".into());
                 self.failure_key = None;
@@ -143,19 +151,6 @@ impl Composer {
             }
             super::slash::Parsed::MalformedInit => {
                 self.failure = Some("Usage: /init (no arguments)".into());
-                self.failure_key = None;
-                cx.notify();
-                return;
-            }
-            // A skill switched off in Settings → Skills is refused even when
-            // typed out in full — disabled means unusable, not just hidden.
-            super::slash::Parsed::Skill { name, .. }
-                if crate::settings::current(cx).disabled_skills.contains(&name) =>
-            {
-                self.failure = Some(
-                    format!("Skill \"{name}\" is disabled — re-enable it in Settings → Skills")
-                        .into(),
-                );
                 self.failure_key = None;
                 cx.notify();
                 return;
@@ -264,12 +259,12 @@ impl Composer {
         };
         let space_id = space.as_ref().map(|s| s.id.clone());
         let space_path = space.as_ref().map(|s| s.path.clone());
-        // Slash interception (ADR-0006): a parsed `/skill` rides this send
-        // as a typed invocation — the raw directive never becomes prompt
-        // text. Staged image attachments and diff-comment folding stay put
-        // for the next ordinary message; path references do NOT travel
-        // alone — a skill invocation consumes them into its extra
-        // instructions (spec: skills receive both reference forms).
+        // Slash interception (ADR-0006): `/compact` and `/init` rewrite the
+        // queued payload directly; a skill mention in the text stays and
+        // resolves at engine admission (ADR-0035). Staged image attachments
+        // and diff-comment folding stay put for the next ordinary message;
+        // path references do NOT travel alone — an ordinary send consumes
+        // them into the prompt (spec: skills receive both reference forms).
         let mut slash = super::slash::parse(&text);
         // `/plan <task>` (ADR-0025): the task IS the outgoing planning
         // input — an ordinary message — so the content is rewritten here
@@ -308,10 +303,7 @@ impl Composer {
         // Both intercepted commands travel alone (ADR-0006/0011): staged
         // attachments and diff-comment folding stay put for the next
         // ordinary message.
-        let travels_alone = matches!(
-            slash,
-            super::slash::Parsed::Skill { .. } | super::slash::Parsed::Compact
-        );
+        let travels_alone = matches!(slash, super::slash::Parsed::Compact);
         // `typed` keeps the user's own words for the failure hand-back below:
         // restoring the folded prompt would paste the comment block into the
         // input as literal text. Computed now because a retry of an uncertain
@@ -541,42 +533,12 @@ impl Composer {
                 }
 
                 let command = match &slash {
-                    // The engine builds the model-visible prompt from the
-                    // skill's content; `request.prompt` rides empty. Inline
-                    // `@` links in the extra instructions resolve in place
-                    // and the attachment-area path list appends to them, so
-                    // the skill-prompt construction carries the references.
-                    super::slash::Parsed::Skill { name, extra } => {
-                        let extra = extra.as_deref().map(super::mentions::resolve_mentions);
-                        SessionCommandPayload::InvokeSkill {
-                            request: RunRequest {
-                                prompt: String::new(),
-                                provider: resolved.provider.clone().ok_or_else(|| {
-                                    "Configure a provider before sending".to_string()
-                                })?,
-                                model: resolved.model.clone().ok_or_else(|| {
-                                    "Choose a model before sending".to_string()
-                                })?,
-                                reasoning: resolved.reasoning,
-                                model_options: resolved.model_options.clone(),
-                                cwd,
-                                permission_mode,
-                                auto_approve: false,
-                                attachments: Vec::new(),
-                                worktree: run_worktree,
-                            },
-                            name: name.clone(),
-                            extra_instructions: crate::path_refs::append_references_opt(
-                                extra.as_deref(),
-                                &references,
-                            ),
-                            message_id: message_id.clone(),
-                        }
-                    }
                     // `/compact` rides the same queue as a typed command
                     // (ADR-0011); the engine needs only the provider/model
                     // resolution — its prompt is unused and the raw
-                    // directive never reaches the model.
+                    // directive never reaches the model. Every other parse
+                    // result is an ordinary run: inline `$` mentions ride
+                    // the prompt text and resolve at admission (ADR-0035).
                     super::slash::Parsed::Compact => SessionCommandPayload::Compact {
                         request: RunRequest {
                             prompt: String::new(),

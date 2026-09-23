@@ -121,14 +121,6 @@ pub fn append_references(text: &str, refs: &[PathRef]) -> String {
     out
 }
 
-/// `append_references` for an optional body (skill extra instructions).
-pub fn append_references_opt(text: Option<&str>, refs: &[PathRef]) -> Option<String> {
-    if refs.is_empty() {
-        return text.map(str::to_string);
-    }
-    Some(append_references(text.unwrap_or(""), refs))
-}
-
 // ---------------------------------------------------------------------------
 // Transcript projection: sent messages render path references as the same
 // `@name` chips the composer showed. Display-only — the raw text (what the
@@ -311,6 +303,7 @@ pub fn sent_reference_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>
             range: start..display.len(),
             path: SharedString::from(path.clone()),
             is_dir: path.ends_with('/'),
+            is_skill: false,
         });
         at = range.end;
     }
@@ -399,15 +392,6 @@ mod tests {
     #[test]
     fn no_references_leave_the_body_untouched() {
         assert_eq!(append_references("plain", &[]), "plain");
-        assert_eq!(append_references_opt(None, &[]), None);
-        assert_eq!(
-            append_references_opt(Some("extra"), &[reference("/a", false)]),
-            Some("extra\n\nReferenced paths:\n- \"/a\"".to_string())
-        );
-        assert_eq!(
-            append_references_opt(None, &[reference("/a", false)]),
-            Some("Referenced paths:\n- \"/a\"".to_string())
-        );
     }
 
     #[test]

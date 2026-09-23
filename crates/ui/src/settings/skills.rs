@@ -3,7 +3,7 @@
 //! deliberately is not (ADR-0005). Placement is still the only way IN (a
 //! skill becomes available by being placed in a root), but each invocable
 //! row carries an enable switch: a disabled skill hides from the `/` menu
-//! and is refused on a typed `/skill` invocation. The disabled set persists
+//! and a `$` mention naming it is refused at submit (ADR-0035). The disabled set persists
 //! by catalog-unique name in `ui-settings.json` (`disabledSkills`).
 
 use gpui::{Context, Entity, IntoElement, Render, SharedString, Task, Window, div, prelude::*, px};

@@ -1,8 +1,11 @@
-//! Slash-command interception (ADR-0006): the composer recognizes `/skill`
-//! on submit and handles it itself — the raw directive never becomes a
-//! prompt. Pure over the input text so the recognition is unit-testable
-//! per the picker-logic pattern. Also owns the `/` popup's mixed-source
-//! candidate model (skills + provider commands).
+//! Slash-command interception (ADR-0006/0035): the composer recognizes
+//! `/compact`, `/plan`, and `/init` on submit and handles them itself — the
+//! raw directive never becomes a prompt. Skill invocation is NOT a slash
+//! directive anymore (ADR-0035): skills ride ordinary messages as inline `$`
+//! mentions, and the `/` popup below just inserts their link form. Pure over
+//! the input text so the recognition is unit-testable per the picker-logic
+//! pattern. Also owns the `/` popup's mixed-source candidate model (skills +
+//! provider commands).
 
 use holt_proto::{SkillListing, SkillRoot, SlashCommand};
 
@@ -15,17 +18,9 @@ pub(crate) const INIT_PROMPT: &str = include_str!("init_prompt.md");
 /// What the composer learned from one input string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
-    /// Ordinary text — send it as the prompt, untouched.
+    /// Ordinary text — send it as the prompt, untouched. Inline `$skill`
+    /// mentions ride along and resolve at engine admission (ADR-0035).
     Plain,
-    /// `/skill <name> [extra…]` — intercepted; never sent as prompt text.
-    Skill {
-        name: String,
-        /// Everything after the name, trimmed; `None` when nothing follows.
-        extra: Option<String>,
-    },
-    /// `/skill` with no name — still intercepted (the raw directive must
-    /// never leak), with the usage message for the composer to surface.
-    Malformed,
     /// `/compact` — intercepted; never sent as prompt text (ADR-0011).
     Compact,
     /// `/compact` with arguments — still intercepted, with the usage
@@ -60,6 +55,8 @@ pub(crate) enum SlashCandidate {
     Skill {
         name: String,
         description: String,
+        /// Absolute `SKILL.md` path — the linked mention's target (ADR-0035).
+        file: String,
         /// The source root, shown as the row's right-aligned tag.
         root: SkillRoot,
     },
@@ -71,12 +68,13 @@ pub(crate) enum SlashCandidate {
 }
 
 impl SlashCandidate {
-    /// What accepting fills into the composer: `/skill <name>` for a skill
-    /// — ready for extra instructions and submit — `/name` for a command
-    /// (`/compact` and `/init` submit on accept; there is nothing to edit).
+    /// What accepting fills into the composer: the skill's linked mention
+    /// form `[$name](SKILL.md path)` (ADR-0035) — ready for surrounding
+    /// instructions and submit — or `/name` for a command (`/compact` and
+    /// `/init` submit on accept; there is nothing to edit).
     pub(crate) fn title(&self) -> String {
         match self {
-            SlashCandidate::Skill { name, .. } => format!("/skill {name}"),
+            SlashCandidate::Skill { name, file, .. } => format!("[${name}]({file})"),
             SlashCandidate::Command { name, .. } => format!("/{name}"),
         }
     }
@@ -166,35 +164,17 @@ pub(crate) fn popup_candidates(
                 .map(|skill| SlashCandidate::Skill {
                     name: skill.name.clone(),
                     description: skill.description.clone(),
+                    file: skill.file.clone(),
                     root: skill.root,
                 }),
         )
         .collect()
 }
 
-/// Recognize a leading `/skill` directive. Only the start of the input is
-/// a command (`hello /skill x` is ordinary text), and `/skills`-style
-/// longer words are not `/skill`.
+/// Recognize the leading slash directive (never `/skill` anymore — skills
+/// are inline `$` mentions, ADR-0035).
 pub(crate) fn parse(text: &str) -> Parsed {
-    let Some(rest) = text.trim_start().strip_prefix("/skill") else {
-        return parse_compact(text);
-    };
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-        return parse_compact(text);
-    }
-    let rest = rest.trim();
-    if rest.is_empty() {
-        return Parsed::Malformed;
-    }
-    let name = rest.split_whitespace().next().unwrap_or_default();
-    if name.is_empty() {
-        return Parsed::Malformed;
-    }
-    let extra = rest[name.len()..].trim();
-    Parsed::Skill {
-        name: name.to_string(),
-        extra: (!extra.is_empty()).then(|| extra.to_string()),
-    }
+    parse_compact(text)
 }
 
 /// `/compact` takes no arguments; `/compacted`-style longer words stay
@@ -253,31 +233,6 @@ fn parse_init(text: &str) -> Parsed {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recognizes_name_and_extra() {
-        assert_eq!(
-            parse("/skill grill"),
-            Parsed::Skill {
-                name: "grill".into(),
-                extra: None,
-            }
-        );
-        assert_eq!(
-            parse("  /skill grill  focus on the data layer  "),
-            Parsed::Skill {
-                name: "grill".into(),
-                extra: Some("focus on the data layer".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn bare_directive_is_malformed_not_plain() {
-        // The raw directive must never fall through to the prompt path.
-        assert_eq!(parse("/skill"), Parsed::Malformed);
-        assert_eq!(parse("   /skill   "), Parsed::Malformed);
-    }
 
     #[test]
     fn recognizes_compact_and_refuses_arguments() {
@@ -343,9 +298,12 @@ mod tests {
 
     #[test]
     fn longer_words_and_mid_text_directives_stay_plain() {
+        assert_eq!(parse("/compacted"), Parsed::Plain);
+        assert_eq!(parse("/compaction please"), Parsed::Plain);
+        assert_eq!(parse("please /compact"), Parsed::Plain);
+        // `/skill` is no longer a directive: skills ride inline mentions.
+        assert_eq!(parse("/skill grill"), Parsed::Plain);
         assert_eq!(parse("/skills grill"), Parsed::Plain);
-        assert_eq!(parse("/skillbook"), Parsed::Plain);
-        assert_eq!(parse("run /skill grill please"), Parsed::Plain);
         assert_eq!(parse("just a normal prompt"), Parsed::Plain);
         assert_eq!(parse(""), Parsed::Plain);
     }
@@ -383,13 +341,15 @@ mod tests {
                 SlashCandidate::Skill {
                     name: "grill".into(),
                     description: "Grill a plan.".into(),
+                    file: "/roots/grill/SKILL.md".into(),
                     root: SkillRoot::Personal,
                 },
             ]
         );
-        // The fill text stays `/skill grill` — ready for extra instructions
-        // and submit — while the ROW shows the bare name and its root tag.
-        assert_eq!(candidates[1].title(), "/skill grill");
+        // The fill text is the linked mention form (ADR-0035) — ready for
+        // surrounding instructions and submit — while the ROW shows the
+        // bare name and its root tag.
+        assert_eq!(candidates[1].title(), "[$grill](/roots/grill/SKILL.md)");
         assert_eq!(candidates[1].row_label(), "grill");
         assert_eq!(candidates[1].root_tag(), Some("personal"));
         assert_eq!(candidates[0].row_label(), "compact");
@@ -427,8 +387,11 @@ mod tests {
         };
         let candidates = popup_candidates(&listing, &[], &[]);
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].title(), "/skill grill");
-        assert_eq!(candidates[1].title(), "/skill manual-only");
+        assert_eq!(candidates[0].title(), "[$grill](/roots/grill/SKILL.md)");
+        assert_eq!(
+            candidates[1].title(),
+            "[$manual-only](/roots/manual-only/SKILL.md)"
+        );
     }
 
     #[test]
@@ -447,6 +410,7 @@ mod tests {
             vec![SlashCandidate::Skill {
                 name: "diagnose".into(),
                 description: "Diagnose a bug.".into(),
+                file: "/roots/diagnose/SKILL.md".into(),
                 root: SkillRoot::Personal,
             }]
         );

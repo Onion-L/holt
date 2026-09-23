@@ -800,11 +800,13 @@ impl Transcript {
         div().py(px(4.0)).w_full().child(card).into_any_element()
     }
 
-    /// A `/skill` invocation inside the user bubble: the skill title as an
-    /// accent chip at the head of the text flow (the composer's treatment),
-    /// with a click through to the source file. The `<skill>` block itself
-    /// rides the AGENT entry's opening chip — this bubble only records what
-    /// the user did.
+    /// A `/skill` invocation inside the user bubble (legacy transcripts):
+    /// the skill title as an accent chip at the head of the text flow (the
+    /// composer's treatment), with a click through to the source file. New
+    /// invocations keep the raw mention text inline instead (ADR-0035).
+    /// The `<skill>` block itself rides the AGENT entry's opening chip —
+    /// this bubble only records what the user did.
+    #[allow(clippy::too_many_arguments)]
     fn render_user_skill(
         &mut self,
         row_id: &SharedString,
@@ -813,6 +815,7 @@ impl Transcript {
         mentions: &Arc<Vec<crate::composer::SentMentionSpan>>,
         theme: &Theme,
         image_open: ImageOpen,
+        skill_open: Option<SkillOpen>,
     ) -> AnyElement {
         let open_url = (!skill.file.is_empty())
             .then(|| format!("file://{}", skill.file.trim_start_matches("file://")));
@@ -843,6 +846,7 @@ impl Transcript {
             Some(chip),
             theme,
             Some(image_open),
+            skill_open,
         )
     }
 
@@ -1198,6 +1202,19 @@ impl Transcript {
                         .ok();
                     }
                 });
+                // Skill mention chips open the SKILL.md in the sidebar's file
+                // tab — the same shell-facing event the invocation chip uses,
+                // never an external open.
+                let skill_weak = cx.weak_entity();
+                let skill_open: SkillOpen = Rc::new(move |path, _window, cx| {
+                    skill_weak
+                        .update(cx, |_, cx| {
+                            cx.emit(super::TranscriptEvent::OpenSkillFile {
+                                path: path.to_string(),
+                            });
+                        })
+                        .ok();
+                });
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
                 // HStack); image-only sends show no bubble at all.
@@ -1272,6 +1289,7 @@ impl Transcript {
                                 &mentions,
                                 &theme,
                                 image_open.clone(),
+                                Some(skill_open.clone()),
                             ),
                             None => user_bubble_text_with_chip(
                                 &row.id,
@@ -1280,6 +1298,7 @@ impl Transcript {
                                 None,
                                 &theme,
                                 Some(image_open),
+                                Some(skill_open),
                             )
                             .into_any_element(),
                         }
@@ -2413,6 +2432,21 @@ struct SkillChipRun {
 
 type ImageOpen = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
+/// A skill mention chip's click-through: emits the shell-facing file-open
+/// event so the `SKILL.md` lands in the sidebar's file tab.
+type SkillOpen = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
+
+/// Where one clickable bubble span leads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BubbleLinkKind {
+    /// An image file mention — the lightbox viewer.
+    Image,
+    /// A skill mention — the shell's `OpenSkillFile` event.
+    SkillFile,
+    /// Anything else — an external `file://` open (the legacy chip).
+    Url,
+}
+
 fn user_bubble_text_with_chip(
     row_id: &SharedString,
     text: SharedString,
@@ -2420,10 +2454,11 @@ fn user_bubble_text_with_chip(
     skill: Option<SkillChipRun>,
     theme: &Theme,
     image_open: Option<ImageOpen>,
+    skill_open: Option<SkillOpen>,
 ) -> AnyElement {
     // Split runs at chip boundaries (spans are in order): body text keeps the
-    // sans font, mention chips read as inline code, the skill chip reads in
-    // the accent like the composer's. Size/line-height flow from the bubble's
+    // sans font, mention chips read as inline code, skill chips read in the
+    // accent like the composer's. Size/line-height flow from the bubble's
     // div like every text child.
     let body_run = |len: usize| TextRun {
         len,
@@ -2462,7 +2497,11 @@ fn user_bubble_text_with_chip(
         if at < span.range.start {
             runs.push(body_run(span.range.start - at));
         }
-        runs.push(chip_run(span.range.len()));
+        if span.is_skill {
+            runs.push(skill_run(span.range.len()));
+        } else {
+            runs.push(chip_run(span.range.len()));
+        }
         at = span.range.end;
     }
     if at < text.len() {
@@ -2471,17 +2510,26 @@ fn user_bubble_text_with_chip(
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
     let skill_range = skill.as_ref().map(|chip| chip.range.clone());
-    let mut links = Vec::new();
+    let mut links: Vec<(std::ops::Range<usize>, String, BubbleLinkKind)> = Vec::new();
     if let Some(chip) = skill
         && let Some(url) = chip.open_url
     {
-        links.push((chip.range, url, false));
+        links.push((chip.range, url, BubbleLinkKind::Url));
     }
-    for mention in mentions
-        .iter()
-        .filter(|m| !m.is_dir && crate::images::is_image_path(&m.path))
-    {
-        links.push((mention.range.clone(), mention.path.to_string(), true));
+    for span in mentions.iter() {
+        if span.is_skill {
+            links.push((
+                span.range.clone(),
+                span.path.to_string(),
+                BubbleLinkKind::SkillFile,
+            ));
+        } else if !span.is_dir && crate::images::is_image_path(&span.path) {
+            links.push((
+                span.range.clone(),
+                span.path.to_string(),
+                BubbleLinkKind::Image,
+            ));
+        }
     }
     let text_el = if links.is_empty() {
         styled.into_any_element()
@@ -2490,13 +2538,19 @@ fn user_bubble_text_with_chip(
             .on_click(
                 links.iter().map(|l| l.0.clone()).collect(),
                 move |index, window, cx| {
-                    let (_, path, image) = &links[index];
-                    if *image {
-                        if let Some(open) = &image_open {
-                            open(path, window, cx);
+                    let (_, path, kind) = &links[index];
+                    match kind {
+                        BubbleLinkKind::Image => {
+                            if let Some(open) = &image_open {
+                                open(path, window, cx);
+                            }
                         }
-                    } else {
-                        cx.open_url(path);
+                        BubbleLinkKind::SkillFile => {
+                            if let Some(open) = &skill_open {
+                                open(path, window, cx);
+                            }
+                        }
+                        BubbleLinkKind::Url => cx.open_url(path),
                     }
                 },
             )
@@ -2525,7 +2579,8 @@ fn user_bubble_text_with_chip(
                 paint(window, range, skill_wash);
             }
             for span in mentions.iter() {
-                paint(window, &span.range, wash);
+                let color = if span.is_skill { skill_wash } else { wash };
+                paint(window, &span.range, color);
             }
             render::paint_text_selection(window, &sel_key, &text, &layout, &sel_theme);
         },

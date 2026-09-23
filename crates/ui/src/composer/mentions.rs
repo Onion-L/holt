@@ -151,41 +151,79 @@ pub(super) fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
     links
 }
 
-/// A leading `/skill <name>` token. The composer projects it to the chip
-/// treatment skill invocations get elsewhere (accent colour, name only);
-/// the raw text stays the submission format (`slash::parse`).
+/// A linked skill mention in the composer buffer: `[$name](SKILL.md path)`.
+/// The underlying prompt always contains this canonical Markdown form (the
+/// engine resolves it at admission, ADR-0035); the editor projects it to a
+/// chip for display. The bare `$name` form stays plain text here — it
+/// resolves silently at send — so only the menu-inserted / hand-written
+/// links get the chip treatment.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SkillToken {
+pub(super) struct SkillLink {
     pub(super) range: Range<usize>,
-    name: String,
+    pub(super) name: String,
+    pub(super) path: String,
 }
 
-/// Skill names are single words; brackets are excluded so a token can never
-/// overlap a file-mention link's Markdown.
-fn skill_token(text: &str) -> Option<SkillToken> {
-    const PREFIX: &str = "/skill ";
-    let rest = text.strip_prefix(PREFIX)?;
-    let name_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let name = &rest[..name_len];
-    if name.is_empty() || name.contains(['[', ']', '(', ')']) {
-        return None;
-    }
-    Some(SkillToken {
-        range: 0..PREFIX.len() + name_len,
-        name: name.to_string(),
-    })
+fn skill_links(text: &str) -> Vec<SkillLink> {
+    holt_doc::skill_mentions(text)
+        .into_iter()
+        .filter_map(|mention| {
+            let path = mention.path?;
+            Some(SkillLink {
+                range: mention.range,
+                name: mention.name,
+                path,
+            })
+        })
+        .collect()
+}
+
+/// Every skill name a text mentions — linked labels and bare `$name` tokens
+/// alike. The submit path checks these against the disabled list.
+pub(crate) fn skill_mention_names(text: &str) -> Vec<String> {
+    holt_doc::skill_mentions(text)
+        .into_iter()
+        .map(|mention| mention.name)
+        .collect()
 }
 
 /// The glyph a masked character projects to (U+2022 bullet, three UTF-8
 /// bytes).
 const MASK_CHAR: char = '•';
 
+/// One chip source in a projection pass: a linked skill mention or a file
+/// mention, ordered by raw position.
+enum Chip<'a> {
+    Skill(&'a SkillLink),
+    File {
+        link: &'a FileMentionLink,
+        label: &'a str,
+    },
+}
+
+impl Chip<'_> {
+    fn raw_start(&self) -> &usize {
+        match self {
+            Chip::Skill(link) => &link.range.start,
+            Chip::File { link, .. } => &link.range.start,
+        }
+    }
+
+    fn raw_end(&self) -> &usize {
+        match self {
+            Chip::Skill(link) => &link.range.end,
+            Chip::File { link, .. } => &link.range.end,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct TextProjection {
     pub(super) display: String,
     pub(super) mentions: Vec<(FileMentionLink, Range<usize>)>,
-    /// Leading `/skill <name>` chip: at most one, always at raw offset 0.
-    pub(super) skills: Vec<(SkillToken, Range<usize>)>,
+    /// Linked skill mentions (`[$name](SKILL.md path)`), projected to the
+    /// accent `$name` chip; the bare `$name` form stays plain text.
+    pub(super) skills: Vec<(SkillLink, Range<usize>)>,
     /// Secret projection: one bullet per raw char. Holds the raw byte offset
     /// of every char plus the end offset, for raw↔display translation.
     /// Mutually exclusive with `mentions` — secret inputs never enable them.
@@ -222,14 +260,13 @@ impl TextProjection {
         }
     }
 
-    /// Every chip — skill tokens and file mentions — as (raw range, display
-    /// range) pairs in raw-text order. Skill chips sit at offset 0, so a
-    /// stable sort keeps them ahead of any mention.
+    /// Every chip — skill links and file mentions — as (raw range, display
+    /// range) pairs in raw-text order.
     fn chips(&self) -> Vec<(&Range<usize>, &Range<usize>)> {
         let mut chips: Vec<_> = self
             .skills
             .iter()
-            .map(|(token, display)| (&token.range, display))
+            .map(|(link, display)| (&link.range, display))
             .chain(
                 self.mentions
                     .iter()
@@ -258,48 +295,67 @@ impl TextProjection {
     }
 
     pub(super) fn new(raw: &str) -> Self {
-        let skill = skill_token(raw);
+        let skills = skill_links(raw);
         let mut links = file_mention_links(raw);
-        if let Some(skill) = &skill {
-            links.retain(|link| link.range.start >= skill.range.end);
-        }
+        // The two grammars cannot parse the same span, but a degenerate
+        // buffer (hand-edited mixes) must never double-project: file links
+        // overlapping a skill link yield.
+        links.retain(|link| {
+            !skills.iter().any(|skill| {
+                link.range.start < skill.range.end && skill.range.start < link.range.end
+            })
+        });
         let labels = mention_display_labels(&links);
+        // One ordered pass over both chip kinds, raw position ascending.
+        let mut ordered: Vec<Chip> = skills
+            .iter()
+            .map(Chip::Skill)
+            .chain(labels.iter().enumerate().map(|(ix, label)| Chip::File {
+                link: &links[ix],
+                label,
+            }))
+            .collect();
+        ordered.sort_by_key(|chip| *chip.raw_start());
         let mut projection = Self::default();
         let mut raw_at = 0;
-        if let Some(skill) = skill {
+        for chip in ordered {
+            projection.display.push_str(&raw[raw_at..*chip.raw_start()]);
             let display_start = projection.display.len();
+            // The chip is plain projected text between non-breaking side
+            // bearings; the rounded wash beneath it is painted by
+            // `ComposerTextElement::paint`. Every character here must exist
+            // in Geist (no exotic whitespace — U+2003/U+202F shape at
+            // fallback width and collapsed the chip once already).
             projection.display.push_str(MENTION_SIDE_PAD);
-            for ch in skill.name.chars() {
-                projection
-                    .display
-                    .push(if ch == ' ' { '\u{00A0}' } else { ch });
+            match &chip {
+                Chip::Skill(link) => {
+                    projection.display.push('$');
+                    for ch in link.name.chars() {
+                        projection
+                            .display
+                            .push(if ch == ' ' { '\u{00A0}' } else { ch });
+                    }
+                }
+                Chip::File { label, .. } => {
+                    projection.display.push(MENTION_PREFIX);
+                    for ch in label.chars() {
+                        projection
+                            .display
+                            .push(if ch == ' ' { '\u{00A0}' } else { ch });
+                    }
+                }
             }
             projection.display.push('\u{00A0}');
             let display_end = projection.display.len();
-            raw_at = skill.range.end;
-            projection.skills.push((skill, display_start..display_end));
-        }
-        for (link, label) in links.into_iter().zip(labels) {
-            projection.display.push_str(&raw[raw_at..link.range.start]);
-            let display_start = projection.display.len();
-            // The chip is plain projected text — `@` plus the label between
-            // non-breaking side bearings; the rounded code wash beneath it is
-            // painted by `ComposerTextElement::paint`. Every character here
-            // must exist in Geist (no exotic whitespace — U+2003/U+202F shape
-            // at fallback width and collapsed the chip once already).
-            projection.display.push_str(MENTION_SIDE_PAD);
-            projection.display.push(MENTION_PREFIX);
-            for ch in label.chars() {
-                projection
-                    .display
-                    .push(if ch == ' ' { '\u{00A0}' } else { ch });
+            match chip {
+                Chip::Skill(link) => projection
+                    .skills
+                    .push((link.clone(), display_start..display_end)),
+                Chip::File { link, .. } => projection
+                    .mentions
+                    .push((link.clone(), display_start..display_end)),
             }
-            projection.display.push('\u{00A0}');
-            let display_end = projection.display.len();
-            projection
-                .mentions
-                .push((link.clone(), display_start..display_end));
-            raw_at = link.range.end;
+            raw_at = *chip.raw_end();
         }
         projection.display.push_str(&raw[raw_at..]);
         projection
@@ -426,14 +482,18 @@ fn mention_display_labels(links: &[FileMentionLink]) -> Vec<String> {
         .collect()
 }
 /// One chip in a *sent* message: its byte range over the projected display
-/// string (`@label` between side bearings). The transcript renders these
-/// read-only — no editing state, no tooltip machinery.
+/// string (`@label` or `$name` between side bearings). The transcript
+/// renders these read-only — no editing state, no tooltip machinery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentMentionSpan {
     pub range: Range<usize>,
-    /// Full workspace-relative path (labels can be shortened to basenames).
+    /// Full target path: a workspace-relative file path for file mentions
+    /// (labels can be shortened to basenames), the absolute `SKILL.md` path
+    /// for a skill mention.
     pub path: SharedString,
     pub is_dir: bool,
+    /// A skill mention chip (accent styling, click opens the `SKILL.md`).
+    pub is_skill: bool,
 }
 
 /// Submission conversion: every mention link becomes its readable absolute
@@ -456,20 +516,22 @@ pub(crate) fn resolve_mentions(text: &str) -> String {
     out
 }
 
-/// Project a sent message's raw Markdown for transcript display: mention links
-/// collapse to the same chip labels the composer shows, everything else passes
-/// through untouched. `None` when the text has no valid mention — the
-/// substring probe keeps ordinary prompts on the zero-allocation path, so this
-/// is safe to call for every user row.
+/// Project a sent message's raw Markdown for transcript display: file mention
+/// links and linked skill mentions collapse to the same chip labels the
+/// composer shows, everything else passes through untouched. `None` when the
+/// text has no valid mention — the substring probe keeps ordinary prompts on
+/// the zero-allocation path, so this is safe to call for every user row.
 pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)> {
-    if !raw.contains(FILE_MENTION_SCHEME) {
+    // The probe: valid file mentions carry the scheme, valid skill links
+    // carry the `$` sigil inside the label brackets.
+    if !raw.contains(FILE_MENTION_SCHEME) && !raw.contains("[$") {
         return None;
     }
     let projection = TextProjection::new(raw);
-    if projection.mentions.is_empty() {
+    if projection.mentions.is_empty() && projection.skills.is_empty() {
         return None;
     }
-    let spans = projection
+    let mut spans: Vec<SentMentionSpan> = projection
         .mentions
         .iter()
         .map(|(link, display)| SentMentionSpan {
@@ -480,8 +542,21 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
                 if link.is_dir { "/" } else { "" }
             )),
             is_dir: link.is_dir,
+            is_skill: false,
         })
         .collect();
+    spans.extend(
+        projection
+            .skills
+            .iter()
+            .map(|(link, display)| SentMentionSpan {
+                range: display.clone(),
+                path: SharedString::from(link.path.clone()),
+                is_dir: false,
+                is_skill: true,
+            }),
+    );
+    spans.sort_by_key(|span| span.range.start);
     Some((projection.display, spans))
 }
 
@@ -667,20 +742,21 @@ mod tests {
     }
 
     #[test]
-    fn leading_skill_token_projects_to_an_accent_chip() {
-        let projection = TextProjection::new("/skill setup refactor this");
-        let (token, chip) = &projection.skills[0];
-        assert_eq!(token.name, "setup");
-        assert_eq!(&projection.display[chip.clone()], "\u{00A0}setup\u{00A0}");
+    fn linked_skill_mentions_project_to_accent_chips() {
+        let raw = "[$grill](/root/grill/SKILL.md) refactor this";
+        let projection = TextProjection::new(raw);
+        let (link, chip) = &projection.skills[0];
+        assert_eq!(link.name, "grill");
+        assert_eq!(&projection.display[chip.clone()], "\u{00A0}$grill\u{00A0}");
         // The chip is atomic: offsets inside it snap to its raw boundaries.
-        assert_eq!(projection.display_to_raw(chip.start + 1), token.range.start);
-        assert_eq!(projection.display_to_raw(chip.end - 1), token.range.end);
+        assert_eq!(projection.display_to_raw(chip.start + 1), link.range.start);
+        assert_eq!(projection.display_to_raw(chip.end - 1), link.range.end);
         assert_eq!(
-            projection.previous_boundary(token.range.end),
-            Some(token.range.start)
+            projection.previous_boundary(link.range.end),
+            Some(link.range.start)
         );
         // Extra instructions stay plain text right after the chip.
-        let extra_at = projection.raw_to_display(token.range.end);
+        let extra_at = projection.raw_to_display(link.range.end);
         assert_eq!(&projection.display[extra_at..], " refactor this");
         assert!(
             projection
@@ -688,13 +764,26 @@ mod tests {
                 .first()
                 .is_some_and(|(_, skill)| *skill)
         );
+        // A bare `$name` token stays plain text — it resolves at send.
+        let plain = TextProjection::new("try $grill please");
+        assert!(plain.skills.is_empty());
+        assert_eq!(plain.display, "try $grill please");
     }
 
     #[test]
-    fn skill_token_needs_the_leading_command_form() {
-        assert!(TextProjection::new("/skill").skills.is_empty());
-        assert!(TextProjection::new("/skill  setup").skills.is_empty());
-        assert!(TextProjection::new("use /skill setup").skills.is_empty());
+    fn mixed_skill_and_file_mentions_project_in_text_order() {
+        let raw = format!(
+            "[$a](/r/a/SKILL.md) and {} then $bare",
+            local_file_link("src/b.rs", false)
+        );
+        let projection = TextProjection::new(&raw);
+        assert_eq!(projection.skills.len(), 1);
+        assert_eq!(projection.mentions.len(), 1);
+        let spans = projection.chip_spans();
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].1, "the skill chip comes first");
+        assert!(!spans[1].1);
+        assert!(projection.display.contains("and"));
     }
 
     #[test]
@@ -714,9 +803,29 @@ mod tests {
             "\u{00A0}@composer.rs\u{00A0}"
         );
         assert!(!spans[0].is_dir);
+        assert!(!spans[0].is_skill);
         assert_eq!(spans[0].path.as_ref(), "src/composer.rs");
         assert!(spans[1].is_dir);
         assert_eq!(spans[1].path.as_ref(), "src/components/");
+    }
+
+    #[test]
+    fn sent_mention_display_chips_skill_links_with_their_source_path() {
+        let raw = "[$security-audit](/u/.agents/skills/security-audit/SKILL.md) go";
+        let (display, spans) = sent_mention_display(raw).expect("skill link projects");
+        assert!(!display.contains("SKILL.md"));
+        assert_eq!(
+            &display[spans[0].range.clone()],
+            "\u{00A0}$security-audit\u{00A0}"
+        );
+        assert!(spans[0].is_skill);
+        assert!(!spans[0].is_dir);
+        assert_eq!(
+            spans[0].path.as_ref(),
+            "/u/.agents/skills/security-audit/SKILL.md"
+        );
+        // Bare `$name` mentions stay plain text in the transcript too.
+        assert_eq!(sent_mention_display("run $grill now"), None);
     }
 
     /// Ordinary prompts must stay on the zero-cost path, including ones that
