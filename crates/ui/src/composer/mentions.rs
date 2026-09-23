@@ -191,6 +191,15 @@ pub(crate) fn skill_mention_names(text: &str) -> Vec<String> {
 /// bytes).
 const MASK_CHAR: char = '•';
 
+/// How a skill chip's label renders in projected text: the composer keeps
+/// the `$` sigil (`$name`); the transcript bubble drops it in favor of the
+/// painted icon glyph (icon gutter + bare name).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SkillChipLabel {
+    Sigil,
+    Name,
+}
+
 /// One chip source in a projection pass: a linked skill mention or a file
 /// mention, ordered by raw position.
 enum Chip<'a> {
@@ -295,6 +304,10 @@ impl TextProjection {
     }
 
     pub(super) fn new(raw: &str) -> Self {
+        Self::with_skill_label(raw, SkillChipLabel::Sigil)
+    }
+
+    pub(super) fn with_skill_label(raw: &str, skill_label: SkillChipLabel) -> Self {
         let skills = skill_links(raw);
         let mut links = file_mention_links(raw);
         // The two grammars cannot parse the same span, but a degenerate
@@ -329,7 +342,19 @@ impl TextProjection {
             projection.display.push_str(MENTION_SIDE_PAD);
             match &chip {
                 Chip::Skill(link) => {
-                    projection.display.push('$');
+                    // The composer chip keeps the `$` sigil; the transcript
+                    // style reserves an extra gutter for the painted icon
+                    // glyph instead. Only NBSPs here — every character must
+                    // exist in Geist (exotic whitespace collapsed a chip
+                    // once already).
+                    if skill_label == SkillChipLabel::Name {
+                        // Extra gutter NBSPs for the painted icon glyph.
+                        projection.display.push_str(MENTION_SIDE_PAD);
+                        projection.display.push_str(MENTION_SIDE_PAD);
+                    }
+                    if skill_label == SkillChipLabel::Sigil {
+                        projection.display.push('$');
+                    }
                     for ch in link.name.chars() {
                         projection
                             .display
@@ -531,7 +556,7 @@ pub fn sent_mention_display(raw: &str) -> Option<(String, Vec<SentMentionSpan>)>
     if !raw.contains(FILE_MENTION_SCHEME) && !raw.contains("[$") {
         return None;
     }
-    let projection = TextProjection::new(raw);
+    let projection = TextProjection::with_skill_label(raw, SkillChipLabel::Name);
     if projection.mentions.is_empty() && projection.skills.is_empty() {
         return None;
     }
@@ -820,15 +845,21 @@ mod tests {
         let raw = "[$security-audit](/u/.agents/skills/security-audit/SKILL.md) go";
         let (display, spans) = sent_mention_display(raw).expect("skill link projects");
         assert!(!display.contains("SKILL.md"));
+        // The bubble label is the bare name over the icon gutter — no sigil.
         assert_eq!(
             &display[spans[0].range.clone()],
-            "\u{00A0}$security-audit\u{00A0}"
+            "\u{a0}\u{a0}\u{a0}security-audit\u{a0}"
         );
         assert!(spans[0].is_skill);
         assert!(!spans[0].is_dir);
         assert_eq!(
             spans[0].path.as_ref(),
             "/u/.agents/skills/security-audit/SKILL.md"
+        );
+        // …while the copy map still yields the canonical linked form.
+        assert_eq!(
+            &raw[spans[0].raw_range.clone()],
+            "[$security-audit](/u/.agents/skills/security-audit/SKILL.md)"
         );
         // Bare `$name` mentions stay plain text in the transcript too.
         assert_eq!(sent_mention_display("run $grill now"), None);
