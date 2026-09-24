@@ -1708,6 +1708,24 @@ impl Transcript {
                 .iter()
                 .any(|r| &r.id == id && matches!(r.kind, RowKind::LiveMarkdown { .. }))
         });
+        // A provider card's busy state and masked key input live only while
+        // the card is pending: a settled or superseded card drops them even
+        // when it is scrolled out and never renders again.
+        self.provider_cards.retain(|id, _| {
+            new_rows.iter().any(|r| {
+                &r.id == id
+                    && matches!(
+                        r.kind,
+                        RowKind::ModelProposal {
+                            state: holt_doc::ProposalCardState::Pending,
+                            ..
+                        } | RowKind::KeyRequest {
+                            state: holt_doc::KeyCardState::Pending,
+                            ..
+                        }
+                    )
+            })
+        });
 
         // Capture this before the row splice changes the list's measured end.
         // When the user is truly live-following, retaining the end anchor

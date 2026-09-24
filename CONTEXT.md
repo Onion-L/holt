@@ -60,7 +60,7 @@ _Avoid_: double-Esc stop
   _Avoid_: plan (Plan Mode vocabulary), diff, suggestion
 - **Key request**: Provider Mode's way of collecting a provider API key mid-workflow: the assistant asks for it, a card in the transcript collects the value locally, and saving it notifies the chat to continue. The value never enters History, a tool argument, or the Transcript. The card shows the destination the key would be sent to, and saving it approves that destination for the chat. The provider may still be a draft that no proposal has written.
   _Avoid_: key prompt, password dialog, secret input
-- **Provider Mode**: a chat-level mode, like Plan Mode and exclusive with it, under which the conversation adds and updates providers. Its Turns run a fixed catalog workflow with a toolset that touches no files; writes happen only through a proposal card's Write button, never by the agent. Entered from the mode chip, `/provider`, or Settings' "Add with AI"; it stays on until the user leaves it.
+- **Provider Mode**: a chat-level mode, like Plan Mode and exclusive with it, under which the conversation adds and updates providers. Its Turns run a fixed catalog workflow with a toolset that touches no files; writes happen only through a proposal card's Write button, never by the agent. Entered with `/provider` or Settings' "Add with AI"; the composer's Provider chip shows it and its × leaves it. It stays on until the user leaves it.
   _Avoid_: setup chat, setup session, wizard chat
 - **Provider reset**: dropping every user-written catalog entry for one Provider — model records, custom provider definition, hidden models — leaving the compiled catalog under the hand-edited overlay. Credentials are not catalog entries and survive it.
   _Avoid_: restore, backup, factory reset

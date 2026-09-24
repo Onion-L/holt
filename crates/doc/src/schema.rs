@@ -1464,6 +1464,40 @@ mod tests {
         assert_eq!(doc.read_entries().unwrap()[0].parts, cards);
     }
 
+    /// A card that does not decode — a damaged card, or a card kind this
+    /// build does not know — degrades to an empty text part in place; the
+    /// entry's other parts still read.
+    #[test]
+    fn undecodable_cards_leave_the_surrounding_parts_intact() {
+        let parts: Vec<MessagePart> = [
+            serde_json::json!({ "id": "t0", "kind": "text", "text": "before" }),
+            serde_json::json!({ "id": "c1", "kind": "modelProposal", "card": { "kind": "modelProposal" } }),
+            serde_json::json!({ "id": "c2", "kind": "keyRequest" }),
+            serde_json::json!({ "id": "c3", "kind": "someFutureCard", "card": {} }),
+            serde_json::json!({ "id": "t4", "kind": "text", "text": "after" }),
+        ]
+        .into_iter()
+        .map(|part| from_doc_part(serde_json::from_value(part).unwrap()))
+        .collect();
+        let texts: Vec<(&str, &str)> = parts
+            .iter()
+            .map(|part| match part {
+                MessagePart::Text { id, text } => (id.as_str(), text.as_str()),
+                other => panic!("expected a text part, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("t0", "before"),
+                ("c1", ""),
+                ("c2", ""),
+                ("c3", ""),
+                ("t4", "after")
+            ]
+        );
+    }
+
     #[test]
     fn unknown_card_states_read_as_superseded() {
         let part: MessagePart = serde_json::from_value(serde_json::json!({

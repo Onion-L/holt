@@ -885,18 +885,16 @@ impl Composer {
                 .client()
                 .call(method, serde_json::json!({ "chatId": chat_id }))
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                this.failure = Some(match result {
-                    Ok(_) if enter => "Provider Mode on".into(),
-                    Ok(_) => "Provider Mode off".into(),
-                    Err(err) => {
-                        tracing::warn!(error = %err, "/provider command failed");
-                        format!("/provider failed: {err}").into()
-                    }
+            // Success needs no notice: the chat row's republish moves the
+            // chip. Only a failure takes the (red) banner.
+            if let Err(err) = result {
+                tracing::warn!(error = %err, "/provider command failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.failure = Some(format!("/provider failed: {err}").into());
+                    this.failure_key = Some(chat_id.clone());
+                    cx.notify();
                 });
-                this.failure_key = Some(chat_id.clone());
-                cx.notify();
-            });
+            }
         })
         .detach();
     }

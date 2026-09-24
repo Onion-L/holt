@@ -328,67 +328,54 @@ impl Pickers {
     /// Provider Mode on the selected chat.
     fn exit_provider_mode(&mut self, cx: &mut Context<Self>) {
         self.provider_mode_draft = false;
+        self.exit_chat_mode(
+            methods::EXIT_PROVIDER_MODE,
+            super::PickerEvent::ProviderModeExited,
+            super::PickerEvent::ProviderModeExitFailed,
+            cx,
+        );
+    }
+
+    /// The Plan chip's close button: leave Plan Mode without the `/plan off`
+    /// detour.
+    fn exit_plan_mode(&mut self, cx: &mut Context<Self>) {
+        self.plan_mode_draft = false;
+        self.exit_chat_mode(
+            methods::EXIT_PLAN_MODE,
+            super::PickerEvent::PlanModeExited,
+            super::PickerEvent::PlanModeExitFailed,
+            cx,
+        );
+    }
+
+    /// Leaves a chat-level mode on the selected chat (no chat: only the
+    /// draft, already cleared by the caller). The outcome is announced
+    /// through [`PickerEvent`] — the footer row has nowhere to print it.
+    fn exit_chat_mode(
+        &mut self,
+        method: &'static str,
+        exited: super::PickerEvent,
+        failed: fn(String) -> super::PickerEvent,
+        cx: &mut Context<Self>,
+    ) {
         cx.notify();
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
         let Some(engine) = self.engine(cx) else {
-            cx.emit(super::PickerEvent::ProviderModeExitFailed(
-                "Engine not connected".into(),
-            ));
+            cx.emit(failed("Engine not connected".into()));
             return;
         };
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(
-                    methods::EXIT_PROVIDER_MODE,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
+                .call(method, serde_json::json!({ "chatId": chat_id }))
                 .await;
             let event = match result {
-                Ok(_) => super::PickerEvent::ProviderModeExited,
+                Ok(_) => exited,
                 Err(error) => {
-                    tracing::warn!(error = %error, "ExitProviderMode failed");
-                    super::PickerEvent::ProviderModeExitFailed(error.to_string())
-                }
-            };
-            this.update(cx, |_, cx| cx.emit(event)).ok();
-        })
-        .detach();
-    }
-
-    /// The Plan chip's close button: leave Plan Mode without the `/plan off`
-    /// detour. The outcome is announced through [`PickerEvent`] — the footer
-    /// row has nowhere to print it.
-    fn exit_plan_mode(&mut self, cx: &mut Context<Self>) {
-        self.plan_mode_draft = false;
-        cx.notify();
-        let chat_id = self.state.read(cx).selected_chat.clone();
-        let Some(chat_id) = chat_id else {
-            self.plan_mode_draft = false;
-            cx.notify();
-            return;
-        };
-        let Some(engine) = self.engine(cx) else {
-            cx.emit(super::PickerEvent::PlanModeExitFailed(
-                "Engine not connected".into(),
-            ));
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::EXIT_PLAN_MODE,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await;
-            let event = match result {
-                Ok(_) => super::PickerEvent::PlanModeExited,
-                Err(error) => {
-                    tracing::warn!(error = %error, "ExitPlanMode failed");
-                    super::PickerEvent::PlanModeExitFailed(error.to_string())
+                    tracing::warn!(error = %error, method, "leaving a chat mode failed");
+                    failed(error.to_string())
                 }
             };
             this.update(cx, |_, cx| cx.emit(event)).ok();

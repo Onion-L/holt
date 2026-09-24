@@ -88,9 +88,6 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let pending = state == ProposalCardState::Pending;
-        if !pending {
-            self.provider_cards.remove(row_id);
-        }
         let ui = self.provider_cards.get(row_id);
         let busy = ui.is_some_and(|ui| ui.busy);
         let error = ui.and_then(|ui| ui.error.clone());
@@ -206,13 +203,12 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let pending = state == KeyCardState::Pending;
-        if !pending {
-            // Settled: the input (and whatever was typed) goes with it.
-            self.provider_cards.remove(row_id);
-        } else if self
-            .provider_cards
-            .get(row_id)
-            .is_none_or(|ui| ui.key_input.is_none())
+        // Settled cards lose their input in `sync`, rendered or not.
+        if pending
+            && self
+                .provider_cards
+                .get(row_id)
+                .is_none_or(|ui| ui.key_input.is_none())
         {
             let input = cx.new(|cx| ComposerInput::new_secret("API key", cx));
             let submit_row = row_id.clone();
@@ -660,9 +656,7 @@ mod tests {
         assert!(cx.debug_bounds("provider-key-save-a1#k1").is_none());
         transcript.update(cx, |this, _| {
             assert!(
-                this.provider_cards
-                    .get("a1#k1")
-                    .is_none_or(|ui| ui.key_input.is_none()),
+                !this.provider_cards.contains_key("a1#k1"),
                 "the settled card dropped its key input"
             );
         });

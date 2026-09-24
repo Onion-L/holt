@@ -10,9 +10,10 @@ which the conversation itself adds and updates providers.
 
 Provider Mode rides the chat row (`Chat::provider_mode`), orthogonal to the
 permission mode and mutually exclusive with Plan Mode — entering either one
-exits the other through its ordinary exit path. It is entered from the
-composer's mode chip, `/provider`, or Settings' "Add with AI" (the new-chat
-canvas with the mode drafted), survives restart, and stays on after a write
+exits the other through its ordinary exit path. It is entered with
+`/provider` or Settings' "Add with AI" (the new-chat canvas with the mode
+drafted); like the Plan chip, the composer's Provider chip only shows the
+mode and leaves it (its ×). It survives restart, and stays on after a write
 until the user leaves it — one chat often sets up several providers. A Turn
 admitted under Provider Mode keeps the chat's workspace prompt and appends a
 Provider Mode block (research → resolve → propose → stop); its toolset is
@@ -38,9 +39,11 @@ pending Key request, and approved key destinations — and is deleted with the
 chat. Without it a restart would leave cards in the history that can no
 longer write. With several independent cards alive in one chat, a
 whole-catalog baseline would make writing one card stale every other; the
-staleness gate narrows to the providers a proposal touches: their slice of
-the live settings must equal the proposal's baseline slice, the batch is
-re-validated, and it applies onto the current settings under a CAS against
+staleness gate narrows to the providers a proposal touches: a sha256
+fingerprint of their slice of the live settings must equal the one stored
+with the proposal — a fingerprint rather than the slice itself, because
+model-record headers can hold secrets that must not be copied into
+`provider-mode/<chatId>.json` — the batch is re-validated, and it applies onto the current settings under a CAS against
 the snapshot read at apply time.
 
 The key flow no longer needs a proposal first. `request_provider_key` and

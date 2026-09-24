@@ -438,8 +438,9 @@ their state, and a Pending card from before the restart still writes.
 
 ## Done criteria
 
-- [ ] A normal chat enters Provider Mode via chip, `/provider`, or Settings'
-  "Add with AI", and exits via × or `/provider off`.
+- [ ] A normal chat enters Provider Mode via `/provider` or Settings'
+  "Add with AI" (the chip, like the Plan chip, only shows the mode), and
+  exits via the chip's × or `/provider off`.
 - [ ] Mode Turns keep the workspace prompt, append the block, and mount
   exactly `web_fetch`/`web_search`/`model_proposal`/`request_provider_key`;
   non-mode Turns mount neither catalog tool.
@@ -489,3 +490,17 @@ their state, and a Pending card from before the restart still writes.
   disagree after a crash between the two writes (the transcript card is
   display; the state file is truth — an apply on a missing proposal stamps
   `Superseded`).
+
+## Deviations recorded after execution
+
+- The proposal baseline is a sha256 fingerprint of the touched providers'
+  slice, not a stored `BaselineSlice`: record headers can be secret, so the
+  slice must not be persisted. Recorded in ADR-0037.
+- The `ModelProposal` part carries `lines: Vec<String>` (one plain line per
+  change) instead of `changes` as `change_view()` JSON; the card renders the
+  lines as text, and `change_view`/`proposal_views` went with the review
+  panel.
+- The engine carries stamped card states onto a running Turn's rebuilt
+  entry (`carry_card_states`), and a settle with nothing pending stamps stale key
+  cards superseded — both keep cards from reading pending after the engine
+  has settled them.
