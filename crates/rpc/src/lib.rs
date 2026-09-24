@@ -206,6 +206,14 @@ pub mod methods {
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
+    /// Provider Mode (ADR-0037). `EnterProviderMode` / `ExitProviderMode`
+    /// take `{chatId}` and reply the chat's `holt_proto::ProviderModeState`;
+    /// both are idempotent. Entering exits Plan Mode first (and
+    /// `EnterPlanMode` exits Provider Mode first). Exiting keeps pending
+    /// proposal and key cards writable. `GetProviderMode` is the pure query.
+    pub const ENTER_PROVIDER_MODE: &str = "EnterProviderMode";
+    pub const EXIT_PROVIDER_MODE: &str = "ExitProviderMode";
+    pub const GET_PROVIDER_MODE: &str = "GetProviderMode";
     /// Resolve a submitted plan (ADR-0025): params `{chatId, planId,
     /// verdict, feedback?}` where verdict is `"approve" | "reject" |
     /// "remain"`. Approve exits Plan Mode, restores the entry permission

@@ -301,6 +301,7 @@ impl EngineService {
                 room_gen: None,
                 compact_before_next_turn: false,
                 plan_mode: None,
+                provider_mode: false,
             });
             persist_chats(&self.data_dir, &chats)
                 .map_err(|error| RpcError::Failed(error.to_string()))?;
@@ -370,6 +371,7 @@ impl EngineService {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            provider_mode: false,
         });
         drop(chats);
         self.runtime
@@ -873,9 +875,9 @@ impl EngineService {
         // makes this a planning Turn; a mid-Turn switch lands from the
         // next Turn exactly like the mode beside it.
         let mut planning = false;
-        // The Turn's setup-scope snapshot (model setup v2): the chat's
-        // stored scope, snapshotted at acceptance like the mode.
-        let mut setup_scope = false;
+        // The Turn's Provider Mode snapshot (ADR-0037), taken at
+        // acceptance like the permission mode and Plan Mode.
+        let mut provider_mode = false;
         {
             let mut chats = self
                 .runtime
@@ -889,14 +891,14 @@ impl EngineService {
                     row.source_context = Some(source);
                 }
                 planning = row.plan_mode.is_some();
-                // The setup scope persists with the row's config: the run
-                // request cannot move it, exactly like the permission mode.
+                // Legacy model-setup rows run as Provider Mode until they
+                // are retired.
                 let scope = row
                     .config
                     .as_ref()
                     .map(|config| config.scope)
                     .unwrap_or_default();
-                setup_scope = scope == holt_proto::ChatScope::ModelSetup;
+                provider_mode = row.provider_mode || scope == holt_proto::ChatScope::ModelSetup;
                 // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -1014,7 +1016,7 @@ impl EngineService {
             invocation,
             permission_mode: mode,
             plan_mode: planning,
-            setup_scope,
+            provider_mode,
             // The admission-time backend snapshot (ADR-0023): resolved
             // once here, so a settings change mid-Turn lands from the
             // next Turn — the same snapshot semantics as the mode.
@@ -1402,6 +1404,7 @@ impl EngineService {
     /// would.
     fn enter_plan_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
+        self.set_provider_mode(chat_id, false)?;
         {
             let mut chats = self
                 .runtime
@@ -1460,6 +1463,68 @@ impl EngineService {
             );
         }
         RpcReply::value(&self.plan_mode_state(chat_id)?)
+    }
+
+    /// Enter Provider Mode (ADR-0037). Idempotent; a planning chat leaves
+    /// Plan Mode first — the two modes never overlap.
+    fn enter_provider_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        self.exit_plan_mode(serde_json::json!({ "chatId": chat_id }))?;
+        self.set_provider_mode(chat_id, true)?;
+        RpcReply::value(&self.provider_mode_state(chat_id)?)
+    }
+
+    /// Leave Provider Mode (ADR-0037). Idempotent. Pending proposal and key
+    /// cards stay writable: they are the user's to settle, not the mode's.
+    fn exit_provider_mode(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        self.set_provider_mode(chat_id, false)?;
+        RpcReply::value(&self.provider_mode_state(chat_id)?)
+    }
+
+    /// Persist and broadcast the chat row's Provider Mode flag when it
+    /// moves.
+    fn set_provider_mode(&self, chat_id: &str, active: bool) -> Result<(), RpcError> {
+        let changed = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            let changed = chat.provider_mode != active;
+            if changed {
+                chat.provider_mode = active;
+                persist_chats(&self.data_dir, &chats)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+            }
+            changed
+        };
+        if changed {
+            self.runtime.publish_chats();
+        }
+        Ok(())
+    }
+
+    fn provider_mode_state(
+        &self,
+        chat_id: &str,
+    ) -> Result<holt_proto::ProviderModeState, RpcError> {
+        let chats = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+        let chat = chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+        Ok(holt_proto::ProviderModeState {
+            active: chat.provider_mode,
+        })
     }
 
     /// Resolve a proposed plan (ADR-0025): the verdict applies to the
@@ -3607,6 +3672,11 @@ impl RpcService for EngineService {
             }
             methods::ENTER_PLAN_MODE => self.enter_plan_mode(params),
             methods::EXIT_PLAN_MODE => self.exit_plan_mode(params),
+            methods::ENTER_PROVIDER_MODE => self.enter_provider_mode(params),
+            methods::EXIT_PROVIDER_MODE => self.exit_provider_mode(params),
+            methods::GET_PROVIDER_MODE => {
+                RpcReply::value(&self.provider_mode_state(required_string(&params, "chatId")?)?)
+            }
             methods::GET_PLAN_MODE => {
                 RpcReply::value(&self.plan_mode_state(required_string(&params, "chatId")?)?)
             }

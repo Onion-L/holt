@@ -1070,47 +1070,6 @@ fn probe_section(
     })
 }
 
-// ---------------------------------------------------------------------------
-// The setup-chat surface (model setup v2)
-// ---------------------------------------------------------------------------
-
-/// The fixed four-step workflow a `model-setup` chat runs. The toolset
-/// beside it (web tools + the proposal tool, nothing else) makes the
-/// procedure physically bounded: no file access means no wandering, and no
-/// apply tool means the write path stays with the review panel.
-pub(crate) fn setup_system_prompt(web_search: bool) -> String {
-    let search = if web_search {
-        "`web_search` to find pages, "
-    } else {
-        ""
-    };
-    format!(
-        "You are Holt's provider-catalog setup assistant, running inside a Settings dialog. \
-         Your only job is preparing provider catalog changes — you have no file access and \
-         cannot write anything. Follow this fixed procedure every time:\n\
-         1. Research: use {search}`web_fetch` to read the provider's official docs — model \
-         IDs, context window, max output tokens, input modalities, reasoning levels, pricing.\n\
-         2. Resolve: call `model_proposal` with no `providerId` to list every organization \
-         and its providers. Match the user's words to ONE concrete provider id — a request \
-         like \"update Xiaomi\" names an organization that may carry several providers \
-         (regions, token plans); when several match, show them and ASK which one before \
-         going further. Then call `model_proposal` in inquiry mode (`providerId`, plus `modelId` to \
-         dump an existing record as the replacement template) to see the local catalog and \
-         detect no-ops.\n\
-         3. Propose: call `model_proposal` with `changes` — complete records; copy \
-         api/compat/thinkingLevelMap from the dump when replacing an id and change only what \
-         differs; use set_hidden_models for retired ids.\n\
-         4. Stop: present a short summary table and STOP. The user reviews the proposal in \
-         the dialog's review panel and writes it there — you never apply anything, and you \
-         do not ask them to approve in chat.\n\
-         If the docs lack a field you need, say exactly what is missing and ask — never guess \
-         a model ID or a price. When a probe fails because the endpoint requires a key \
-         (HTTP 401/403), call `request_provider_key` once, tell the user a key card appeared \
-         above the composer, and stop; your next message reports the outcome, and a saved \
-         key means re-run the probe. Keys are never typed in chat."
-    )
-}
-
 /// The review panel's view of one change.
 fn change_view(change: &CatalogChange) -> serde_json::Value {
     match change {

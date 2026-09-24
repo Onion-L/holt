@@ -706,6 +706,8 @@ pub(crate) struct RawChat {
     // decodes as absent on older rows.
     #[serde(default)]
     plan_mode: Option<holt_proto::ChatPlanState>,
+    #[serde(default)]
+    provider_mode: bool,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -751,6 +753,7 @@ impl From<RawChat> for Chat {
             room_gen: raw.room_gen,
             compact_before_next_turn: raw.compact_before_next_turn,
             plan_mode: raw.plan_mode,
+            provider_mode: raw.provider_mode,
         }
     }
 }
@@ -822,6 +825,7 @@ mod tests {
             }),
             compact_before_next_turn: false,
             plan_mode: None,
+            provider_mode: false,
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),

@@ -2588,6 +2588,7 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            provider_mode: false,
         }
     }
 

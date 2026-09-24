@@ -430,7 +430,7 @@ async fn execute(
                 invocation: Vec::new(),
                 permission_mode: d.permission_mode,
                 plan_mode: false,
-                setup_scope: false,
+                provider_mode: false,
                 search_backend: d.search_backend,
                 providers: None,
                 attribution: d.attribution,

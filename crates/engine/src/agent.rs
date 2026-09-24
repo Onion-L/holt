@@ -1818,11 +1818,11 @@ pub(crate) struct AgentRun {
     /// leaving Plan Mode mid-Turn cannot move it; it lands from the next
     /// Turn like the permission snapshot beside it.
     pub(crate) plan_mode: bool,
-    /// The Turn's setup-scope snapshot (model setup v2): a `model-setup`
-    /// chat runs the fixed provider-catalog workflow — a file-free toolset
-    /// and its own system prompt, no delegation, no apply tool. The write
-    /// path is the Settings review panel's RPC, never the agent.
-    pub(crate) setup_scope: bool,
+    /// The Turn's Provider Mode snapshot (ADR-0037), taken at admission:
+    /// the Turn runs the provider-catalog workflow — the workspace prompt
+    /// plus the mode block, a file-free toolset, no delegation, no apply
+    /// tool. The write path is the card's RPC, never the agent.
+    pub(crate) provider_mode: bool,
     /// The Turn's web-search backend snapshot (ADR-0023), resolved once at
     /// admission from the engine's settings state. `None` — nothing
     /// configured — mounts no `web_search` tool at all.
@@ -1903,7 +1903,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         invocation,
         permission_mode,
         plan_mode,
-        setup_scope,
+        provider_mode,
         search_backend,
         providers,
         stream_fn,
@@ -1918,12 +1918,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         system_prompt =
             crate::subagents::system_prompt(&child.role, &cwd, &catalog, search_backend.is_some())
                 .await;
-    }
-    if setup_scope {
-        // The setup surface replaces the workspace prompt wholesale (model
-        // setup v2): no AGENTS.md, no skills — the fixed four-step workflow
-        // and nothing else.
-        system_prompt = crate::tools::model_setup::setup_system_prompt(search_backend.is_some());
     }
     let skill_files: HashMap<String, String> = catalog
         .winners
@@ -2373,6 +2367,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cancel: cancel.clone(),
     });
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
+    let search_backend_present = search_backend.is_some();
     let mut tools = crate::tools::execution_tools_for_model(
         &cwd,
         allow_images,
@@ -2392,13 +2387,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }
-    } else if setup_scope {
-        // The fixed setup surface (model setup v2): web research plus the
+    } else if provider_mode {
+        // The Provider Mode surface (ADR-0037): web research plus the
         // read-only proposal tool and the Key request (ADR-0031) — no file
-        // access, no delegation, and no apply (the review panel's button
-        // applies). Normal chats mount no model-setup tool: their
-        // catalog-write capability is nil.
-        tools.retain(|tool| matches!(tool.name.as_str(), "web_fetch" | "web_search"));
+        // access, no delegation, and no apply (the card's button writes).
+        // Outside the mode neither catalog tool is mounted.
+        tools.retain(|tool| crate::provider_mode::provider_mode_tool_allowed(&tool.name));
         if let Some(model_providers) = &providers {
             tools.push(crate::tools::create_model_proposal_tool(
                 model_providers.clone(),
@@ -2431,15 +2425,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     }
     // The MCP tools (ADR-0034): the Turn-start snapshot — every enabled
     // server's tools join the toolset as `mcp__<server>__<tool>` agent
-    // tools, connecting lazily here and only here. Subagent runs, the
-    // setup surface, and planning Turns (whose read-only retain below
+    // tools, connecting lazily here and only here. Subagent runs, Provider
+    // Mode Turns, and planning Turns (whose read-only retain below
     // would drop the tools anyway) keep their curated toolsets without
     // spawning a thing. The schemas defer (ADR-0036): a small loader
     // joins the toolset and a synthetic bootstrap pair marks the whole
     // snapshot, so supporting providers keep the definitions out of the
     // static context until the model loads and calls them.
     let mut mcp_bootstrap = None;
-    if chat.child.is_none() && !setup_scope && !plan_mode {
+    if chat.child.is_none() && !provider_mode && !plan_mode {
         let snapshot = runtime.mcp.agent_tools().await;
         if !snapshot.is_empty() {
             mcp_bootstrap = Some(crate::mcp::bootstrap_messages(&snapshot, &model));
@@ -2455,6 +2449,12 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         system_prompt.push('\n');
         system_prompt.push_str(&crate::plan_mode::planning_system_block());
         tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
+    }
+    if provider_mode {
+        system_prompt.push('\n');
+        system_prompt.push_str(&crate::provider_mode::provider_mode_block(
+            search_backend_present,
+        ));
     }
     let config = AgentLoopConfig {
         stream_options,
@@ -2694,6 +2694,7 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            provider_mode: false,
         }
     }
 

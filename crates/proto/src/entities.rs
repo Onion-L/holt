@@ -291,6 +291,11 @@ pub struct Chat {
     /// restart; recovery never starts a Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_mode: Option<ChatPlanState>,
+    /// Provider Mode (ADR-0037): the chat's Turns may propose provider and
+    /// model catalog changes and request keys. Mutually exclusive with Plan
+    /// Mode; exiting keeps pending cards writable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provider_mode: bool,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on
@@ -310,6 +315,13 @@ pub struct PlanModeState {
     pub active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_permission_mode: Option<PermissionMode>,
+}
+
+/// The `GetProviderMode` reply: the chat's Provider Mode view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModeState {
+    pub active: bool,
 }
 
 impl Chat {

@@ -137,3 +137,54 @@ pub(crate) fn delete(data_dir: &Path, chat_id: &str) {
         let _ = std::fs::remove_file(path);
     }
 }
+
+/// The Provider Mode toolset (ADR-0037): web research plus the read-only
+/// proposal tool and the Key request. No file access, no delegation, no
+/// MCP, and no apply — the card's Write button is the only write path.
+pub(crate) fn provider_mode_tool_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "web_fetch" | "web_search" | "model_proposal" | "request_provider_key"
+    )
+}
+
+/// The Provider Mode system-prompt block, appended to the chat's ordinary
+/// prompt: the fixed research → resolve → propose → stop workflow.
+pub(crate) fn provider_mode_block(web_search: bool) -> String {
+    let search = if web_search {
+        "`web_search` to find pages, "
+    } else {
+        ""
+    };
+    format!(
+        "## Provider Mode (active)\n\n\
+         This Turn runs in Provider Mode: your only job is preparing provider and model \
+         catalog changes. You have no file access and cannot write the catalog — the user \
+         writes a proposal with the Write button on its card. Follow this procedure:\n\
+         1. Research: use {search}`web_fetch` to read the provider's official docs — base \
+         URL, API style, model IDs, context window, max output tokens, input modalities, \
+         reasoning levels, pricing.\n\
+         2. Resolve: call `model_proposal` with no `providerId` to list every organization \
+         and its providers. Match the user's words to ONE concrete provider id — an \
+         organization may carry several providers (regions, token plans); when several \
+         match, show them and ASK which one. Then call `model_proposal` in inquiry mode \
+         (`providerId`, plus `modelId` to dump an existing record as the replacement \
+         template) to see the local catalog and detect no-ops. A provider that does not \
+         exist yet is addressed as a draft `provider` object `{{id, name, baseUrl, \
+         defaultApi}}` for the inquiry probe and the key request.\n\
+         3. Keys: as soon as the docs say the endpoint needs authentication — or a probe \
+         fails with HTTP 401/403 — call `request_provider_key` once and stop. A key card \
+         appears in the conversation; the user saves the key there and your next message \
+         reports the outcome. A saved key means re-run the probe. Keys are never typed in \
+         chat, and you never ask for one in text.\n\
+         4. Propose: call `model_proposal` with `changes` — complete records; copy \
+         api/compat/thinkingLevelMap from the dump when replacing an id and change only \
+         what differs; use set_hidden_models for retired ids. A new proposal touching the \
+         same provider replaces the previous one.\n\
+         5. Stop: give a short summary and STOP. A proposal card appears in the \
+         conversation; the user reviews and writes it there. Never claim a proposal is \
+         written or applied, and do not ask for approval in chat.\n\
+         If the docs lack a field you need, say exactly what is missing and ask — never \
+         guess a model ID or a price."
+    )
+}
