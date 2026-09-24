@@ -1,5 +1,10 @@
 # Model setup runs in a scoped setup chat; the agent never applies
 
+**Status:** superseded by ADR-0037 (Provider Mode: catalog setup is a chat
+mode, not a dialog). The scoping argument — catalog tools are mounted only
+where catalog setup runs, and the agent never holds an apply tool — carries
+over.
+
 The v1 surface (ADR-0029: a proposal tool plus an apply tool behind a forced
 approval, mounted in every chat) is replaced by a fixed flow: a hidden
 `model-setup` chat (found/created by `EnsureModelSetupChat`, scoped via

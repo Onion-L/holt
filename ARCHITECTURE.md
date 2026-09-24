@@ -51,20 +51,16 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `ListHiddenModels` (the greyed ids the Settings page unhides), and
   `ResetProviderCatalog` (per-provider, or global when `providerId` is
   absent). `ListApiDialects` serves the record form's dialect dropdown
-  (pi-core's compat registry). Every write takes effect without a restart. The model-setup
-  dialog's surface rides the same store: `StartModelSetupChat`
-  (starts a fresh session-scoped hidden setup chat, deleting any earlier
-  one), `ListModelProposals`,
-  `ApplyModelProposal` (the review panel's write button), and
-  `DiscardModelProposal` (its discard button). The setup chat's Key
-  request (ADR-0031) rides the same dialog: `GetProviderKeyRequest`
-  (the pending request the card renders — `{}` when none) and
-  `SettleProviderKeyRequest` (the card's Save/Dismiss: saves the key to
-  the credential store — never the chat — and queues the fixed notice
-  that continues the setup chat; a Save also approves the exact
-  (provider, baseUrl) destination shown, letting this session's
-  planned-target probes carry the key — the SSRF public-host gate for
-  planned targets stays).
+  (pi-core's compat registry). Every write takes effect without a restart. Provider Mode
+  (ADR-0037) rides the same store: `EnterProviderMode` /
+  `ExitProviderMode` / `GetProviderMode` flip and read `Chat::provider_mode`;
+  `ApplyModelProposal` and `DiscardModelProposal` are a proposal card's
+  Write and Discard buttons. `SettleProviderKeyRequest` is the Key request
+  card's Save/Dismiss (ADR-0031): it saves the key to the credential store —
+  never the chat — and queues the fixed notice that continues the chat; a
+  Save also approves the exact (provider, baseUrl) destination shown, so
+  the chat's probes of that target carry the key — the SSRF public-host
+  gate for planned and draft targets stays.
 - Title settings (ADR-0012): `GetTitleSettings` / `SaveTitleSettings` — the
   engine-owned title-task record (`TitleSettings` in `title-settings.json`),
   both replying `TitleSettingsState` (settings + validation warning).
@@ -541,30 +537,34 @@ marks the whole snapshot — providers with deferred-tool support keep the
 definitions out of the static context until the model loads them through
 the loader (and calls them, which turns them immediate); providers without
 support see the full static declarations, exactly as before. The pair is
-never persisted to the transcript. Subagent runs, planning Turns, and the
-model-setup chat mount no MCP tools; MCP calls render on the existing
+never persisted to the transcript. Subagent runs, planning Turns, and
+Provider Mode Turns mount no MCP tools; MCP calls render on the existing
 unknown-tool transcript part. The child environment is sanitized (credential-shaped variables
 stripped unless the server's `env` sets them) and config values expand
 `${VAR}`/`${VAR:-default}` at run time.
 Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —
-planning Turns excepted, since they run the read-only toolset. The model
-setup surface (ADR-0030) lives in its own chat, not here: normal chats
-mount no catalog tool at all — their catalog-write capability is nil. A
-hidden `model-setup` chat (`ChatConfig.scope`, started fresh per dialog
-session by `StartModelSetupChat` and deleted when the dialog closes — no
-conversation memory carries across opens) runs the fixed four-step
-workflow under a dedicated
-system prompt, with a toolset of exactly the web tools plus the read-only
+planning Turns excepted, since they run the read-only toolset. Catalog setup
+is Provider Mode (ADR-0037), not this toolset: Turns outside the mode mount
+no catalog tool at all — their catalog-write capability is nil. A Turn
+admitted with `Chat::provider_mode` set keeps the workspace prompt, appends
+the Provider Mode block (research → resolve → propose → stop), and mounts
+exactly the web tools, `request_provider_key`, and the read-only
 `model_proposal` (validates an exact catalog change against the local
 catalog — no-op detection, deterministic checks, an optional read-only
-`GET {baseUrl}/models` probe using the stored key, single-record dumps as
+`GET {baseUrl}/models` probe using an approved key, single-record dumps as
 replacement templates — then stores it engine-side and returns a proposal
-id). No file tools, no delegation, and no apply tool: the only write path
-is the Settings review panel's `ApplyModelProposal` RPC, which
-re-validates and transactionally applies a stored proposal — the button is
-the human approval (`ListModelProposals` feeds the panel). Proposals live
-per chat, in memory, capped; a restart drops them and the assistant
-re-proposes. Keys never enter the path — Settings is the only key entry.
+id). Both tools accept a draft provider, so a key can be asked for before
+anything is written. No file tools, no delegation, and no apply tool: a
+stored proposal lands as a `ModelProposal` transcript part whose Write
+button calls `ApplyModelProposal`, which re-validates and applies it under
+a baseline check narrowed to the providers it touches — the button is the
+human approval. A newer proposal on the same provider supersedes the older
+card, and each card's state (pending, written, discarded, superseded) is
+stamped into the transcript. Key requests land as `KeyRequest` parts the
+same way. Pending proposals, the pending Key request, and approved key
+destinations persist in `provider-mode/<chatId>.json` and go with the chat.
+Keys never enter History, a tool argument, or the Transcript. Legacy
+`model-setup` chat rows (ADR-0030) are deleted on startup.
 
 ## Data on disk
 
@@ -601,6 +601,9 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   any model or tool work.
 - `usage/<chatId>.jsonl` — the per-chat usage ledger; `usage/archive.jsonl`
   holds the grow-only device-level archive of deleted chats.
+- `provider-mode/<chatId>.json` — a Provider Mode chat's pending
+  proposals, pending Key request, and approved key destinations
+  (ADR-0037); never a key value.
 - `turn-changes/<chatId>/<messageId>.json` — one settled Turn's frozen change
   set (ADR-0024).
 - `images/` — Holt-managed pasted pixels.

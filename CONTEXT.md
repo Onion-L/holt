@@ -56,12 +56,12 @@ _Avoid_: double-Esc stop
   _Avoid_: model config, catalog entry
 - **Hidden model**: a catalog model the user excluded from model listings; chats already configured with it keep resolving it. Reversible by unhide or Provider reset.
   _Avoid_: retired model, deleted model (nothing is deleted)
-- **Model proposal**: an exact catalog change the engine has prepared and stored — model records, a custom provider, or hidden models — applied only by an explicit user action, and applied exactly as stored.
+- **Model proposal**: an exact catalog change the engine has prepared and stored — model records, a custom provider, or hidden models — shown as a card in the Provider Mode transcript and applied only by its Write button, exactly as stored. A newer proposal touching the same provider supersedes it.
   _Avoid_: plan (Plan Mode vocabulary), diff, suggestion
-- **Key request**: the Setup chat's way of collecting a provider API key mid-workflow: the assistant asks for it, a Settings-owned prompt collects the value locally, and saving it notifies the chat to continue. The value never enters History. The prompt shows the destination the key would be sent to, and saving it approves that destination.
+- **Key request**: Provider Mode's way of collecting a provider API key mid-workflow: the assistant asks for it, a card in the transcript collects the value locally, and saving it notifies the chat to continue. The value never enters History, a tool argument, or the Transcript. The card shows the destination the key would be sent to, and saving it approves that destination for the chat. The provider may still be a draft that no proposal has written.
   _Avoid_: key prompt, password dialog, secret input
-- **Setup chat**: the hidden `model-setup` chat the Settings dialog drives. It runs a fixed catalog workflow with a toolset that touches no files; writes happen only through the review panel, never by its agent.
-  _Avoid_: setup session, wizard chat
+- **Provider Mode**: a chat-level mode, like Plan Mode and exclusive with it, under which the conversation adds and updates providers. Its Turns run a fixed catalog workflow with a toolset that touches no files; writes happen only through a proposal card's Write button, never by the agent. Entered from the mode chip, `/provider`, or Settings' "Add with AI"; it stays on until the user leaves it.
+  _Avoid_: setup chat, setup session, wizard chat
 - **Provider reset**: dropping every user-written catalog entry for one Provider — model records, custom provider definition, hidden models — leaving the compiled catalog under the hand-edited overlay. Credentials are not catalog entries and survive it.
   _Avoid_: restore, backup, factory reset
 - **Path reference**: a file or folder location attached to a user message for the agent to consult. It refers to whatever exists at that location when the agent reads it, including a missing target; it does not preserve a snapshot of the contents.

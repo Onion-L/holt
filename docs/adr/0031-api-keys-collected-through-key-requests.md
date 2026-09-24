@@ -1,5 +1,10 @@
 # API keys are collected through key requests, never as chat text
 
+**Status:** amended by ADR-0037. The card moved from the Settings dialog
+into the Provider Mode transcript, destination approvals persist with the
+chat instead of the session, and a draft provider can be addressed. The
+key rules below are unchanged.
+
 The setup chat can raise a **key request**: a `request_provider_key`
 tool (mounted only there; normal chats never see it) makes the engine
 hold a pending request that the Settings dialog renders as a card above
