@@ -8,9 +8,9 @@ use holt_doc::{
     diff_transcript,
 };
 use holt_proto::{
-    AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, ProviderId, ReasoningLevel,
-    RunRequest, SessionStatus, Space, TitleSettings, TitleSettingsState, TitleSource,
-    TurnChangeSetReply, WebSearchBackendOption, WebSearchSettingsState,
+    AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, RunRequest, SessionStatus, Space,
+    TitleSettings, TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
+    WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
@@ -239,81 +239,6 @@ impl EngineService {
         drop(spaces);
         self.spaces_tx.send_replace(value);
         RpcReply::value(&serde_json::json!({}))
-    }
-
-    /// Starts a fresh hidden `model-setup` chat (model setup v2). The
-    /// dialog session IS the chat's whole lifetime — the UI deletes it on
-    /// close — so nothing carries across opens: no transcript memory for
-    /// the model, no stale proposals. Any earlier setup chat still on
-    /// record (a dialog killed mid-session, a crashed run) is deleted here
-    /// outright. The row is archived so the sidebar never lists it.
-    fn start_model_setup_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        let provider = ProviderId(required_string(&params, "provider")?.to_string());
-        let model = required_string(&params, "model")?.to_string();
-        let reasoning: Option<ReasoningLevel> = params
-            .get("reasoning")
-            .filter(|value| !value.is_null())
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok());
-        let config = ChatConfig {
-            provider,
-            model,
-            reasoning,
-            model_options: Default::default(),
-            permission_mode: self.mode_default.get(),
-            scope: holt_proto::ChatScope::ModelSetup,
-        };
-        let chat_id = uuid::Uuid::new_v4().to_string();
-        let stale = {
-            let mut chats = self
-                .runtime
-                .chats
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            let stale: Vec<String> = chats
-                .iter()
-                .filter(|chat| {
-                    chat.config
-                        .as_ref()
-                        .is_some_and(|config| config.scope == holt_proto::ChatScope::ModelSetup)
-                })
-                .map(|chat| chat.id.clone())
-                .collect();
-            chats.retain(|chat| !stale.contains(&chat.id));
-            chats.push(Chat {
-                id: chat_id.clone(),
-                device_id: self.engine_info.device_id.clone(),
-                title: Some("Provider setup".into()),
-                title_source: TitleSource::UserManual,
-                title_task_started: true,
-                archived: true,
-                pinned: false,
-                cwd: None,
-                branch: None,
-                checkout_id: None,
-                source_context: None,
-                config: Some(config),
-                last_message_preview: None,
-                last_message_at: None,
-                created_at: Utc::now(),
-                space_id: None,
-                last_seen_at: None,
-                room_gen: None,
-                compact_before_next_turn: false,
-                plan_mode: None,
-                provider_mode: false,
-            });
-            persist_chats(&self.data_dir, &chats)
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
-            stale
-        };
-        for stale_id in &stale {
-            self.runtime.remove_chat(stale_id);
-            self.terminals.close_chat(stale_id);
-        }
-        self.runtime.chat(&chat_id);
-        self.runtime.publish_chats();
-        RpcReply::value(&serde_json::json!({ "chatId": chat_id }))
     }
 
     fn create_chat(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -891,14 +816,7 @@ impl EngineService {
                     row.source_context = Some(source);
                 }
                 planning = row.plan_mode.is_some();
-                // Legacy model-setup rows run as Provider Mode until they
-                // are retired.
-                let scope = row
-                    .config
-                    .as_ref()
-                    .map(|config| config.scope)
-                    .unwrap_or_default();
-                provider_mode = row.provider_mode || scope == holt_proto::ChatScope::ModelSetup;
+                provider_mode = row.provider_mode;
                 // The permission mode is NOT the
                 // request's to move (ADR-0014): the stored mode is
                 // authoritative — switches land through the mode RPC and
@@ -910,6 +828,11 @@ impl EngineService {
                     .as_ref()
                     .map(|config| config.permission_mode)
                     .unwrap_or(mode);
+                let scope = row
+                    .config
+                    .as_ref()
+                    .map(|config| config.scope)
+                    .unwrap_or_default();
                 row.config = Some(ChatConfig {
                     provider: request.provider.clone(),
                     model: request.model.clone(),
@@ -2621,14 +2544,6 @@ impl RpcService for EngineService {
                 self.refresh_catalog_windows();
                 RpcReply::value(&serde_json::json!({ "applied": applied }))
             }
-            methods::LIST_MODEL_PROPOSALS => {
-                let chat_id = required_string(&params, "chatId")?;
-                if !crate::store::id_is_path_safe(chat_id) {
-                    return Err(RpcError::BadParams("invalid chatId".into()));
-                }
-                let chat = self.runtime.chat(chat_id);
-                RpcReply::value(&crate::tools::model_setup::proposal_views(&chat))
-            }
             methods::DISCARD_MODEL_PROPOSAL => {
                 let chat_id = required_string(&params, "chatId")?;
                 if !crate::store::id_is_path_safe(chat_id) {
@@ -2650,20 +2565,6 @@ impl RpcService for EngineService {
                     holt_doc::parts::ProposalCardState::Discarded,
                 );
                 RpcReply::value(&serde_json::json!({ "discarded": true }))
-            }
-            methods::START_MODEL_SETUP_CHAT => self.start_model_setup_chat(params),
-            // The Key request's read half (ADR-0031): the dialog's card.
-            methods::GET_PROVIDER_KEY_REQUEST => {
-                let chat_id = required_string(&params, "chatId")?;
-                if !crate::store::id_is_path_safe(chat_id) {
-                    return Err(RpcError::BadParams("invalid chatId".into()));
-                }
-                let chat = self.runtime.chat(chat_id);
-                let view =
-                    crate::tools::model_setup::key_request_view(&self.providers, &chat).await;
-                // `{}` when none: a bare JSON null on the wire reads back
-                // as an absent `ok` field and would hang the client call.
-                RpcReply::value(&view.unwrap_or(serde_json::json!({})))
             }
             // The settle (ADR-0031): one engine-owned operation — save the
             // key (never the chat), queue the fixed notice, clear the card.
@@ -2739,7 +2640,7 @@ impl RpcService for EngineService {
                     crate::tools::model_setup::key_dismissed_notice(&pending.provider_id)
                 };
                 // The notice rides the queue as an ordinary user message on
-                // the setup chat's own model — exactly what the composer
+                // the chat's own model — exactly what the composer
                 // would have sent had the user typed it.
                 let (config, cwd) = {
                     let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
@@ -2753,7 +2654,7 @@ impl RpcService for EngineService {
                     (row.config.clone(), cwd)
                 };
                 let config = config
-                    .ok_or_else(|| RpcError::Failed("the setup chat has no model config".into()))?;
+                    .ok_or_else(|| RpcError::Failed("the chat has no model config".into()))?;
                 let message_id = format!("key-request-{}", uuid::Uuid::new_v4());
                 if let Err(error) = self.enqueue_run(
                     chat.clone(),

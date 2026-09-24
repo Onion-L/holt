@@ -617,3 +617,543 @@ async fn a_draft_key_request_saves_under_the_draft_and_never_leaks_the_key() {
     }
     assert!(approved, "the draft destination was approved on the chat");
 }
+
+// ---------------------------------------------------------------------------
+// The review and key seams, ported from the dialog-era suite (Step 8)
+// ---------------------------------------------------------------------------
+
+/// One complete, servable record.
+fn record_json(provider: &str, id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": id,
+        "api": "openai-completions",
+        "provider": provider,
+        "baseUrl": "https://api.openai.com/v1",
+        "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 1.0, "output": 2.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+        "contextWindow": 321_000,
+        "maxTokens": 16_384,
+    })
+}
+
+fn propose_record(call_id: &str, provider: &str, model: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        call_id,
+        "model_proposal",
+        serde_json::json!({
+            "changes": [{
+                "action": "upsert_model_record",
+                "providerId": provider,
+                "record": record_json(provider, model),
+            }],
+        }),
+    )
+}
+
+fn key_call(call_id: &str, provider_id: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        call_id,
+        "request_provider_key",
+        serde_json::json!({ "providerId": provider_id }),
+    )
+}
+
+/// A provider-mode chat with no Turn run yet.
+async fn mode_chat(
+    fixture: &Fixture,
+    replies: Vec<ScriptedReply>,
+) -> (holt_engine::LocalEngine, ScriptedProvider) {
+    let provider = ScriptedProvider::new(replies);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    call(&engine, methods::ENTER_PROVIDER_MODE, "chat-1").await;
+    (engine, provider)
+}
+
+async fn first_proposal_id(engine: &holt_engine::LocalEngine) -> String {
+    cards(engine, "chat-1", "modelProposal").await[0]["proposalId"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn list_models(engine: &holt_engine::LocalEngine, provider: &str) -> Vec<serde_json::Value> {
+    let RpcReply::Value(models) = engine
+        .handle(
+            methods::LIST_MODELS,
+            serde_json::json!({ "providerId": provider }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ListModels did not return a value");
+    };
+    models.as_array().unwrap().clone()
+}
+
+async fn reveal_key(engine: &holt_engine::LocalEngine, provider: &str) -> Option<String> {
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::REVEAL_PROVIDER_KEY,
+            serde_json::json!({ "providerId": provider }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("RevealProviderKey did not return a value");
+    };
+    reply["key"].as_str().map(str::to_string)
+}
+
+async fn settle(engine: &holt_engine::LocalEngine, key: Option<&str>) -> serde_json::Value {
+    let mut params = serde_json::json!({ "chatId": "chat-1" });
+    if let Some(key) = key {
+        params["key"] = key.into();
+    }
+    let RpcReply::Value(settled) = engine
+        .handle(methods::SETTLE_PROVIDER_KEY_REQUEST, params)
+        .await
+        .unwrap()
+    else {
+        panic!("SettleProviderKeyRequest did not return a value");
+    };
+    settled
+}
+
+#[tokio::test]
+async fn a_record_proposal_writes_a_live_model_record() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            propose_record("call-1", "openai", "gpt-via-mode"),
+            ScriptedReply::text("proposed"),
+        ],
+    )
+    .await;
+    let proposal_id = first_proposal_id(&engine).await;
+    // Stored, not written.
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .all(|row| row["id"] != "openai/gpt-via-mode")
+    );
+
+    let RpcReply::Value(applied) =
+        proposal_rpc(&engine, methods::APPLY_MODEL_PROPOSAL, &proposal_id)
+            .await
+            .unwrap()
+    else {
+        panic!("ApplyModelProposal did not return a value");
+    };
+    assert!(
+        applied["applied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row == "openai/gpt-via-mode")
+    );
+    let row = list_models(&engine, "openai")
+        .await
+        .into_iter()
+        .find(|row| row["id"] == "openai/gpt-via-mode")
+        .expect("the applied record is live");
+    assert_eq!(row["contextWindow"], 321_000);
+}
+
+#[tokio::test]
+async fn a_stale_proposal_is_refused_and_changes_nothing() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            propose_record("call-1", "openai", "gpt-stale"),
+            ScriptedReply::text("proposed"),
+        ],
+    )
+    .await;
+    let proposal_id = first_proposal_id(&engine).await;
+
+    // The catalog moves under the proposal.
+    engine
+        .handle(
+            methods::SAVE_MODEL_RECORD,
+            serde_json::json!({
+                "providerId": "openai",
+                "record": record_json("openai", "gpt-stale"),
+            }),
+        )
+        .await
+        .unwrap();
+
+    let Err(error) = proposal_rpc(&engine, methods::APPLY_MODEL_PROPOSAL, &proposal_id).await
+    else {
+        panic!("the stale apply must fail");
+    };
+    assert!(
+        error.to_string().contains("changed since this proposal"),
+        "the staleness refusal surfaced: {error}"
+    );
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .any(|row| row["id"] == "openai/gpt-stale")
+    );
+}
+
+#[tokio::test]
+async fn unknown_proposals_and_chats_are_refused() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_chat(&fixture, vec![]).await;
+    assert!(
+        proposal_rpc(&engine, methods::APPLY_MODEL_PROPOSAL, "not-a-proposal")
+            .await
+            .is_err()
+    );
+    for method in [
+        methods::APPLY_MODEL_PROPOSAL,
+        methods::DISCARD_MODEL_PROPOSAL,
+    ] {
+        assert!(
+            engine
+                .handle(
+                    method,
+                    serde_json::json!({ "chatId": "../escape", "proposalId": "x" }),
+                )
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_discarded_proposal_cannot_be_written() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            propose_record("call-1", "openai", "gpt-discarded"),
+            ScriptedReply::text("proposed"),
+        ],
+    )
+    .await;
+    let proposal_id = first_proposal_id(&engine).await;
+    let RpcReply::Value(reply) =
+        proposal_rpc(&engine, methods::DISCARD_MODEL_PROPOSAL, &proposal_id)
+            .await
+            .unwrap()
+    else {
+        panic!("DiscardModelProposal did not return a value");
+    };
+    assert_eq!(reply["discarded"], true);
+    assert!(
+        proposal_rpc(&engine, methods::APPLY_MODEL_PROPOSAL, &proposal_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        list_models(&engine, "openai")
+            .await
+            .iter()
+            .all(|row| row["id"] != "openai/gpt-discarded")
+    );
+}
+
+#[tokio::test]
+async fn a_settled_key_is_saved_and_the_chat_is_told() {
+    let fixture = Fixture::new();
+    let (engine, provider) = mode_chat(
+        &fixture,
+        vec![
+            key_call("call-1", "zai-coding-cn"),
+            ScriptedReply::text("I've asked for the key"),
+            ScriptedReply::text("re-probed"),
+        ],
+    )
+    .await;
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    run_turn(&engine, &fixture, "list the models").await;
+
+    let settled = settle(&engine, Some("sk-test-secret")).await;
+    assert_eq!(settled["settled"], "saved");
+    assert_eq!(
+        reveal_key(&engine, "zai-coding-cn").await.as_deref(),
+        Some("sk-test-secret")
+    );
+    common::wait_for_transcript_text(&mut transcript, "API key saved for zai-coding-cn").await;
+    wait_for_requests(&provider, 3).await;
+    // Nothing is pending any more: a second settle fails.
+    assert!(
+        engine
+            .handle(
+                methods::SETTLE_PROVIDER_KEY_REQUEST,
+                serde_json::json!({ "chatId": "chat-1" }),
+            )
+            .await
+            .is_err()
+    );
+    for request in provider.requests() {
+        let summary = serde_json::to_string(&request.messages).unwrap_or_default();
+        assert!(
+            !summary.contains("sk-test-secret"),
+            "the key leaked to the model"
+        );
+    }
+}
+
+/// A key settled through the card rides the next probe as the
+/// Authorization header, and never reaches anything the model saw.
+#[tokio::test]
+async fn a_settled_key_reaches_the_wire_on_a_stored_probe() {
+    let fixture = Fixture::new();
+    let (server, heads) =
+        common::serve_loopback_with_capture("application/json", br#"{"data":[{"id":"acme-1"}]}"#)
+            .await;
+    let (engine, provider) = mode_chat(
+        &fixture,
+        vec![
+            key_call("call-1", "acme-custom"),
+            ScriptedReply::text("asked"),
+            ScriptedReply::tool_call(
+                "call-2",
+                "model_proposal",
+                serde_json::json!({ "providerId": "acme-custom", "probe": true }),
+            ),
+            ScriptedReply::text("probed"),
+        ],
+    )
+    .await;
+    engine
+        .handle(
+            methods::SAVE_CUSTOM_PROVIDER,
+            serde_json::json!({
+                "id": "acme-custom",
+                "name": "Acme custom",
+                "baseUrl": server.base,
+                "defaultApi": "openai-completions",
+            }),
+        )
+        .await
+        .unwrap();
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    run_turn(&engine, &fixture, "list the models").await;
+    assert_eq!(
+        settle(&engine, Some("sk-wire-secret")).await["settled"],
+        "saved"
+    );
+
+    common::wait_for_transcript_text(&mut transcript, "acme-1").await;
+    wait_for_requests(&provider, 4).await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(snapshot.contains("key attached"));
+    let heads = heads.lock().unwrap().clone();
+    assert!(
+        heads.iter().any(|head| {
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-wire-secret")
+        }),
+        "the settled key rode the probe as the Authorization header"
+    );
+    for request in provider.requests() {
+        let summary = serde_json::to_string(&request.messages).unwrap_or_default();
+        assert!(!summary.contains("sk-wire-secret"));
+    }
+}
+
+/// A settle's approval never softens the SSRF gate: a planned loopback
+/// baseUrl stays refused, key or no key.
+#[tokio::test]
+async fn a_planned_loopback_target_stays_refused_key_or_not() {
+    let fixture = Fixture::new();
+    let server = common::serve_loopback("application/json", br#"{"data":[]}"#).await;
+    let propose = || {
+        ScriptedReply::tool_call(
+            "call-probe",
+            "model_proposal",
+            serde_json::json!({
+                "changes": [{
+                    "action": "upsert_custom_provider",
+                    "provider": {
+                        "id": "acme-planned",
+                        "name": "Acme planned",
+                        "baseUrl": server.base,
+                        "defaultApi": "openai-completions",
+                    },
+                }],
+                "probe": true,
+            }),
+        )
+    };
+    let (engine, _provider) = mode_chat(
+        &fixture,
+        vec![
+            propose(),
+            ScriptedReply::text("proposed"),
+            key_call("call-key", "acme-planned"),
+            ScriptedReply::text("asked"),
+            ScriptedReply::text("continuing"),
+            propose(),
+            ScriptedReply::text("probed"),
+        ],
+    )
+    .await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "add it").await;
+    common::wait_for_transcript_text(&mut transcript, "refused").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    run_turn(&engine, &fixture, "list the models").await;
+    settle(&engine, Some("sk-planned")).await;
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "probe again").await;
+    common::wait_for_transcript_text(&mut transcript, "is not a public address").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert_eq!(
+        snapshot.to_string().matches("refused").count(),
+        2,
+        "both planned probes were refused, key or not"
+    );
+}
+
+#[tokio::test]
+async fn a_dismissed_key_request_notifies_without_saving() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_chat(
+        &fixture,
+        vec![
+            key_call("call-1", "zai-coding-cn"),
+            ScriptedReply::text("I've asked for the key"),
+            ScriptedReply::text("researching instead"),
+        ],
+    )
+    .await;
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    run_turn(&engine, &fixture, "list the models").await;
+
+    assert_eq!(settle(&engine, None).await["settled"], "dismissed");
+    common::wait_for_transcript_text(
+        &mut transcript,
+        "The user dismissed the key request for zai-coding-cn",
+    )
+    .await;
+    assert!(reveal_key(&engine, "zai-coding-cn").await.is_none());
+    assert_eq!(
+        cards(&engine, "chat-1", "keyRequest").await[0]["state"],
+        "dismissed"
+    );
+}
+
+#[tokio::test]
+async fn settling_without_a_pending_request_fails() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_chat(&fixture, vec![]).await;
+    for chat_id in ["chat-1", "../escape"] {
+        assert!(
+            engine
+                .handle(
+                    methods::SETTLE_PROVIDER_KEY_REQUEST,
+                    serde_json::json!({ "chatId": chat_id }),
+                )
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn chats_outside_provider_mode_reject_the_catalog_tools() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "model_proposal",
+            serde_json::json!({ "providerId": "openai" }),
+        ),
+        key_call("call-2", "openai"),
+        ScriptedReply::text("done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    run_turn(&engine, &fixture, "set it up").await;
+
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    let empty = Vec::new();
+    for call in ["call-1", "call-2"] {
+        let part = snapshot["reset"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| entry["parts"].as_array().unwrap_or(&empty))
+            .find(|part| part["id"] == call)
+            .expect("the tool part exists");
+        assert_eq!(part["isError"], true, "{call} must settle as an error");
+    }
+    assert!(provider.requests().iter().any(|request| {
+        common::summarize(&request.messages)
+            .iter()
+            .any(|row| row.contains("Tool model_proposal not found"))
+    }));
+    assert!(cards(&engine, "chat-1", "modelProposal").await.is_empty());
+    assert!(cards(&engine, "chat-1", "keyRequest").await.is_empty());
+}
+
+/// Rows the retired Settings setup chat (ADR-0030) left in chats.json are
+/// deleted on startup; ordinary chats stay.
+#[tokio::test]
+async fn legacy_model_setup_chats_are_deleted_on_startup() {
+    let fixture = Fixture::new();
+    let data_dir = fixture.data_dir.path().to_path_buf();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    common::setup_chat(&engine, "chat-1").await;
+    common::setup_chat(&engine, "legacy-setup").await;
+    drop(engine);
+
+    let path = data_dir.join("chats.json");
+    let mut rows: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for row in rows.as_array_mut().unwrap() {
+        if row["id"] == "legacy-setup" {
+            row["config"] = serde_json::json!({
+                "provider": "openai",
+                "model": "openai/gpt-5.4",
+                "reasoning": null,
+                "scope": "model-setup",
+            });
+        }
+    }
+    std::fs::write(&path, serde_json::to_string(&rows).unwrap()).unwrap();
+
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = holt_engine::LocalEngine::assemble(&holt_engine::EngineConfig {
+        data_dir: data_dir.clone(),
+        personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
+        stream_fn: Some(provider.stream_fn()),
+        search_backend_resolver: None,
+    })
+    .unwrap();
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, serde_json::json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchChats did not return a stream");
+    };
+    let frame = common::next_frame(&mut chats).await;
+    let ids: Vec<&str> = frame
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"chat-1"));
+    assert!(!ids.contains(&"legacy-setup"));
+    let stored = std::fs::read_to_string(&path).unwrap();
+    assert!(!stored.contains("legacy-setup"));
+}

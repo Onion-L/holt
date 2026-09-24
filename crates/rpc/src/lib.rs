@@ -56,28 +56,13 @@ pub mod methods {
     /// Drops every user-written catalog entry for one provider — or for all
     /// providers when `providerId` is absent.
     pub const RESET_PROVIDER_CATALOG: &str = "ResetProviderCatalog";
-    /// The Settings review panel's write path (model setup v2): params
-    /// `{chatId, proposalId}` execute a proposal the setup chat stored —
-    /// re-validated against the current catalog. The agent never applies;
-    /// this button does.
+    /// The proposal card's Write (ADR-0037): params `{chatId, proposalId}`
+    /// execute a proposal the chat stored — re-validated against the
+    /// current catalog. The agent never applies; this button does.
     pub const APPLY_MODEL_PROPOSAL: &str = "ApplyModelProposal";
-    /// The setup chat's stored proposals, newest first — the review
-    /// panel's data (`{chatId}` → `[{id, summary, changes}]`). In-memory
-    /// only; a restart empties it and the assistant re-proposes.
-    pub const LIST_MODEL_PROPOSALS: &str = "ListModelProposals";
-    /// Drops one stored proposal (the review panel's discard button):
+    /// Drops one stored proposal (the proposal card's Discard):
     /// params `{chatId, proposalId}`. Nothing is written.
     pub const DISCARD_MODEL_PROPOSAL: &str = "DiscardModelProposal";
-    /// Starts a fresh hidden `model-setup` chat (params `{provider, model,
-    /// reasoning?}`) → `{chatId}`. Session-scoped: earlier setup chats are
-    /// deleted outright, and the dialog deletes this one on close — no
-    /// conversation memory carries across opens.
-    pub const START_MODEL_SETUP_CHAT: &str = "StartModelSetupChat";
-    /// The setup chat's pending Key request (ADR-0031): `{chatId}` →
-    /// `{providerId, providerName, destination, hasKey}`, or `{}` when no
-    /// request is pending. The dialog's key-entry card reads it.
-    /// In-memory only; it dies with the chat.
-    pub const GET_PROVIDER_KEY_REQUEST: &str = "GetProviderKeyRequest";
     /// Settles the pending Key request (ADR-0031): params `{chatId, key?}`.
     /// With `key` the value is saved to the credential store (never the
     /// chat) and a fixed "API key saved for …" notice is queued as an

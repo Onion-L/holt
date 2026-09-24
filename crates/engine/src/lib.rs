@@ -204,14 +204,33 @@ impl LocalEngine {
             serde_json::to_value(&*spaces).map_err(|error| EngineError::Other(error.to_string()))?
         };
         let (spaces_tx, _) = watch::channel(spaces_value);
+        // ADR-0037 retired the Settings setup chat (ADR-0030): rows older
+        // builds left behind are deleted with their records on startup.
+        let mut chats = load_chats(&config.data_dir)?;
+        let retired: Vec<String> = chats
+            .iter()
+            .filter(|chat| {
+                chat.config
+                    .as_ref()
+                    .is_some_and(|config| config.scope == holt_proto::ChatScope::ModelSetup)
+            })
+            .map(|chat| chat.id.clone())
+            .collect();
+        if !retired.is_empty() {
+            chats.retain(|chat| !retired.contains(&chat.id));
+            store::persist_chats(&config.data_dir, &chats)?;
+        }
         let runtime = Arc::new(AgentRuntime::new(
             device_id.clone(),
             WorkspaceScope::Local,
             config.data_dir.clone(),
-            load_chats(&config.data_dir)?,
+            chats,
             config.stream_fn.clone(),
             crate::mcp::McpPool::load(&config.data_dir)?,
         ));
+        for chat_id in &retired {
+            runtime.remove_chat(chat_id);
+        }
         let credentials = Arc::new(HoltCredentialStore::load(&config.data_dir)?);
         let provider_settings = Arc::new(ProviderSettingsStore::load(&config.data_dir)?);
         // The provider store is read once per boot: the file is written only

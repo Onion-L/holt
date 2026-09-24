@@ -1,7 +1,7 @@
-//! The model-setup surface (ADR-0029, reshaped by ADR-0030): the
-//! read-only `model_proposal` tool validates an exact provider-catalog
-//! change and stores it engine-side; the only apply path is the Settings
-//! review panel's `ApplyModelProposal` RPC, which executes a stored
+//! The provider-catalog tools (ADR-0029, now mounted by Provider Mode,
+//! ADR-0037): the read-only `model_proposal` tool validates an exact
+//! provider-catalog change and stores it engine-side; the only apply path
+//! is the proposal card's `ApplyModelProposal` RPC, which executes a stored
 //! proposal by id under the same revalidation — the agent never holds an
 //! apply tool, so what the user saw in the transcript is bit-for-bit what
 //! executes. API keys never enter this path: they live in the credential
@@ -207,9 +207,7 @@ pub(crate) struct StoredProposal {
     /// when the proposal was built. A hash, not the slice: stored record
     /// headers are secrets and the proposal is persisted (ADR-0037).
     pub(crate) baseline: String,
-    /// Creation time (unix ms). The review panel filters proposals by it:
-    /// ones stored before the dialog opened belong to earlier sessions and
-    /// must not render as actionable.
+    /// Creation time (unix ms).
     pub(crate) created_at: i64,
 }
 
@@ -1109,70 +1107,7 @@ fn probe_section(
     })
 }
 
-/// The review panel's view of one change.
-fn change_view(change: &CatalogChange) -> serde_json::Value {
-    match change {
-        CatalogChange::UpsertModelRecord {
-            provider_id,
-            record,
-        } => serde_json::json!({
-            "action": "upsert_model_record",
-            "providerId": provider_id,
-            "modelId": record.id,
-            "record": record,
-        }),
-        CatalogChange::UpsertCustomProvider { provider } => serde_json::json!({
-            "action": "upsert_custom_provider",
-            "providerId": provider.id,
-            "provider": provider,
-        }),
-        CatalogChange::RemoveCustomProvider { provider_id } => serde_json::json!({
-            "action": "remove_custom_provider",
-            "providerId": provider_id,
-        }),
-        CatalogChange::RemoveModelRecord {
-            provider_id,
-            model_id,
-        } => serde_json::json!({
-            "action": "remove_model_record",
-            "providerId": provider_id,
-            "modelId": model_id,
-        }),
-        CatalogChange::SetHiddenModels {
-            provider_id,
-            model_ids,
-        } => serde_json::json!({
-            "action": "set_hidden_models",
-            "providerId": provider_id,
-            "modelIds": model_ids,
-        }),
-    }
-}
-
-/// The chat's stored proposals, newest first, as the review panel renders
-/// them: id, one-line summary, and the structured changes.
-pub(crate) fn proposal_views(chat: &ChatRuntime) -> Vec<serde_json::Value> {
-    chat.proposals
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .iter()
-        .rev()
-        .map(|proposal| {
-            serde_json::json!({
-                "id": proposal.id,
-                "summary": proposal.summary,
-                "createdAt": proposal.created_at,
-                "changes": proposal
-                    .changes
-                    .iter()
-                    .map(change_view)
-                    .collect::<Vec<_>>(),
-            })
-        })
-        .collect()
-}
-
-/// Drops one stored proposal (the review panel's discard). Returns
+/// Drops one stored proposal (the card's Discard). Returns
 /// `false` when the chat holds no proposal under that id.
 pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
     let mut proposals = chat
@@ -1189,7 +1124,7 @@ pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
     discarded
 }
 
-/// The review panel's write button (model setup v2): executes a stored
+/// The proposal card's Write button (ADR-0037): executes a stored
 /// proposal under the same revalidation the tool path used. The human
 /// approval is the button itself — no agent is involved. A successful
 /// apply CONSUMES the proposal (same path as discard): an already-written
@@ -1603,8 +1538,8 @@ pub(crate) fn create_model_proposal_tool(
 // The Key request (ADR-0031)
 // ---------------------------------------------------------------------------
 
-/// The setup chat's pending Key request: what the dialog's card renders
-/// and the settle RPC consumes. Deliberately key-free — only where the
+/// The chat's pending Key request: what the key card stands for and the
+/// settle RPC consumes. Deliberately key-free — only where the
 /// key would go, never a key value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1741,30 +1676,6 @@ pub(crate) fn key_dismissed_notice(provider_id: &str) -> String {
         "The user dismissed the key request for {provider_id}. \
          Continue with web research."
     )
-}
-
-/// The card's view of the pending request (the read RPC's reply body):
-/// who the key is for, where it goes, and whether one is already stored.
-pub(crate) async fn key_request_view(
-    providers: &ProviderAdapter,
-    chat: &ChatRuntime,
-) -> Option<serde_json::Value> {
-    let request = chat
-        .key_request
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()?;
-    let has_key = providers
-        .credentials
-        .reveal_key(&request.provider_id)
-        .await
-        .is_some();
-    Some(serde_json::json!({
-        "providerId": request.provider_id,
-        "providerName": request.provider_name,
-        "destination": request.destination,
-        "hasKey": has_key,
-    }))
 }
 
 const KEY_REQUEST_DESCRIPTION: &str = "Ask the user for a provider's API key through a \
