@@ -1,5 +1,6 @@
-//! The Add Provider dialog: tabs, the manual definition form, the top
-//! action row, and client-side shape checks.
+//! The Add Provider dialog: the manual definition form, the top action
+//! row ("Add with AI" hands off to Provider Mode, ADR-0037), and
+//! client-side shape checks.
 
 use super::*;
 
@@ -12,17 +13,9 @@ pub(super) const NEW_PROVIDER_FIELDS: [(&str, &str); 5] = [
     ("apiKey", "API key (optional)"),
 ];
 
-/// The Add Provider dialog's tabs (design-v2): the manual form, or the AI
-/// setup chat that arrives with V2c.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AddProviderTab {
-    Manual,
-    Ai,
-}
-
-/// The page's top action row: the Add Provider primary next to the global
-/// reset ghost button, both pushed right by a spacer; the reset opens the
-/// confirm dialog.
+/// The page's top action row: "Add with AI" (a new Provider Mode chat) and
+/// the manual Add Provider next to the global reset ghost button, all pushed
+/// right by a spacer; the reset opens the confirm dialog.
 pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
@@ -33,14 +26,34 @@ pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> 
         .gap(px(8.0))
         .pb(px(6.0))
         .child(div().flex_1())
+        .child({
+            let hover_theme = theme.clone();
+            action_button(theme)
+                .id("add-provider-with-ai")
+                .debug_selector(|| "add-provider-with-ai".into())
+                .hover(move |style| widgets::ghost_hover(&hover_theme, style))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ProvidersPageEvent::StartProviderChat);
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOUD)
+                                .size(px(13.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child("Add with AI"),
+                )
+        })
         .child(
             action_button(theme)
                 .id("open-add-provider")
                 .debug_selector(|| "open-add-provider".into())
                 .hover(move |style| widgets::ghost_hover(&hover_theme, style))
-                .on_click(
-                    cx.listener(|page, _, _, cx| page.open_add_dialog(AddProviderTab::Manual, cx)),
-                )
+                .on_click(cx.listener(|page, _, _, cx| page.open_add_dialog(cx)))
                 .child(
                     div()
                         .flex()
@@ -68,24 +81,16 @@ pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> 
         .into_any_element()
 }
 
-/// The Add Provider dialog (design-v2): tabs over the manual form and the
-/// AI setup chat. Rendered through `popover::modal` from the page.
+/// The Add Provider dialog (design-v2): the manual form. Rendered through
+/// `popover::modal` from the page.
 pub(super) fn add_provider_dialog(
     page: &mut ProvidersPage,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
-    let tab = page.add_dialog.unwrap_or(AddProviderTab::Manual);
-    // The AI tab is a chat surface: near-window size so the transcript has
-    // room; the Manual tab keeps the compact form card.
-    let mut card = popover::dialog_card(theme)
+    popover::dialog_card(theme)
         .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_add_dialog(cx)))
-        .w(if tab == AddProviderTab::Ai {
-            px(760.0)
-        } else {
-            px(560.0)
-        })
-        .when(tab == AddProviderTab::Ai, |card| card.h(px(640.0)))
+        .w(px(560.0))
         .gap(px(14.0))
         .child(
             div()
@@ -106,76 +111,17 @@ pub(super) fn add_provider_dialog(
                         ),
                 ),
         )
-        .child(tab_row(tab, theme, cx));
-    card = match tab {
-        AddProviderTab::Manual => card.child(manual_tab(
+        .child(manual_tab(
             page.new_provider_error.clone(),
             &page.new_provider_inputs,
             theme,
             cx,
-        )),
-        AddProviderTab::Ai => card.child(ai_tab(page, theme, cx)),
-    };
-    card.into_any_element()
+        ))
+        .into_any_element()
 }
 
-/// The dialog's tab pills.
-pub(super) fn tab_row(
-    tab: AddProviderTab,
-    theme: &Theme,
-    cx: &mut Context<ProvidersPage>,
-) -> AnyElement {
-    let mut row = div().flex().items_center().gap(px(6.0));
-    for (candidate, label) in [
-        (AddProviderTab::Manual, "Manual"),
-        (AddProviderTab::Ai, "AI"),
-    ] {
-        let selected = candidate == tab;
-        let hover_theme = theme.clone();
-        let mut pill = div()
-            .id(match candidate {
-                AddProviderTab::Manual => "add-provider-tab-manual",
-                AddProviderTab::Ai => "add-provider-tab-ai",
-            })
-            .debug_selector(move || match candidate {
-                AddProviderTab::Manual => "add-provider-tab-manual".into(),
-                AddProviderTab::Ai => "add-provider-tab-ai".into(),
-            })
-            .cursor_pointer()
-            .px(px(10.0))
-            .py(px(5.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .text_size(crate::typography::ui_rems(11.5))
-            .child(label);
-        pill = if selected {
-            pill.border_color(theme.border_strong)
-                .bg(crate::theme::ink(0.05))
-                .text_color(theme.text)
-        } else {
-            pill.border_color(theme.border)
-                .text_color(theme.text_muted)
-                .hover(move |style| {
-                    style
-                        .bg(crate::theme::ink(0.03))
-                        .text_color(hover_theme.text)
-                })
-        };
-        row = row.child(pill.on_click(cx.listener(move |page, _, _, cx| {
-            if page.add_dialog != Some(candidate) {
-                page.add_dialog = Some(candidate);
-                if candidate == AddProviderTab::Ai {
-                    page.prepare_setup(cx);
-                }
-                cx.notify();
-            }
-        })));
-    }
-    row.into_any_element()
-}
-
-/// The manual tab: the custom-provider definition form (moved from the old
-/// page-bottom section).
+/// The custom-provider definition form (moved from the old page-bottom
+/// section).
 pub(super) fn manual_tab(
     error: Option<String>,
     inputs: &HashMap<&'static str, Entity<ComposerInput>>,
@@ -280,11 +226,8 @@ pub(super) fn new_provider_problem(id: &str, base_url: &str, default_api: &str) 
 }
 
 impl ProvidersPage {
-    pub(super) fn open_add_dialog(&mut self, tab: AddProviderTab, cx: &mut Context<Self>) {
-        if tab == AddProviderTab::Ai {
-            self.prepare_setup(cx);
-        }
-        self.add_dialog = Some(tab);
+    pub(super) fn open_add_dialog(&mut self, cx: &mut Context<Self>) {
+        self.add_dialog = true;
         for (key, placeholder) in NEW_PROVIDER_FIELDS {
             // The key field is masked like every other key entry — the
             // manual form collects a credential, not chat text.
@@ -303,47 +246,10 @@ impl ProvidersPage {
     }
 
     pub(super) fn close_add_dialog(&mut self, cx: &mut Context<Self>) {
-        self.add_dialog = None;
+        self.add_dialog = false;
         self.new_provider_error = None;
-        // Dropping the view + the doc watch stops all background work; the
-        // next open re-prepares from a fresh subscription. The session's
-        // applied/error memories go with it — a reopened dialog lists only
-        // what its own session wrote.
-        self.setup_transcript_view = None;
-        self.setup_doc_empty = true;
-        self.setup_proposal_signature = (0, 0, 0);
-        self.setup_queue_task = None;
-        self.setup_queue = None;
-        self.setup_applied.clear();
-        self.setup_apply_errors.clear();
-        self.setup_applying = None;
-        self.setup_key_request = None;
-        self.setup_key_input = None;
-        self.setup_key_error = None;
-        self.setup_key_settling = false;
-        // The setup chat is session-scoped: closing the dialog ends it.
-        // The delete cancels any in-flight turn and drops the transcript
-        // and its stored proposals — nothing carries into the next open.
-        if let Some(chat_id) = self.setup_chat.take() {
-            self.state
-                .update(cx, |state, _| state.unwatch_subagent_doc(&chat_id));
-            if let Some(engine) = self.state.read(cx).engine().cloned() {
-                cx.spawn(async move |_, _| {
-                    let _ = engine
-                        .client()
-                        .call(
-                            methods::MUTATE,
-                            serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
-                        )
-                        .await;
-                })
-                .detach();
-            }
-        }
         cx.notify();
     }
-
-    // -- The AI tab (V2c) --------------------------------------------------
 
     pub(super) fn save_custom_provider(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -473,42 +379,39 @@ mod tests {
         );
     }
 
-    /// The fresh-install dead end: no provider configured means the setup
-    /// assistant has no model to run on. The tab must offer the way out —
-    /// the manual form — not just the dead-end error strip.
+    /// "Add with AI" is a hand-off, not a surface: the page only asks the
+    /// shell for a Provider Mode chat (ADR-0037).
     #[gpui::test]
-    fn the_manual_tab_escape_hatch_when_no_provider_is_configured(cx: &mut gpui::TestAppContext) {
-        let mut harness = setup_dialog_harness(cx);
-        harness
-            .engine
-            .unconfigured
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        harness.click("open-add-provider");
-        harness.click("add-provider-tab-ai");
-        harness.pump();
-
+    fn add_with_ai_asks_the_shell_for_a_provider_chat(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = harness.visual.update(|_, cx| {
+            cx.subscribe(&harness.page, move |_, event: &ProvidersPageEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+        harness.click("add-provider-with-ai");
         assert!(
-            harness
-                .visual
-                .debug_bounds("setup-bootstrap-manual")
-                .is_some(),
-            "the dead end offers the manual form"
+            matches!(
+                events.borrow().as_slice(),
+                [ProvidersPageEvent::StartProviderChat]
+            ),
+            "one StartProviderChat: {:?}",
+            events.borrow()
         );
-        harness.click("setup-bootstrap-manual");
-        let tab = harness
+        let open = harness
             .page
             .update(&mut *harness.visual, |page, _| page.add_dialog);
-        assert_eq!(
-            tab,
-            Some(AddProviderTab::Manual),
-            "the escape hatch switches to the manual tab"
-        );
+        assert!(!open, "no dialog opens");
     }
 
     /// Fills the manual form and saves. Returns the fake's recorded calls.
-    fn fill_and_save_manual(harness: &mut SetupHarness<'_>, key: &str) -> Vec<serde_json::Value> {
+    fn fill_and_save_manual(
+        harness: &mut ProvidersHarness<'_>,
+        key: &str,
+    ) -> Vec<serde_json::Value> {
         harness.click("open-add-provider");
-        harness.click("add-provider-tab-manual");
         harness.pump();
         harness.page.update(&mut *harness.visual, |page, cx| {
             for (field, text) in [
@@ -536,7 +439,7 @@ mod tests {
     /// provider save and the key save land together, no model involved.
     #[gpui::test]
     fn the_manual_tab_key_field_writes_the_credential_path(cx: &mut gpui::TestAppContext) {
-        let mut harness = setup_dialog_harness(cx);
+        let mut harness = providers_harness(cx);
         let saves = fill_and_save_manual(&mut harness, "sk-manual-secret");
         assert_eq!(saves.len(), 1, "the provider definition saved");
         let keys = harness.engine.saved_keys.lock().unwrap().clone();
@@ -560,7 +463,7 @@ mod tests {
         );
         let open = harness
             .page
-            .update(&mut *harness.visual, |page, _| page.add_dialog.is_some());
+            .update(&mut *harness.visual, |page, _| page.add_dialog);
         assert!(!open, "the dialog closed on success");
 
         // The panel behind the dialog shows the stored state: expanding
@@ -586,7 +489,7 @@ mod tests {
     /// existing provider leaves its stored key exactly as it was.
     #[gpui::test]
     fn an_empty_manual_key_field_leaves_the_stored_key_untouched(cx: &mut gpui::TestAppContext) {
-        let mut harness = setup_dialog_harness(cx);
+        let mut harness = providers_harness(cx);
         harness
             .engine
             .keys

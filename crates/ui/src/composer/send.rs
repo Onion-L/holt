@@ -162,6 +162,7 @@ impl Composer {
                 super::slash::PlanAction::Enter => {
                     self.pickers.update(cx, |pickers, cx| {
                         pickers.plan_mode_draft = true;
+                        pickers.provider_mode_draft = false;
                         cx.notify();
                     });
                     if self.state.read(cx).selected_chat.is_some() {
@@ -176,6 +177,17 @@ impl Composer {
                     return;
                 }
                 super::slash::PlanAction::Task(_) => {}
+            },
+            super::slash::Parsed::Provider { action } => match action {
+                super::slash::ProviderAction::Enter => {
+                    self.provider_command(true, cx);
+                    return;
+                }
+                super::slash::ProviderAction::Exit => {
+                    self.provider_command(false, cx);
+                    return;
+                }
+                super::slash::ProviderAction::Task(_) => {}
             },
             _ => {}
         }
@@ -278,6 +290,17 @@ impl Composer {
             plan_enter = true;
             self.plan_mode_draft = false;
         }
+        // Provider Mode (ADR-0037) rides the same way: a canvas draft or
+        // `/provider <task>` enters before the run is queued. The draft
+        // lives on the pickers alone — its chip's close button clears it.
+        let mut provider_enter = false;
+        if is_new && self.pickers.read(cx).provider_mode_draft {
+            provider_enter = true;
+            self.pickers.update(cx, |pickers, cx| {
+                pickers.provider_mode_draft = false;
+                cx.notify();
+            });
+        }
         let restore_text;
         if let super::slash::Parsed::Plan {
             action: super::slash::PlanAction::Task(task),
@@ -289,6 +312,14 @@ impl Composer {
             // path (references, stashes, echo) applies untouched.
             slash = super::slash::Parsed::Plain;
             plan_enter = true;
+        } else if let super::slash::Parsed::Provider {
+            action: super::slash::ProviderAction::Task(task),
+        } = &slash
+        {
+            restore_text = Some(text.clone());
+            text = task.clone();
+            slash = super::slash::Parsed::Plain;
+            provider_enter = true;
         } else if matches!(slash, super::slash::Parsed::Init) {
             // `/init`: the queued message's prompt is the bundled template
             // (codex's `include_str!` shape) — the directive itself never
@@ -530,6 +561,18 @@ impl Composer {
                     .await
                 {
                     return Err(format!("/plan failed: {err}"));
+                }
+                if provider_enter
+                    && let Err(err) = attachments::call_with_timeout(
+                        &engine,
+                        cx.background_executor(),
+                        methods::ENTER_PROVIDER_MODE,
+                        serde_json::json!({ "chatId": chat_id }),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+                {
+                    return Err(format!("/provider failed: {err}"));
                 }
 
                 let command = match &slash {
@@ -804,6 +847,56 @@ impl Composer {
                     });
                 }
             }
+        })
+        .detach();
+    }
+
+    /// The mode-only `/provider` forms (ADR-0037). On the new-chat canvas
+    /// they only flip the draft the first send enters with; on a chat they
+    /// call the engine, whose chat-row republish moves the chip.
+    pub(crate) fn provider_command(&mut self, enter: bool, cx: &mut Context<Self>) {
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            if enter {
+                self.plan_mode_draft = false;
+            }
+            self.pickers.update(cx, |pickers, cx| {
+                pickers.provider_mode_draft = enter;
+                if enter {
+                    pickers.plan_mode_draft = false;
+                }
+                cx.notify();
+            });
+            cx.notify();
+            return;
+        };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.failure = Some("Engine not connected".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let method = if enter {
+            methods::ENTER_PROVIDER_MODE
+        } else {
+            methods::EXIT_PROVIDER_MODE
+        };
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(method, serde_json::json!({ "chatId": chat_id }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.failure = Some(match result {
+                    Ok(_) if enter => "Provider Mode on".into(),
+                    Ok(_) => "Provider Mode off".into(),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "/provider command failed");
+                        format!("/provider failed: {err}").into()
+                    }
+                });
+                this.failure_key = Some(chat_id.clone());
+                cx.notify();
+            });
         })
         .detach();
     }

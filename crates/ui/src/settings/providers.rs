@@ -4,9 +4,7 @@
 //! (ADR-0028's catalog layers).
 //! `record_form` — the manual model-record dialog (ADR-0029).
 //! `add_dialog` — the Add Provider dialog and the manual definition
-//! form.
-//! `setup` — the AI setup tab (V2c): transcript, model picker, review
-//! panel, and the Key request card (ADR-0031).
+//! form; "Add with AI" hands off to a Provider Mode chat (ADR-0037).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -14,11 +12,10 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Subscription,
-    Task, Window, div, prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Task, Window,
+    div, prelude::*, px,
 };
-use holt_doc::{MessagePart, SessionMessageEntry};
-use holt_proto::{Model, Provider, ProviderId, ToolCall};
+use holt_proto::{Model, Provider};
 use holt_rpc::methods;
 use serde::Deserialize;
 
@@ -34,12 +31,10 @@ use crate::{
 mod add_dialog;
 mod panels;
 mod record_form;
-mod setup;
 
 use add_dialog::*;
 use panels::*;
 use record_form::*;
-use setup::*;
 
 #[cfg(test)]
 mod test_support;
@@ -49,6 +44,8 @@ mod test_support;
 #[derive(Debug, Clone)]
 pub enum ProvidersPageEvent {
     Error(SharedString),
+    /// "Add with AI": open a new chat in Provider Mode (ADR-0037).
+    StartProviderChat,
 }
 
 impl EventEmitter<ProvidersPageEvent> for ProvidersPage {}
@@ -74,8 +71,8 @@ pub struct ProvidersPage {
     /// masked on every expansion and re-masks when the panel collapses or the
     /// page is left.
     revealed: HashSet<String>,
-    /// The Add Provider dialog's open tab (design-v2); `None` = closed.
-    add_dialog: Option<AddProviderTab>,
+    /// The Add Provider dialog (the manual form) is open.
+    add_dialog: bool,
     new_provider_inputs: HashMap<&'static str, Entity<ComposerInput>>,
     new_provider_error: Option<String>,
     /// The mounted model-record form, targeting the expanded panel's active
@@ -101,67 +98,6 @@ pub struct ProvidersPage {
     armed_remove: Option<String>,
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
-    /// The AI tab (V2c): the session's setup chat id (a fresh chat per
-    /// dialog open, deleted on close — no conversation memory persists),
-    /// the real Transcript view pinned to it (fed by AppState's
-    /// doc watch), the picker's catalog and popup, the composer input, and
-    /// the review panel's proposals. The panel refreshes when the setup
-    /// transcript's proposal-tool signature moves (observed off AppState).
-    setup_chat: Option<String>,
-    setup_transcript_view: Option<Entity<crate::transcript::Transcript>>,
-    /// The session view's last-rendered emptiness — the observe hook's
-    /// placeholder ↔ transcript flip detector.
-    setup_doc_empty: bool,
-    setup_proposal_signature: (usize, usize, usize),
-    setup_models: Loadable<Vec<Model>>,
-    setup_model_menu: Popup<()>,
-    setup_selected_model: Option<String>,
-    /// The setup picker menu's provider rail selection. One provider's
-    /// models show at a time: a single configured aggregator (openrouter)
-    /// contributes hundreds of rows, so a flat catalog list is unusable.
-    setup_model_provider: Option<ProviderId>,
-    setup_input: Option<Entity<ComposerInput>>,
-    setup_input_events: Option<Subscription>,
-    setup_state_observe: Option<Subscription>,
-    setup_proposals: Vec<serde_json::Value>,
-    /// Proposals written this session, kept past the engine's consume so
-    /// the panel can render the "written" terminal card instead of
-    /// silently vanishing the user's action.
-    setup_applied: Vec<serde_json::Value>,
-    /// Per-proposal apply failures, rendered inline on the card — an apply
-    /// error is a property of this proposal (usually the staleness gate),
-    /// not a page-level fault, so it never rides the window-top modal.
-    setup_apply_errors: HashMap<String, String>,
-    /// The in-flight apply's proposal id; one apply at a time.
-    setup_applying: Option<String>,
-    /// The setup chat's queue snapshot (`WatchMessageQueue`). The send RPC
-    /// returns before admission, so a turn that fails to start (missing
-    /// key, unresolvable model, storage fault) never writes a doc entry —
-    /// this frame is the only place its reason surfaces.
-    setup_queue: Option<holt_proto::MessageQueue>,
-    /// The setup chat's pending Key request (ADR-0031): the engine's view
-    /// row (`providerId`, `providerName`, `destination`, `hasKey`), fetched
-    /// with the panel refresh and rendered as the card above the composer.
-    setup_key_request: Option<serde_json::Value>,
-    /// The card's secret input — masked like every other key field; the
-    /// value rides the settle RPC and nothing else.
-    setup_key_input: Option<Entity<ComposerInput>>,
-    /// A settle failure rendered inline on the card (a page-level modal
-    /// would overstate it).
-    setup_key_error: Option<String>,
-    /// True while a settle call is in flight — the card's buttons idle.
-    setup_key_settling: bool,
-    /// The setup tab's async work is slot-separated from the page's `task`:
-    /// every page action assigns `task`, and dropping a `Task` cancels it,
-    /// so sharing the slot let a panel refresh abort an in-flight send
-    /// (its prompt was already cleared — a silent message loss) or the
-    /// tab's own preparation. Preparation owns a slot; the queue watch
-    /// owns one (cancelled on dialog close); the send, the proposal
-    /// apply, and the key settle are `detach`ed instead — cancelling any
-    /// loses the user's action silently, so they must run to completion.
-    setup_task: Option<Task<()>>,
-    setup_panel_task: Option<Task<()>>,
-    setup_queue_task: Option<Task<()>>,
     task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
 }
@@ -459,7 +395,7 @@ impl Render for ProvidersPage {
                 ))
                 .into_any_element();
         }
-        if self.add_dialog.is_some() {
+        if self.add_dialog {
             let card = add_provider_dialog(self, &theme, cx);
             return div()
                 .child(page)
@@ -568,9 +504,6 @@ impl Drop for ProvidersPage {
 
 impl ProvidersPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let setup_observe = cx.observe(&state, |page: &mut Self, state, cx| {
-            page.on_setup_state_changed(state, cx);
-        });
         let mut page = Self {
             state,
             providers: Loadable::Idle,
@@ -583,7 +516,7 @@ impl ProvidersPage {
             model_tasks: HashMap::new(),
             key_tasks: HashMap::new(),
             revealed: HashSet::new(),
-            add_dialog: None,
+            add_dialog: false,
             new_provider_inputs: HashMap::new(),
             new_provider_error: None,
             record_form: None,
@@ -594,36 +527,9 @@ impl ProvidersPage {
             armed_reset: None,
             armed_remove: None,
             confirm_reset_all: false,
-            setup_chat: None,
-            setup_transcript_view: None,
-            setup_doc_empty: true,
-            setup_proposal_signature: (0, 0, 0),
-            setup_models: Loadable::Idle,
-            setup_model_menu: Popup::default(),
-            setup_selected_model: None,
-            setup_model_provider: None,
-            setup_input: None,
-            setup_input_events: None,
-            setup_state_observe: None,
-            setup_proposals: Vec::new(),
-            setup_applied: Vec::new(),
-            setup_apply_errors: HashMap::new(),
-            setup_applying: None,
-            setup_queue: None,
-            setup_key_request: None,
-            setup_key_input: None,
-            setup_key_error: None,
-            setup_key_settling: false,
-            setup_task: None,
-            setup_panel_task: None,
-            setup_queue_task: None,
             task: None,
             collapse_task: None,
         };
-        // The setup chat's transcript lives in AppState's sub_transcripts;
-        // its proposal-tool signature moving is the review panel's refresh
-        // signal.
-        page.setup_state_observe = Some(setup_observe);
         page.load(cx);
         page
     }

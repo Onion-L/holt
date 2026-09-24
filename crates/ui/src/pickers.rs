@@ -141,6 +141,10 @@ pub enum PickerEvent {
     /// The same button's `ExitPlanMode` failed — the chat is still
     /// planning — or there was no engine to send it to.
     PlanModeExitFailed(String),
+    /// The Provider Mode chip's close button left Provider Mode (ADR-0037).
+    ProviderModeExited,
+    /// The same button's `ExitProviderMode` failed, or there was no engine.
+    ProviderModeExitFailed(String),
 }
 
 pub struct Pickers {
@@ -161,6 +165,9 @@ pub struct Pickers {
     sticky_mode: PermissionMode,
     sticky_mode_loaded: bool,
     pub(crate) plan_mode_draft: bool,
+    /// The new-chat canvas's Provider Mode draft (ADR-0037): the first send
+    /// enters Provider Mode. Only read while no chat is selected.
+    pub(crate) provider_mode_draft: bool,
     /// Space the branch draft/cache belong to (see the state observer).
     space_owner: Option<String>,
     open: popover::Popup<PickerKind>,
@@ -344,6 +351,7 @@ impl Pickers {
             sticky_mode: PermissionMode::default(),
             sticky_mode_loaded: false,
             plan_mode_draft: false,
+            provider_mode_draft: false,
             open,
             model_rail: ModelRail::default(),
             providers: Loadable::Idle,
@@ -1013,6 +1021,7 @@ impl Pickers {
             // planning state and the active revision's lifecycle, read from
             // the same chat row the mode chip renders.
             let plan_chip = self.plan_chip(&theme, cx);
+            let provider_chip = self.provider_chip(&theme, cx);
             let mut left = div()
                 .flex()
                 .flex_row()
@@ -1025,7 +1034,8 @@ impl Pickers {
                     "mode-popover",
                     closing,
                 ))
-                .children(plan_chip);
+                .children(plan_chip)
+                .children(provider_chip);
             // Mirrors the draft chips: mode + checkout hug the left edge, ref
             // the right.
             let mut right = div()
@@ -1115,6 +1125,7 @@ impl Pickers {
         };
         let mode_chip = self.mode_chip(&theme, cx);
         let plan_chip = self.plan_chip(&theme, cx);
+        let provider_chip = self.provider_chip(&theme, cx);
         let mut left = div()
             .flex()
             .flex_row()
@@ -1127,7 +1138,7 @@ impl Pickers {
                 "mode-popover",
                 closing,
             ));
-        left = left.children(plan_chip);
+        left = left.children(plan_chip).children(provider_chip);
         let mut right = div().flex().flex_row().items_center().min_w_0();
         if git {
             // Refs feed the draft labels — eager + idempotent.

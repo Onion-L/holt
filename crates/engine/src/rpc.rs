@@ -2950,12 +2950,13 @@ impl RpcService for EngineService {
                 let name = required_string(&params, "name")?;
                 RpcReply::value(&self.mcp_probe_reply(name).await)
             }
-            // The composer's slash menu (ADR-0011/0025): the commands this
+            // The composer's slash menu (ADR-0011/0025/0037): the commands this
             // backend intercepts itself.
             methods::LIST_COMMANDS => RpcReply::value(&serde_json::json!([
                 { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" },
                 { "name": "init", "description": "Generate or update AGENTS.md for this repository" },
-                { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task]" }
+                { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task]" },
+                { "name": "provider", "description": "Provider Mode: add or update providers and models by conversation", "inputHint": "[task | off]" }
             ])),
             // The skills catalog (ADR-0005): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.

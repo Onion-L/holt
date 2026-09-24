@@ -127,6 +127,12 @@ pub(crate) fn plan_label(chat: Option<&Chat>) -> Option<String> {
     chat?.plan_mode.as_ref().map(|_| "Plan".to_string())
 }
 
+/// The Provider chip's label (ADR-0037): only chats in Provider Mode get one.
+pub(crate) fn provider_label(chat: Option<&Chat>) -> Option<String> {
+    chat.filter(|chat| chat.provider_mode)
+        .map(|_| "Provider".to_string())
+}
+
 impl Pickers {
     /// The mode the chip advertises: the selected chat's stored mode; on the
     /// new-chat canvas the draft pick, else the engine's sticky default (the
@@ -233,50 +239,123 @@ impl Pickers {
         let state = self.state.read(cx);
         let label = plan_label(state.selected_chat_row())
             .or_else(|| self.plan_mode_draft.then(|| "Plan".to_string()))?;
+        Some(self.mode_flag_chip(
+            crate::icons::CHECKLIST,
+            label,
+            "picker-plan",
+            "Exit Plan Mode",
+            Self::exit_plan_mode,
+            theme,
+            cx,
+        ))
+    }
+
+    /// The Provider Mode chip (ADR-0037): the Plan chip's twin. Shown while
+    /// the selected chat is in Provider Mode, or on the new-chat canvas
+    /// when the first send will enter it; the hover × leaves it.
+    pub(super) fn provider_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let state = self.state.read(cx);
+        let draft = state.selected_chat.is_none() && self.provider_mode_draft;
+        let label = provider_label(state.selected_chat_row())
+            .or_else(|| draft.then(|| "Provider".to_string()))?;
+        Some(self.mode_flag_chip(
+            crate::icons::CLOUD,
+            label,
+            "picker-provider",
+            "Exit Provider Mode",
+            Self::exit_provider_mode,
+            theme,
+            cx,
+        ))
+    }
+
+    /// A chat-level mode flag: icon + label, and a × revealed on hover
+    /// that leaves the mode.
+    #[allow(clippy::too_many_arguments)]
+    fn mode_flag_chip(
+        &self,
+        icon: &'static str,
+        label: String,
+        id: &'static str,
+        tooltip: &'static str,
+        exit: fn(&mut Self, &mut Context<Self>),
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         // One group: the × reveals from the label's hover too, and stays put
         // while the pointer is on the button itself.
-        let group: SharedString = "picker-plan-chip".into();
-        Some(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .group(group.clone())
-                .child(Self::footer_label(
-                    crate::icons::CHECKLIST,
-                    SharedString::from(label),
-                    theme,
-                ))
-                .child(
-                    div()
-                        .id("picker-plan-exit")
-                        .debug_selector(|| "picker-plan-exit".into())
-                        .flex_none()
-                        .size(px(16.0))
-                        .rounded(px(4.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        // Hidden at rest: Plan Mode is chat state, not a
-                        // control the resting footer advertises. The slot is
-                        // reserved either way, so the reveal never shifts the
-                        // chips beside it.
-                        .opacity(0.0)
-                        .group_hover(group, |state| state.opacity(1.0))
-                        .hover(|state| state.bg(crate::theme::wash(0.10)))
-                        .tooltip(|_, cx| {
-                            cx.new(|_| crate::image_viewer::ViewerTooltip("Exit Plan Mode".into()))
-                                .into()
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.exit_plan_mode(cx)))
-                        .child(
-                            crate::icons::icon(crate::icons::CLOSE)
-                                .size(px(11.0))
-                                .text_color(theme.text_muted),
-                        ),
-                ),
-        )
+        let group: SharedString = format!("{id}-chip").into();
+        let exit_id: SharedString = format!("{id}-exit").into();
+        let selector = exit_id.to_string();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .group(group.clone())
+            .child(Self::footer_label(icon, SharedString::from(label), theme))
+            .child(
+                div()
+                    .id(exit_id)
+                    .debug_selector(move || selector.clone())
+                    .flex_none()
+                    .size(px(16.0))
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    // Hidden at rest: the mode is chat state, not a control
+                    // the resting footer advertises. The slot is reserved
+                    // either way, so the reveal never shifts the chips
+                    // beside it.
+                    .opacity(0.0)
+                    .group_hover(group, |state| state.opacity(1.0))
+                    .hover(|state| state.bg(crate::theme::wash(0.10)))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.into()))
+                            .into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| exit(this, cx)))
+                    .child(
+                        crate::icons::icon(crate::icons::CLOSE)
+                            .size(px(11.0))
+                            .text_color(theme.text_muted),
+                    ),
+            )
+    }
+
+    /// The Provider chip's close button: clear the canvas draft, or leave
+    /// Provider Mode on the selected chat.
+    fn exit_provider_mode(&mut self, cx: &mut Context<Self>) {
+        self.provider_mode_draft = false;
+        cx.notify();
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
+        let Some(engine) = self.engine(cx) else {
+            cx.emit(super::PickerEvent::ProviderModeExitFailed(
+                "Engine not connected".into(),
+            ));
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::EXIT_PROVIDER_MODE,
+                    serde_json::json!({ "chatId": chat_id }),
+                )
+                .await;
+            let event = match result {
+                Ok(_) => super::PickerEvent::ProviderModeExited,
+                Err(error) => {
+                    tracing::warn!(error = %error, "ExitProviderMode failed");
+                    super::PickerEvent::ProviderModeExitFailed(error.to_string())
+                }
+            };
+            this.update(cx, |_, cx| cx.emit(event)).ok();
+        })
+        .detach();
     }
 
     /// The Plan chip's close button: leave Plan Mode without the `/plan off`
@@ -415,6 +494,20 @@ mod tests {
             entry_permission_mode: PermissionMode::ConfirmChanges,
         });
         assert_eq!(plan_label(Some(&planning)).as_deref(), Some("Plan"));
+    }
+
+    #[test]
+    fn provider_label_marks_only_provider_chats() {
+        let none = chat("chat-1", PermissionMode::ConfirmChanges);
+        assert_eq!(provider_label(Some(&none)), None);
+        assert_eq!(provider_label(None), None);
+
+        let mut providing = chat("chat-1", PermissionMode::ConfirmChanges);
+        providing.provider_mode = true;
+        assert_eq!(
+            provider_label(Some(&providing)).as_deref(),
+            Some("Provider")
+        );
     }
 
     fn chat(id: &str, mode: PermissionMode) -> holt_proto::Chat {
@@ -766,6 +859,129 @@ mod tests {
             visual.run_until_parked();
         }
 
+        assert_eq!(
+            engine.calls.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "chatId": "chat-1" })]
+        );
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+    }
+
+    /// The Provider chip (ADR-0037): on the canvas it stands for the draft
+    /// and its × only clears it; on a Provider Mode chat the × sends
+    /// `ExitProviderMode` for that chat and announces the exit.
+    #[gpui::test]
+    fn the_provider_chip_follows_the_draft_and_the_chat_row(cx: &mut gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        use crate::state::AppState;
+
+        struct ExitEngine {
+            calls: Mutex<Vec<serde_json::Value>>,
+        }
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for ExitEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                if method == methods::EXIT_PROVIDER_MODE {
+                    self.calls.lock().unwrap().push(params);
+                    return holt_rpc::RpcReply::value(&serde_json::json!({ "active": false }));
+                }
+                Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+            }
+        }
+
+        struct ProviderChipView {
+            pickers: gpui::Entity<Pickers>,
+        }
+        impl gpui::Render for ProviderChipView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let theme = Theme::of(cx).clone();
+                let chip = self
+                    .pickers
+                    .update(cx, |this, cx| this.provider_chip(&theme, cx));
+                div().children(chip)
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let engine = Arc::new(ExitEngine {
+            calls: Mutex::new(Vec::new()),
+        });
+        let state = cx.new(|_| AppState::new());
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        let exited = Arc::new(AtomicUsize::new(0));
+        let _events = cx.update(|cx| {
+            let exited = exited.clone();
+            cx.subscribe(
+                &pickers,
+                move |_, event: &crate::pickers::PickerEvent, _| {
+                    if matches!(event, crate::pickers::PickerEvent::ProviderModeExited) {
+                        exited.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            )
+        });
+        let (_view, visual) = cx.add_window_view(|_, _| ProviderChipView {
+            pickers: pickers.clone(),
+        });
+        let pump = |visual: &mut gpui::VisualTestContext| {
+            for _ in 0..8 {
+                runtime.block_on(async { tokio::task::yield_now().await });
+                visual.run_until_parked();
+            }
+        };
+
+        // Canvas, no draft: no chip.
+        assert!(visual.debug_bounds("picker-provider-exit").is_none());
+
+        // Canvas draft: the chip shows; its × clears the draft, no RPC.
+        pickers.update(visual, |this, cx| {
+            this.provider_mode_draft = true;
+            cx.notify();
+        });
+        pump(visual);
+        let close = visual
+            .debug_bounds("picker-provider-exit")
+            .expect("the draft chip renders");
+        visual.simulate_click(close.center(), Default::default());
+        pump(visual);
+        assert!(!pickers.read_with(visual, |this, _| this.provider_mode_draft));
+        assert!(visual.debug_bounds("picker-provider-exit").is_none());
+        assert!(engine.calls.lock().unwrap().is_empty());
+
+        // A Provider Mode chat: the × exits it on the engine.
+        state.update(visual, |state, cx| {
+            let mut providing = chat("chat-1", PermissionMode::ConfirmChanges);
+            providing.provider_mode = true;
+            state.chats.push(providing);
+            state.selected_chat = Some("chat-1".into());
+            cx.notify();
+        });
+        pickers.update(visual, |_, cx| cx.notify());
+        pump(visual);
+        let close = visual
+            .debug_bounds("picker-provider-exit")
+            .expect("the chat chip renders");
+        visual.simulate_click(close.center(), Default::default());
+        pump(visual);
         assert_eq!(
             engine.calls.lock().unwrap().as_slice(),
             &[serde_json::json!({ "chatId": "chat-1" })]

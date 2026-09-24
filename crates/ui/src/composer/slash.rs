@@ -1,5 +1,5 @@
 //! Slash-command interception (ADR-0006/0035): the composer recognizes
-//! `/compact`, `/plan`, and `/init` on submit and handles them itself — the
+//! `/compact`, `/plan`, `/init`, and `/provider` on submit and handles them itself — the
 //! raw directive never becomes a prompt. Skill invocation is NOT a slash
 //! directive anymore (ADR-0035): skills ride ordinary messages as inline `$`
 //! mentions, and the `/` popup below just inserts their link form. Pure over
@@ -35,6 +35,9 @@ pub(crate) enum Parsed {
     /// `/init` with arguments — still intercepted, with the usage message
     /// for the composer to surface.
     MalformedInit,
+    /// `/provider [off | <task>]` — Provider Mode (ADR-0037); the raw
+    /// directive never becomes prompt text.
+    Provider { action: ProviderAction },
 }
 
 /// One `/plan` form (ADR-0025).
@@ -44,6 +47,18 @@ pub(crate) enum PlanAction {
     Enter,
     /// `/plan <task>` — enter Plan Mode and send the task as the first
     /// planning input.
+    Task(String),
+}
+
+/// One `/provider` form (ADR-0037).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderAction {
+    /// `/provider` — enter Provider Mode on the current chat (or the
+    /// new-chat draft).
+    Enter,
+    /// `/provider off` — leave it.
+    Exit,
+    /// `/provider <task>` — enter and send the task as the first message.
     Task(String),
 }
 
@@ -219,7 +234,7 @@ fn parse_plan(text: &str) -> Parsed {
 /// `/initialize`-style longer words stay plain text.
 fn parse_init(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/init") else {
-        return Parsed::Plain;
+        return parse_provider(text);
     };
     if rest.is_empty() || rest.trim().is_empty() {
         return Parsed::Init;
@@ -228,6 +243,28 @@ fn parse_init(text: &str) -> Parsed {
         return Parsed::MalformedInit;
     }
     Parsed::Plain
+}
+
+/// `/provider` forms (ADR-0037), shaped like `/plan` plus `off`.
+fn parse_provider(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/provider") else {
+        return Parsed::Plain;
+    };
+    if rest.trim().is_empty() {
+        return Parsed::Provider {
+            action: ProviderAction::Enter,
+        };
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return Parsed::Plain;
+    }
+    let rest = rest.trim();
+    let action = if rest == "off" {
+        ProviderAction::Exit
+    } else {
+        ProviderAction::Task(rest.to_string())
+    };
+    Parsed::Provider { action }
 }
 
 #[cfg(test)]
@@ -282,6 +319,20 @@ mod tests {
         assert_eq!(parse("/plans status"), Parsed::Plain);
         assert_eq!(parse("please /plan off"), Parsed::Plain);
         assert_eq!(parse(""), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_provider_forms() {
+        let provider = |action| Parsed::Provider { action };
+        assert_eq!(parse("/provider"), provider(ProviderAction::Enter));
+        assert_eq!(parse("  /provider  "), provider(ProviderAction::Enter));
+        assert_eq!(parse("/provider off"), provider(ProviderAction::Exit));
+        assert_eq!(
+            parse("/provider add DeepSeek"),
+            provider(ProviderAction::Task("add DeepSeek".into()))
+        );
+        assert_eq!(parse("/providers"), Parsed::Plain);
+        assert_eq!(parse("please /provider"), Parsed::Plain);
     }
 
     #[test]

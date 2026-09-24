@@ -90,6 +90,7 @@ mod model;
 
 mod approval;
 mod plan_card;
+mod provider_card;
 pub use plan_card::{pending_plan_approval, resolve_plan_approval};
 
 pub use approval::{
@@ -224,6 +225,10 @@ pub struct Transcript {
     /// chaining reads offset/max to forward the wheel remainder the body
     /// could not absorb to the transcript list. Render-local like `folds`.
     nested_scrolls: HashMap<SharedString, ScrollHandle>,
+    /// Provider Mode card state (ADR-0037) keyed by row id: in-flight and
+    /// error flags, and a key card's masked input. Render-local like
+    /// `folds`.
+    provider_cards: HashMap<SharedString, provider_card::ProviderCardUi>,
     /// Detail folds (output/diff) per chip, keyed `"{row_id}#d{ix}"` — full
     /// [`FoldState`]s so detail bodies tween open/closed exactly like the
     /// group fold. Render-local like `folds` — never part of the row
@@ -482,6 +487,7 @@ impl Transcript {
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
             nested_scrolls: HashMap::new(),
+            provider_cards: HashMap::new(),
             tool_details: HashMap::new(),
             veils: HashMap::new(),
             veil_baseline: std::collections::HashSet::new(),
@@ -702,6 +708,13 @@ impl Transcript {
             anchor.held = false;
         }
         self.own_turn_last_tick = None;
+    }
+
+    fn remeasure_row(&mut self, row_id: &SharedString) {
+        if let Some(ix) = self.rows.iter().position(|row| &row.id == row_id) {
+            self.list.remeasure_items(ix..ix + 1);
+            self.viewport_layout_revision = self.viewport_layout_revision.wrapping_add(1);
+        }
     }
 
     fn remeasure_last_row(&mut self) {

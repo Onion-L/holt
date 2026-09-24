@@ -1506,6 +1506,32 @@ impl Transcript {
             RowKind::PlanApproval { content, state } => {
                 self.render_plan_approval_card(&row.id, content, state, &theme)
             }
+            RowKind::ModelProposal {
+                proposal_id,
+                summary,
+                lines,
+                state,
+            } => self.render_model_proposal_card(
+                &row.id,
+                proposal_id,
+                summary,
+                lines,
+                *state,
+                &theme,
+                cx,
+            ),
+            RowKind::KeyRequest {
+                provider_name,
+                destination,
+                state,
+            } => self.render_key_request_card(
+                &row.id,
+                provider_name,
+                destination,
+                *state,
+                &theme,
+                cx,
+            ),
             RowKind::TurnChangeCard { change_set } => {
                 self.render_turn_change_card(&row.id, change_set, &theme, cx)
             }

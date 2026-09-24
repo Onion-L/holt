@@ -280,6 +280,23 @@ pub enum RowKind {
         content: SharedString,
         state: holt_doc::parts::PlanApprovalState,
     },
+    /// A Provider Mode proposal card (ADR-0037): the stored proposal's
+    /// summary and change lines. Write / Discard while pending; the
+    /// buttons' busy/error state lives on the Transcript keyed by row id.
+    ModelProposal {
+        proposal_id: SharedString,
+        summary: SharedString,
+        lines: Vec<SharedString>,
+        state: holt_doc::ProposalCardState,
+    },
+    /// A Provider Mode key request (ADR-0037): who the key unlocks and the
+    /// one destination it goes to. The masked input is a Transcript-owned
+    /// entity keyed by row id — the key never enters the row.
+    KeyRequest {
+        provider_name: SharedString,
+        destination: SharedString,
+        state: holt_doc::KeyCardState,
+    },
     /// The Turn's file-change card (ADR-0024 ticket 03): what one main-chat
     /// Turn changed so far — or, once it settled (success, failure, or
     /// interruption), what it froze as. Appended after the Turn's last row,
@@ -939,8 +956,54 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
-                    // Provider Mode cards render once the card rows land.
-                    MessagePart::ModelProposal { .. } | MessagePart::KeyRequest { .. } => {}
+                    MessagePart::ModelProposal {
+                        id: part_id,
+                        proposal_id,
+                        summary,
+                        lines,
+                        state,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(format!("{state:?}\0{summary}").as_bytes()),
+                            turn_start: false,
+                            kind: RowKind::ModelProposal {
+                                proposal_id: proposal_id.clone().into(),
+                                summary: summary.clone().into(),
+                                lines: lines.iter().cloned().map(SharedString::from).collect(),
+                                state: *state,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
+                    MessagePart::KeyRequest {
+                        id: part_id,
+                        provider_id,
+                        provider_name,
+                        destination,
+                        state,
+                    } => {
+                        let provider_name = if provider_name.is_empty() {
+                            provider_id
+                        } else {
+                            provider_name
+                        };
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(format!("{state:?}\0{destination}").as_bytes()),
+                            turn_start: false,
+                            kind: RowKind::KeyRequest {
+                                provider_name: provider_name.clone().into(),
+                                destination: destination.clone().into(),
+                                state: *state,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
                     MessagePart::CompactionDivider {
                         id: part_id,
                         summary,
@@ -1028,12 +1091,18 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
         render::MD_BLOCK_GAP
     } else if matches!(
         row.kind,
-        RowKind::ToolGroup { .. } | RowKind::PlanApproval { .. } | RowKind::TurnChangeCard { .. }
+        RowKind::ToolGroup { .. }
+            | RowKind::PlanApproval { .. }
+            | RowKind::ModelProposal { .. }
+            | RowKind::KeyRequest { .. }
+            | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
         matches!(
             row.kind,
             RowKind::ToolGroup { .. }
                 | RowKind::PlanApproval { .. }
+                | RowKind::ModelProposal { .. }
+                | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
         )
     }) {

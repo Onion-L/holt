@@ -701,7 +701,7 @@ mod tests {
     /// saved record.
     #[gpui::test]
     fn the_record_form_picks_the_api_dialect_from_a_dropdown(cx: &mut gpui::TestAppContext) {
-        let mut harness = setup_dialog_harness(cx);
+        let mut harness = providers_harness(cx);
         // The panel clips its content behind the expand animation's height
         // (wall-clock driven — a parked test clock never finishes it), so
         // the rows' hitboxes stay clipped away. Reduce motion: animations
