@@ -147,6 +147,11 @@ struct DocPartJson {
     /// Proposed-plan Markdown for `kind: "planApproval"` cards (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_content: Option<String>,
+    /// The whole card for `kind: "modelProposal"` / `"keyRequest"`
+    /// (additive, ADR-0037). Never `text`: old readers must degrade these
+    /// to an invisible empty part, not prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    card: Option<serde_json::Value>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -286,6 +291,16 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             }),
             ..Default::default()
         },
+        MessagePart::ModelProposal { id, .. } | MessagePart::KeyRequest { id, .. } => DocPartJson {
+            id: id.clone(),
+            kind: match part {
+                MessagePart::ModelProposal { .. } => "modelProposal",
+                _ => "keyRequest",
+            }
+            .into(),
+            card: serde_json::to_value(part).ok(),
+            ..Default::default()
+        },
     })
 }
 
@@ -379,6 +394,20 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             text: p.reasoning.unwrap_or_default(),
         },
+        "modelProposal" | "keyRequest" => {
+            match p
+                .card
+                .and_then(|card| serde_json::from_value::<MessagePart>(card).ok())
+            {
+                Some(
+                    card @ (MessagePart::ModelProposal { .. } | MessagePart::KeyRequest { .. }),
+                ) => card,
+                _ => MessagePart::Text {
+                    id: p.id,
+                    text: String::new(),
+                },
+            }
+        }
         _ => MessagePart::Text {
             id: p.id,
             text: p.text.unwrap_or_default(),
@@ -858,6 +887,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(plan_content) = &doc_part.plan_content {
         map.insert("planContent", plan_content.as_str())?;
     }
+    if let Some(card) = &doc_part.card {
+        map.insert("card", loro_value_from_json(card))?;
+    }
     Ok(())
 }
 
@@ -1265,6 +1297,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(plan_content) = &doc_part.plan_content {
         map.insert("planContent", plan_content.as_str())?;
     }
+    if let Some(card) = &doc_part.card {
+        map.insert("card", loro_value_from_json(card))?;
+    }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
         if let Some(loro::ValueOrContainer::Container(loro::Container::Text(t))) = map.get("text") {
@@ -1399,6 +1434,53 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn round_trips_provider_mode_cards() {
+        let cards = vec![
+            MessagePart::ModelProposal {
+                id: "c0".into(),
+                proposal_id: "prop-1".into(),
+                summary: "Add model gpt-x to acme".into(),
+                lines: vec!["+ acme/gpt-x".into()],
+                state: crate::parts::ProposalCardState::Pending,
+            },
+            MessagePart::KeyRequest {
+                id: "c1".into(),
+                provider_id: "acme".into(),
+                provider_name: "Acme".into(),
+                destination: "https://api.acme.dev/v1".into(),
+                state: crate::parts::KeyCardState::Saved,
+            },
+        ];
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.push_message(&SessionMessageEntry {
+            role: MessageRole::System,
+            parts: cards.clone(),
+            ..user_entry("m1", "ignored")
+        })
+        .unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].parts, cards);
+    }
+
+    #[test]
+    fn unknown_card_states_read_as_superseded() {
+        let part: MessagePart = serde_json::from_value(serde_json::json!({
+            "kind": "modelProposal",
+            "id": "c0",
+            "proposalId": "p",
+            "summary": "s",
+            "state": "someFutureState",
+        }))
+        .unwrap();
+        assert!(matches!(
+            part,
+            MessagePart::ModelProposal {
+                state: crate::parts::ProposalCardState::Superseded,
+                ..
+            }
+        ));
     }
 
     #[test]

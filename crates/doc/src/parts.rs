@@ -233,6 +233,32 @@ pub enum PlanApprovalState {
     Settled { verdict: PlanApprovalVerdict },
 }
 
+/// Where a Provider Mode proposal card stands (ADR-0037). Only the
+/// human's Write button moves it to `Written`; a newer proposal touching
+/// the same provider supersedes a pending one. Unknown states read as
+/// `Superseded` — inert, never actionable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProposalCardState {
+    Pending,
+    Written,
+    Discarded,
+    #[serde(other)]
+    Superseded,
+}
+
+/// Where a Provider Mode key-request card stands (ADR-0037). The key
+/// itself never rides the card — only who it is for and where it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyCardState {
+    Pending,
+    Saved,
+    Dismissed,
+    #[serde(other)]
+    Superseded,
+}
+
 /// How a plan-approval card settled (ADR-0025). Approve exits Plan Mode
 /// and restores the entry permission mode; a rejection retires the
 /// revision (the document stays) and opens the revision loop; remain
@@ -389,6 +415,31 @@ pub enum MessagePart {
         content: String,
         state: PlanApprovalState,
     },
+    /// A Provider Mode catalog proposal (ADR-0037): the stored proposal's
+    /// id, its one-line summary, and the human-readable diff lines it
+    /// would write. Write / Discard ride the proposal RPCs; the card is
+    /// the only surface that writes.
+    #[serde(rename_all = "camelCase")]
+    ModelProposal {
+        id: String,
+        proposal_id: String,
+        summary: String,
+        #[serde(default)]
+        lines: Vec<String>,
+        state: ProposalCardState,
+    },
+    /// A Provider Mode API-key request (ADR-0037, amends ADR-0031): which
+    /// provider the key unlocks and the one destination it is sent to.
+    /// The key is entered on the card and goes straight to the credential
+    /// store — it never enters History, tool results, or this part.
+    #[serde(rename_all = "camelCase")]
+    KeyRequest {
+        id: String,
+        provider_id: String,
+        provider_name: String,
+        destination: String,
+        state: KeyCardState,
+    },
 }
 
 impl MessagePart {
@@ -402,7 +453,9 @@ impl MessagePart {
             | MessagePart::Error { id, .. }
             | MessagePart::Notice { id, .. }
             | MessagePart::CompactionDivider { id, .. }
-            | MessagePart::PlanApproval { id, .. } => id,
+            | MessagePart::PlanApproval { id, .. }
+            | MessagePart::ModelProposal { id, .. }
+            | MessagePart::KeyRequest { id, .. } => id,
         }
     }
 
@@ -443,6 +496,26 @@ impl MessagePart {
             // fingerprint keys its row cache on.
             MessagePart::PlanApproval { content, state, .. } => {
                 content.len() + serde_json::to_vec(state).map_or(0, |v| v.len())
+            }
+            MessagePart::ModelProposal {
+                summary,
+                lines,
+                state,
+                ..
+            } => {
+                summary.len()
+                    + lines.iter().map(String::len).sum::<usize>()
+                    + serde_json::to_vec(state).map_or(0, |v| v.len())
+            }
+            MessagePart::KeyRequest {
+                provider_name,
+                destination,
+                state,
+                ..
+            } => {
+                provider_name.len()
+                    + destination.len()
+                    + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
         }
     }

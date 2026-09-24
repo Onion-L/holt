@@ -939,6 +939,8 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    // Provider Mode cards render once the card rows land.
+                    MessagePart::ModelProposal { .. } | MessagePart::KeyRequest { .. } => {}
                     MessagePart::CompactionDivider {
                         id: part_id,
                         summary,
