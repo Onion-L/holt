@@ -534,9 +534,16 @@ settles its calls as error results the model reads. Every `mcp__` call
 is presumed mutating by prefix: confirm-changes pauses it behind the
 ordinary Approval, auto-review's model pass judges it, full-access passes
 it, and an always-allow records the exact two-level name as a session
-grant. Subagent runs, planning Turns, and the model-setup chat mount no
-MCP tools; MCP calls render on the existing unknown-tool transcript
-part. The child environment is sanitized (credential-shaped variables
+grant. The schemas defer (ADR-0036): a small `mcp_tools` loader joins the
+toolset, and the Turn's `convert_to_llm` hook appends a synthetic
+call/result pair to the LLM view of every request whose `added_tool_names`
+marks the whole snapshot — providers with deferred-tool support keep the
+definitions out of the static context until the model loads them through
+the loader (and calls them, which turns them immediate); providers without
+support see the full static declarations, exactly as before. The pair is
+never persisted to the transcript. Subagent runs, planning Turns, and the
+model-setup chat mount no MCP tools; MCP calls render on the existing
+unknown-tool transcript part. The child environment is sanitized (credential-shaped variables
 stripped unless the server's `env` sets them) and config values expand
 `${VAR}`/`${VAR:-default}` at run time.
 Parent runs also mount the foreground `Agent` delegation tool (ADR-0016) —

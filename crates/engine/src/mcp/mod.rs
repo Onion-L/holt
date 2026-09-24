@@ -9,6 +9,13 @@
 //! into the running Turn. A server that fails to start or answer is
 //! skipped for that Turn with a log line and retried the same lazy way on
 //! the next one — no background restart loop.
+//!
+//! The model-facing surface defers the schemas (ADR-0036): main-chat
+//! Turns also mount a small `mcp_tools` loader and append a synthetic
+//! call/result pair of it to every LLM request, whose `added_tool_names`
+//! marks every mounted MCP tool — providers with deferred-tool support
+//! keep the schemas out of the static context until the model loads and
+//! calls them.
 
 pub(crate) mod config;
 
@@ -19,10 +26,14 @@ use std::{
     time::Duration,
 };
 
+use chrono::Utc;
 use futures::future::BoxFuture;
 use pi_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
-    ai::types::{BlockContent, TextContent},
+    ai::types::{
+        AssistantContent, AssistantMessage, BlockContent, Message, Model, TextContent, ToolCall,
+        ToolResultMessage,
+    },
 };
 use rmcp::{
     ServiceExt,
@@ -554,6 +565,220 @@ fn split_text_content(result: &CallToolResult) -> (String, bool) {
     (parts.join("\n"), dropped_non_text)
 }
 
+/// The discovery surface for deferred MCP tools (ADR-0036): one small
+/// always-immediate tool. It reads only the Turn's own snapshot — never
+/// the gate's mutating predicate (`mcp__` prefix misses `mcp_tools`), so
+/// calls pass straight through.
+pub(crate) const LOADER_TOOL_NAME: &str = "mcp_tools";
+
+/// Loading is deliberately batch-small: every definition returns the full
+/// description and schema, and a flood defeats the deferral.
+const MAX_LOAD_PER_CALL: usize = 8;
+
+/// A catalog line carries the description's first line, capped.
+const CATALOG_DESCRIPTION_CHARS: usize = 120;
+
+/// One mounted tool as the loader sees it: the definition it hands out
+/// and the name it marks.
+#[derive(Clone)]
+struct MountedTool {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+fn mounted(tools: &[AgentTool]) -> Vec<MountedTool> {
+    tools
+        .iter()
+        .map(|tool| MountedTool {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone(),
+        })
+        .collect()
+}
+
+/// The catalog's one-line description: first line, whitespace collapsed,
+/// capped with an in-band marker.
+fn one_line(description: &str) -> String {
+    let first = description
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if first.chars().count() <= CATALOG_DESCRIPTION_CHARS {
+        return first;
+    }
+    let cut: String = first.chars().take(CATALOG_DESCRIPTION_CHARS).collect();
+    format!("{cut}…")
+}
+
+/// The catalog text the bootstrap pair and the loader's empty call share:
+/// names plus one-line descriptions — enough to pick, never enough to
+/// call.
+fn catalog_text(tools: &[MountedTool]) -> String {
+    let mut text = format!(
+        "Mounted MCP tools (schemas are deferred — call {LOADER_TOOL_NAME} with the names you need before calling one):"
+    );
+    for tool in tools {
+        text.push_str("\n- ");
+        text.push_str(&tool.name);
+        let line = one_line(&tool.description);
+        if !line.is_empty() {
+            text.push_str(": ");
+            text.push_str(&line);
+        }
+    }
+    text
+}
+
+/// The loader tool over one Turn's snapshot. `names` loads full
+/// definitions and marks them through `added_tool_names`; an empty or
+/// absent list returns the catalog. Unknown names report against the
+/// mounted set — the config file may have changed since the snapshot.
+pub(crate) fn loader_tool(tools: &[AgentTool]) -> AgentTool {
+    let snapshot = mounted(tools);
+    AgentTool {
+        name: LOADER_TOOL_NAME.to_string(),
+        label: "MCP tools".to_string(),
+        description: format!(
+            "List the mounted MCP tools, or load the full definitions (description and \
+             parameter schema) of the named mcp__* tools so they can be called. MCP tool \
+             schemas are deferred: load a tool before its first call, at most \
+             {MAX_LOAD_PER_CALL} per call."
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Mounted MCP tool names to load (e.g. [\"mcp__github__create_issue\"]). Omit or pass an empty array to return the catalog."
+                }
+            }
+        }),
+        constrained_sampling: None,
+        prepare_arguments: None,
+        execution_mode: None,
+        execute: Arc::new(
+            move |_tool_call_id: &str,
+                  params: &serde_json::Value,
+                  _signal: Option<&CancellationToken>,
+                  _on_update: Option<&AgentToolUpdateCallback>| {
+                let snapshot = snapshot.clone();
+                let params = params.clone();
+                Box::pin(async move {
+                    let mut requested: Vec<String> = Vec::new();
+                    if let Some(array) = params.get("names").and_then(|value| value.as_array()) {
+                        for name in array.iter().filter_map(|value| value.as_str()) {
+                            let name = name.trim();
+                            if !name.is_empty() && !requested.iter().any(|seen| seen == name) {
+                                requested.push(name.to_string());
+                            }
+                        }
+                    }
+                    if requested.is_empty() {
+                        return Ok(AgentToolResult {
+                            content: vec![BlockContent::Text(TextContent {
+                                text: catalog_text(&snapshot),
+                                ..Default::default()
+                            })],
+                            ..Default::default()
+                        });
+                    }
+                    let skipped = requested.len().saturating_sub(MAX_LOAD_PER_CALL);
+                    let mut loaded: Vec<&MountedTool> = Vec::new();
+                    let mut unknown: Vec<&str> = Vec::new();
+                    for name in requested.iter().take(MAX_LOAD_PER_CALL) {
+                        match snapshot.iter().find(|tool| &tool.name == name) {
+                            Some(tool) => loaded.push(tool),
+                            None => unknown.push(name),
+                        }
+                    }
+                    if loaded.is_empty() {
+                        return Err(format!(
+                            "none of the requested tools are mounted in this Turn; call \
+                             {LOADER_TOOL_NAME} with no names for the catalog"
+                        ));
+                    }
+                    let mut text = String::new();
+                    for tool in &loaded {
+                        text.push_str(&format!(
+                            "## {}\n\n{}\n\nParameters:\n```json\n{}\n```\n\n",
+                            tool.name,
+                            tool.description,
+                            serde_json::to_string_pretty(&tool.parameters)
+                                .unwrap_or_else(|_| tool.parameters.to_string())
+                        ));
+                    }
+                    if !unknown.is_empty() {
+                        text.push_str(&format!(
+                            "Not mounted in this Turn: {}.\n",
+                            unknown.join(", ")
+                        ));
+                    }
+                    if skipped > 0 {
+                        text.push_str(&format!(
+                            "…[{skipped} more names skipped; load at most {MAX_LOAD_PER_CALL} per call]\n"
+                        ));
+                    }
+                    Ok(AgentToolResult {
+                        content: vec![BlockContent::Text(TextContent {
+                            text: text.trim_end().to_string(),
+                            ..Default::default()
+                        })],
+                        details: serde_json::json!({
+                            "loaded": loaded.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>(),
+                        }),
+                        added_tool_names: Some(
+                            loaded.iter().map(|tool| tool.name.clone()).collect(),
+                        ),
+                        ..Default::default()
+                    })
+                }) as BoxFuture<'static, Result<AgentToolResult, String>>
+            },
+        ),
+    }
+}
+
+/// The synthetic pair every request of the Turn appends to the LLM view
+/// (ADR-0036): a loader call plus its catalog result, whose
+/// `added_tool_names` marks every mounted MCP tool deferred from the very
+/// first request. LLM-view only — never persisted to the transcript, so a
+/// Turn restart simply re-appends it.
+pub(crate) fn bootstrap_messages(tools: &[AgentTool], model: &Model) -> Vec<Message> {
+    let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+    let call_id = "holt-mcp-bootstrap";
+    vec![
+        Message::Assistant(Box::new(AssistantMessage {
+            content: vec![AssistantContent::ToolCall(ToolCall {
+                id: call_id.to_string(),
+                name: LOADER_TOOL_NAME.to_string(),
+                ..Default::default()
+            })],
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            timestamp: Utc::now().timestamp_millis(),
+            ..Default::default()
+        })),
+        Message::ToolResult(Box::new(ToolResultMessage {
+            tool_call_id: call_id.to_string(),
+            tool_name: LOADER_TOOL_NAME.to_string(),
+            content: vec![BlockContent::Text(TextContent {
+                text: catalog_text(&mounted(tools)),
+                ..Default::default()
+            })],
+            added_tool_names: Some(names),
+            is_error: false,
+            timestamp: Utc::now().timestamp_millis(),
+            ..Default::default()
+        })),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +834,213 @@ mod tests {
         assert!(!tool_name_is_legal(&"n".repeat(65)));
         assert!(!tool_name_is_legal("bad name"));
         assert!(!tool_name_is_legal("bad/name"));
+    }
+
+    fn fake_tool(name: &str, description: &str) -> AgentTool {
+        AgentTool {
+            name: name.to_string(),
+            label: name.to_string(),
+            description: description.to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "q": { "type": "string" } }
+            }),
+            constrained_sampling: None,
+            prepare_arguments: None,
+            execution_mode: None,
+            execute: Arc::new(|_, _, _, _| {
+                Box::pin(async {
+                    Ok(AgentToolResult {
+                        content: vec![],
+                        details: serde_json::Value::Object(serde_json::Map::new()),
+                        usage: None,
+                        added_tool_names: None,
+                        terminate: None,
+                    })
+                }) as BoxFuture<'static, Result<AgentToolResult, String>>
+            }),
+        }
+    }
+
+    fn result_text(result: &AgentToolResult) -> String {
+        result
+            .content
+            .iter()
+            .map(|block| match block {
+                BlockContent::Text(text) => text.text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn catalog_lists_names_with_one_line_descriptions() {
+        let tools = vec![
+            fake_tool(
+                "mcp__github__create_issue",
+                "Create an issue.\nSecond line is dropped.",
+            ),
+            fake_tool("mcp__github__search", "  spaced   out  "),
+            fake_tool("mcp__bare__noop", ""),
+        ];
+        let catalog = catalog_text(&mounted(&tools));
+        assert!(catalog.contains("- mcp__github__create_issue: Create an issue."));
+        assert!(!catalog.contains("Second line"));
+        assert!(catalog.contains("- mcp__github__search: spaced out"));
+        assert!(catalog.trim_end().ends_with("- mcp__bare__noop"));
+        // Long first lines truncate at the cap with a marker.
+        let long = fake_tool("mcp__s__long", &"d".repeat(200));
+        let catalog = catalog_text(&mounted(&[long]));
+        assert!(catalog.contains(&format!("{}…", "d".repeat(CATALOG_DESCRIPTION_CHARS))));
+    }
+
+    #[tokio::test]
+    async fn loader_without_names_returns_the_catalog() {
+        let loader = loader_tool(&[fake_tool("mcp__a__x", "Does x.")]);
+        let result = (loader.execute)("call-1", &serde_json::json!({}), None, None)
+            .await
+            .unwrap();
+        assert!(result.added_tool_names.is_none());
+        assert!(result_text(&result).contains("- mcp__a__x: Does x."));
+    }
+
+    #[tokio::test]
+    async fn loader_returns_definitions_and_marks_loaded() {
+        let tools = vec![fake_tool("mcp__github__create_issue", "Create an issue.")];
+        let loader = loader_tool(&tools);
+        let result = (loader.execute)(
+            "call-1",
+            &serde_json::json!({"names": ["mcp__github__create_issue"]}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.added_tool_names,
+            Some(vec!["mcp__github__create_issue".to_string()])
+        );
+        let text = result_text(&result);
+        assert!(text.contains("## mcp__github__create_issue"));
+        assert!(text.contains("Create an issue."));
+        assert!(text.contains("\"q\""), "schema missing: {text}");
+    }
+
+    #[tokio::test]
+    async fn loader_reports_unknown_names_against_the_mounted_set() {
+        let loader = loader_tool(&[fake_tool("mcp__a__x", "x")]);
+        let error = (loader.execute)(
+            "call-1",
+            &serde_json::json!({"names": ["mcp__gone__y"]}),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("catalog"), "unexpected error: {error}");
+        // A mixed call still loads the known half and reports the rest.
+        let result = (loader.execute)(
+            "call-2",
+            &serde_json::json!({"names": ["mcp__a__x", "mcp__gone__y"]}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.added_tool_names, Some(vec!["mcp__a__x".to_string()]));
+        assert!(result_text(&result).contains("Not mounted in this Turn: mcp__gone__y"));
+    }
+
+    #[tokio::test]
+    async fn loader_caps_each_call_and_reports_the_skip() {
+        let tools: Vec<AgentTool> = (0..10)
+            .map(|index| fake_tool(&format!("mcp__s__t{index}"), "d"))
+            .collect();
+        let loader = loader_tool(&tools);
+        let names: Vec<String> = (0..10).map(|index| format!("mcp__s__t{index}")).collect();
+        let result = (loader.execute)("call-1", &serde_json::json!({"names": names}), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.added_tool_names.as_ref().unwrap().len(),
+            MAX_LOAD_PER_CALL
+        );
+        assert!(result_text(&result).contains("2 more names skipped"));
+    }
+
+    #[test]
+    fn bootstrap_pair_marks_every_mounted_tool() {
+        let tools = vec![fake_tool("mcp__a__x", "x"), fake_tool("mcp__b__y", "y")];
+        let pair = bootstrap_messages(&tools, &Model::default());
+        assert_eq!(pair.len(), 2);
+        let Message::Assistant(call) = &pair[0] else {
+            panic!("first message must be the assistant call")
+        };
+        let Message::ToolResult(result) = &pair[1] else {
+            panic!("second message must be the tool result")
+        };
+        let Some(AssistantContent::ToolCall(tool_call)) = call.content.first() else {
+            panic!("the assistant message must carry the loader call")
+        };
+        assert_eq!(tool_call.name, LOADER_TOOL_NAME);
+        assert_eq!(result.tool_call_id, tool_call.id);
+        assert_eq!(result.tool_name, LOADER_TOOL_NAME);
+        assert!(!result.is_error);
+        assert_eq!(
+            result.added_tool_names,
+            Some(vec!["mcp__a__x".to_string(), "mcp__b__y".to_string()])
+        );
+    }
+
+    #[test]
+    fn the_bootstrap_pair_defers_mounted_tools_until_called() {
+        use pi_core::ai::{
+            types::{Context, Tool},
+            utils::deferred_tools::split_deferred_tools,
+        };
+
+        let mounted_tools = vec![fake_tool("mcp__a__x", "x")];
+        let toolset = [
+            fake_tool("read", "read"),
+            loader_tool(&mounted_tools),
+            fake_tool("mcp__a__x", "x"),
+        ];
+        let provider_tools: Vec<Tool> = toolset.iter().map(|tool| tool.to_tool()).collect();
+        let pair = bootstrap_messages(&mounted_tools, &Model::default());
+        let context = Context {
+            messages: pair.clone(),
+            tools: Some(provider_tools.clone()),
+            ..Default::default()
+        };
+        let split = split_deferred_tools(&context, true, |name| name.to_string());
+        assert!(split.deferred.contains_key("mcp__a__x"));
+        assert_eq!(split.deferred.len(), 1);
+        let immediate: Vec<&str> = split
+            .immediate
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(immediate, vec!["read", LOADER_TOOL_NAME]);
+
+        // Once the assistant calls the tool it turns immediate: the pair
+        // always appends after the conversation, so the call precedes the
+        // marker and the schema joins the static declarations.
+        let mut messages = vec![Message::Assistant(Box::new(AssistantMessage {
+            content: vec![AssistantContent::ToolCall(ToolCall {
+                id: "call-2".to_string(),
+                name: "mcp__a__x".to_string(),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }))];
+        messages.extend(pair);
+        let context = Context {
+            messages,
+            tools: Some(provider_tools),
+            ..Default::default()
+        };
+        let split = split_deferred_tools(&context, true, |name| name.to_string());
+        assert!(split.deferred.is_empty());
     }
 }
 
