@@ -210,9 +210,10 @@ pub(crate) struct StoredProposal {
     pub(crate) created_at: i64,
 }
 
-/// Remembers a proposal on its chat (LRU of [`PROPOSAL_CAP`]) and returns
-/// its id. In-memory only: a restart drops them, and the model can simply
-/// re-propose.
+/// Remembers a proposal on its chat and returns its id. A new proposal
+/// replaces every stored one touching any of the same providers (their
+/// cards read as superseded), and the oldest fall out past
+/// [`PROPOSAL_CAP`]. Persisted with the chat's Provider Mode state.
 pub(crate) fn store_proposal(
     chat: &ChatRuntime,
     changes: Vec<CatalogChange>,
@@ -220,9 +221,11 @@ pub(crate) fn store_proposal(
     baseline: &ProviderSettingsSnapshot,
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
-    let baseline = baseline_fingerprint(baseline, &touched_providers(&changes));
+    let touched = touched_providers(&changes);
+    let baseline = baseline_fingerprint(baseline, &touched);
     {
         let mut proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
+        proposals.retain(|stored| touched_providers(&stored.changes).is_disjoint(&touched));
         proposals.push_back(StoredProposal {
             id: id.clone(),
             summary,
@@ -1297,7 +1300,10 @@ async fn run_proposal_tool(
         ProposalOutcome::NoChanges { lines } => lines.clone(),
     };
     match outcome {
-        ProposalOutcome::Changes { summary, .. } => {
+        ProposalOutcome::Changes {
+            summary,
+            lines: diff,
+        } => {
             let probe_providers: BTreeSet<String> = changes
                 .iter()
                 .map(|change| change.provider_id().to_string())
@@ -1347,14 +1353,14 @@ async fn run_proposal_tool(
             lines.push(String::new());
             lines.push(format!("proposalId: {id}"));
             lines.push(
-                "Proposal stored. Present the diff above to the user and stop — they review \
-                 it in the dialog's review panel and write it there; nothing is written \
-                 from the chat."
+                "Proposal stored. A proposal card with this diff appears in the conversation; \
+                 give a short summary and stop — the user writes it from the card. Nothing \
+                 is written until they do."
                     .into(),
             );
             text_result(
                 lines.join("\n"),
-                json!({ "proposalId": id, "summary": summary }),
+                json!({ "proposalId": id, "summary": summary, "lines": diff }),
             )
         }
         ProposalOutcome::NoChanges { .. } => text_result(
@@ -1719,16 +1725,21 @@ pub(crate) fn create_request_provider_key_tool(
                             )
                         })?;
                     let destination = request.destination.clone();
+                    let provider_name = request.provider_name.clone();
                     *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
                     chat.save_provider_mode();
                     text_result(
                         format!(
-                            "Key request shown for {provider_id} — the card sits above \
-                             the composer and sends the key only to {destination}. Tell the \
+                            "Key request shown for {provider_id} — a key card appears in the \
+                             conversation and sends the key only to {destination}. Tell the \
                              user to enter it there, then STOP this turn; your next user \
                              message reports the outcome.",
                         ),
-                        json!({ "providerId": provider_id }),
+                        json!({
+                            "providerId": provider_id,
+                            "providerName": provider_name,
+                            "destination": destination,
+                        }),
                     )
                 }) as BoxFuture<'static, Result<AgentToolResult, String>>
             },
@@ -1915,9 +1926,11 @@ mod tests {
             &chat,
             change("openai", "gpt-one", "https://api.openai.com/v1"),
         );
+        // A second chat: on one chat the newer proposal would replace it.
+        let other_chat = ChatRuntime::new();
         let openai_again = propose(
             &providers,
-            &chat,
+            &other_chat,
             change("openai", "gpt-two", "https://api.openai.com/v1"),
         );
         let anthropic = propose(
@@ -1927,9 +1940,34 @@ mod tests {
         );
 
         apply_stored(&providers, &chat, &openai).unwrap();
-        let error = apply_stored(&providers, &chat, &openai_again).unwrap_err();
+        let error = apply_stored(&providers, &other_chat, &openai_again).unwrap_err();
         assert!(error.contains("changed since this proposal"), "{error}");
         apply_stored(&providers, &chat, &anthropic).unwrap();
+    }
+
+    #[test]
+    fn a_new_proposal_replaces_overlapping_ones_on_its_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let chat = ChatRuntime::new();
+        let first = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-one", "https://api.openai.com/v1"),
+        );
+        let anthropic = propose(
+            &providers,
+            &chat,
+            change("anthropic", "claude-x", "https://api.anthropic.com"),
+        );
+        let second = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-two", "https://api.openai.com/v1"),
+        );
+        assert!(stored_proposal(&chat, &first).is_none());
+        assert!(stored_proposal(&chat, &anthropic).is_some());
+        assert!(stored_proposal(&chat, &second).is_some());
     }
 
     #[test]

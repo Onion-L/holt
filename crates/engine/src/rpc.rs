@@ -2215,6 +2215,10 @@ impl WorkspacePathParams {
     }
 }
 
+/// A proposal card's Write/Discard found nothing stored under its id.
+const GONE_PROPOSAL: &str =
+    "this proposal was replaced or already settled; ask the assistant to propose again";
+
 fn required_string<'a>(params: &'a serde_json::Value, field: &str) -> Result<&'a str, RpcError> {
     params
         .get(field)
@@ -2583,10 +2587,11 @@ impl RpcService for EngineService {
                     .collect();
                 RpcReply::value(&rows)
             }
-            // The Settings review panel (model setup v2): the write path the
-            // setup agent never holds. Revalidation rides the same
-            // `apply_changes` the old tool used; the button is the human
-            // approval.
+            // The proposal card's Write (ADR-0037): the write path the agent
+            // never holds. Revalidation rides `apply_changes`; the button is
+            // the human approval. A gone proposal (superseded, evicted,
+            // settled) stamps its card so no stale Write lingers; any other
+            // failure leaves the card Pending with the error to show.
             methods::APPLY_MODEL_PROPOSAL => {
                 let chat_id = required_string(&params, "chatId")?;
                 if !crate::store::id_is_path_safe(chat_id) {
@@ -2597,9 +2602,22 @@ impl RpcService for EngineService {
                 if chat.is_removed() {
                     return Err(RpcError::Failed("chat was deleted".into()));
                 }
+                if crate::tools::model_setup::stored_proposal(&chat, proposal_id).is_none() {
+                    crate::provider_mode::stamp_proposal_card(
+                        &chat,
+                        proposal_id,
+                        holt_doc::parts::ProposalCardState::Superseded,
+                    );
+                    return Err(RpcError::Failed(GONE_PROPOSAL.into()));
+                }
                 let applied =
                     crate::tools::model_setup::apply_stored(&self.providers, &chat, proposal_id)
                         .map_err(RpcError::Failed)?;
+                crate::provider_mode::stamp_proposal_card(
+                    &chat,
+                    proposal_id,
+                    holt_doc::parts::ProposalCardState::Written,
+                );
                 self.refresh_catalog_windows();
                 RpcReply::value(&serde_json::json!({ "applied": applied }))
             }
@@ -2618,8 +2636,20 @@ impl RpcService for EngineService {
                 }
                 let proposal_id = required_string(&params, "proposalId")?;
                 let chat = self.runtime.chat(chat_id);
-                let discarded = crate::tools::model_setup::discard_stored(&chat, proposal_id);
-                RpcReply::value(&serde_json::json!({ "discarded": discarded }))
+                if !crate::tools::model_setup::discard_stored(&chat, proposal_id) {
+                    crate::provider_mode::stamp_proposal_card(
+                        &chat,
+                        proposal_id,
+                        holt_doc::parts::ProposalCardState::Superseded,
+                    );
+                    return Err(RpcError::Failed(GONE_PROPOSAL.into()));
+                }
+                crate::provider_mode::stamp_proposal_card(
+                    &chat,
+                    proposal_id,
+                    holt_doc::parts::ProposalCardState::Discarded,
+                );
+                RpcReply::value(&serde_json::json!({ "discarded": true }))
             }
             methods::START_MODEL_SETUP_CHAT => self.start_model_setup_chat(params),
             // The Key request's read half (ADR-0031): the dialog's card.
@@ -2653,10 +2683,18 @@ impl RpcService for EngineService {
                     .key_request
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .ok_or_else(|| {
-                        RpcError::Failed("no pending key request on this chat".into())
-                    })?;
+                    .take();
+                let Some(pending) = pending else {
+                    // A card left Pending past its request (a newer one
+                    // replaced it) must not keep offering Save.
+                    crate::provider_mode::stamp_key_cards(
+                        &chat,
+                        holt_doc::parts::KeyCardState::Superseded,
+                    );
+                    return Err(RpcError::Failed(
+                        "no pending key request on this chat".into(),
+                    ));
+                };
                 let restore = || {
                     *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(pending.clone());
@@ -2726,6 +2764,14 @@ impl RpcService for EngineService {
                     return Err(error);
                 }
                 chat.save_provider_mode();
+                crate::provider_mode::stamp_key_cards(
+                    &chat,
+                    if saved {
+                        holt_doc::parts::KeyCardState::Saved
+                    } else {
+                        holt_doc::parts::KeyCardState::Dismissed
+                    },
+                );
                 RpcReply::value(&serde_json::json!({
                     "settled": if saved { "saved" } else { "dismissed" },
                     "providerId": pending.provider_id,

@@ -1767,6 +1767,8 @@ fn update_assistant_entry(
 ) {
     let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == entry_id) {
+        let mut parts = parts;
+        crate::provider_mode::carry_card_states(&existing.parts, &mut parts);
         existing.parts = parts;
         existing.status = Some(status);
     } else {
@@ -2095,9 +2097,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 }
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
+                    tool_name,
                     result,
                     is_error,
-                    ..
                 } => {
                     let output = tool_output_full(&result);
                     let read_chat_title = result.details["title"].as_str().map(str::to_owned);
@@ -2134,6 +2136,40 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         read_chat_title.as_deref(),
                         tool_usage_total(&result),
                     );
+                    // Provider Mode cards (ADR-0037): a stored proposal or a
+                    // shown Key request lands as a card after its tool part.
+                    if !is_error
+                        && let Some(card) = crate::provider_mode::tool_card(
+                            &tool_call_id,
+                            &tool_name,
+                            &result.details,
+                        )
+                    {
+                        let key_card = matches!(card, MessagePart::KeyRequest { .. });
+                        if key_card {
+                            crate::provider_mode::stamp_key_cards(
+                                &chat,
+                                holt_doc::parts::KeyCardState::Superseded,
+                            );
+                        }
+                        base_parts
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(card.clone());
+                        if let Some(entry) = chat
+                            .transcript
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .iter_mut()
+                            .find(|entry| entry.id == run_entry)
+                        {
+                            entry.parts.push(card);
+                        }
+                        chat.persist_entry_tail(&run_entry);
+                        if !key_card {
+                            crate::provider_mode::supersede_orphan_proposal_cards(&chat);
+                        }
+                    }
                 }
                 _ => {}
             }

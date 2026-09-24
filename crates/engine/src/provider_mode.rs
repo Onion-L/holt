@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use holt_doc::parts::{KeyCardState, MessagePart, ProposalCardState};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -187,4 +188,141 @@ pub(crate) fn provider_mode_block(web_search: bool) -> String {
          If the docs lack a field you need, say exactly what is missing and ask — never \
          guess a model ID or a price."
     )
+}
+
+/// The card a settled catalog tool call leaves in the transcript
+/// (ADR-0037), built from its result details: a proposal card for a stored
+/// proposal, a key card for a shown Key request. Inquiries, no-ops, and
+/// errors leave none.
+pub(crate) fn tool_card(
+    tool_call_id: &str,
+    tool_name: &str,
+    details: &serde_json::Value,
+) -> Option<MessagePart> {
+    let text = |field: &str| details.get(field)?.as_str().map(str::to_owned);
+    match tool_name {
+        "model_proposal" => Some(MessagePart::ModelProposal {
+            id: format!("{tool_call_id}-card"),
+            proposal_id: text("proposalId")?,
+            summary: text("summary").unwrap_or_default(),
+            lines: details
+                .get("lines")
+                .and_then(serde_json::Value::as_array)
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .filter_map(|line| line.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            state: ProposalCardState::Pending,
+        }),
+        "request_provider_key" => Some(MessagePart::KeyRequest {
+            id: format!("{tool_call_id}-card"),
+            provider_id: text("providerId")?,
+            provider_name: text("providerName").unwrap_or_default(),
+            destination: text("destination").unwrap_or_default(),
+            state: KeyCardState::Pending,
+        }),
+        _ => None,
+    }
+}
+
+/// Apply `stamp` to every part in the transcript; each entry it changed
+/// re-appends itself to the log (ADR-0032), like `settle_plan_cards`. Card
+/// states are display state — the lifecycle already moved in the store or
+/// through the RPC.
+fn stamp_cards(chat: &ChatRuntime, mut stamp: impl FnMut(&mut MessagePart) -> bool) {
+    let mut transcript = chat
+        .transcript
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut changed = Vec::new();
+    for entry in transcript.iter_mut() {
+        let mut entry_changed = false;
+        for part in entry.parts.iter_mut() {
+            entry_changed |= stamp(part);
+        }
+        if entry_changed {
+            changed.push(entry.id.clone());
+        }
+    }
+    drop(transcript);
+    for entry_id in changed {
+        chat.persist_entry(&entry_id);
+    }
+}
+
+/// Settle the pending card for one proposal.
+pub(crate) fn stamp_proposal_card(chat: &ChatRuntime, proposal: &str, to: ProposalCardState) {
+    stamp_cards(chat, |part| match part {
+        MessagePart::ModelProposal {
+            proposal_id, state, ..
+        } if proposal_id == proposal && *state == ProposalCardState::Pending => {
+            *state = to;
+            true
+        }
+        _ => false,
+    });
+}
+
+/// Supersede every pending proposal card whose proposal is no longer
+/// stored — replaced by a newer proposal on the same provider, or evicted
+/// by the cap — so no card offers a Write that can only fail.
+pub(crate) fn supersede_orphan_proposal_cards(chat: &ChatRuntime) {
+    let stored: HashSet<String> = chat
+        .proposals
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .map(|proposal| proposal.id.clone())
+        .collect();
+    stamp_cards(chat, |part| match part {
+        MessagePart::ModelProposal {
+            proposal_id, state, ..
+        } if *state == ProposalCardState::Pending && !stored.contains(proposal_id) => {
+            *state = ProposalCardState::Superseded;
+            true
+        }
+        _ => false,
+    });
+}
+
+/// Settle every pending key card: at most one Key request is pending per
+/// chat, so a settle or a newer request retires all of them.
+pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
+    stamp_cards(chat, |part| match part {
+        MessagePart::KeyRequest { state, .. } if *state == KeyCardState::Pending => {
+            *state = to;
+            true
+        }
+        _ => false,
+    });
+}
+
+/// Keep settled card states across a live entry rewrite: a running Turn
+/// rebuilds its entry from its own part list, which still holds the card
+/// as it was appended, while the RPC may already have stamped it.
+pub(crate) fn carry_card_states(existing: &[MessagePart], parts: &mut [MessagePart]) {
+    for part in parts.iter_mut() {
+        match part {
+            MessagePart::ModelProposal { id, state, .. }
+                if *state == ProposalCardState::Pending =>
+            {
+                if let Some(MessagePart::ModelProposal { state: settled, .. }) =
+                    existing.iter().find(|old| old.id() == id.as_str())
+                {
+                    *state = *settled;
+                }
+            }
+            MessagePart::KeyRequest { id, state, .. } if *state == KeyCardState::Pending => {
+                if let Some(MessagePart::KeyRequest { state: settled, .. }) =
+                    existing.iter().find(|old| old.id() == id.as_str())
+                {
+                    *state = *settled;
+                }
+            }
+            _ => {}
+        }
+    }
 }
