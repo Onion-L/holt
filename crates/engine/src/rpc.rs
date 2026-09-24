@@ -2595,6 +2595,7 @@ impl RpcService for EngineService {
                 let restore = || {
                     *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(pending.clone());
+                    chat.save_provider_mode();
                 };
                 let saved = if let Some(key) = params
                     .get("key")
@@ -2618,6 +2619,7 @@ impl RpcService for EngineService {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .insert((pending.provider_id.clone(), pending.destination.clone()));
+                    chat.save_provider_mode();
                     true
                 } else if params.get("key").is_some() {
                     restore();
@@ -2658,6 +2660,7 @@ impl RpcService for EngineService {
                     restore();
                     return Err(error);
                 }
+                chat.save_provider_mode();
                 RpcReply::value(&serde_json::json!({
                     "settled": if saved { "saved" } else { "dismissed" },
                     "providerId": pending.provider_id,

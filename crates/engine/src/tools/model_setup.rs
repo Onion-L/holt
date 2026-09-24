@@ -221,17 +221,20 @@ pub(crate) fn store_proposal(
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let baseline = baseline_fingerprint(baseline, &touched_providers(&changes));
-    let mut proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
-    proposals.push_back(StoredProposal {
-        id: id.clone(),
-        summary,
-        changes,
-        baseline,
-        created_at: chrono::Utc::now().timestamp_millis(),
-    });
-    while proposals.len() > PROPOSAL_CAP {
-        proposals.pop_front();
+    {
+        let mut proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
+        proposals.push_back(StoredProposal {
+            id: id.clone(),
+            summary,
+            changes,
+            baseline,
+            created_at: chrono::Utc::now().timestamp_millis(),
+        });
+        while proposals.len() > PROPOSAL_CAP {
+            proposals.pop_front();
+        }
     }
+    chat.save_provider_mode();
     id
 }
 
@@ -1180,7 +1183,12 @@ pub(crate) fn discard_stored(chat: &ChatRuntime, proposal_id: &str) -> bool {
         .unwrap_or_else(|error| error.into_inner());
     let before = proposals.len();
     proposals.retain(|proposal| proposal.id != proposal_id);
-    proposals.len() != before
+    let discarded = proposals.len() != before;
+    drop(proposals);
+    if discarded {
+        chat.save_provider_mode();
+    }
+    discarded
 }
 
 /// The review panel's write button (model setup v2): executes a stored
@@ -1568,7 +1576,8 @@ pub(crate) fn create_model_proposal_tool(
 /// The setup chat's pending Key request: what the dialog's card renders
 /// and the settle RPC consumes. Deliberately key-free — only where the
 /// key would go, never a key value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PendingKeyRequest {
     pub(crate) provider_id: String,
     pub(crate) provider_name: String,
@@ -1752,6 +1761,7 @@ pub(crate) fn create_request_provider_key_tool(
                         })?;
                     let destination = request.destination.clone();
                     *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+                    chat.save_provider_mode();
                     text_result(
                         format!(
                             "Key request shown for {provider_id} — the card sits above \

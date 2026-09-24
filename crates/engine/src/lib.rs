@@ -42,6 +42,7 @@ mod mcp;
 mod mode_default;
 mod path_search;
 mod plan_mode;
+mod provider_mode;
 pub mod provider_settings;
 mod provider_store;
 pub mod providers;

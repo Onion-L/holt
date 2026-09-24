@@ -160,19 +160,19 @@ pub(crate) struct ChatRuntime {
     /// This chat's always-allow grants (ADR-0014): in-memory and
     /// session-scoped — a restart starts with none.
     pub(crate) grants: Arc<Mutex<crate::gate::GateGrants>>,
-    /// This chat's stored model-setup proposals (ADR-0029), newest last
-    /// and capped — in-memory only, so a restart drops them and the model
-    /// re-proposes.
+    /// This chat's stored catalog proposals (ADR-0029), newest last and
+    /// capped. Persisted with the Key request and the approvals below in
+    /// `provider-mode/<chatId>.json` (ADR-0037) — every mutation calls
+    /// [`ChatRuntime::save_provider_mode`].
     pub(crate) proposals:
         Arc<Mutex<std::collections::VecDeque<crate::tools::model_setup::StoredProposal>>>,
-    /// The chat's pending Key request (ADR-0031): raised by the setup
-    /// chat's `request_provider_key` tool, settled by the dialog's card.
-    /// In-memory only — it dies with the chat, like stored proposals.
+    /// The chat's pending Key request (ADR-0031): raised by the
+    /// `request_provider_key` tool, settled by the transcript card.
     pub(crate) key_request: Arc<Mutex<Option<crate::tools::model_setup::PendingKeyRequest>>>,
-    /// The destinations a settled Key request approved this session
-    /// (ADR-0031): (provider, baseUrl) pairs. A planned-target probe may
-    /// carry the stored key only against an exact pair. In-memory only —
-    /// it dies with the chat.
+    /// The destinations a settled Key request approved on this chat
+    /// (ADR-0031, chat-scoped by ADR-0037): (provider, baseUrl) pairs. A
+    /// planned-target probe may carry the stored key only against an
+    /// exact pair.
     pub(crate) approved_key_destinations: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     pub(crate) child: Option<Arc<crate::subagents::ChildLink>>,
     pub(crate) usage: Mutex<pi_core::ai::types::Usage>,
@@ -430,6 +430,7 @@ impl ChatRuntime {
         // The channel's initial value is the first frame subscribers see, so
         // seed it with the restored transcript: opening the watch replays it
         // as a whole-transcript `reset` without needing a publish.
+        let provider_mode = crate::provider_mode::load(data_dir, chat_id);
         let (transcript_tx, _) = watch::channel(Arc::new(transcript.clone()));
         let (usage_tx, _) = watch::channel(serde_json::Value::Null);
         Self {
@@ -452,9 +453,11 @@ impl ChatRuntime {
             chat_id: chat_id.to_string(),
             removed: std::sync::atomic::AtomicBool::new(false),
             grants: Arc::new(Mutex::new(crate::gate::GateGrants::default())),
-            proposals: Arc::new(Mutex::new(Default::default())),
-            key_request: Arc::new(Mutex::new(None)),
-            approved_key_destinations: Arc::new(Mutex::new(Default::default())),
+            proposals: Arc::new(Mutex::new(provider_mode.proposals)),
+            key_request: Arc::new(Mutex::new(provider_mode.key_request)),
+            approved_key_destinations: Arc::new(Mutex::new(
+                provider_mode.approved_key_destinations,
+            )),
             child: None,
             usage: Mutex::new(Default::default()),
             usage_pending: Mutex::new(Vec::new()),
@@ -462,6 +465,12 @@ impl ChatRuntime {
             // file is set aside inside and the count continues from zero.
             usage_totals: Mutex::new(crate::usage::warm_totals(data_dir, chat_id)),
         }
+    }
+
+    /// Persist the chat's Provider Mode state (ADR-0037) after a change to
+    /// its proposals, Key request, or approved destinations.
+    pub(crate) fn save_provider_mode(&self) {
+        crate::provider_mode::save(self);
     }
 
     /// Broadcast the live transcript to the watch (and a subagent's chip
@@ -868,6 +877,7 @@ impl AgentRuntime {
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
         crate::turn_change_store::delete_chat(&self.data_dir, chat_id);
+        crate::provider_mode::delete(&self.data_dir, chat_id);
         self.subagents.remove_parent(&self.data_dir, chat_id);
         // The usage ledger archives before it dies: the chat's records move
         // into the device-level stream, then the per-chat file and its
@@ -2899,6 +2909,46 @@ mod tests {
                 .unwrap()
                 .contains("closed the stream")
         );
+    }
+
+    #[test]
+    fn provider_mode_state_survives_reload_and_dies_with_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            "device".into(),
+            WorkspaceScope::Local,
+            dir.path().to_path_buf(),
+            vec![session_chat("chat-1")],
+            None,
+            crate::mcp::McpPool::load(dir.path()).unwrap(),
+        );
+        let chat = runtime.chat("chat-1");
+        let request = crate::tools::model_setup::PendingKeyRequest {
+            provider_id: "acme".into(),
+            provider_name: "Acme".into(),
+            destination: "https://api.acme.dev/v1".into(),
+        };
+        *chat.key_request.lock().unwrap() = Some(request.clone());
+        chat.approved_key_destinations
+            .lock()
+            .unwrap()
+            .insert(("acme".into(), "https://api.acme.dev/v1".into()));
+        chat.save_provider_mode();
+
+        let reloaded = ChatRuntime::load(dir.path(), "chat-1", "device");
+        assert_eq!(*reloaded.key_request.lock().unwrap(), Some(request));
+        assert!(
+            reloaded
+                .approved_key_destinations
+                .lock()
+                .unwrap()
+                .contains(&("acme".to_string(), "https://api.acme.dev/v1".to_string()))
+        );
+
+        let path = dir.path().join("provider-mode").join("chat-1.json");
+        assert!(path.exists());
+        runtime.remove_chat("chat-1");
+        assert!(!path.exists());
     }
 
     #[test]
