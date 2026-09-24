@@ -516,3 +516,104 @@ async fn a_key_request_lands_as_a_card_and_the_settle_stamps_it() {
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     assert!(!snapshot.to_string().contains("sk-card-secret"));
 }
+
+// ---------------------------------------------------------------------------
+// Draft providers (Step 6)
+// ---------------------------------------------------------------------------
+
+fn draft_key_call(call_id: &str, base_url: &str) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        call_id,
+        "request_provider_key",
+        serde_json::json!({
+            "providerId": "acme",
+            "provider": {
+                "id": "acme",
+                "name": "Acme",
+                "baseUrl": base_url,
+                "defaultApi": "openai-completions",
+            },
+        }),
+    )
+}
+
+fn files_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_draft_key_request_saves_under_the_draft_and_never_leaks_the_key() {
+    let fixture = Fixture::new();
+    let (engine, provider) = mode_turn(
+        &fixture,
+        vec![
+            // A loopback draft is refused: a tool error, no card.
+            draft_key_call("call-1", "http://127.0.0.1:8080/v1"),
+            draft_key_call("call-2", "https://8.8.8.8/v1"),
+            ScriptedReply::text("asked"),
+            ScriptedReply::text("re-probed"),
+        ],
+    )
+    .await;
+    let found = cards(&engine, "chat-1", "keyRequest").await;
+    assert_eq!(found.len(), 1, "the refused draft left no card");
+    assert_eq!(found[0]["providerId"], "acme");
+    assert_eq!(found[0]["providerName"], "Acme");
+    assert_eq!(found[0]["destination"], "https://8.8.8.8/v1");
+    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+    assert!(snapshot.to_string().contains("is not a public address"));
+
+    engine
+        .handle(
+            methods::SETTLE_PROVIDER_KEY_REQUEST,
+            serde_json::json!({ "chatId": "chat-1", "key": "sk-draft-secret" }),
+        )
+        .await
+        .unwrap();
+    wait_for_requests(&provider, 4).await;
+    let RpcReply::Value(revealed) = engine
+        .handle(
+            methods::REVEAL_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "acme" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("RevealProviderKey did not return a value");
+    };
+    assert_eq!(revealed["key"], "sk-draft-secret");
+    assert_eq!(
+        cards(&engine, "chat-1", "keyRequest").await[0]["state"],
+        "saved"
+    );
+
+    // Nothing but the credential store holds the key: not the transcript,
+    // History, chat state, or any request the model saw.
+    for request in provider.requests() {
+        let messages = serde_json::to_string(&request.messages).unwrap();
+        assert!(!messages.contains("sk-draft-secret"));
+    }
+    let mut files = Vec::new();
+    files_under(fixture.data_dir.path(), &mut files);
+    let mut approved = false;
+    for path in files {
+        let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+        if path.file_name().unwrap() == "provider-credentials.json" {
+            continue;
+        }
+        assert!(
+            !text.contains("sk-draft-secret"),
+            "{} holds the key",
+            path.display()
+        );
+        approved |= text.contains("https://8.8.8.8/v1") && text.contains("approvedKeyDestinations");
+    }
+    assert!(approved, "the draft destination was approved on the chat");
+}

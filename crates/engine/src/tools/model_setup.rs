@@ -45,23 +45,26 @@ const PROBE_LISTING_CAP: usize = 200;
 const PROPOSAL_DESCRIPTION: &str = "Prepare a provider-catalog change (add or update a model \
 with full metadata, define a custom provider, hide dead models) WITHOUT writing anything. \
 Validates the change against the local catalog, reports exactly what would change (a no-op \
-says so), stores the result engine-side, and returns a proposalId for the \
-review panel to apply. Parameters: \
+says so), stores the result engine-side, and returns a proposalId; a proposal card with the \
+diff appears in the conversation. Parameters: \
 `changes` (an array; omit it to only inspect a provider), `providerId` (when \
 inspecting: a concrete provider id; OMIT it entirely to list the organizations \
 and their providers — resolve the user's words to one before proposing), `modelId` (when inspecting: dump that one model's complete record JSON — the \
 template to copy when replacing it), `probe` (optional: live GET {baseUrl}/models against \
-the provider using the stored key if one exists). Each change is an object with an `action` \
+the provider using the stored key if one exists), `provider` (when inspecting a provider \
+that is in neither the catalog nor a proposal yet: the draft {id, name, baseUrl, \
+defaultApi} from its docs — the probe targets the draft's baseUrl, and the key rides only \
+after the user saved one for exactly that baseUrl). Each change is an object with an `action` \
 of: upsert_model_record ({providerId, record — a complete model record: id, name, api, \
 provider, baseUrl, reasoning, input, cost, contextWindow, maxTokens, and optionally \
 thinkingLevelMap/compat}), upsert_custom_provider ({provider: {id, name, baseUrl, \
 defaultApi}}), remove_custom_provider ({providerId}), remove_model_record ({providerId, \
 modelId}), or set_hidden_models ({providerId, modelIds}). When replacing an existing id, \
-inspect it first and copy its api/compat/thinkingLevelMap, changing only what differs. Only \
-call this when the user explicitly asks to add, fix, or clean up models or providers — \
-research model facts first with web_fetch/web_search, then propose. After presenting the \
-resulting diff, STOP — the user reviews the proposal in the dialog's review panel and \
-writes it there; never claim to apply it yourself and never wait for an in-chat approval.";
+inspect it first and copy its api/compat/thinkingLevelMap, changing only what differs. \
+Research model facts first with web_fetch/web_search, then propose. A newer proposal \
+touching the same provider replaces the older one. After presenting the resulting diff, \
+STOP — the user writes it from the proposal card; never claim to apply it yourself and \
+never wait for an in-chat approval.";
 
 // ---------------------------------------------------------------------------
 // The change vocabulary
@@ -926,6 +929,39 @@ fn probe_target(providers: &ProviderAdapter, provider_id: &str) -> Option<(Strin
     Some((model.base_url, model.api))
 }
 
+/// A tool call's `provider` draft: a definition the model resolved from
+/// the docs but nobody has proposed or written yet — a key and probe
+/// target before any proposal exists. Structurally validated here; the
+/// public-host gate runs where the draft is used.
+fn parse_draft(params: &serde_json::Value) -> Result<Option<CustomProvider>, String> {
+    let Some(value) = params.get("provider").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let provider: CustomProvider = serde_json::from_value(value.clone())
+        .map_err(|error| format!("\"provider\" is not a provider draft: {error}"))?;
+    if let Some(problem) = crate::provider_settings::custom_provider_problem(&provider) {
+        return Err(format!("\"provider\" draft is invalid: {problem}"));
+    }
+    Ok(Some(provider))
+}
+
+/// An inquiry probe's target and key rule: a draft probes its own planned
+/// transport (through the public-host gate), carrying the key only for a
+/// (provider, baseUrl) the user approved on this chat; without a draft the
+/// stored target probes with the stored key.
+fn inquiry_probe_plan(
+    draft: Option<&CustomProvider>,
+    approved: &HashSet<(String, String)>,
+) -> (Option<(String, String)>, bool) {
+    match draft {
+        Some(draft) => (
+            Some((draft.base_url.clone(), draft.default_api.clone())),
+            planned_probe_key_allowed(approved, &draft.id, &draft.base_url),
+        ),
+        None => (None, true),
+    }
+}
+
 /// Is this address reachable from the public internet only — i.e. not
 /// loopback, private, link-local (the cloud metadata endpoints live
 /// there), CGNAT, multicast, or otherwise non-routable space?
@@ -1217,8 +1253,24 @@ fn proposal_parameters_schema() -> serde_json::Value {
             "probe": {
                 "type": "boolean",
                 "description": "Also GET {baseUrl}/models live against the provider (read-only)"
-            }
+            },
+            "provider": provider_draft_schema()
         }
+    })
+}
+
+fn provider_draft_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "description": "A provider not yet in the catalog or any proposal: \
+    {id, name, baseUrl, defaultApi} as resolved from its docs",
+        "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "baseUrl": { "type": "string" },
+            "defaultApi": { "type": "string" }
+        },
+        "required": ["id", "name", "baseUrl", "defaultApi"]
     })
 }
 
@@ -1237,6 +1289,19 @@ async fn run_proposal_tool(
         .map(str::to_string);
     let raw_changes = params.get("changes").and_then(|value| value.as_array());
     let Some(raw_changes) = raw_changes else {
+        let draft = parse_draft(params)?;
+        let provider_id = match (&draft, provider_id) {
+            (Some(draft), Some(id)) if id != draft.id => {
+                return Err(format!(
+                    "providerId {id:?} does not match the provider draft's id {:?}",
+                    draft.id
+                ));
+            }
+            (Some(draft), _) => Some(draft.id.clone()),
+            (None, id) => id,
+        };
+        let (probe_target, probe_key) =
+            inquiry_probe_plan(draft.as_ref(), &approved_key_destinations(&chat));
         // Inquiry mode: one model's complete record (the replacement
         // template), the provider listing (the no-op detection the GLM
         // rehearsal made the first step), or — with no providerId — the
@@ -1258,8 +1323,8 @@ async fn run_proposal_tool(
                     probe_section(
                         providers.clone(),
                         &provider_id,
-                        None,
-                        true,
+                        probe_target.clone(),
+                        probe_key,
                         cancellation.clone(),
                     )
                     .await,
@@ -1277,8 +1342,8 @@ async fn run_proposal_tool(
                 probe_section(
                     providers.clone(),
                     &provider_id,
-                    None,
-                    true,
+                    probe_target,
+                    probe_key,
                     cancellation.clone(),
                 )
                 .await,
@@ -1553,9 +1618,44 @@ pub(crate) struct PendingKeyRequest {
 
 /// The card's destination: a stored custom provider's own baseUrl, else
 /// the newest unapplied proposal's planned definition, else the catalog's
-/// transport for a known provider. `None` means the id names nothing the
-/// engine can address.
+/// transport for a known provider, else the call's draft — which must
+/// pass the planned probe's public-host gate. An error means the id names
+/// nothing the engine can address, or the draft was refused.
 async fn key_request_target(
+    providers: &ProviderAdapter,
+    chat: &ChatRuntime,
+    provider_id: &str,
+    draft: Option<CustomProvider>,
+) -> Result<PendingKeyRequest, String> {
+    if let Some(request) = known_key_target(providers, chat, provider_id).await {
+        return Ok(request);
+    }
+    let Some(draft) = draft else {
+        return Err(format!(
+            "unknown provider {provider_id:?} — resolve it to a catalog id, or pass a \
+             `provider` draft {{id, name, baseUrl, defaultApi}} from its docs"
+        ));
+    };
+    if draft.id != provider_id {
+        return Err(format!(
+            "providerId {provider_id:?} does not match the provider draft's id {:?}",
+            draft.id
+        ));
+    }
+    if let Some(problem) = planned_probe_problem(&draft.base_url).await {
+        return Err(format!(
+            "the provider draft's baseUrl is refused ({problem}) — a key is only \
+             requested for a public endpoint"
+        ));
+    }
+    Ok(PendingKeyRequest {
+        provider_id: draft.id,
+        provider_name: draft.name,
+        destination: draft.base_url,
+    })
+}
+
+async fn known_key_target(
     providers: &ProviderAdapter,
     chat: &ChatRuntime,
     provider_id: &str,
@@ -1667,16 +1767,19 @@ pub(crate) async fn key_request_view(
     }))
 }
 
-const KEY_REQUEST_DESCRIPTION: &str = "Ask the user for a provider's API key through the \
-dialog's key-entry card. Call this when a `model_proposal` probe fails because the endpoint \
-requires a key (HTTP 401/403) — NEVER ask the user to paste a key in chat. Parameters: \
-`providerId`. The card collects the key locally and saves it to the credential store; the \
-key is never sent to you. After calling, tell the user a key card appeared above the \
-composer and STOP your turn. Your next user message reports the outcome: 'API key saved for \
-…' means re-run the probe with `probe: true` (inquiry mode — `providerId` only — for a \
-provider the catalog already serves; the same `changes` again for one your proposal still \
-defines); 'dismissed' means continue with web research. A probe marked 'key attached' that \
-still fails means the key itself is wrong — say so instead of requesting again.";
+const KEY_REQUEST_DESCRIPTION: &str = "Ask the user for a provider's API key through a \
+key card in the conversation. Call this as soon as the provider's docs say requests need a \
+key, or when a `model_proposal` probe fails with HTTP 401/403 — NEVER ask the user to paste \
+a key in chat. Parameters: `providerId`, and `provider` (the draft {id, name, baseUrl, \
+defaultApi} from its docs) when the provider is in neither the catalog nor a proposal yet — \
+the draft's baseUrl must be a public https endpoint. The card collects the key locally and \
+saves it to the credential store; the key is never sent to you. After calling, tell the user \
+to enter the key in the card and STOP your turn. Your next user message reports the \
+outcome: 'API key saved for …' means re-run the probe with `probe: true` (inquiry mode — \
+`providerId`, plus the same `provider` draft if you used one; the same `changes` again for \
+a provider your proposal defines); 'dismissed' means continue with web research. A probe \
+marked 'key attached' that still fails means the key itself is wrong — say so instead of \
+requesting again.";
 
 pub(crate) fn create_request_provider_key_tool(
     providers: Arc<ProviderAdapter>,
@@ -1692,8 +1795,9 @@ pub(crate) fn create_request_provider_key_tool(
                 "providerId": {
                     "type": "string",
                     "description": "The provider the key unlocks — a catalog id, \
-        or one a stored proposal defines"
-                }
+        one a stored proposal defines, or the draft's id"
+                },
+                "provider": provider_draft_schema()
             },
             "required": ["providerId"]
         }),
@@ -1716,14 +1820,9 @@ pub(crate) fn create_request_provider_key_tool(
                         .filter(|text| !text.is_empty())
                         .ok_or_else(|| "\"providerId\" is required".to_string())?
                         .to_string();
-                    let request = key_request_target(&providers, &chat, &provider_id)
-                        .await
-                        .ok_or_else(|| {
-                            format!(
-                                "unknown provider {provider_id:?} — resolve it to a catalog \
-                                 id, or define it with upsert_custom_provider first"
-                            )
-                        })?;
+                    let draft = parse_draft(&params)?;
+                    let request =
+                        key_request_target(&providers, &chat, &provider_id, draft).await?;
                     let destination = request.destination.clone();
                     let provider_name = request.provider_name.clone();
                     *chat.key_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
@@ -2306,5 +2405,110 @@ mod tests {
             );
         }
         assert!(planned_probe_problem("ftp://example.com").await.is_some());
+    }
+
+    fn draft(id: &str, base_url: &str) -> CustomProvider {
+        CustomProvider {
+            id: id.into(),
+            name: format!("{id} draft"),
+            base_url: base_url.into(),
+            default_api: "openai-completions".into(),
+        }
+    }
+
+    #[test]
+    fn a_draft_probe_carries_the_key_only_for_its_approved_base_url() {
+        let approved = HashSet::from([("acme".to_string(), "https://8.8.8.8/v1".to_string())]);
+        let (target, key) =
+            inquiry_probe_plan(Some(&draft("acme", "https://8.8.8.8/v1")), &approved);
+        assert_eq!(
+            target,
+            Some((
+                "https://8.8.8.8/v1".to_string(),
+                "openai-completions".to_string()
+            ))
+        );
+        assert!(key);
+        let (_, key) = inquiry_probe_plan(Some(&draft("acme", "https://1.1.1.1/v1")), &approved);
+        assert!(!key, "a different baseUrl re-arms");
+        // No draft: the stored target with the stored key, as before.
+        assert_eq!(inquiry_probe_plan(None, &approved), (None, true));
+    }
+
+    #[test]
+    fn drafts_parse_and_validate() {
+        assert_eq!(parse_draft(&serde_json::json!({})).unwrap(), None);
+        let ok = parse_draft(&serde_json::json!({ "provider": {
+            "id": "acme", "name": "Acme", "baseUrl": "https://8.8.8.8/v1",
+            "defaultApi": "openai-completions",
+        }}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(ok.id, "acme");
+        assert!(parse_draft(&serde_json::json!({ "provider": { "id": "acme" } })).is_err());
+        assert!(
+            parse_draft(&serde_json::json!({ "provider": {
+                "id": "acme", "name": "Acme", "baseUrl": "http://acme.example/v1",
+                "defaultApi": "openai-completions",
+            }}))
+            .is_err(),
+            "plaintext http off loopback"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_request_falls_back_to_a_public_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let chat = ChatRuntime::new();
+        // Unknown and no draft: refused.
+        assert!(
+            key_request_target(&providers, &chat, "acme", None)
+                .await
+                .is_err()
+        );
+        // A public draft addresses the card.
+        let request = key_request_target(
+            &providers,
+            &chat,
+            "acme",
+            Some(draft("acme", "https://8.8.8.8/v1")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(request.destination, "https://8.8.8.8/v1");
+        assert_eq!(request.provider_name, "acme draft");
+        // A loopback draft is refused by the public-host gate.
+        assert!(
+            key_request_target(
+                &providers,
+                &chat,
+                "acme",
+                Some(draft("acme", "http://127.0.0.1:8080/v1")),
+            )
+            .await
+            .is_err()
+        );
+        // A mismatched id is refused.
+        assert!(
+            key_request_target(
+                &providers,
+                &chat,
+                "acme",
+                Some(draft("other", "https://8.8.8.8/v1")),
+            )
+            .await
+            .is_err()
+        );
+        // A catalog provider resolves first; the draft cannot redirect it.
+        let request = key_request_target(
+            &providers,
+            &chat,
+            "openai",
+            Some(draft("openai", "https://8.8.8.8/v1")),
+        )
+        .await
+        .unwrap();
+        assert_ne!(request.destination, "https://8.8.8.8/v1");
     }
 }
