@@ -229,9 +229,7 @@ async fn a_stale_proposal_is_rejected_by_the_review_rpc() {
         panic!("the stale apply must fail");
     };
     assert!(
-        error
-            .to_string()
-            .contains("catalog changed since this proposal"),
+        error.to_string().contains("changed since this proposal"),
         "the staleness rejection surfaced: {error}"
     );
     // The RPC-written record is intact — the stale apply changed nothing.

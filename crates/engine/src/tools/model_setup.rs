@@ -20,7 +20,9 @@ use pi_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, Model as CoreModel, TextContent},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -32,6 +34,9 @@ use crate::{
 
 /// Proposals kept per chat, newest last; older ones fall off.
 const PROPOSAL_CAP: usize = 5;
+/// A Write whose touched providers moved since the proposal was built.
+const STALE_PROPOSAL: &str = "provider settings changed since this proposal was created; \
+ask the assistant to propose again";
 /// The `/models` probe's whole-request budget.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Probe listings are research aids, not catalogs: cap what rides back.
@@ -63,8 +68,15 @@ writes it there; never claim to apply it yourself and never wait for an in-chat 
 // ---------------------------------------------------------------------------
 
 /// One exact catalog change. Stored verbatim in proposals and executed
-/// verbatim on apply — this is the "as stored" of ADR-0029.
-#[derive(Clone, Debug, PartialEq)]
+/// verbatim on apply — this is the "as stored" of ADR-0029. Serialized in
+/// the tool's own `action` vocabulary so a persisted proposal (ADR-0037)
+/// reads like the call that made it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "action",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub(crate) enum CatalogChange {
     UpsertModelRecord {
         provider_id: String,
@@ -87,7 +99,7 @@ pub(crate) enum CatalogChange {
 }
 
 impl CatalogChange {
-    fn provider_id(&self) -> &str {
+    pub(crate) fn provider_id(&self) -> &str {
         match self {
             CatalogChange::UpsertModelRecord { provider_id, .. }
             | CatalogChange::RemoveCustomProvider { provider_id }
@@ -182,12 +194,16 @@ pub(crate) fn parse_change(value: &serde_json::Value) -> Result<CatalogChange, S
 // The stored proposal
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StoredProposal {
     pub(crate) id: String,
     pub(crate) summary: String,
     pub(crate) changes: Vec<CatalogChange>,
-    pub(crate) baseline: ProviderSettingsSnapshot,
+    /// [`baseline_fingerprint`] of the providers the batch touches, taken
+    /// when the proposal was built. A hash, not the slice: stored record
+    /// headers are secrets and the proposal is persisted (ADR-0037).
+    pub(crate) baseline: String,
     /// Creation time (unix ms). The review panel filters proposals by it:
     /// ones stored before the dialog opened belong to earlier sessions and
     /// must not render as actionable.
@@ -201,9 +217,10 @@ pub(crate) fn store_proposal(
     chat: &ChatRuntime,
     changes: Vec<CatalogChange>,
     summary: String,
-    baseline: ProviderSettingsSnapshot,
+    baseline: &ProviderSettingsSnapshot,
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
+    let baseline = baseline_fingerprint(baseline, &touched_providers(&changes));
     let mut proposals = chat.proposals.lock().unwrap_or_else(|e| e.into_inner());
     proposals.push_back(StoredProposal {
         id: id.clone(),
@@ -216,6 +233,68 @@ pub(crate) fn store_proposal(
         proposals.pop_front();
     }
     id
+}
+
+/// The provider ids a batch reads or writes.
+pub(crate) fn touched_providers(changes: &[CatalogChange]) -> BTreeSet<String> {
+    changes
+        .iter()
+        .map(|change| change.provider_id().to_string())
+        .collect()
+}
+
+/// The staleness gate's key (ADR-0037): a hash of every settings entry
+/// under the touched providers. A write to any other provider leaves it —
+/// and so the proposal — intact; any change under a touched one stales it.
+/// Hashed over canonical (key-sorted) JSON so it is stable across restarts.
+pub(crate) fn baseline_fingerprint(
+    snapshot: &ProviderSettingsSnapshot,
+    touched: &BTreeSet<String>,
+) -> String {
+    fn canonical(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                out.push('{');
+                for (ix, key) in keys.into_iter().enumerate() {
+                    if ix > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                    out.push(':');
+                    canonical(&map[key], out);
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for (ix, item) in items.iter().enumerate() {
+                    if ix > 0 {
+                        out.push(',');
+                    }
+                    canonical(item, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let slice: Vec<serde_json::Value> = touched
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "customModels": snapshot.custom_models.get(id),
+                "modelRecords": snapshot.model_records.get(id),
+                "customProvider": snapshot.custom_providers.get(id),
+                "hiddenModels": snapshot.hidden_models.get(id),
+            })
+        })
+        .collect();
+    let mut text = String::new();
+    canonical(&serde_json::Value::Array(slice), &mut text);
+    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 pub(crate) fn stored_proposal(chat: &ChatRuntime, id: &str) -> Option<StoredProposal> {
@@ -1121,7 +1200,13 @@ pub(crate) fn apply_stored(
              a restart; ask the assistant to propose again"
         )
     })?;
-    let applied = apply_changes(providers, &proposal.baseline, &proposal.changes)?;
+    // Only the touched providers must be as proposed; the whole-snapshot
+    // CAS inside `apply_changes` then guards just this read→write window.
+    let live = providers.settings.snapshot();
+    if baseline_fingerprint(&live, &touched_providers(&proposal.changes)) != proposal.baseline {
+        return Err(STALE_PROPOSAL.into());
+    }
+    let applied = apply_changes(providers, &live, &proposal.changes)?;
     discard_stored(chat, proposal_id);
     Ok(applied)
 }
@@ -1291,7 +1376,7 @@ async fn run_proposal_tool(
                     );
                 }
             }
-            let id = store_proposal(&chat, changes, summary.clone(), baseline);
+            let id = store_proposal(&chat, changes, summary.clone(), &baseline);
             lines.push(String::new());
             lines.push(format!("proposalId: {id}"));
             lines.push(
@@ -1840,6 +1925,80 @@ mod tests {
                 .context_window,
             newer.context_window
         );
+    }
+
+    fn propose(providers: &ProviderAdapter, chat: &ChatRuntime, change: CatalogChange) -> String {
+        let changes = vec![change];
+        let ProposalOutcome::Changes { summary, .. } = build_proposal(providers, &changes).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        store_proposal(chat, changes, summary, &providers.settings.snapshot())
+    }
+
+    #[test]
+    fn a_write_stales_only_proposals_on_the_same_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let chat = ChatRuntime::new();
+        let openai = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-one", "https://api.openai.com/v1"),
+        );
+        let openai_again = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-two", "https://api.openai.com/v1"),
+        );
+        let anthropic = propose(
+            &providers,
+            &chat,
+            change("anthropic", "claude-x", "https://api.anthropic.com"),
+        );
+
+        apply_stored(&providers, &chat, &openai).unwrap();
+        let error = apply_stored(&providers, &chat, &openai_again).unwrap_err();
+        assert!(error.contains("changed since this proposal"), "{error}");
+        apply_stored(&providers, &chat, &anthropic).unwrap();
+    }
+
+    #[test]
+    fn an_untouched_provider_change_does_not_stale_a_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let chat = ChatRuntime::new();
+        let id = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-one", "https://api.openai.com/v1"),
+        );
+        providers
+            .settings
+            .upsert_model_record(
+                "anthropic",
+                record("anthropic", "claude-x", "https://api.anthropic.com"),
+            )
+            .unwrap();
+        apply_stored(&providers, &chat, &id).unwrap();
+    }
+
+    #[test]
+    fn stored_proposals_round_trip_through_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let chat = ChatRuntime::new();
+        let id = propose(
+            &providers,
+            &chat,
+            change("openai", "gpt-one", "https://api.openai.com/v1"),
+        );
+        let stored = stored_proposal(&chat, &id).unwrap();
+        let json = serde_json::to_value(&stored).unwrap();
+        assert_eq!(json["changes"][0]["action"], "upsert_model_record");
+        assert_eq!(json["changes"][0]["providerId"], "openai");
+        let back: StoredProposal = serde_json::from_value(json).unwrap();
+        assert_eq!(back, stored);
     }
 
     #[test]

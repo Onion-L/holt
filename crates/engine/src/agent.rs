@@ -207,7 +207,7 @@ impl ChatRuntime {
     }
 
     #[cfg(test)]
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (transcript_tx, _) = watch::channel(Arc::new(Vec::new()));
         let (usage_tx, _) = watch::channel(serde_json::Value::Null);
         Self {
