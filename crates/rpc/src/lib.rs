@@ -71,6 +71,11 @@ pub mod methods {
     /// reply is `{settled: "saved" | "dismissed", providerId,
     /// destination}`.
     pub const SETTLE_PROVIDER_KEY_REQUEST: &str = "SettleProviderKeyRequest";
+    /// Settles a provider-choice card (ADR-0037): params `{chatId, cardId,
+    /// providerId}`. The card must be pending and offer the id; the card
+    /// is stamped chosen and the fixed "Use provider …" message is queued
+    /// as an ordinary user message. Reply `{providerId}`.
+    pub const SETTLE_PROVIDER_CHOICE: &str = "SettleProviderChoice";
     /// The registered API dialect ids (pi-core's compat registry) →
     /// `[String]`. The record form's dialect dropdown reads it — the set
     /// is the engine's, never the UI's.

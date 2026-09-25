@@ -459,6 +459,7 @@ mod tests {
         MessagePart::ModelProposal {
             id: "p1".into(),
             proposal_id: "prop-1".into(),
+            targets: vec![],
             summary: "Add acme/acme-2".into(),
             lines: vec!["+ acme/acme-2  200k ctx".into()],
             state,

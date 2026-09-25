@@ -1432,6 +1432,25 @@ impl EngineService {
         Ok(())
     }
 
+    /// The model config and cwd a queued follow-up runs with: exactly
+    /// what the composer would send on this chat.
+    fn chat_run_target(&self, chat_id: &str) -> Result<(holt_proto::ChatConfig, String), RpcError> {
+        let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+        let row = chats
+            .iter()
+            .find(|row| row.id == chat_id)
+            .ok_or_else(|| RpcError::Failed("chat was deleted".into()))?;
+        let config = row
+            .config
+            .clone()
+            .ok_or_else(|| RpcError::Failed("the chat has no model config".into()))?;
+        let cwd = row
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+        Ok((config, cwd))
+    }
+
     fn provider_mode_state(
         &self,
         chat_id: &str,
@@ -2642,19 +2661,13 @@ impl RpcService for EngineService {
                 // The notice rides the queue as an ordinary user message on
                 // the chat's own model — exactly what the composer
                 // would have sent had the user typed it.
-                let (config, cwd) = {
-                    let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
-                    let row = chats
-                        .iter()
-                        .find(|row| row.id == chat_id)
-                        .ok_or_else(|| RpcError::Failed("chat was deleted".into()))?;
-                    let cwd = row.cwd.clone().unwrap_or_else(|| {
-                        std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
-                    });
-                    (row.config.clone(), cwd)
+                let (config, cwd) = match self.chat_run_target(chat_id) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        restore();
+                        return Err(error);
+                    }
                 };
-                let config = config
-                    .ok_or_else(|| RpcError::Failed("the chat has no model config".into()))?;
                 let message_id = format!("key-request-{}", uuid::Uuid::new_v4());
                 if let Err(error) = self.enqueue_run(
                     chat.clone(),
@@ -2678,6 +2691,38 @@ impl RpcService for EngineService {
                     "providerId": pending.provider_id,
                     "destination": pending.destination,
                 }))
+            }
+            methods::SETTLE_PROVIDER_CHOICE => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let card_id = required_string(&params, "cardId")?;
+                let provider_id = required_string(&params, "providerId")?;
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                if !self.provider_mode_state(chat_id)?.active {
+                    return Err(RpcError::Failed("the chat is not in Provider Mode".into()));
+                }
+                let (config, cwd) = self.chat_run_target(chat_id)?;
+                // The stamp is the claim: a second concurrent click finds
+                // the card already Chosen and is refused.
+                let chosen = crate::provider_mode::choose_provider(&chat, card_id, provider_id)
+                    .map_err(RpcError::Failed)?;
+                let notice =
+                    crate::tools::model_setup::provider_chosen_notice(&chosen.id, &chosen.name);
+                let message_id = format!("provider-choice-{}", uuid::Uuid::new_v4());
+                if let Err(error) = self.enqueue_run(
+                    chat.clone(),
+                    Self::queued_run_request(&config, &notice, cwd),
+                    message_id,
+                ) {
+                    crate::provider_mode::unchoose_provider(&chat, card_id);
+                    return Err(error);
+                }
+                RpcReply::value(&serde_json::json!({ "providerId": chosen.id }))
             }
             methods::LIST_API_DIALECTS => {
                 let ids: Vec<String> = pi_core::ai::compat::get_api_providers()

@@ -2145,12 +2145,18 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             &result.details,
                         )
                     {
-                        let key_card = matches!(card, MessagePart::KeyRequest { .. });
-                        if key_card {
-                            crate::provider_mode::stamp_key_cards(
-                                &chat,
-                                holt_doc::parts::KeyCardState::Superseded,
-                            );
+                        let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
+                        match card {
+                            MessagePart::KeyRequest { .. } => {
+                                crate::provider_mode::stamp_key_cards(
+                                    &chat,
+                                    holt_doc::parts::KeyCardState::Superseded,
+                                );
+                            }
+                            MessagePart::ProviderChoice { .. } => {
+                                crate::provider_mode::supersede_choice_cards(&chat);
+                            }
+                            _ => {}
                         }
                         base_parts
                             .lock()
@@ -2166,7 +2172,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             entry.parts.push(card);
                         }
                         chat.persist_entry_tail(&run_entry);
-                        if !key_card {
+                        if proposal_card {
                             crate::provider_mode::supersede_orphan_proposal_cards(&chat);
                         }
                     }
@@ -2429,6 +2435,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         // access, no delegation, and no apply (the card's button writes).
         // Outside the mode neither catalog tool is mounted.
         tools.retain(|tool| crate::provider_mode::provider_mode_tool_allowed(&tool.name));
+        // A new Turn moved past any still-open provider choice — a typed
+        // answer, or the click that queued this very Turn (already
+        // stamped chosen).
+        crate::provider_mode::supersede_choice_cards(&chat);
         if let Some(model_providers) = &providers {
             tools.push(crate::tools::create_model_proposal_tool(
                 model_providers.clone(),
@@ -2437,6 +2447,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             tools.push(crate::tools::create_request_provider_key_tool(
                 model_providers.clone(),
                 chat.clone(),
+            ));
+            tools.push(crate::tools::create_choose_provider_tool(
+                model_providers.clone(),
             ));
         }
     } else if !plan_mode {

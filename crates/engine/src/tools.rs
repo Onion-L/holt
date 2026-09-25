@@ -807,6 +807,7 @@ pub(crate) fn execution_tools_for_model(
     tools
 }
 
+pub(crate) use model_setup::create_choose_provider_tool;
 pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use model_setup::create_request_provider_key_tool;
 pub(crate) use read_chat::create_read_chat_tool;

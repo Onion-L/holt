@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use holt_doc::parts::{KeyCardState, MessagePart, ProposalCardState};
+use holt_doc::parts::{ChoiceCardState, KeyCardState, MessagePart, ProposalCardState, ProviderRef};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -140,12 +140,13 @@ pub(crate) fn delete(data_dir: &Path, chat_id: &str) {
 }
 
 /// The Provider Mode toolset (ADR-0037): web research plus the read-only
-/// proposal tool and the Key request. No file access, no delegation, no
-/// MCP, and no apply — the card's Write button is the only write path.
+/// proposal tool, the Key request, and the provider choice. No file
+/// access, no delegation, no MCP, and no apply — the card's Write button
+/// is the only write path.
 pub(crate) fn provider_mode_tool_allowed(name: &str) -> bool {
     matches!(
         name,
-        "web_fetch" | "web_search" | "model_proposal" | "request_provider_key"
+        "web_fetch" | "web_search" | "model_proposal" | "request_provider_key" | "choose_provider"
     )
 }
 
@@ -166,10 +167,14 @@ pub(crate) fn provider_mode_block(web_search: bool) -> String {
          URL, API style, model IDs, context window, max output tokens, input modalities, \
          reasoning levels, pricing.\n\
          2. Resolve: call `model_proposal` with no `providerId` to list every organization \
-         and its providers. Match the user's words to ONE concrete provider id — an \
-         organization may carry several providers (regions, token plans); when several \
-         match, show them and ASK which one. Then call `model_proposal` in inquiry mode \
-         (`providerId`, plus `modelId` to dump an existing record as the replacement \
+         and its providers. Resolve the user's words to ONE concrete provider id — an \
+         organization may carry several providers (regions, token plans). Without asking, \
+         take the provider already settled earlier in this conversation; else the only one \
+         in the organization whose catalog has the named model; else the only configured \
+         one. The proposal card names its target provider, so the user sees where it lands \
+         and can correct you. When several still match, call `choose_provider` with the \
+         candidate ids and STOP — never list them in text. Then call `model_proposal` in \
+         inquiry mode (`providerId`, plus `modelId` to dump an existing record as the replacement \
          template) to see the local catalog and detect no-ops. A provider that does not \
          exist yet is addressed as a draft `provider` object `{{id, name, baseUrl, \
          defaultApi}}` for the inquiry probe and the key request.\n\
@@ -200,10 +205,17 @@ pub(crate) fn tool_card(
     details: &serde_json::Value,
 ) -> Option<MessagePart> {
     let text = |field: &str| details.get(field)?.as_str().map(str::to_owned);
+    let refs = |field: &str| -> Vec<ProviderRef> {
+        details
+            .get(field)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    };
     match tool_name {
         "model_proposal" => Some(MessagePart::ModelProposal {
             id: format!("{tool_call_id}-card"),
             proposal_id: text("proposalId")?,
+            targets: refs("targets"),
             summary: text("summary").unwrap_or_default(),
             lines: details
                 .get("lines")
@@ -224,6 +236,15 @@ pub(crate) fn tool_card(
             destination: text("destination").unwrap_or_default(),
             state: KeyCardState::Pending,
         }),
+        "choose_provider" => {
+            let options = refs("options");
+            (!options.is_empty()).then(|| MessagePart::ProviderChoice {
+                id: format!("{tool_call_id}-card"),
+                options,
+                chosen: None,
+                state: ChoiceCardState::Pending,
+            })
+        }
         _ => None,
     }
 }
@@ -300,6 +321,67 @@ pub(crate) fn stamp_key_cards(chat: &ChatRuntime, to: KeyCardState) {
     });
 }
 
+/// Retire every pending provider-choice card: a newer choice, or any new
+/// Turn — a typed answer moved the conversation past it.
+pub(crate) fn supersede_choice_cards(chat: &ChatRuntime) {
+    stamp_cards(chat, |part| match part {
+        MessagePart::ProviderChoice { state, .. } if *state == ChoiceCardState::Pending => {
+            *state = ChoiceCardState::Superseded;
+            true
+        }
+        _ => false,
+    });
+}
+
+/// Settle one pending choice card on `provider_id` — the click — and
+/// return the option picked. Checked and stamped under one transcript
+/// lock, so two clicks cannot both settle it.
+pub(crate) fn choose_provider(
+    chat: &ChatRuntime,
+    card_id: &str,
+    provider_id: &str,
+) -> Result<ProviderRef, String> {
+    let mut picked = None;
+    let mut refusal = "no such provider choice on this chat";
+    stamp_cards(chat, |part| match part {
+        MessagePart::ProviderChoice {
+            id,
+            options,
+            chosen,
+            state,
+        } if id == card_id => {
+            if *state != ChoiceCardState::Pending {
+                refusal = "this provider choice is already settled";
+                return false;
+            }
+            let Some(option) = options.iter().find(|option| option.id == provider_id) else {
+                refusal = "the provider is not one of this card's options";
+                return false;
+            };
+            picked = Some(option.clone());
+            *chosen = Some(provider_id.to_string());
+            *state = ChoiceCardState::Chosen;
+            true
+        }
+        _ => false,
+    });
+    picked.ok_or_else(|| refusal.to_string())
+}
+
+/// Put a chosen card back to pending — the queued message did not go out.
+pub(crate) fn unchoose_provider(chat: &ChatRuntime, card_id: &str) {
+    stamp_cards(chat, |part| match part {
+        MessagePart::ProviderChoice {
+            id, chosen, state, ..
+        } if id == card_id && *state == ChoiceCardState::Chosen => {
+            *chosen = None;
+            *state = ChoiceCardState::Pending;
+            true
+        }
+        _ => false,
+    });
+}
+
 /// Keep settled card states across a live entry rewrite: a running Turn
 /// rebuilds its entry from its own part list, which still holds the card
 /// as it was appended, while the RPC may already have stamped it.
@@ -319,6 +401,19 @@ pub(crate) fn carry_card_states(existing: &[MessagePart], parts: &mut [MessagePa
                 if let Some(MessagePart::KeyRequest { state: settled, .. }) =
                     existing.iter().find(|old| old.id() == id.as_str())
                 {
+                    *state = *settled;
+                }
+            }
+            MessagePart::ProviderChoice {
+                id, chosen, state, ..
+            } if *state == ChoiceCardState::Pending => {
+                if let Some(MessagePart::ProviderChoice {
+                    chosen: settled_choice,
+                    state: settled,
+                    ..
+                }) = existing.iter().find(|old| old.id() == id.as_str())
+                {
+                    *chosen = settled_choice.clone();
                     *state = *settled;
                 }
             }

@@ -16,6 +16,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
+use holt_doc::parts::ProviderRef;
 use pi_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, Model as CoreModel, TextContent},
@@ -1349,6 +1350,7 @@ async fn run_proposal_tool(
                     );
                 }
             }
+            let targets = proposal_targets(&providers, &changes).await;
             let id = store_proposal(&chat, changes, summary.clone(), &baseline);
             lines.push(String::new());
             lines.push(format!("proposalId: {id}"));
@@ -1360,7 +1362,12 @@ async fn run_proposal_tool(
             );
             text_result(
                 lines.join("\n"),
-                json!({ "proposalId": id, "summary": summary, "lines": diff }),
+                json!({
+                    "proposalId": id,
+                    "targets": targets,
+                    "summary": summary,
+                    "lines": diff,
+                }),
             )
         }
         ProposalOutcome::NoChanges { .. } => text_result(
@@ -1368,6 +1375,42 @@ async fn run_proposal_tool(
             json!({ "no_op": true }),
         ),
     }
+}
+
+/// The providers a proposal writes to, as its card names them: the
+/// batch's own definition for a provider it adds, else the catalog's
+/// display name.
+async fn proposal_targets(
+    providers: &ProviderAdapter,
+    changes: &[CatalogChange],
+) -> Vec<ProviderRef> {
+    let rows = providers.providers().await;
+    touched_providers(changes)
+        .into_iter()
+        .map(|id| {
+            let name = changes
+                .iter()
+                .find_map(|change| match change {
+                    CatalogChange::UpsertCustomProvider { provider } if provider.id == id => {
+                        Some(provider.name.clone())
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    rows.iter()
+                        .flat_map(|row| row.variants.iter())
+                        .find(|variant| variant.id.0 == id)
+                        .map(|variant| variant.name.clone())
+                })
+                .unwrap_or_else(|| id.clone());
+            ProviderRef {
+                id,
+                name,
+                detail: String::new(),
+                configured: false,
+            }
+        })
+        .collect()
 }
 
 /// One model's complete record as JSON — the template a replacement
@@ -1750,6 +1793,119 @@ pub(crate) fn create_request_provider_key_tool(
                             "providerName": provider_name,
                             "destination": destination,
                         }),
+                    )
+                }) as BoxFuture<'static, Result<AgentToolResult, String>>
+            },
+        ),
+    }
+}
+
+/// The fixed message a provider-choice click queues (ADR-0037) — the
+/// same words a typed answer would carry.
+pub(crate) fn provider_chosen_notice(provider_id: &str, provider_name: &str) -> String {
+    format!("Use provider {provider_id} ({provider_name}).")
+}
+
+/// The choice card's options, filled from the catalog so the model can
+/// only narrow the list, never invent an entry: 2–6 distinct concrete
+/// provider ids, each with its display name, endpoint host, and whether a
+/// key is stored.
+pub(crate) async fn provider_choice_options(
+    providers: &ProviderAdapter,
+    provider_ids: &[String],
+) -> Result<Vec<ProviderRef>, String> {
+    let mut ids: Vec<&str> = Vec::new();
+    for id in provider_ids.iter().map(|id| id.trim()) {
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if !(2..=MAX_CHOICE_OPTIONS).contains(&ids.len()) {
+        return Err(format!(
+            "pass 2–{MAX_CHOICE_OPTIONS} distinct provider ids — with one candidate, \
+             just use it"
+        ));
+    }
+    let rows = providers.providers().await;
+    ids.into_iter()
+        .map(|id| {
+            let variant = rows
+                .iter()
+                .flat_map(|row| row.variants.iter())
+                .find(|variant| variant.id.0 == id)
+                .ok_or_else(|| {
+                    format!(
+                        "unknown provider {id:?} — pick ids from the providerless \
+                         `model_proposal` listing"
+                    )
+                })?;
+            Ok(ProviderRef {
+                id: id.to_string(),
+                name: variant.name.clone(),
+                detail: probe_target(providers, id)
+                    .map(|(base_url, _)| host_of(&base_url).to_string())
+                    .unwrap_or_default(),
+                configured: variant.configured,
+            })
+        })
+        .collect()
+}
+
+const MAX_CHOICE_OPTIONS: usize = 6;
+
+const CHOICE_DESCRIPTION: &str = "Ask the user to pick ONE provider when their words still \
+match several — an organization's regions or token plans — after the resolve rules. Pass the \
+candidate `providerIds` (2–6 ids from the providerless `model_proposal` listing). A choice \
+card listing them appears in the conversation. Do NOT list the candidates in text; STOP your \
+turn after calling. The next user message names the provider ('Use provider <id> …') or \
+answers in words.";
+
+pub(crate) fn create_choose_provider_tool(providers: Arc<ProviderAdapter>) -> AgentTool {
+    AgentTool {
+        name: "choose_provider".into(),
+        label: "Choose Provider".into(),
+        description: CHOICE_DESCRIPTION.into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "providerIds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The candidate provider ids, most likely first"
+                }
+            },
+            "required": ["providerIds"]
+        }),
+        constrained_sampling: None,
+        prepare_arguments: None,
+        execution_mode: None,
+        execute: Arc::new(
+            move |_tool_call_id: &str,
+                  params: &serde_json::Value,
+                  _signal: Option<&CancellationToken>,
+                  _on_update: Option<&AgentToolUpdateCallback>| {
+                let providers = providers.clone();
+                let params = params.clone();
+                Box::pin(async move {
+                    let ids: Vec<String> = params
+                        .get("providerIds")
+                        .and_then(serde_json::Value::as_array)
+                        .ok_or_else(|| "\"providerIds\" is required".to_string())?
+                        .iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect();
+                    let options = provider_choice_options(&providers, &ids).await?;
+                    let listed = options
+                        .iter()
+                        .map(|option| option.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    text_result(
+                        format!(
+                            "Choice card shown for: {listed}. STOP this turn — the user \
+                             picks on the card or answers in chat."
+                        ),
+                        json!({ "options": options }),
                     )
                 }) as BoxFuture<'static, Result<AgentToolResult, String>>
             },

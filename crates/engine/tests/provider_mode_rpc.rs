@@ -117,7 +117,7 @@ async fn a_mode_turn_carries_the_block_and_only_the_catalog_surface() {
 
     let requests = provider.requests();
     let (ordinary, mode) = (&requests[0], &requests[1]);
-    for name in ["model_proposal", "request_provider_key"] {
+    for name in ["model_proposal", "request_provider_key", "choose_provider"] {
         assert!(
             !ordinary.tool_names.iter().any(|tool| tool == name),
             "a normal Turn must not mount {name}"
@@ -128,7 +128,12 @@ async fn a_mode_turn_carries_the_block_and_only_the_catalog_surface() {
     // No search backend on the fixture: web_search is never mounted.
     assert_eq!(
         names,
-        ["model_proposal", "request_provider_key", "web_fetch"]
+        [
+            "choose_provider",
+            "model_proposal",
+            "request_provider_key",
+            "web_fetch"
+        ]
     );
     let ordinary_prompt = ordinary.system_prompt.clone().unwrap();
     let mode_prompt = mode.system_prompt.clone().unwrap();
@@ -1156,4 +1161,178 @@ async fn legacy_model_setup_chats_are_deleted_on_startup() {
     assert!(!ids.contains(&"legacy-setup"));
     let stored = std::fs::read_to_string(&path).unwrap();
     assert!(!stored.contains("legacy-setup"));
+}
+
+// ---------------------------------------------------------------------------
+// Organizations resolve to one provider (plan 011)
+// ---------------------------------------------------------------------------
+
+fn choose_call(call_id: &str, ids: &[&str]) -> ScriptedReply {
+    ScriptedReply::tool_call(
+        call_id,
+        "choose_provider",
+        serde_json::json!({ "providerIds": ids }),
+    )
+}
+
+async fn settle_choice(
+    engine: &holt_engine::LocalEngine,
+    card_id: &str,
+    provider_id: &str,
+) -> Result<RpcReply, holt_rpc::RpcError> {
+    engine
+        .handle(
+            methods::SETTLE_PROVIDER_CHOICE,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "cardId": card_id,
+                "providerId": provider_id,
+            }),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_provider_choice_card_carries_engine_filled_options() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            choose_call("call-1", &["xiaomi", "xiaomi-token-plan-cn", "xiaomi"]),
+            ScriptedReply::text("pick one"),
+        ],
+    )
+    .await;
+    let found = cards(&engine, "chat-1", "providerChoice").await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0]["state"], "pending");
+    let options = found[0]["options"].as_array().unwrap();
+    let ids: Vec<&str> = options
+        .iter()
+        .map(|option| option["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["xiaomi", "xiaomi-token-plan-cn"]);
+    for option in options {
+        assert!(!option["name"].as_str().unwrap().is_empty());
+        assert!(!option["detail"].as_str().unwrap_or_default().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn unknown_or_single_ids_build_no_choice_card() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            choose_call("call-1", &["xiaomi", "not-a-provider"]),
+            choose_call("call-2", &["xiaomi"]),
+            ScriptedReply::text("gave up"),
+        ],
+    )
+    .await;
+    assert!(cards(&engine, "chat-1", "providerChoice").await.is_empty());
+}
+
+#[tokio::test]
+async fn settling_a_choice_stamps_it_and_tells_the_chat() {
+    let fixture = Fixture::new();
+    let (engine, provider) = mode_chat(
+        &fixture,
+        vec![
+            choose_call("call-1", &["xiaomi", "xiaomi-token-plan-cn"]),
+            ScriptedReply::text("pick one"),
+            ScriptedReply::text("using it"),
+        ],
+    )
+    .await;
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
+    run_turn(&engine, &fixture, "update xiaomi").await;
+    let card_id = cards(&engine, "chat-1", "providerChoice").await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Not one of the card's options: refused, the card stays pending.
+    assert!(settle_choice(&engine, &card_id, "openai").await.is_err());
+    assert!(
+        settle_choice(&engine, "no-such-card", "xiaomi")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        cards(&engine, "chat-1", "providerChoice").await[0]["state"],
+        "pending"
+    );
+
+    let RpcReply::Value(reply) = settle_choice(&engine, &card_id, "xiaomi-token-plan-cn")
+        .await
+        .unwrap()
+    else {
+        panic!("SettleProviderChoice did not return a value");
+    };
+    assert_eq!(reply["providerId"], "xiaomi-token-plan-cn");
+    common::wait_for_transcript_text(&mut transcript, "Use provider xiaomi-token-plan-cn").await;
+    wait_for_requests(&provider, 3).await;
+    let card = &cards(&engine, "chat-1", "providerChoice").await[0];
+    assert_eq!(card["state"], "chosen");
+    assert_eq!(card["chosen"], "xiaomi-token-plan-cn");
+
+    // Settled once: a second click is refused.
+    assert!(settle_choice(&engine, &card_id, "xiaomi").await.is_err());
+}
+
+#[tokio::test]
+async fn a_new_turn_supersedes_a_pending_choice() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            choose_call("call-1", &["xiaomi", "xiaomi-token-plan-cn"]),
+            ScriptedReply::text("pick one"),
+            ScriptedReply::text("the token plan then"),
+        ],
+    )
+    .await;
+    run_turn(&engine, &fixture, "the cn token plan").await;
+    let card = &cards(&engine, "chat-1", "providerChoice").await[0];
+    assert_eq!(card["state"], "superseded");
+    let card_id = card["id"].as_str().unwrap().to_string();
+    assert!(settle_choice(&engine, &card_id, "xiaomi").await.is_err());
+}
+
+#[tokio::test]
+async fn a_choice_is_refused_outside_provider_mode() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            choose_call("call-1", &["xiaomi", "xiaomi-token-plan-cn"]),
+            ScriptedReply::text("pick one"),
+        ],
+    )
+    .await;
+    let card_id = cards(&engine, "chat-1", "providerChoice").await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(&engine, methods::EXIT_PROVIDER_MODE, "chat-1").await;
+    assert!(settle_choice(&engine, &card_id, "xiaomi").await.is_err());
+}
+
+#[tokio::test]
+async fn a_proposal_card_names_its_target_provider() {
+    let fixture = Fixture::new();
+    let (engine, _provider) = mode_turn(
+        &fixture,
+        vec![
+            propose_custom("call-1", "acme"),
+            ScriptedReply::text("proposed"),
+        ],
+    )
+    .await;
+    let card = &cards(&engine, "chat-1", "modelProposal").await[0];
+    let targets = card["targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0]["id"], "acme");
+    assert_eq!(targets[0]["name"], "acme");
 }

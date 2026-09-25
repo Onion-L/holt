@@ -291,10 +291,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             }),
             ..Default::default()
         },
-        MessagePart::ModelProposal { id, .. } | MessagePart::KeyRequest { id, .. } => DocPartJson {
+        MessagePart::ModelProposal { id, .. }
+        | MessagePart::ProviderChoice { id, .. }
+        | MessagePart::KeyRequest { id, .. } => DocPartJson {
             id: id.clone(),
             kind: match part {
                 MessagePart::ModelProposal { .. } => "modelProposal",
+                MessagePart::ProviderChoice { .. } => "providerChoice",
                 _ => "keyRequest",
             }
             .into(),
@@ -394,13 +397,15 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             text: p.reasoning.unwrap_or_default(),
         },
-        "modelProposal" | "keyRequest" => {
+        "modelProposal" | "providerChoice" | "keyRequest" => {
             match p
                 .card
                 .and_then(|card| serde_json::from_value::<MessagePart>(card).ok())
             {
                 Some(
-                    card @ (MessagePart::ModelProposal { .. } | MessagePart::KeyRequest { .. }),
+                    card @ (MessagePart::ModelProposal { .. }
+                    | MessagePart::ProviderChoice { .. }
+                    | MessagePart::KeyRequest { .. }),
                 ) => card,
                 _ => MessagePart::Text {
                     id: p.id,
@@ -1442,6 +1447,12 @@ mod tests {
             MessagePart::ModelProposal {
                 id: "c0".into(),
                 proposal_id: "prop-1".into(),
+                targets: vec![crate::parts::ProviderRef {
+                    id: "acme".into(),
+                    name: "Acme".into(),
+                    detail: String::new(),
+                    configured: false,
+                }],
                 summary: "Add model gpt-x to acme".into(),
                 lines: vec!["+ acme/gpt-x".into()],
                 state: crate::parts::ProposalCardState::Pending,
@@ -1452,6 +1463,17 @@ mod tests {
                 provider_name: "Acme".into(),
                 destination: "https://api.acme.dev/v1".into(),
                 state: crate::parts::KeyCardState::Saved,
+            },
+            MessagePart::ProviderChoice {
+                id: "c2".into(),
+                options: vec![crate::parts::ProviderRef {
+                    id: "acme-cn".into(),
+                    name: "Acme (China)".into(),
+                    detail: "api.acme.cn".into(),
+                    configured: true,
+                }],
+                chosen: Some("acme-cn".into()),
+                state: crate::parts::ChoiceCardState::Chosen,
             },
         ];
         let doc = SessionDoc::init("chat-1").unwrap();
@@ -1496,6 +1518,23 @@ mod tests {
                 ("t4", "after")
             ]
         );
+    }
+
+    /// Proposal cards written before targets existed still decode.
+    #[test]
+    fn a_proposal_card_without_targets_decodes() {
+        let part: MessagePart = serde_json::from_value(serde_json::json!({
+            "kind": "modelProposal",
+            "id": "c0",
+            "proposalId": "p",
+            "summary": "s",
+            "state": "written",
+        }))
+        .unwrap();
+        assert!(matches!(
+            part,
+            MessagePart::ModelProposal { ref targets, .. } if targets.is_empty()
+        ));
     }
 
     #[test]

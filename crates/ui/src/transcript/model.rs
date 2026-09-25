@@ -956,12 +956,14 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    MessagePart::ProviderChoice { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
                         summary,
                         lines,
                         state,
+                        ..
                     } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),

@@ -247,6 +247,32 @@ pub enum ProposalCardState {
     Superseded,
 }
 
+/// Where a Provider Mode provider-choice card stands (ADR-0037). A click
+/// moves it to `Chosen`; any later Turn retires a still-pending one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChoiceCardState {
+    Pending,
+    Chosen,
+    #[serde(other)]
+    Superseded,
+}
+
+/// One concrete provider as a Provider Mode card shows it: the id every
+/// RPC addresses, its display name, and — on choice options — the
+/// endpoint host and whether a key is stored. Engine-filled from the
+/// catalog, never from model text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRef {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    #[serde(default)]
+    pub configured: bool,
+}
+
 /// Where a Provider Mode key-request card stands (ADR-0037). The key
 /// itself never rides the card — only who it is for and where it goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,17 +442,30 @@ pub enum MessagePart {
         state: PlanApprovalState,
     },
     /// A Provider Mode catalog proposal (ADR-0037): the stored proposal's
-    /// id, its one-line summary, and the human-readable diff lines it
-    /// would write. Write / Discard ride the proposal RPCs; the card is
-    /// the only surface that writes.
+    /// id, the providers it writes to, its one-line summary, and the
+    /// human-readable diff lines it would write. Write / Discard ride the
+    /// proposal RPCs; the card is the only surface that writes.
     #[serde(rename_all = "camelCase")]
     ModelProposal {
         id: String,
         proposal_id: String,
+        #[serde(default)]
+        targets: Vec<ProviderRef>,
         summary: String,
         #[serde(default)]
         lines: Vec<String>,
         state: ProposalCardState,
+    },
+    /// A Provider Mode provider choice (ADR-0037): the candidates an
+    /// organization name left open. A click settles it through
+    /// `SettleProviderChoice`, which records `chosen`.
+    #[serde(rename_all = "camelCase")]
+    ProviderChoice {
+        id: String,
+        options: Vec<ProviderRef>,
+        #[serde(default)]
+        chosen: Option<String>,
+        state: ChoiceCardState,
     },
     /// A Provider Mode API-key request (ADR-0037, amends ADR-0031): which
     /// provider the key unlocks and the one destination it is sent to.
@@ -455,6 +494,7 @@ impl MessagePart {
             | MessagePart::CompactionDivider { id, .. }
             | MessagePart::PlanApproval { id, .. }
             | MessagePart::ModelProposal { id, .. }
+            | MessagePart::ProviderChoice { id, .. }
             | MessagePart::KeyRequest { id, .. } => id,
         }
     }
@@ -505,6 +545,10 @@ impl MessagePart {
             } => {
                 summary.len()
                     + lines.iter().map(String::len).sum::<usize>()
+                    + serde_json::to_vec(state).map_or(0, |v| v.len())
+            }
+            MessagePart::ProviderChoice { options, state, .. } => {
+                serde_json::to_vec(options).map_or(0, |v| v.len())
                     + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
             MessagePart::KeyRequest {
