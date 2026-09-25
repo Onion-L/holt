@@ -350,7 +350,7 @@ fn planned_providers(changes: &[CatalogChange]) -> HashSet<&str> {
 
 fn json_field_diff(current: &serde_json::Value, proposed: &serde_json::Value) -> Vec<String> {
     let (Some(current), Some(proposed)) = (current.as_object(), proposed.as_object()) else {
-        return vec![format!("record {} -> {}", current, proposed)];
+        return vec![format!("{DETAIL_INDENT}record: {current} → {proposed}")];
     };
     let keys: BTreeSet<&str> = current
         .keys()
@@ -364,18 +364,40 @@ fn json_field_diff(current: &serde_json::Value, proposed: &serde_json::Value) ->
             let changed = before != after;
             let before = redact_json(before);
             let after = redact_json(after);
-            changed.then(|| format!("{key} {before} -> {after}"))
+            changed.then(|| format!("{DETAIL_INDENT}{key}: {before} → {after}"))
         })
         .collect()
 }
 
+/// Diff lines are a header (`+`/`~`/`-`/`=`/`!` and the subject) followed
+/// by detail lines carrying this indent — the proposal card renders the
+/// two apart.
+const DETAIL_INDENT: &str = "    ";
+
+/// A new record or definition as its full JSON, pretty-printed — the
+/// shape the user reviews. Unset top-level fields are left out.
+fn detail_lines(value: &serde_json::Value) -> Vec<String> {
+    let mut redacted = redact_json(value);
+    if let Some(fields) = redacted.as_object_mut() {
+        fields.retain(|_, value| !value.is_null());
+    }
+    serde_json::to_string_pretty(&redacted)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| format!("{DETAIL_INDENT}{line}"))
+        .collect()
+}
+
+/// Credential-shaped keys. `token` alone would also catch token COUNTS
+/// (`maxTokens`, `maxTokensField`), hiding exactly the limits the user
+/// reviews — a credential is a singular token (`authToken`, `token`).
 fn sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     key == "headers"
         || key.contains("authorization")
         || key.contains("api_key")
         || key.contains("apikey")
-        || key.contains("token")
+        || (key.contains("token") && !key.contains("tokens"))
         || key.contains("secret")
 }
 
@@ -387,7 +409,8 @@ fn redact_json(value: &serde_json::Value) -> serde_json::Value {
                 .map(|(key, value)| {
                     (
                         key.clone(),
-                        if sensitive_key(key) {
+                        // An unset secret stays visibly unset.
+                        if sensitive_key(key) && !value.is_null() {
                             serde_json::Value::String("<redacted>".into())
                         } else {
                             redact_json(value)
@@ -424,17 +447,11 @@ fn record_diff(
 ) {
     let qualified = format!("{provider_id}/{}", record.id);
     let Some(current) = providers.resolve_model(provider_id, &qualified).ok() else {
-        return (
-            vec![format!(
-                "+ {qualified}: new complete record {}",
-                serde_json::to_string(&redact_json(
-                    &serde_json::to_value(record).unwrap_or_default()
-                ))
-                .unwrap_or_default()
-            )],
-            false,
-            false,
-        );
+        let mut lines = vec![format!("+ {qualified}")];
+        lines.extend(detail_lines(
+            &serde_json::to_value(record).unwrap_or_default(),
+        ));
+        return (lines, false, false);
     };
     if &current == record {
         return (
@@ -449,13 +466,11 @@ fn record_diff(
     let key_moves = current.base_url != record.base_url
         && host_of(&current.base_url) != host_of(&record.base_url);
     if key_moves {
-        notes.push("API key destination changes".to_string());
+        notes.push(format!("{DETAIL_INDENT}API key destination changes"));
     }
-    (
-        vec![format!("~ {qualified}: {}", notes.join("; "))],
-        false,
-        key_moves,
-    )
+    let mut lines = vec![format!("~ {qualified}")];
+    lines.append(&mut notes);
+    (lines, false, key_moves)
 }
 
 /// A replacement record never carries headers (`parse_change` rejects
@@ -542,20 +557,15 @@ pub(crate) fn build_proposal(
                         let current = exists.as_ref().expect("matched Some");
                         let current_json = serde_json::to_value(current).unwrap_or_default();
                         let proposed_json = serde_json::to_value(provider).unwrap_or_default();
-                        lines.push(format!(
-                            "~ provider {}: {}",
-                            provider.id,
-                            json_field_diff(&current_json, &proposed_json).join("; ")
+                        lines.push(format!("~ provider {}", provider.id));
+                        lines.extend(json_field_diff(&current_json, &proposed_json));
+                    }
+                    None => {
+                        lines.push(format!("+ provider {}", provider.id));
+                        lines.extend(detail_lines(
+                            &serde_json::to_value(provider).unwrap_or_default(),
                         ));
                     }
-                    None => lines.push(format!(
-                        "+ provider {}: new complete definition {}",
-                        provider.id,
-                        serde_json::to_string(&redact_json(
-                            &serde_json::to_value(provider).unwrap_or_default(),
-                        ))
-                        .unwrap_or_default()
-                    )),
                 }
                 providers_touched.insert(provider.id.clone());
             }
@@ -1917,6 +1927,47 @@ pub(crate) fn create_choose_provider_tool(providers: Arc<ProviderAdapter>) -> Ag
 mod tests {
     use super::*;
 
+    #[test]
+    fn redaction_hides_credentials_but_not_token_limits() {
+        let redacted = redact_json(&serde_json::json!({
+            "maxTokens": 65536,
+            "compat": { "maxTokensField": "max_completion_tokens", "authToken": "t" },
+            "token": "t",
+            "apiKey": "k",
+        }));
+        assert_eq!(
+            redacted,
+            serde_json::json!({
+                "maxTokens": 65536,
+                "compat": { "maxTokensField": "max_completion_tokens", "authToken": "<redacted>" },
+                "token": "<redacted>",
+                "apiKey": "<redacted>",
+            })
+        );
+    }
+
+    #[test]
+    fn a_new_record_reads_as_indented_json() {
+        let lines = detail_lines(&serde_json::json!({
+            "id": "mimo",
+            "maxTokens": 65536,
+            "compat": { "thinkingFormat": "deepseek" },
+            "headers": null,
+        }));
+        assert_eq!(
+            lines,
+            vec![
+                "    {",
+                "      \"id\": \"mimo\",",
+                "      \"maxTokens\": 65536,",
+                "      \"compat\": {",
+                "        \"thinkingFormat\": \"deepseek\"",
+                "      }",
+                "    }",
+            ]
+        );
+    }
+
     fn adapter(data_dir: &std::path::Path) -> ProviderAdapter {
         ProviderAdapter::new(
             Arc::new(crate::credentials::HoltCredentialStore::load(data_dir).unwrap()),
@@ -2194,7 +2245,11 @@ mod tests {
         else {
             panic!("expected a change");
         };
-        assert!(lines[0].contains("API key destination changes"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("API key destination changes"))
+        );
         assert!(summary.contains("baseUrl host changes"));
     }
 
@@ -2364,7 +2419,7 @@ mod tests {
         else {
             panic!("expected a change");
         };
-        assert!(lines[0].contains("contextWindow"));
+        assert!(lines.iter().any(|line| line.contains("contextWindow")));
         assert!(!lines.join("\n").contains("headers"));
 
         apply_changes(&providers, &providers.settings.snapshot(), &changes).unwrap();
