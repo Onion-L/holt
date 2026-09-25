@@ -1846,9 +1846,14 @@ impl Transcript {
         cx: &mut Context<Self>,
     ) -> render::MermaidUi {
         let row_key = row_id.clone();
-        let zooms: HashMap<usize, f32> = (0..tree.blocks.len())
-            .map(|ix| (ix, self.mermaids.zoom_for(&row_key, ix)))
+        let zooms: HashMap<usize, (f32, f32)> = (0..tree.blocks.len())
+            .map(|ix| {
+                let zoom = self.mermaids.zoom_for(&row_key, ix);
+                let raster = self.mermaids.raster_zoom_for(&row_key, ix);
+                (ix, (zoom, raster))
+            })
             .collect();
+        let rasters = zooms.clone();
         let entity = cx.weak_entity();
         let reset_entity = entity.clone();
         let step_row = row_key.clone();
@@ -1872,7 +1877,8 @@ impl Transcript {
                 .ok();
         });
         render::MermaidUi {
-            zoom: Rc::new(move |ix| zooms.get(&ix).copied().unwrap_or(1.0)),
+            zoom: Rc::new(move |ix| zooms.get(&ix).map_or(1.0, |z| z.0)),
+            raster_zoom: Rc::new(move |ix| rasters.get(&ix).map_or(1.0, |z| z.1)),
             handler,
             reset,
         }

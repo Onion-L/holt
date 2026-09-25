@@ -17,7 +17,7 @@ use std::time::Instant;
 use gpui::{
     AnyElement, BorderStyle, Bounds, CursorStyle, FontStyle, FontWeight, Hsla, InteractiveText,
     Pixels, RenderImage, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div,
-    font, img, point, prelude::*, px, quad, size,
+    font, img, point, prelude::*, px, quad, relative, size,
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
@@ -59,6 +59,9 @@ pub const TABLE_MIN_COLUMN_CONTENT: f32 = 48.0;
 pub const TABLE_MIN_COLUMN_WIDTH: f32 = 96.0;
 /// Per-click step for the mermaid −/+ buttons (the wheel zooms continuously).
 const MERMAID_BUTTON_ZOOM_STEP: f32 = 1.05;
+/// Floor for the mermaid fit-to-width scale. Squeezing a wide diagram below
+/// this leaves its labels unreadable, so past it the image pans instead.
+const MERMAID_MIN_FIT_SCALE: f32 = 0.6;
 /// Hairline tone (holt md theme `table.borderColor`: rgba(255,255,255,0.1)).
 pub fn table_hairline() -> Hsla {
     crate::theme::hairline(0.10)
@@ -103,7 +106,7 @@ pub struct CopyUi {
 /// `factor` (one wheel step).
 pub type MermaidZoomHandler = dyn Fn(usize, f32, &mut Window, &mut gpui::App);
 
-/// Reset handler: return block ix's zoom to natural fit (1.0).
+/// Reset handler: return block ix's zoom to fit (1.0).
 pub type MermaidResetHandler = dyn Fn(usize, &mut Window, &mut gpui::App);
 
 /// Wheel-zoom wiring for one row's diagrams — the mermaid sibling of
@@ -112,11 +115,14 @@ pub type MermaidResetHandler = dyn Fn(usize, &mut Window, &mut gpui::App);
 /// entity's [`MermaidStore`](super::mermaid::MermaidStore).
 #[derive(Clone)]
 pub struct MermaidUi {
-    /// Current zoom for a top-level block index (1.0 = natural size).
+    /// Current zoom for a top-level block index (1.0 = fit width).
     pub zoom: Rc<dyn Fn(usize) -> f32>,
+    /// Scale the block's image was rasterized at (its pixels are natural ×
+    /// this); divided out to recover the diagram's natural size.
+    pub raster_zoom: Rc<dyn Fn(usize) -> f32>,
     /// Multiply a block's zoom by `factor` (one wheel step).
     pub handler: Rc<MermaidZoomHandler>,
-    /// Return a block's zoom to natural fit.
+    /// Return a block's zoom to fit.
     pub reset: Rc<MermaidResetHandler>,
 }
 
@@ -1318,10 +1324,14 @@ fn render_mermaid_image(
         .as_ref()
         .map(|ui| (ui.zoom)(ix))
         .unwrap_or(1.0);
-    // RenderImage is 2× supersampled; logical size is device pixels / 2.
-    let natural = image.size(0);
-    let natural_w = natural.width.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR;
-    let natural_h = natural.height.0 as f32 / gpui::SMOOTH_SVG_SCALE_FACTOR;
+    let raster_zoom = opts
+        .mermaid_ui
+        .as_ref()
+        .map(|ui| (ui.raster_zoom)(ix))
+        .unwrap_or(1.0);
+    // RenderImage is 2× supersampled at `raster_zoom`; the diagram's natural
+    // logical width is device pixels / (2 × raster_zoom).
+    let natural_w = image.size(0).width.0 as f32 / (gpui::SMOOTH_SVG_SCALE_FACTOR * raster_zoom);
 
     // cmd/ctrl+wheel zooms (stop-propagated — the transcript must not scroll
     // alongside); plain wheel does nothing here and keeps scrolling the row.
@@ -1342,15 +1352,9 @@ fn render_mermaid_image(
     });
 
     // Overlay controls (top-right, same ghost-button family as the code
-    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width —
-    // the real display scale against natural size depends on the row width —
-    // so the readout says "Fit" there instead of a misleading "100%", and
-    // percentages only appear once the user has zoomed relative to fit.
-    // Overlay controls (top-right, same ghost-button family as the code
-    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width —
-    // the real display scale against natural size depends on the row width —
-    // so the readout says "Fit" there instead of a misleading "100%", and
-    // percentages only appear once the user has zoomed relative to fit.
+    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width
+    // and percentages are relative to it, so the readout says "Fit" there
+    // instead of a misleading "100%".
     let fit = zoom == 1.0;
     let controls = opts.mermaid_ui.as_ref().map(|ui| {
         let step = ui.handler.clone();
@@ -1439,24 +1443,23 @@ fn render_mermaid_image(
             })
     });
 
-    // At natural size the image caps to the card width (fit). Zoomed, it
-    // keeps its scaled size and pans in its own x-scroller — vertical wheel
-    // stays with the transcript (same axis restriction as code blocks).
-    let body: AnyElement = if zoom != 1.0 {
-        div()
-            .id(SharedString::from(format!("{}-mermaid{ix}", opts.row_key)))
-            .overflow_x_scroll()
-            .max_w_full()
-            .child(
-                img(image.clone())
-                    .w(px(natural_w * zoom))
-                    .h(px(natural_h * zoom))
-                    .object_fit(gpui::ObjectFit::Fill),
-            )
-            .into_any_element()
-    } else {
-        img(image.clone()).max_w_full().into_any_element()
-    };
+    // Zoom is relative to the fit width. Fit caps the image to the card,
+    // down to [`MERMAID_MIN_FIT_SCALE`] of natural (narrower than that it
+    // pans): fit = clamp(card, N·floor, N). Zoom z renders
+    // clamp(card·z, N·floor·z, N·z) = z·fit, so a step grows from what is on
+    // screen instead of jumping to natural size. Past the card it pans in its
+    // own x-scroller — vertical wheel stays with the transcript (same axis
+    // restriction as code blocks).
+    let diagram = img(image.clone())
+        .w(px(natural_w * zoom))
+        .max_w(relative(zoom))
+        .min_w(px(natural_w * MERMAID_MIN_FIT_SCALE * zoom));
+    let mut body = div()
+        .id(SharedString::from(format!("{}-mermaid{ix}", opts.row_key)))
+        .overflow_x_scroll()
+        .w_full()
+        .child(diagram.mx_auto());
+    body.style().restrict_scroll_to_axis = Some(true);
 
     // Rendered diagram card — the code block's visual family (ink wash card,
     // hairline border) with the image centered.
@@ -1837,6 +1840,105 @@ mod tests {
                 "a 400-char line dwarfs a 10-char one ({wide:?} vs {narrow:?})"
             );
         });
+    }
+
+    /// Fit caps a diagram to the card, down to `MERMAID_MIN_FIT_SCALE` of
+    /// natural (past that it pans), and zoom scales the fitted size — a zoom
+    /// step grows from what's on screen instead of jumping to natural size.
+    #[gpui::test]
+    fn mermaid_zoom_is_relative_to_fit(cx: &mut gpui::TestAppContext) {
+        // (card width, natural w×h, zoom, raster zoom) → rendered height. The card
+        // adds 6px padding + 1px border per side (inner = card − 14).
+        for (card, natural, zoom, raster, expected) in [
+            // Fits: capped to the 800px inner width.
+            (814.0, (1000.0, 100.0), 1.0, 1.0, 80.0),
+            (814.0, (1000.0, 100.0), 1.05, 1.0, 84.0),
+            // Too wide to fit legibly: floored at 0.6 × natural, then pans.
+            (300.0, (1000.0, 100.0), 1.0, 1.0, 60.0),
+            (300.0, (1000.0, 100.0), 1.05, 1.0, 63.0),
+            // Narrower than the card: natural size, zoom scales it.
+            (814.0, (200.0, 50.0), 1.0, 1.0, 50.0),
+            (814.0, (200.0, 50.0), 2.0, 1.0, 100.0),
+            // Re-rasterized at 2×: the bitmap's extra pixels are resolution,
+            // not size.
+            (814.0, (200.0, 50.0), 2.0, 2.0, 100.0),
+        ] {
+            let height = render_mermaid_height(cx, card, natural, zoom, raster);
+            assert_eq!(
+                height,
+                px(expected),
+                "card {card}, natural {natural:?}, zoom {zoom}"
+            );
+        }
+    }
+
+    fn render_mermaid_height(
+        cx: &mut gpui::TestAppContext,
+        card: f32,
+        (w, h): (f32, f32),
+        zoom: f32,
+        raster: f32,
+    ) -> Pixels {
+        let cx = cx.add_empty_window();
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}"><rect width="{w}" height="{h}" fill="red"/></svg>"#
+        );
+        let image = gpui::SvgRenderer::new(std::sync::Arc::new(()))
+            .render_single_frame(svg.as_bytes(), raster)
+            .expect("rasterize");
+
+        struct TestView {
+            image: std::sync::Arc<RenderImage>,
+            card: f32,
+            zoom: f32,
+            raster: f32,
+            bounds: Rc<std::cell::Cell<Bounds<Pixels>>>,
+        }
+
+        impl gpui::Render for TestView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let theme = crate::theme::Theme::dark();
+                let probe = self.bounds.clone();
+                let (zoom, raster) = (self.zoom, self.raster);
+                let mut opts = RenderOptions::settled("t".into());
+                opts.mermaid_ui = Some(MermaidUi {
+                    zoom: Rc::new(move |_| zoom),
+                    raster_zoom: Rc::new(move |_| raster),
+                    handler: Rc::new(|_, _, _, _| {}),
+                    reset: Rc::new(|_, _, _| {}),
+                });
+                div()
+                    .relative()
+                    .w(px(self.card))
+                    .child(render_mermaid_image(&self.image, 0, &opts, &theme))
+                    .child(
+                        gpui::canvas(|_, _, _| {}, move |b, _, _, _| probe.set(b))
+                            .absolute()
+                            .size_full(),
+                    )
+            }
+        }
+
+        let bounds = Rc::new(std::cell::Cell::new(Bounds::default()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TestView {
+                image,
+                card,
+                zoom,
+                raster,
+                bounds: bounds.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.0), px(0.0)),
+            size(px(card), px(600.0)),
+            |_, _| view.clone().into_any_element(),
+        );
+        bounds.get().size.height - px(14.0)
     }
 
     /// The code scroller's shape (viewport + inner block pinned to the widest

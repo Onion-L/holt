@@ -59,14 +59,22 @@ pub fn supported_diagram(source: &str) -> bool {
 }
 
 /// Mermaid theme variables derived from the app theme, as CSS color strings.
+///
+/// Shape fills and strokes are translucent ink, not the opaque surface
+/// tokens: the diagram composites onto a card that may sit on glass, and
+/// opaque near-black plates read as holes punched through the frost.
+/// `raised` stays opaque — mermaid derives pie/gantt/git palettes from
+/// `primaryColor` and those must not inherit an alpha.
 struct MermaidPalette {
     dark: bool,
     font_family: String,
-    bg: String,
-    surface: String,
     raised: String,
-    border: String,
-    border_strong: String,
+    node_fill: String,
+    node_border: String,
+    cluster_fill: String,
+    cluster_border: String,
+    line: String,
+    label_bg: String,
     text: String,
     text_muted: String,
     accent_wash: String,
@@ -80,11 +88,13 @@ impl MermaidPalette {
             // measurement is conservative for unknown fonts and picks a
             // visibly too-narrow width otherwise (same workaround Zed uses).
             font_family: format!("{}, sans-serif", theme.font_sans),
-            bg: css(theme.bg),
-            surface: css(theme.surface),
             raised: css(theme.surface_raised),
-            border: css(theme.border),
-            border_strong: css(theme.border_strong),
+            node_fill: css(theme.ink(0.06)),
+            node_border: css(theme.hairline(0.28)),
+            cluster_fill: css(theme.ink(0.025)),
+            cluster_border: css(theme.hairline(0.14)),
+            line: css(theme.text_muted),
+            label_bg: css(theme.bg.opacity(0.7)),
             text: css(theme.text),
             text_muted: css(theme.text_muted),
             accent_wash: css(theme.accent_wash),
@@ -110,11 +120,13 @@ fn merman_config(palette: &MermaidPalette) -> merman::MermaidConfig {
     let MermaidPalette {
         dark,
         font_family,
-        bg,
-        surface,
         raised,
-        border,
-        border_strong,
+        node_fill,
+        node_border,
+        cluster_fill,
+        cluster_border,
+        line,
+        label_bg,
         text,
         text_muted,
         accent_wash,
@@ -126,32 +138,35 @@ fn merman_config(palette: &MermaidPalette) -> merman::MermaidConfig {
         "htmlLabels": true,
         "flowchart": { "htmlLabels": true, "padding": 16 },
         "themeVariables": {
-            "background": bg,
+            "background": "transparent",
             "primaryColor": raised,
             "primaryTextColor": text,
-            "primaryBorderColor": border_strong,
-            "lineColor": border_strong,
+            "primaryBorderColor": node_border,
+            "lineColor": line,
             "secondaryColor": accent_wash,
             "secondaryTextColor": text,
-            "tertiaryColor": surface,
+            "tertiaryColor": cluster_fill,
             "tertiaryTextColor": text_muted,
-            "mainBkg": raised,
-            "nodeBorder": border_strong,
+            "mainBkg": node_fill,
+            "nodeBorder": node_border,
             "nodeTextColor": text,
-            "clusterBkg": surface,
-            "clusterBorder": border,
-            "titleColor": text,
-            "edgeLabelBackground": bg,
+            "clusterBkg": cluster_fill,
+            "clusterBorder": cluster_border,
+            "titleColor": text_muted,
+            "edgeLabelBackground": label_bg,
             "textColor": text,
             "noteBkgColor": accent_wash,
-            "noteBorderColor": border_strong,
+            "noteBorderColor": node_border,
             "noteTextColor": text,
-            "actorBkg": raised,
-            "actorBorder": border_strong,
+            "actorBkg": node_fill,
+            "actorBorder": node_border,
             "actorTextColor": text,
+            "actorLineColor": cluster_border,
+            "labelBoxBkgColor": node_fill,
+            "labelBoxBorderColor": node_border,
             "labelTextColor": text,
             "loopTextColor": text_muted,
-            "signalColor": text_muted,
+            "signalColor": line,
             "signalTextColor": text,
             "classText": text,
             "labelColor": text,
@@ -179,15 +194,82 @@ fn render_svg(source: &str, palette: &MermaidPalette) -> anyhow::Result<String> 
     // composites onto the host surface (the code-block-style card) instead.
     let pipeline = merman::svg::SvgPipeline::resvg_safe()
         .with_postprocessor(merman::svg::CssOverridePostprocessor::strip_existing_important())
-        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new("transparent"));
+        .with_postprocessor(merman::svg::RootBackgroundPostprocessor::new("transparent"))
+        .with_postprocessor(ClusterTitleLeft);
     renderer
         .render_svg_with_pipeline_sync(source, &pipeline)
         .context("merman render failed")?
         .ok_or_else(|| anyhow!("merman returned no SVG for the given source"))
 }
 
+/// Left-aligns flowchart subgraph titles. Upstream centers them over the
+/// cluster, and dagre routinely drops a cross-cluster edge label onto the
+/// middle of a cluster's top border — exactly where a centered title sits.
+struct ClusterTitleLeft;
+
+/// Title inset from the cluster's left edge, in SVG units.
+const CLUSTER_TITLE_INSET: f64 = 12.0;
+
+impl merman::svg::SvgPostprocessor for ClusterTitleLeft {
+    fn name(&self) -> &'static str {
+        "holt-cluster-title-left"
+    }
+
+    fn process<'a>(
+        &self,
+        svg: std::borrow::Cow<'a, str>,
+        ctx: &merman::svg::SvgPostprocessContext<'_>,
+    ) -> merman::svg::RenderResult<std::borrow::Cow<'a, str>> {
+        if !ctx
+            .diagram_type()
+            .is_some_and(|t| t.starts_with("flowchart"))
+        {
+            return Ok(svg);
+        }
+        Ok(left_align_cluster_titles(&svg)
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(svg))
+    }
+}
+
+/// `<g class="cluster" …><rect x="X" …/><g class="cluster-label"
+/// transform="translate(TX,TY)">` → TX = X + inset. `None` when nothing
+/// matched, so the pass stays a no-op on unexpected markup.
+fn left_align_cluster_titles(svg: &str) -> Option<String> {
+    const CLUSTER: &str = r#"<g class="cluster""#;
+    const LABEL: &str = r#"<g class="cluster-label" transform="translate("#;
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    let mut changed = false;
+    while let Some(at) = rest.find(LABEL) {
+        let (head, tail) = rest.split_at(at + LABEL.len());
+        out.push_str(head);
+        rest = tail;
+        let group = &head[head.rfind(CLUSTER).unwrap_or(0)..];
+        let rect_x = group.find("<rect").and_then(|r| attr_f64(&group[r..], "x"));
+        if let (Some(x), Some(comma)) = (rect_x, rest.find(',')) {
+            out.push_str(&format!("{}", x + CLUSTER_TITLE_INSET));
+            rest = &rest[comma..];
+            changed = true;
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
+/// Numeric attribute from the first tag in `tag` (`name="…"`).
+fn attr_f64(tag: &str, name: &str) -> Option<f64> {
+    let tag = &tag[..tag.find('>')?];
+    let needle = format!(" {name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let len = tag[start..].find('"')?;
+    tag[start..start + len].parse().ok()
+}
+
 /// SVG bytes → rasterized image at `zoom` (logical size = natural × zoom,
-/// still 2× supersampled). `None` on failure. Background executor.
+/// still 2× supersampled). The displayed scale is fit × zoom with fit ≤ 1,
+/// so rasterizing at `zoom` never undersamples. `None` on failure.
+/// Background executor.
 fn rasterize(svg: &str, svg_renderer: &SvgRenderer, zoom: f32) -> Option<Arc<RenderImage>> {
     svg_renderer.render_single_frame(svg.as_bytes(), zoom).ok()
 }
@@ -217,7 +299,7 @@ struct MermaidEntry {
     /// Rasterized at `raster_zoom`; `None` while pending or failed.
     image: Option<Arc<RenderImage>>,
     raster_zoom: f32,
-    /// User zoom (wheel); display size = natural × zoom, clamped [0.5, 6].
+    /// User zoom (wheel), relative to the fit width; clamped [0.5, 6].
     zoom: f32,
     _task: Option<Task<()>>,
     raster_task: Option<Task<()>>,
@@ -234,8 +316,7 @@ pub struct MermaidStore {
     recency: VecDeque<(SharedString, usize)>,
 }
 
-/// Zoom bounds for the wheel control (1.0 = natural size, fit-width capped
-/// by the card).
+/// Zoom bounds for the wheel control (1.0 = fit width).
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 6.0;
 /// Re-rasterize once the user zoom drifts this far from the raster's scale —
@@ -321,11 +402,21 @@ impl MermaidStore {
         None
     }
 
-    /// Current user zoom for a slot (1.0 = natural size).
+    /// Current user zoom for a slot (1.0 = fit width).
     pub fn zoom_for(&self, row_key: &SharedString, block_ix: usize) -> f32 {
         self.entries
             .get(&(row_key.clone(), block_ix))
             .map(|entry| entry.zoom)
+            .unwrap_or(1.0)
+    }
+
+    /// Scale the slot's current image was rasterized at — its pixel size is
+    /// natural × this (× 2 supersampling), which lags `zoom` by up to
+    /// [`RASTER_DRIFT`] or while a re-raster is in flight.
+    pub fn raster_zoom_for(&self, row_key: &SharedString, block_ix: usize) -> f32 {
+        self.entries
+            .get(&(row_key.clone(), block_ix))
+            .map(|entry| entry.raster_zoom)
             .unwrap_or(1.0)
     }
 
@@ -356,7 +447,7 @@ impl MermaidStore {
         true
     }
 
-    /// Reset a slot to natural fit (zoom 1.0). Returns whether changed.
+    /// Reset a slot to fit (zoom 1.0). Returns whether changed.
     pub fn zoom_reset<H: MermaidHost>(
         &mut self,
         row_key: SharedString,
@@ -491,6 +582,37 @@ mod tests {
     }
 
     #[test]
+    fn cluster_titles_move_to_the_left_edge() {
+        let svg = r#"<g class="cluster" id="a"><rect x="100.5" y="0" width="400" height="80"/><g class="cluster-label" transform="translate(300,6)"></g></g><g class="cluster" id="b"><rect x="7" y="90" width="50" height="50"/><g class="cluster-label" transform="translate(32,96)"></g></g>"#;
+        let out = left_align_cluster_titles(svg).expect("clusters matched");
+        assert!(out.contains("translate(112.5,6)"), "got: {out}");
+        assert!(out.contains("translate(19,96)"), "got: {out}");
+        // No clusters: untouched.
+        assert!(left_align_cluster_titles("<svg><rect x=\"1\"/></svg>").is_none());
+    }
+
+    #[test]
+    fn flowchart_subgraph_title_is_left_aligned() {
+        let svg = render_svg(
+            "flowchart LR\n    subgraph s[Title]\n        A --> B\n    end",
+            &test_palette(),
+        )
+        .expect("render");
+        let rect_x = svg
+            .find(r#"<g class="cluster""#)
+            .and_then(|at| {
+                let group = &svg[at..];
+                attr_f64(&group[group.find("<rect")?..], "x")
+            })
+            .expect("cluster rect");
+        let label = format!(
+            r#"<g class="cluster-label" transform="translate({},"#,
+            rect_x + CLUSTER_TITLE_INSET
+        );
+        assert!(svg.contains(&label), "got: {svg}");
+    }
+
+    #[test]
     fn unsupported_and_garbage_sources_fail_soft() {
         let palette = test_palette();
         // Whitelisted prefix, invalid body: merman yields no SVG — the error
@@ -531,11 +653,13 @@ mod tests {
         MermaidPalette {
             dark: true,
             font_family: "Geist, sans-serif".into(),
-            bg: "#060606".into(),
-            surface: "#0e0e0e".into(),
             raised: "#161616".into(),
-            border: "#232323".into(),
-            border_strong: "#3a3a3a".into(),
+            node_fill: "rgba(255, 255, 255, 0.060)".into(),
+            node_border: "rgba(255, 255, 255, 0.280)".into(),
+            cluster_fill: "rgba(255, 255, 255, 0.025)".into(),
+            cluster_border: "rgba(255, 255, 255, 0.140)".into(),
+            line: "#989898".into(),
+            label_bg: "rgba(6, 6, 6, 0.700)".into(),
             text: "#e7e7e7".into(),
             text_muted: "#989898".into(),
             accent_wash: "rgba(99, 102, 241, 0.22)".into(),
