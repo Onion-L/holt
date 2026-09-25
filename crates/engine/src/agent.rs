@@ -2468,15 +2468,19 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // joins the toolset and a synthetic bootstrap pair marks the whole
     // snapshot, so supporting providers keep the definitions out of the
     // static context until the model loads and calls them.
-    let mut mcp_bootstrap = None;
-    if chat.child.is_none() && !provider_mode && !plan_mode {
+    let mcp_bootstrap = if chat.child.is_none() && !provider_mode && !plan_mode {
         let snapshot = runtime.mcp.agent_tools().await;
-        if !snapshot.is_empty() {
-            mcp_bootstrap = Some(crate::mcp::bootstrap_messages(&snapshot, &model));
+        if snapshot.is_empty() {
+            None
+        } else {
+            let bootstrap = crate::mcp::bootstrap_messages(&snapshot, &model);
             tools.push(crate::mcp::loader_tool(&snapshot));
             tools.extend(snapshot);
+            Some(bootstrap)
         }
-    }
+    } else {
+        None
+    };
     // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit
     // convention appended to the system prompt and the toolset cut down to
     // the read-only exploration surface. The plan itself is ordinary
@@ -2499,14 +2503,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         // for ordinary messages, but renders the `compactionSummary`
         // custom message into the templated user message the model reads
         // after a compaction — the pass-through would drop it. The MCP
-        // bootstrap pair (ADR-0036) appends after the conversion:
-        // LLM-view only, never persisted to the transcript.
+        // bootstrap pair (ADR-0036) prefixes the initial LLM view only;
+        // later requests rely on tool-result markers from actual loader
+        // calls. It is never persisted to the transcript.
         convert_to_llm: Arc::new(move |messages| {
             let bootstrap = mcp_bootstrap.clone();
             Box::pin(async move {
                 let mut converted = harness_convert_to_llm(messages);
                 if let Some(pair) = bootstrap {
-                    converted.extend(pair);
+                    converted.splice(0..0, pair);
                 }
                 converted
             })
