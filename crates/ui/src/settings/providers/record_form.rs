@@ -323,7 +323,192 @@ pub(super) fn record_form_dialog(
     card.into_any_element()
 }
 
-/// Builds the model record the engine expects from the form's texts:
+/// The fetch-from-vendor dialog: the probed listing as checkbox rows over
+/// the two numbers a servable record needs. The vendor listing carries no
+/// metadata, so context window and max tokens are shared fields — prefilled
+/// from the provider's first known model — and every added row stays
+/// editable through the record form afterward.
+pub(super) fn fetch_models_dialog(
+    page: &mut ProvidersPage,
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let Some(dialog) = page.fetch_dialog.as_ref() else {
+        return div().into_any_element();
+    };
+    let field_input = |key: &str| dialog.inputs.get(key).cloned();
+    let number_field = |key: &'static str, label: &str| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(widgets::field_label(theme, label))
+            .children(
+                field_input(key)
+                    .map(|input| bordered_input(theme, input).w_full().into_any_element()),
+            )
+    };
+    let count = dialog.checked.len();
+    let ids = dialog.ids.clone();
+    let checked = dialog.checked.clone();
+    let mut card = popover::dialog_card(theme)
+        .on_mouse_down_out(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+            if !page
+                .fetch_dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.saving)
+            {
+                page.fetch_dialog = None;
+                cx.notify();
+            }
+        }))
+        .w(px(560.0))
+        .gap(px(14.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(popover::dialog_title(
+                    theme,
+                    &format!("Fetch models from {}", dialog.provider),
+                ))
+                .child(div().flex_1())
+                .child(
+                    widgets::ghost_action(theme)
+                        .id("fetch-dialog-close")
+                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                            page.fetch_dialog = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::CLOSE)
+                                .size(px(13.0))
+                                .text_color(theme.text_muted),
+                        ),
+                ),
+        );
+    let rows: Vec<AnyElement> = ids
+        .iter()
+        .enumerate()
+        .map(|(row, id)| {
+            let ticked = checked.contains(id);
+            let toggle_id = id.clone();
+            div()
+                .id(("fetch-id", row))
+                .cursor_pointer()
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                    page.toggle_fetch_id(toggle_id.clone(), cx);
+                }))
+                .child(widgets::checkbox(
+                    theme,
+                    if ticked {
+                        widgets::CheckboxState::Checked
+                    } else {
+                        widgets::CheckboxState::Unchecked
+                    },
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text)
+                        .child(SharedString::from(id.clone())),
+                )
+                .into_any_element()
+        })
+        .collect();
+    card = card
+        .child(
+            div()
+                .id("fetch-id-list")
+                .debug_selector(|| "fetch-id-list".into())
+                .max_h(px(240.0))
+                .overflow_y_scroll()
+                .occlude()
+                .flex()
+                .flex_col()
+                .children(rows),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(8.0))
+                .child(number_field("contextWindow", "Context window"))
+                .child(number_field("maxTokens", "Max tokens")),
+        )
+        .children(dialog.error.clone().map(|message| {
+            div()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.danger_muted.opacity(0.9))
+                .child(SharedString::from(message))
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    action_button(theme)
+                        .id("save-fetch")
+                        .debug_selector(|| "save-fetch".into())
+                        .hover(|style| style.bg(crate::theme::ink(0.04)))
+                        .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                            page.save_fetch(cx);
+                        }))
+                        .child(SharedString::from(format!(
+                            "Add {} model{}",
+                            count,
+                            if count == 1 { "" } else { "s" }
+                        ))),
+                )
+                .child(
+                    widgets::ghost_action(theme)
+                        .id("cancel-fetch")
+                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .on_click(cx.listener(|page: &mut ProvidersPage, _, _, cx| {
+                            page.fetch_dialog = None;
+                            cx.notify();
+                        }))
+                        .child("Cancel"),
+                ),
+        );
+    card.into_any_element()
+}
+
+/// The record one fetched id becomes: id + the probed dialect, the
+/// provider's default endpoint (baseUrl omitted — the engine fills it),
+/// zero costs, and the dialog's two numbers. The vendor listing carries no
+/// metadata, so the window and max tokens are the user's call, and every
+/// row stays editable through the record form afterward.
+pub(super) fn fetch_record(
+    provider: &str,
+    dialect: &str,
+    id: &str,
+    context_window: u64,
+    max_tokens: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": id,
+        "api": dialect,
+        "provider": provider,
+        "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
+        "contextWindow": context_window,
+        "maxTokens": max_tokens,
+    })
+}
 /// numbers parse, costs default to zero, and the advanced JSON (when
 /// present) must be an object whose keys ride along — except the form's
 /// own fields, which the advanced object can never override. `baseUrl`
@@ -431,6 +616,221 @@ pub(super) fn build_record_json(
 }
 
 impl ProvidersPage {
+    /// The Models header's "Fetch from vendor": a fresh ProbeProvider
+    /// call; the dialog opens only on `ok` — the status line carries the
+    /// failure verdict.
+    pub(super) fn open_fetch(&mut self, provider: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.probes.insert(provider.clone(), ProbeState::Running);
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::PROBE_PROVIDER,
+                    serde_json::json!({ "providerId": provider }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result.map_err(|error| error.to_string()).and_then(|value| {
+                    serde_json::from_value::<ProbeOutcome>(value).map_err(|error| error.to_string())
+                }) {
+                    Ok(outcome) => {
+                        let ok = outcome.ok;
+                        let dialect = outcome.dialect.clone();
+                        let ids = outcome.model_ids.clone();
+                        page.probes
+                            .insert(provider.clone(), ProbeState::Done(outcome));
+                        if ok
+                            && let Some(problem) =
+                                page.open_fetch_dialog(provider, dialect, ids, cx)
+                        {
+                            page.fail(problem, cx);
+                        }
+                    }
+                    Err(error) => {
+                        page.probes.remove(&provider);
+                        page.fail(error, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Build the dialog from a probed listing: drop ids the provider
+    /// already offers, prefill the two numbers from its first known model.
+    /// A problem string means the dialog did not open.
+    fn open_fetch_dialog(
+        &mut self,
+        provider: String,
+        dialect: Option<String>,
+        mut ids: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let Some(dialect) = dialect else {
+            return Some("the probe did not resolve a transport".into());
+        };
+        let offered: HashSet<String> = self
+            .models
+            .get(&provider)
+            .and_then(|models| models.ready().cloned())
+            .unwrap_or_default()
+            .iter()
+            .map(|model| model.id.clone())
+            .collect();
+        ids.retain(|id| !offered.contains(id) && !offered.contains(&format!("{provider}/{id}")));
+        if ids.is_empty() {
+            return Some(
+                "the vendor's listing has nothing this provider doesn't already offer".into(),
+            );
+        }
+        let template_window = self
+            .models
+            .get(&provider)
+            .and_then(|models| models.ready().cloned())
+            .unwrap_or_default()
+            .iter()
+            .find_map(|model| model.context_window)
+            .map(|window| window.to_string())
+            .unwrap_or_else(|| "200000".into());
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "contextWindow".to_string(),
+            cx.new(|cx| {
+                let mut input = ComposerInput::new("200000", cx);
+                input.set_text(template_window.clone(), cx);
+                input
+            }),
+        );
+        inputs.insert(
+            "maxTokens".to_string(),
+            cx.new(|cx| {
+                let mut input = ComposerInput::new("8192", cx);
+                input.set_text("8192", cx);
+                input
+            }),
+        );
+        self.fetch_dialog = Some(FetchDialog {
+            checked: ids.iter().cloned().collect(),
+            ids,
+            provider,
+            dialect,
+            inputs,
+            saving: false,
+            error: None,
+        });
+        None
+    }
+
+    pub(super) fn toggle_fetch_id(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(dialog) = self.fetch_dialog.as_mut() else {
+            return;
+        };
+        if dialog.saving {
+            return;
+        }
+        if !dialog.checked.remove(&id) {
+            dialog.checked.insert(id);
+        }
+        cx.notify();
+    }
+
+    /// One SaveModelRecord per checked id, in listing order; the first
+    /// failure stops the batch and shows in the dialog with the rest of
+    /// the selection intact.
+    pub(super) fn save_fetch(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(dialog) = self.fetch_dialog.as_ref() else {
+            return;
+        };
+        if dialog.saving {
+            return;
+        }
+        let number = |key: &str| -> Result<u64, String> {
+            dialog
+                .inputs
+                .get(key)
+                .map(|input| input.read(cx).text().trim().to_string())
+                .unwrap_or_default()
+                .parse::<u64>()
+                .map_err(|_| format!("{key} must be a whole number"))
+        };
+        let (window, max_tokens) = match (number("contextWindow"), number("maxTokens")) {
+            (Ok(window), Ok(max_tokens)) => (window, max_tokens),
+            (Err(problem), _) | (_, Err(problem)) => {
+                if let Some(dialog) = self.fetch_dialog.as_mut() {
+                    dialog.error = Some(problem);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        if window == 0 {
+            if let Some(dialog) = self.fetch_dialog.as_mut() {
+                dialog.error = Some("Context window must be greater than zero".into());
+            }
+            cx.notify();
+            return;
+        }
+        let ids: Vec<String> = dialog
+            .ids
+            .iter()
+            .filter(|id| dialog.checked.contains(*id))
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            self.fetch_dialog = None;
+            cx.notify();
+            return;
+        }
+        let provider = dialog.provider.clone();
+        let dialect = dialog.dialect.clone();
+        if let Some(dialog) = self.fetch_dialog.as_mut() {
+            dialog.saving = true;
+            dialog.error = None;
+        }
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let mut failure = None;
+            for id in ids {
+                let record = fetch_record(&provider, &dialect, &id, window, max_tokens);
+                let result = engine
+                    .client()
+                    .call(
+                        methods::SAVE_MODEL_RECORD,
+                        serde_json::json!({ "providerId": provider, "record": record }),
+                    )
+                    .await;
+                if let Err(error) = result {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+            this.update(cx, |page, cx| {
+                match failure {
+                    Some(error) => {
+                        if let Some(dialog) = page.fetch_dialog.as_mut() {
+                            dialog.saving = false;
+                            dialog.error = Some(error);
+                        }
+                    }
+                    None => {
+                        page.fetch_dialog = None;
+                        crate::pickers::bump_provider_catalog(cx);
+                        page.load_models(&provider, true, cx);
+                        page.load_hidden(&provider, true, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     pub(super) fn open_record_form(&mut self, provider: String, cx: &mut Context<Self>) {
         let mut inputs = HashMap::new();
         for (key, _, placeholder) in RECORD_FIELDS {
@@ -741,5 +1141,74 @@ mod tests {
         let records = harness.engine.records.lock().unwrap().clone();
         assert_eq!(records.len(), 1, "one SaveModelRecord");
         assert_eq!(records[0]["record"]["api"], "anthropic-messages");
+    }
+
+    /// The fetch flow: a fresh probe opens the dialog with the listing
+    /// minus what the provider already offers, and the Add button saves one
+    /// complete record per checked id — dialect from the probe, no baseUrl
+    /// (the engine fills the provider's default endpoint).
+    #[gpui::test]
+    fn fetch_from_vendor_saves_records_for_the_checked_ids(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("fetch-vendor");
+
+        let (ids, checked, dialect) = harness
+            .page
+            .update(&mut *harness.visual, |page, _| {
+                page.fetch_dialog.as_ref().map(|dialog| {
+                    (
+                        dialog.ids.clone(),
+                        dialog.checked.clone(),
+                        dialog.dialect.clone(),
+                    )
+                })
+            })
+            .expect("the fetch dialog opened");
+        // acme-1 is already offered; acme-9 is the only new id.
+        assert_eq!(ids, vec!["acme-9".to_string()]);
+        assert_eq!(checked, ids.iter().cloned().collect());
+        assert_eq!(dialect, "openai-completions");
+
+        harness.click("save-fetch");
+        harness.pump();
+
+        let records = harness.engine.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
+        assert_eq!(records[0]["providerId"], "acme");
+        assert_eq!(records[0]["record"]["id"], "acme-9");
+        assert_eq!(records[0]["record"]["api"], "openai-completions");
+        // The fake listing carries no metadata, so the window prefills to
+        // the conservative default and baseUrl stays with the engine.
+        assert_eq!(records[0]["record"]["contextWindow"], 200_000);
+        assert!(records[0]["record"].get("baseUrl").is_none());
+    }
+
+    /// The key row's Test button: one ProbeProvider call, verdict rendered.
+    #[gpui::test]
+    fn the_test_button_reports_the_probe_verdict(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        harness
+            .visual
+            .update(|_window, cx| cx.set_reduce_motion(true));
+        harness.click("provider-row-0");
+        harness.click("test-provider");
+        harness.pump();
+
+        assert_eq!(harness.engine.probes.lock().unwrap().len(), 1);
+        let done = harness.page.update(&mut *harness.visual, |page, _| {
+            matches!(
+                page.probes.get("acme"),
+                Some(ProbeState::Done(outcome)) if outcome.ok
+            )
+        });
+        assert!(done, "the probe reply landed in the page state");
+        assert!(
+            harness.visual.debug_bounds("probe-status").is_some(),
+            "the verdict line renders"
+        );
     }
 }

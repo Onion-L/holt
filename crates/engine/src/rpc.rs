@@ -2492,6 +2492,72 @@ impl RpcService for EngineService {
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::PROBE_PROVIDER => {
+                let provider = required_string(&params, "providerId")?;
+                if !self.providers.is_eligible(provider) {
+                    return Err(RpcError::BadParams(
+                        "unknown or unsupported provider".into(),
+                    ));
+                }
+                let reply = match crate::tools::model_setup::probe_target(&self.providers, provider)
+                {
+                    None => serde_json::json!({
+                        "ok": false,
+                        "status": "unverifiable",
+                        "latencyMs": serde_json::Value::Null,
+                        "modelIds": [],
+                        "dialect": serde_json::Value::Null,
+                        "error": "no transport to probe",
+                    }),
+                    Some((base_url, dialect)) => {
+                        let key = self.providers.credentials.reveal_key(provider).await;
+                        let started = std::time::Instant::now();
+                        let result = crate::tools::model_setup::probe_models(
+                            &base_url,
+                            &dialect,
+                            key.as_deref(),
+                            None,
+                        )
+                        .await;
+                        let latency_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        match result {
+                            Ok(model_ids) => serde_json::json!({
+                                "ok": true,
+                                "status": "ok",
+                                "latencyMs": latency_ms,
+                                "modelIds": model_ids,
+                                "dialect": dialect,
+                                "error": serde_json::Value::Null,
+                            }),
+                            Err(error) => {
+                                // Only a 401/403 challenge is a verdict on
+                                // the key: every probeable dialect's header
+                                // style matches what probe_models sends, so
+                                // a rejection means the stored key is wrong.
+                                // Anything else — 404, 5xx, timeout, an
+                                // unparseable body — verifies nothing either
+                                // way, because /models may be absent or
+                                // unauthenticated while the key is fine.
+                                let status = if error == "HTTP 401" || error == "HTTP 403" {
+                                    "key_rejected"
+                                } else {
+                                    "unverifiable"
+                                };
+                                serde_json::json!({
+                                    "ok": false,
+                                    "status": status,
+                                    "latencyMs": latency_ms,
+                                    "modelIds": [],
+                                    "dialect": dialect,
+                                    "error": error,
+                                })
+                            }
+                        }
+                    }
+                };
+                RpcReply::value(&reply)
+            }
             methods::REVEAL_PROVIDER_KEY => {
                 let provider = required_string(&params, "providerId")?;
                 RpcReply::value(&serde_json::json!({

@@ -48,6 +48,43 @@ pub enum ProvidersPageEvent {
     StartProviderChat,
 }
 
+/// One ProbeProvider reply, as the settings page consumes it. `status`
+/// carries the verdict words the engine defined: `ok` (endpoint reachable,
+/// listing in `model_ids` — no claim about the key), `key_rejected` (the
+/// only verdict that says the stored key is wrong), `unverifiable`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProbeOutcome {
+    ok: bool,
+    status: String,
+    latency_ms: Option<u64>,
+    #[serde(default)]
+    model_ids: Vec<String>,
+    dialect: Option<String>,
+    error: Option<String>,
+}
+
+/// Per-variant probe lifecycle: the Test button and the fetch dialog share
+/// this slot — running while the call is out, the reply after.
+#[derive(Debug, Clone)]
+pub(super) enum ProbeState {
+    Running,
+    Done(ProbeOutcome),
+}
+
+/// The fetch-from-vendor dialog: a ProbeProvider listing minus the ids the
+/// provider already offers, checkboxes over what to add, and the two
+/// numbers a servable record needs (the vendor listing carries none).
+pub(super) struct FetchDialog {
+    provider: String,
+    dialect: String,
+    ids: Vec<String>,
+    checked: HashSet<String>,
+    inputs: HashMap<String, Entity<ComposerInput>>,
+    saving: bool,
+    error: Option<String>,
+}
+
 impl EventEmitter<ProvidersPageEvent> for ProvidersPage {}
 
 pub struct ProvidersPage {
@@ -78,6 +115,12 @@ pub struct ProvidersPage {
     /// The mounted model-record form, targeting the expanded panel's active
     /// variant (ADR-0029's manual half of the write path).
     record_form: Option<RecordForm>,
+    /// ProbeProvider results per variant (the Test button's status line;
+    /// the fetch dialog opens from a fresh probe's `ok`).
+    probes: HashMap<String, ProbeState>,
+    /// The fetch-from-vendor dialog, targeting the expanded panel's
+    /// active variant.
+    fetch_dialog: Option<FetchDialog>,
     /// The record form's dialect dropdown; page-level because the form is
     /// an Option the popup accessor can't borrow through.
     record_api_menu: Popup<()>,
@@ -151,11 +194,13 @@ impl Render for ProvidersPage {
                     let hidden_count = hidden.ready().map(|rows| rows.len()).unwrap_or(0);
                     let hidden_expanded = self.hidden_expanded.contains(&variant_id);
                     let revealed = self.revealed.contains(&variant_id);
+                    let probe = self.probes.get(&variant_id);
                     let panel_height = provider_controls_height(
                         &models,
                         hidden_count,
                         hidden_expanded,
                         provider.variants.len() > 1,
+                        probe.is_some(),
                     );
                     let panel_epoch = self.panel_epochs.get(&id).copied().unwrap_or_default();
                     let save_id = variant_id.clone();
@@ -168,6 +213,8 @@ impl Render for ProvidersPage {
                     let hidden_list =
                         hidden_rows(index, &variant_id, hidden, hidden_expanded, &theme, cx);
                     let add_record_id = variant_id.clone();
+                    let fetch_id = variant_id.clone();
+                    let test_id = variant_id.clone();
                     let danger_row = panel_danger_row(
                         index,
                         &variant_id,
@@ -214,6 +261,16 @@ impl Render for ProvidersPage {
                                         )
                                         .child(
                                             widgets::ghost_action(&theme)
+                                                .id(("test-provider", index))
+                                                .debug_selector(|| "test-provider".into())
+                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                                .on_click(cx.listener(move |page, _, _, cx| {
+                                                    page.probe(test_id.clone(), cx)
+                                                }))
+                                                .child("Test"),
+                                        )
+                                        .child(
+                                            widgets::ghost_action(&theme)
                                                 .id(("remove-provider", index))
                                                 .hover(move |style| {
                                                     style
@@ -225,7 +282,8 @@ impl Render for ProvidersPage {
                                                 }))
                                                 .child("Remove"),
                                         ),
-                                ),
+                                )
+                                .children(probe_status_line(index, probe, &theme)),
                         )
                         .child(
                             div()
@@ -246,6 +304,16 @@ impl Render for ProvidersPage {
                                                 .into_any_element()
                                         }))
                                         .child(div().flex_1())
+                                        .child(
+                                            widgets::ghost_action(&theme)
+                                                .id(("fetch-vendor", index))
+                                                .debug_selector(|| "fetch-vendor".into())
+                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                                .on_click(cx.listener(move |page, _, _, cx| {
+                                                    page.open_fetch(fetch_id.clone(), cx)
+                                                }))
+                                                .child("Fetch from vendor"),
+                                        )
                                         .child(
                                             widgets::ghost_action(&theme)
                                                 .id(("toggle-record-form", index))
@@ -420,6 +488,17 @@ impl Render for ProvidersPage {
                 ))
                 .into_any_element();
         }
+        if self.fetch_dialog.is_some() {
+            let card = fetch_models_dialog(self, &theme, cx);
+            return div()
+                .child(page)
+                .child(popover::modal(
+                    "fetch-models-dialog",
+                    window.viewport_size(),
+                    card,
+                ))
+                .into_any_element();
+        }
         page.into_any_element()
     }
 }
@@ -523,6 +602,8 @@ impl ProvidersPage {
             new_provider_inputs: HashMap::new(),
             new_provider_error: None,
             record_form: None,
+            probes: HashMap::new(),
+            fetch_dialog: None,
             record_api_menu: Popup::default(),
             api_dialects: Loadable::Idle,
             hidden: HashMap::new(),

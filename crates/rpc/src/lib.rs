@@ -36,6 +36,20 @@ pub mod methods {
     pub const SAVE_PROVIDER_KEY: &str = "SaveProviderKey";
     pub const REVEAL_PROVIDER_KEY: &str = "RevealProviderKey";
     pub const REMOVE_PROVIDER_KEY: &str = "RemoveProviderKey";
+    /// One `GET {baseUrl}/models` against the provider's own endpoint:
+    /// params `{providerId}`; the stored key rides the dialect's auth
+    /// header and the latency is measured engine-side. The reply is
+    /// `{ok, status, latencyMs, modelIds, dialect, error}` where `status`
+    /// is `ok` (a listing — possibly empty — came back; this proves the
+    /// endpoint, not the key: unauthenticated /models answers 200
+    /// regardless), `key_rejected` (HTTP 401/403 — the only verdict that
+    /// says the stored key is wrong, and a safe one: every probeable
+    /// dialect's auth header matches what probe_models sends), or
+    /// `unverifiable` (no transport, 404/5xx, timeout, connect failure,
+    /// unparseable body — nothing either way). `dialect` echoes the
+    /// probed transport when one resolved. `modelIds` is the raw vendor
+    /// listing; the caller filters it against the local catalog.
+    pub const PROBE_PROVIDER: &str = "ProbeProvider";
     pub const LIST_MODELS: &str = "ListModels";
     /// The provider's hidden models — id and label rows the Settings page
     /// greys out; the model picker's `ListModels` never includes them.

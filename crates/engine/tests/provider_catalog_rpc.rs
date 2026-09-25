@@ -475,3 +475,143 @@ async fn reset_drops_the_live_layer_and_keeps_the_catalog() {
     };
     assert_eq!(key["key"], "acme-key");
 }
+
+// ---------------------------------------------------------------------------
+// ProbeProvider — the settings-side /models probe (Test button, fetch list)
+// ---------------------------------------------------------------------------
+
+async fn probe(engine: &LocalEngine, provider: &str) -> serde_json::Value {
+    let RpcReply::Value(reply) = engine
+        .handle(
+            methods::PROBE_PROVIDER,
+            serde_json::json!({ "providerId": provider }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("ProbeProvider did not return a value");
+    };
+    reply
+}
+
+async fn loopback_custom_provider(engine: &LocalEngine, base: &str) {
+    engine
+        .handle(
+            methods::SAVE_CUSTOM_PROVIDER,
+            serde_json::json!({
+                "id": "acme",
+                "name": "Acme Gateway",
+                "baseUrl": base,
+                "defaultApi": "openai-completions",
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_probe_lists_the_vendor_models_riding_the_stored_key() {
+    let fixture = Fixture::new();
+    let (server, heads) = common::serve_loopback_with_capture(
+        "application/json",
+        br#"{"data":[{"id":"acme-1"},{"id":"acme-2"}]}"#,
+    )
+    .await;
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    loopback_custom_provider(&engine, &server.base).await;
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "acme", "key": "sk-probe-secret" }),
+        )
+        .await
+        .unwrap();
+
+    let reply = probe(&engine, "acme").await;
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["status"], "ok");
+    assert_eq!(reply["modelIds"], serde_json::json!(["acme-1", "acme-2"]));
+    assert_eq!(reply["dialect"], "openai-completions");
+    assert!(reply["latencyMs"].is_u64(), "latency is measured");
+    assert!(reply["error"].is_null());
+    let heads = heads.lock().unwrap().clone();
+    assert!(
+        heads.iter().any(|head| head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-probe-secret")),
+        "the stored key rode the probe"
+    );
+}
+
+#[tokio::test]
+async fn an_open_endpoint_probes_ok_without_a_key() {
+    // The OpenRouter shape: /models answers 200 with no (or a wrong) key.
+    // The reply stays `ok` — the probe verifies the endpoint, never the
+    // key; the UI copy must not claim the key was validated.
+    let fixture = Fixture::new();
+    let (server, heads) =
+        common::serve_loopback_with_capture("application/json", br#"{"data":[{"id":"open-1"}]}"#)
+            .await;
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    loopback_custom_provider(&engine, &server.base).await;
+
+    let reply = probe(&engine, "acme").await;
+    assert_eq!(reply["status"], "ok");
+    assert_eq!(reply["modelIds"], serde_json::json!(["open-1"]));
+    let heads = heads.lock().unwrap().clone();
+    assert!(
+        heads
+            .iter()
+            .all(|head| !head.to_ascii_lowercase().contains("authorization:")),
+        "no key stored, no auth header sent"
+    );
+}
+
+#[tokio::test]
+async fn a_401_is_a_key_verdict_and_other_failures_verify_nothing() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+
+    // 401: every probeable dialect's header matches probe_models' auth, so
+    // a challenge is the one verdict that says the stored key is wrong.
+    let rejected = common::serve_loopback_status(401, "application/json", br#"{}"#).await;
+    loopback_custom_provider(&engine, &rejected.base).await;
+    engine
+        .handle(
+            methods::SAVE_PROVIDER_KEY,
+            serde_json::json!({ "providerId": "acme", "key": "sk-stale" }),
+        )
+        .await
+        .unwrap();
+    let reply = probe(&engine, "acme").await;
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["status"], "key_rejected");
+    assert_eq!(reply["modelIds"], serde_json::Value::Array(Vec::new()));
+
+    // 404: the endpoint may simply not expose /models. That must read as
+    // "could not verify", never as "the key is wrong".
+    let missing = common::serve_loopback_status(404, "application/json", br#"{}"#).await;
+    loopback_custom_provider(&engine, &missing.base).await;
+    let reply = probe(&engine, "acme").await;
+    assert_eq!(reply["status"], "unverifiable");
+}
+
+#[tokio::test]
+async fn an_unknown_provider_is_refused_before_any_request() {
+    let fixture = Fixture::new();
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    let error = match engine
+        .handle(
+            methods::PROBE_PROVIDER,
+            serde_json::json!({ "providerId": "ghost" }),
+        )
+        .await
+    {
+        Ok(_) => panic!("ProbeProvider accepted an unknown provider"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("unknown or unsupported"),
+        "the SaveProviderKey guard rejects the probe too"
+    );
+}

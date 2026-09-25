@@ -924,9 +924,33 @@ pub async fn serve_loopback(content_type: &'static str, body: &'static [u8]) -> 
     serve_loopback_with_capture(content_type, body).await.0
 }
 
+/// The loopback server answering with a chosen HTTP status — the 401/404
+/// seam for probe tests.
+pub async fn serve_loopback_status(
+    status: u16,
+    content_type: &'static str,
+    body: &'static [u8],
+) -> LoopbackServer {
+    serve_loopback_status_with_capture(status, content_type, body)
+        .await
+        .0
+}
+
 /// The loopback server plus every request head it received — the seam that
 /// proves what actually left the process (the probe's Authorization header).
 pub async fn serve_loopback_with_capture(
+    content_type: &'static str,
+    body: &'static [u8],
+) -> (
+    LoopbackServer,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    serve_loopback_status_with_capture(200, content_type, body).await
+}
+
+/// The status-parameterized core the loopback helpers delegate to.
+pub async fn serve_loopback_status_with_capture(
+    status: u16,
     content_type: &'static str,
     body: &'static [u8],
 ) -> (
@@ -965,7 +989,7 @@ pub async fn serve_loopback_with_capture(
                     .unwrap_or_else(|error| error.into_inner())
                     .push(String::from_utf8_lossy(&request[..filled]).into_owned());
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = socket.write_all(head.as_bytes()).await;

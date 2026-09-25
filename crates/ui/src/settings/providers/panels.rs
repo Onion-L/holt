@@ -15,6 +15,7 @@ pub(super) fn provider_controls_height(
     hidden_count: usize,
     hidden_expanded: bool,
     variants: bool,
+    probe_status: bool,
 ) -> f32 {
     let list_height = match models {
         Loadable::Idle | Loadable::Loading => 138.0,
@@ -32,10 +33,68 @@ pub(super) fn provider_controls_height(
     } else {
         0.0
     };
-    // The key section is label + full-width input + its own Save/Remove
-    // row. The danger row is always mounted; the hidden block adds its own
-    // height when present. The Add-model action rides the Models header.
-    180.0 + list_height + hidden_height + if variants { 34.0 } else { 0.0 } + 44.0
+    // The key section is label + full-width input + its own
+    // Save/Test/Remove row, plus the probe status line while a probe has
+    // run on this variant. The danger row is always mounted; the hidden
+    // block adds its own height when present. The Add-model action rides
+    // the Models header.
+    180.0
+        + list_height
+        + hidden_height
+        + if variants { 34.0 } else { 0.0 }
+        + 44.0
+        + if probe_status { 26.0 } else { 0.0 }
+}
+
+/// The probe status line under the key row: what the Test button learned.
+/// The wording tracks the engine's three verdicts — `ok` claims the
+/// endpoint, never the key (unauthenticated /models answers 200
+/// regardless); only `key_rejected` speaks about the key.
+pub(super) fn probe_status_line(
+    index: usize,
+    probe: Option<&ProbeState>,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    let probe = probe?;
+    let (text, tone) = match probe {
+        ProbeState::Running => (Some("Testing…".to_string()), theme.text_muted),
+        ProbeState::Done(outcome) => match outcome.status.as_str() {
+            "ok" => {
+                let latency = outcome
+                    .latency_ms
+                    .map(|ms| format!(" · {ms} ms"))
+                    .unwrap_or_default();
+                (
+                    Some(format!(
+                        "Endpoint reachable · {} models{latency}",
+                        outcome.model_ids.len()
+                    )),
+                    theme.text_muted,
+                )
+            }
+            "key_rejected" => (
+                Some("The endpoint rejected this key — replace it and save".to_string()),
+                theme.danger_muted,
+            ),
+            _ => (
+                outcome
+                    .error
+                    .clone()
+                    .map(|error| format!("Could not verify — {error}")),
+                theme.text_muted,
+            ),
+        },
+    };
+    let text = text?;
+    Some(
+        div()
+            .id(("probe-status", index))
+            .debug_selector(|| "probe-status".into())
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(tone)
+            .child(SharedString::from(text))
+            .into_any_element(),
+    )
 }
 
 pub(super) fn mark_provider_loading(providers: &mut Loadable<Vec<Provider>>) {
@@ -943,6 +1002,41 @@ impl ProvidersPage {
         }));
     }
 
+    /// The key row's Test button: one ProbeProvider call; the status line
+    /// under the row renders the verdict. The fetch dialog reads the same
+    /// map (its own flow opens it), so the two never fight over state.
+    pub(super) fn probe(&mut self, provider: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.probes.insert(provider.clone(), ProbeState::Running);
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::PROBE_PROVIDER,
+                    serde_json::json!({ "providerId": provider }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result.map_err(|error| error.to_string()).and_then(|value| {
+                    serde_json::from_value::<ProbeOutcome>(value).map_err(|error| error.to_string())
+                }) {
+                    Ok(outcome) => {
+                        page.probes
+                            .insert(provider.clone(), ProbeState::Done(outcome));
+                    }
+                    Err(error) => {
+                        page.probes.remove(&provider);
+                        page.fail(error, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     pub(super) fn save(&mut self, provider: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -1025,13 +1119,16 @@ mod tests {
     #[test]
     fn panel_heights_account_for_the_new_sections() {
         let models = Loadable::Ready(Vec::<Model>::new());
-        let bare = provider_controls_height(&models, 0, false, false);
+        let bare = provider_controls_height(&models, 0, false, false, false);
         // Hidden rows and their absence move the panel's animated height;
-        // the collapsed Hidden block adds only its header.
-        let collapsed = provider_controls_height(&models, 2, false, false);
-        let expanded = provider_controls_height(&models, 2, true, false);
+        // the collapsed Hidden block adds only its header. The probe
+        // status line adds its own row only once a probe has run.
+        let collapsed = provider_controls_height(&models, 2, false, false, false);
+        let expanded = provider_controls_height(&models, 2, true, false, false);
         assert!(collapsed > bare);
         assert!(expanded > collapsed);
+        let probed = provider_controls_height(&models, 0, false, false, true);
+        assert_eq!(probed, bare + 26.0);
     }
 
     /// "Open in Settings" names a concrete variant: the page expands its

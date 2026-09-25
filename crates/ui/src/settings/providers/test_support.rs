@@ -15,6 +15,10 @@ pub(super) struct FakeProvidersEngine {
     pub(super) custom_saves: std::sync::Mutex<Vec<serde_json::Value>>,
     /// SaveProviderKey params, in call order.
     pub(super) saved_keys: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// ProbeProvider params, in call order.
+    pub(super) probes: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// The canned ProbeProvider listing (bare ids, one already offered).
+    pub(super) probe_ids: Vec<String>,
     /// The store RevealProviderKey reads (provider → key).
     pub(super) keys: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
@@ -108,6 +112,17 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
                     .get(params["providerId"].as_str().unwrap_or_default())
                     .cloned(),
             })),
+            methods::PROBE_PROVIDER => {
+                self.probes.lock().unwrap().push(params.clone());
+                RpcReply::value(&serde_json::json!({
+                    "ok": true,
+                    "status": "ok",
+                    "latencyMs": 5,
+                    "modelIds": self.probe_ids.clone(),
+                    "dialect": "openai-completions",
+                    "error": serde_json::Value::Null,
+                }))
+            }
             _ => Err(RpcError::UnknownMethod(method.to_string())),
         }
     }
@@ -164,6 +179,8 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         records: std::sync::Mutex::new(Vec::new()),
         custom_saves: std::sync::Mutex::new(Vec::new()),
         saved_keys: std::sync::Mutex::new(Vec::new()),
+        probes: std::sync::Mutex::new(Vec::new()),
+        probe_ids: vec!["acme-9".to_string(), "acme-1".to_string()],
         keys: std::sync::Mutex::new(Default::default()),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()

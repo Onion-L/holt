@@ -843,7 +843,7 @@ pub(crate) fn apply_changes(
 
 /// `GET {baseUrl}/models` — the freshest model list a provider offers. The
 /// key, when present, rides the Authorization header and never the output.
-async fn probe_models(
+pub(crate) async fn probe_models(
     base_url: &str,
     api_dialect: &str,
     key: Option<&str>,
@@ -929,7 +929,10 @@ fn parse_model_listing(body: &serde_json::Value) -> Vec<String> {
 
 /// A provider's probe target: its transport base URL and dialect, from the
 /// definition (custom) or the first resolvable model (built-in).
-fn probe_target(providers: &ProviderAdapter, provider_id: &str) -> Option<(String, String)> {
+pub(crate) fn probe_target(
+    providers: &ProviderAdapter,
+    provider_id: &str,
+) -> Option<(String, String)> {
     if let Some(provider) = providers.settings.custom_provider(provider_id) {
         return Some((provider.base_url, provider.default_api));
     }
