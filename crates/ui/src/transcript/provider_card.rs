@@ -9,10 +9,10 @@
 
 use gpui::{AnyElement, Entity, SharedString, Subscription, div, prelude::*, px};
 
-use holt_doc::{KeyCardState, ProposalCardState};
+use holt_doc::{ChoiceCardState, KeyCardState, ProposalCardState, ProviderRef};
 use holt_rpc::methods;
 
-use super::Transcript;
+use super::{Transcript, TranscriptEvent};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::settings::widgets;
 use crate::theme::Theme;
@@ -68,11 +68,53 @@ fn card_frame(theme: &Theme, active: bool) -> gpui::Div {
         .when(!active, |card| card.border_color(theme.hairline(0.12)))
 }
 
-fn state_line(text: &'static str, theme: &Theme) -> gpui::Div {
+fn state_line(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
         .text_size(crate::typography::ui_rems(11.5))
         .text_color(theme.text_muted)
-        .child(text)
+        .child(text.into())
+}
+
+/// A provider's brand mark, or the generic bot glyph.
+fn provider_mark(provider_id: &str, theme: &Theme) -> gpui::Svg {
+    let (path, tint) =
+        crate::pickers::provider_brand_icon(&holt_proto::ProviderId::from(provider_id))
+            .unwrap_or((crate::icons::BOT, Some(theme.text_muted)));
+    crate::icons::icon(path)
+        .size(px(14.0))
+        .flex_none()
+        .text_color(tint.unwrap_or(theme.text))
+}
+
+/// The proposal's target providers: mark, name, and the concrete id — an
+/// organization's variants differ only there.
+fn target_header(targets: &[ProviderRef], theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(12.0))
+        .gap_y(px(4.0))
+        .children(targets.iter().map(|target| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(provider_mark(&target.id, theme))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .child(SharedString::from(target.name.clone())),
+                )
+                .child(
+                    div()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(target.id.clone())),
+                )
+        }))
 }
 
 impl Transcript {
@@ -81,6 +123,7 @@ impl Transcript {
         &mut self,
         row_id: &SharedString,
         proposal_id: &SharedString,
+        targets: &[ProviderRef],
         summary: &SharedString,
         lines: &[SharedString],
         state: ProposalCardState,
@@ -91,12 +134,16 @@ impl Transcript {
         let ui = self.provider_cards.get(row_id);
         let busy = ui.is_some_and(|ui| ui.busy);
         let error = ui.and_then(|ui| ui.error.clone());
-        let mut card = card_frame(theme, pending).child(
-            div()
-                .text_size(crate::typography::ui_rems(12.5))
-                .text_color(theme.text)
-                .child(summary.clone()),
-        );
+        let mut card = card_frame(theme, pending)
+            .when(!targets.is_empty(), |card| {
+                card.child(target_header(targets, theme))
+            })
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .text_color(theme.text)
+                    .child(summary.clone()),
+            );
         if !lines.is_empty() {
             card = card.child(
                 div()
@@ -175,11 +222,165 @@ impl Transcript {
                         ),
                 )
             }
-            ProposalCardState::Written => card.child(state_line("✓ Written", theme)),
+            ProposalCardState::Written => match targets.first() {
+                None => card.child(state_line("✓ Written", theme)),
+                Some(first) => {
+                    let names = targets
+                        .iter()
+                        .map(|target| target.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let provider_id = first.id.clone();
+                    card.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(state_line(format!("✓ Written to {names}"), theme))
+                            .child(
+                                widgets::ghost_action(theme)
+                                    .id(SharedString::from(format!(
+                                        "provider-proposal-settings-{row_id}"
+                                    )))
+                                    .debug_selector({
+                                        let row_id = row_id.clone();
+                                        move || format!("provider-proposal-settings-{row_id}")
+                                    })
+                                    .py(px(2.0))
+                                    .hover(move |style| widgets::ghost_hover(theme, style))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(TranscriptEvent::OpenProviderSettings {
+                                            provider_id: provider_id.clone(),
+                                        })
+                                    }))
+                                    .child("Open in Settings"),
+                            ),
+                    )
+                }
+            },
             ProposalCardState::Discarded => card.child(state_line("Discarded", theme)),
             ProposalCardState::Superseded => {
                 card.child(state_line("Superseded by a newer proposal", theme))
             }
+        };
+        div()
+            .py(px(4.0))
+            .w_full()
+            .child(card.children(error.map(|error| {
+                div()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.danger)
+                    .child(error)
+            })))
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_provider_choice_card(
+        &mut self,
+        row_id: &SharedString,
+        card_id: &SharedString,
+        options: &[ProviderRef],
+        chosen: Option<&SharedString>,
+        state: ChoiceCardState,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pending = state == ChoiceCardState::Pending;
+        let ui = self.provider_cards.get(row_id);
+        let busy = ui.is_some_and(|ui| ui.busy);
+        let error = ui.and_then(|ui| ui.error.clone());
+        let card = card_frame(theme, pending).child(
+            div()
+                .text_size(crate::typography::ui_rems(12.5))
+                .text_color(theme.text)
+                .child("Which provider?"),
+        );
+        let card = match state {
+            ChoiceCardState::Pending => card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .when(busy, |list| list.opacity(0.4))
+                    .children(options.iter().map(|option| {
+                        let selector = format!("provider-choice-{row_id}-{}", option.id);
+                        let settle_row = row_id.clone();
+                        let settle_card = card_id.clone();
+                        let provider_id = SharedString::from(option.id.clone());
+                        let detail = if option.detail.is_empty() {
+                            option.id.clone()
+                        } else {
+                            format!("{} · {}", option.id, option.detail)
+                        };
+                        div()
+                            .id(SharedString::from(selector.clone()))
+                            .debug_selector(move || selector.clone())
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.hairline(0.06)))
+                            .child(provider_mark(&option.id, theme))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_size(crate::typography::ui_rems(12.5))
+                                            .text_color(theme.text)
+                                            .child(SharedString::from(option.name.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(theme.font_mono.clone())
+                                            .text_size(crate::typography::ui_rems(11.0))
+                                            .text_color(theme.text_muted)
+                                            .truncate()
+                                            .child(SharedString::from(detail)),
+                                    ),
+                            )
+                            .when(option.configured, |row| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .px(px(6.0))
+                                        .rounded(px(4.0))
+                                        .border_1()
+                                        .border_color(theme.hairline(0.12))
+                                        .text_size(crate::typography::ui_rems(10.5))
+                                        .text_color(theme.text_muted)
+                                        .child("Configured"),
+                                )
+                            })
+                            .when(!busy, |row| {
+                                row.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.settle_choice(
+                                        settle_row.clone(),
+                                        settle_card.clone(),
+                                        provider_id.clone(),
+                                        cx,
+                                    )
+                                }))
+                            })
+                    })),
+            ),
+            ChoiceCardState::Chosen => {
+                let chosen = chosen.map(SharedString::as_ref).unwrap_or_default();
+                let name = options
+                    .iter()
+                    .find(|option| option.id == chosen)
+                    .map_or(chosen, |option| option.name.as_str());
+                card.child(state_line(format!("✓ Using {name} · {chosen}"), theme))
+            }
+            ChoiceCardState::Superseded => card.child(state_line("No longer active", theme)),
         };
         div()
             .py(px(4.0))
@@ -382,6 +583,53 @@ impl Transcript {
         .detach();
     }
 
+    /// Settle a provider choice card on one of its options. The engine
+    /// stamps the card and queues "Use provider <id>" as the next message.
+    fn settle_choice(
+        &mut self,
+        row_id: SharedString,
+        card_id: SharedString,
+        provider_id: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(chat_id), Some(engine)) =
+            (self.chat_id.clone(), self.state.read(cx).engine().cloned())
+        else {
+            return;
+        };
+        let ui = self.provider_cards.entry(row_id.clone()).or_default();
+        if ui.busy {
+            return;
+        }
+        ui.busy = true;
+        ui.error = None;
+        self.remeasure_row(&row_id);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::SETTLE_PROVIDER_CHOICE,
+                    serde_json::json!({
+                        "chatId": chat_id,
+                        "cardId": card_id,
+                        "providerId": provider_id,
+                    }),
+                )
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(ui) = this.provider_cards.get_mut(&row_id) {
+                    ui.busy = false;
+                    ui.error = result.as_ref().err().map(|error| error.to_string().into());
+                }
+                this.remeasure_row(&row_id);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Save (with the typed key) or Dismiss the chat's pending key request
     /// (ADR-0031). The key goes from the input straight into the RPC.
     fn settle_key(&mut self, row_id: SharedString, save: bool, cx: &mut Context<Self>) {
@@ -466,6 +714,38 @@ mod tests {
         }
     }
 
+    fn provider_ref(id: &str, name: &str) -> ProviderRef {
+        ProviderRef {
+            id: id.into(),
+            name: name.into(),
+            detail: format!("api.{id}.example"),
+            configured: false,
+        }
+    }
+
+    fn written_part() -> MessagePart {
+        MessagePart::ModelProposal {
+            id: "p1".into(),
+            proposal_id: "prop-1".into(),
+            targets: vec![provider_ref("xiaomi-cn", "Xiaomi CN")],
+            summary: "Add xiaomi-cn/mimo".into(),
+            lines: vec![],
+            state: ProposalCardState::Written,
+        }
+    }
+
+    fn choice_part(state: ChoiceCardState, chosen: Option<&str>) -> MessagePart {
+        MessagePart::ProviderChoice {
+            id: "c1".into(),
+            options: vec![
+                provider_ref("xiaomi", "Xiaomi"),
+                provider_ref("xiaomi-cn", "Xiaomi CN"),
+            ],
+            chosen: chosen.map(str::to_owned),
+            state,
+        }
+    }
+
     fn key_part(state: KeyCardState) -> MessagePart {
         MessagePart::KeyRequest {
             id: "k1".into(),
@@ -517,6 +797,32 @@ mod tests {
         assert_eq!(provider_name.as_ref(), "beta");
         assert_eq!(destination.as_ref(), "https://api.beta.example/v1");
 
+        let rows_of = |parts| {
+            crate::transcript::rows_for_entry(
+                &entry("a2", parts),
+                false,
+                &mut |_: &str, text: &str| Arc::new(parse_full(text)) as Arc<BlockTree>,
+            )
+        };
+        let pending = rows_of(vec![choice_part(ChoiceCardState::Pending, None)]);
+        let RowKind::ProviderChoice {
+            card_id, options, ..
+        } = &pending[0].kind
+        else {
+            panic!("expected the provider choice row");
+        };
+        assert_eq!(card_id.as_ref(), "c1");
+        assert_eq!(options.len(), 2);
+        let chosen = rows_of(vec![choice_part(
+            ChoiceCardState::Chosen,
+            Some("xiaomi-cn"),
+        )]);
+        assert_ne!(pending[0].version, chosen[0].version);
+        let RowKind::ModelProposal { targets, .. } = &rows_of(vec![written_part()])[0].kind else {
+            panic!("expected the proposal row");
+        };
+        assert_eq!(targets[0].id, "xiaomi-cn");
+
         // A settle re-versions the row so it re-measures.
         let settled = crate::transcript::rows_for_entry(
             &entry("a1", vec![proposal_part(ProposalCardState::Written)]),
@@ -550,7 +856,8 @@ mod tests {
             match method {
                 methods::APPLY_MODEL_PROPOSAL
                 | methods::DISCARD_MODEL_PROPOSAL
-                | methods::SETTLE_PROVIDER_KEY_REQUEST => {
+                | methods::SETTLE_PROVIDER_KEY_REQUEST
+                | methods::SETTLE_PROVIDER_CHOICE => {
                     self.calls
                         .lock()
                         .unwrap()
@@ -660,6 +967,95 @@ mod tests {
                 !this.provider_cards.contains_key("a1#k1"),
                 "the settled card dropped its key input"
             );
+        });
+    }
+
+    /// A choice card settles only through a click on one of its options;
+    /// the written proposal's Settings link names its target provider.
+    #[gpui::test]
+    fn a_choice_click_settles_and_a_written_card_links_to_settings(cx: &mut gpui::TestAppContext) {
+        use crate::state::AppState;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let engine = Arc::new(CardEngine {
+            calls: Mutex::new(Vec::new()),
+        });
+        let state = cx.new(|_| AppState::new());
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (transcript, cx) = cx.add_window_view(|_, cx| Transcript::new(state.clone(), cx));
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+        });
+        let pump = |cx: &mut gpui::VisualTestContext| {
+            for _ in 0..8 {
+                runtime.block_on(async { tokio::task::yield_now().await });
+                cx.run_until_parked();
+            }
+        };
+
+        state.update(cx, |s, cx| {
+            s.selected_chat = Some("chat-1".into());
+            s.transcript.push(entry(
+                "a1",
+                vec![choice_part(ChoiceCardState::Pending, None), written_part()],
+            ));
+            cx.notify();
+        });
+        pump(cx);
+        let option = cx
+            .debug_bounds("provider-choice-a1#c1-xiaomi-cn")
+            .expect("the option renders");
+        cx.simulate_click(option.center(), Default::default());
+        pump(cx);
+        assert_eq!(
+            engine.calls.lock().unwrap().as_slice(),
+            &[(
+                methods::SETTLE_PROVIDER_CHOICE.to_string(),
+                serde_json::json!({
+                    "chatId": "chat-1",
+                    "cardId": "c1",
+                    "providerId": "xiaomi-cn",
+                }),
+            )]
+        );
+
+        let settings = cx
+            .debug_bounds("provider-proposal-settings-a1#p1")
+            .expect("the written card links to Settings");
+        cx.simulate_click(settings.center(), Default::default());
+        pump(cx);
+        assert!(matches!(
+            events.borrow().as_slice(),
+            [TranscriptEvent::OpenProviderSettings { provider_id }] if provider_id == "xiaomi-cn"
+        ));
+
+        // The stamp retires the options.
+        state.update(cx, |s, cx| {
+            s.transcript[0] = entry(
+                "a1",
+                vec![
+                    choice_part(ChoiceCardState::Chosen, Some("xiaomi-cn")),
+                    written_part(),
+                ],
+            );
+            cx.notify();
+        });
+        pump(cx);
+        assert!(cx.debug_bounds("provider-choice-a1#c1-xiaomi").is_none());
+        transcript.update(cx, |this, _| {
+            assert!(!this.provider_cards.contains_key("a1#c1"));
         });
     }
 }

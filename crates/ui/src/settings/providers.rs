@@ -100,6 +100,9 @@ pub struct ProvidersPage {
     confirm_reset_all: bool,
     task: Option<Task<()>>,
     collapse_task: Option<Task<()>>,
+    /// A provider to open on once the list loads ("Open in Settings" on a
+    /// written proposal card).
+    focus: Option<String>,
 }
 
 impl Render for ProvidersPage {
@@ -529,6 +532,7 @@ impl ProvidersPage {
             confirm_reset_all: false,
             task: None,
             collapse_task: None,
+            focus: None,
         };
         page.load(cx);
         page

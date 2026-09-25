@@ -1773,34 +1773,43 @@ impl Shell {
         cx.notify();
     }
 
+    /// The Providers page, created on first use per visit.
+    fn providers_page(&mut self, cx: &mut Context<Self>) -> Entity<ProvidersPage> {
+        if let Some(page) = &self.providers_page {
+            return page.clone();
+        }
+        let state = self.state.clone();
+        let page = cx.new(|cx| ProvidersPage::new(state, cx));
+        // Action failures surface as the shell's window-top error
+        // alert, not inside the page; "Add with AI" lands on the
+        // new-chat canvas with Provider Mode drafted (ADR-0037).
+        self.providers_sub = Some(cx.subscribe(
+            &page,
+            |this: &mut Shell, _, event: &ProvidersPageEvent, cx| match event {
+                ProvidersPageEvent::Error(message) => {
+                    this.show_provider_error(message.clone(), cx);
+                }
+                ProvidersPageEvent::StartProviderChat => {
+                    this.start_provider_chat(cx);
+                }
+            },
+        ));
+        self.providers_page = Some(page.clone());
+        page
+    }
+
+    /// Settings → Providers opened on one provider: its organization
+    /// expanded on that variant once the list loads.
+    pub(super) fn open_provider_settings(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        self.open_settings(SettingsSection::Providers, cx);
+        self.providers_page(cx)
+            .update(cx, |page, cx| page.focus_provider(provider_id, cx));
+    }
+
     /// Lazily create the entity for a settings section and return it renderable.
     fn settings_outlet(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> AnyElement {
         match section {
-            SettingsSection::Providers => {
-                if self.providers_page.is_none() {
-                    let state = self.state.clone();
-                    let page = cx.new(|cx| ProvidersPage::new(state, cx));
-                    // Action failures surface as the shell's window-top error
-                    // alert, not inside the page; "Add with AI" lands on the
-                    // new-chat canvas with Provider Mode drafted (ADR-0037).
-                    self.providers_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &ProvidersPageEvent, cx| match event {
-                            ProvidersPageEvent::Error(message) => {
-                                this.show_provider_error(message.clone(), cx);
-                            }
-                            ProvidersPageEvent::StartProviderChat => {
-                                this.start_provider_chat(cx);
-                            }
-                        },
-                    ));
-                    self.providers_page = Some(page);
-                }
-                match &self.providers_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
+            SettingsSection::Providers => self.providers_page(cx).into_any_element(),
             SettingsSection::Appearance => {
                 if self.appearance_page.is_none() {
                     self.appearance_page = Some(cx.new(AppearancePage::new));

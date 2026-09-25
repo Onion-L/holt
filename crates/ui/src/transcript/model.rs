@@ -285,9 +285,21 @@ pub enum RowKind {
     /// buttons' busy/error state lives on the Transcript keyed by row id.
     ModelProposal {
         proposal_id: SharedString,
+        /// The providers the batch writes to — the card's header, so the
+        /// user sees where it lands.
+        targets: Vec<holt_doc::ProviderRef>,
         summary: SharedString,
         lines: Vec<SharedString>,
         state: holt_doc::ProposalCardState,
+    },
+    /// A Provider Mode provider choice (ADR-0037): an organization's
+    /// candidate providers, filled by the engine from the catalog. A click
+    /// settles it; `chosen` is the stamped pick.
+    ProviderChoice {
+        card_id: SharedString,
+        options: Vec<holt_doc::ProviderRef>,
+        chosen: Option<SharedString>,
+        state: holt_doc::ChoiceCardState,
     },
     /// A Provider Mode key request (ADR-0037): who the key unlocks and the
     /// one destination it goes to. The masked input is a Transcript-owned
@@ -956,14 +968,13 @@ pub fn rows_for_entry(
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
-                    MessagePart::ProviderChoice { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
+                        targets,
                         summary,
                         lines,
                         state,
-                        ..
                     } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
@@ -971,8 +982,33 @@ pub fn rows_for_entry(
                             turn_start: false,
                             kind: RowKind::ModelProposal {
                                 proposal_id: proposal_id.clone().into(),
+                                targets: targets.clone(),
                                 summary: summary.clone().into(),
                                 lines: lines.iter().cloned().map(SharedString::from).collect(),
+                                state: *state,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
+                    MessagePart::ProviderChoice {
+                        id: part_id,
+                        options,
+                        chosen,
+                        state,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(
+                                format!("{state:?}\0{}", chosen.as_deref().unwrap_or_default())
+                                    .as_bytes(),
+                            ),
+                            turn_start: false,
+                            kind: RowKind::ProviderChoice {
+                                card_id: part_id.clone().into(),
+                                options: options.clone(),
+                                chosen: chosen.clone().map(SharedString::from),
                                 state: *state,
                             },
                             entry_id: entry_id.clone(),
@@ -1096,6 +1132,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
         RowKind::ToolGroup { .. }
             | RowKind::PlanApproval { .. }
             | RowKind::ModelProposal { .. }
+            | RowKind::ProviderChoice { .. }
             | RowKind::KeyRequest { .. }
             | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
@@ -1104,6 +1141,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
             RowKind::ToolGroup { .. }
                 | RowKind::PlanApproval { .. }
                 | RowKind::ModelProposal { .. }
+                | RowKind::ProviderChoice { .. }
                 | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
         )

@@ -1508,14 +1508,30 @@ impl Transcript {
             }
             RowKind::ModelProposal {
                 proposal_id,
+                targets,
                 summary,
                 lines,
                 state,
             } => self.render_model_proposal_card(
                 &row.id,
                 proposal_id,
+                targets,
                 summary,
                 lines,
+                *state,
+                &theme,
+                cx,
+            ),
+            RowKind::ProviderChoice {
+                card_id,
+                options,
+                chosen,
+                state,
+            } => self.render_provider_choice_card(
+                &row.id,
+                card_id,
+                options,
+                chosen.as_ref(),
                 *state,
                 &theme,
                 cx,

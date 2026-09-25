@@ -570,6 +570,9 @@ impl Shell {
             TranscriptEvent::OpenSkillFile { path } => {
                 self.open_file(path.clone(), None, true, cx);
             }
+            TranscriptEvent::OpenProviderSettings { provider_id } => {
+                self.open_provider_settings(provider_id.clone(), cx);
+            }
             TranscriptEvent::EditLastMessage {
                 chat_id,
                 message_id,

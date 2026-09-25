@@ -29,19 +29,29 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
         use holt_rpc::{RpcError, RpcReply};
         match method {
             methods::LIST_PROVIDERS => {
-                let provider = |id: &str, name: &str, abbreviation: &str| {
+                let provider = |id: &str, name: &str, abbreviation: &str, variants: &[&str]| {
                     serde_json::json!({
                         "id": id,
                         "name": name,
                         "abbreviation": abbreviation,
                         "configured": true,
-                        "variants": [{ "id": id, "name": name, "configured": true }],
+                        "variants": variants
+                            .iter()
+                            .map(|variant| {
+                                serde_json::json!({
+                                    "id": variant,
+                                    "name": name,
+                                    "configured": true,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
                         "custom": false,
                     })
                 };
+                // Beta is an organization with a second (regional) variant.
                 RpcReply::value(&serde_json::json!([
-                    provider("acme", "Acme", "A"),
-                    provider("beta", "Beta Labs", "B"),
+                    provider("acme", "Acme", "A", &["acme"]),
+                    provider("beta", "Beta Labs", "B", &["beta", "beta-cn"]),
                 ]))
             }
             methods::LIST_MODELS => {

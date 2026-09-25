@@ -387,6 +387,9 @@ pub enum TranscriptEvent {
     /// engine advertised — it may live outside the workspace (a personal
     /// skill); the engine's read fence admits the skill roots.
     OpenSkillFile { path: String },
+    /// A written proposal card's "Open in Settings": Settings → Providers
+    /// with the provider's organization expanded on that variant.
+    OpenProviderSettings { provider_id: String },
     /// Edit the latest user message in the primary chat. The payload keeps
     /// the raw text so path references and image trailers survive the round
     /// trip; the engine validates that the id is still the latest message.
@@ -1721,6 +1724,9 @@ impl Transcript {
                             ..
                         } | RowKind::KeyRequest {
                             state: holt_doc::KeyCardState::Pending,
+                            ..
+                        } | RowKind::ProviderChoice {
+                            state: holt_doc::ChoiceCardState::Pending,
                             ..
                         }
                     )

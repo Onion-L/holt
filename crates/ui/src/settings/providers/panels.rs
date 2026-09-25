@@ -484,10 +484,47 @@ impl ProvidersPage {
                         .unwrap_or_else(|error| Loadable::Error(error.to_string())),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
+                page.apply_focus(cx);
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Open the page on one concrete provider: its organization expanded
+    /// on that variant, now or once the list loads.
+    pub(crate) fn focus_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        self.focus = Some(provider_id);
+        self.apply_focus(cx);
+    }
+
+    fn apply_focus(&mut self, cx: &mut Context<Self>) {
+        let Some(rows) = self.providers.ready() else {
+            return;
+        };
+        let Some(provider_id) = self.focus.take() else {
+            return;
+        };
+        let Some(org) = rows.iter().find(|row| {
+            row.id.as_str() == provider_id
+                || row
+                    .variants
+                    .iter()
+                    .any(|variant| variant.id.as_str() == provider_id)
+        }) else {
+            return;
+        };
+        let org_id = org.id.to_string();
+        if org
+            .variants
+            .iter()
+            .any(|variant| variant.id.as_str() == provider_id)
+        {
+            self.selected_variant.insert(org_id.clone(), provider_id);
+        }
+        if self.expanded.as_deref() != Some(org_id.as_str()) {
+            self.toggle(&org_id, cx);
+        }
     }
 
     /// The concrete provider the expanded card acts on: the remembered pick
@@ -995,5 +1032,23 @@ mod tests {
         let expanded = provider_controls_height(&models, 2, true, false);
         assert!(collapsed > bare);
         assert!(expanded > collapsed);
+    }
+
+    /// "Open in Settings" names a concrete variant: the page expands its
+    /// organization on that variant, not the first one.
+    #[gpui::test]
+    fn focusing_a_variant_expands_its_organization_on_it(cx: &mut gpui::TestAppContext) {
+        use crate::settings::providers::test_support::*;
+
+        let harness = providers_harness(cx);
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.focus_provider("beta-cn".into(), cx)
+        });
+        harness.pump();
+        let (expanded, variant) = harness.page.update(&mut *harness.visual, |page, _| {
+            (page.expanded.clone(), page.active_variant_id("beta"))
+        });
+        assert_eq!(expanded.as_deref(), Some("beta"));
+        assert_eq!(variant.as_deref(), Some("beta-cn"));
     }
 }
