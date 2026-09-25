@@ -707,12 +707,6 @@ impl Shell {
     /// File browsing surface hosted by the shared right pane.
     pub(super) fn render_file_tree_surface(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let bg = theme.bg;
-        let panel_bg = if theme.is_glass() {
-            bg.opacity(0.4)
-        } else {
-            bg
-        };
         let tree = self.file_tree_panel(cx);
         let content = tree.update(cx, |tree, cx| tree.render_panel(cx));
         let header = div()
@@ -792,13 +786,16 @@ impl Shell {
                             .text_color(theme.text_muted.opacity(0.8)),
                     ),
             );
+        // No fill on glass — the panel sits straight on the root's frost,
+        // the same surface the sidebar reads through; opaque platforms keep
+        // the panel tone.
         div()
             .size_full()
             .flex()
             .flex_col()
             .border_l_1()
             .border_color(theme.border)
-            .bg(panel_bg)
+            .when(!theme.is_glass(), |el| el.bg(theme.bg))
             .overflow_hidden()
             .child(header)
             .child(content)

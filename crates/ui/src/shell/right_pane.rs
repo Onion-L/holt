@@ -1026,14 +1026,13 @@ impl Shell {
             content
         };
         // Flush panel (user request — the inset card is gone): full window
-        // height with a left hairline, glass-friendly like the terminal dock
-        // (translucent over the frost; solid otherwise). The resize grabber
-        // lives outside this clipped container, on the root layout's seam.
-        let panel_bg = if theme.is_glass() {
-            bg.opacity(0.4)
-        } else {
-            bg
-        };
+        // height with a left hairline. On glass the panel paints no fill of
+        // its own — it sits straight on the root's frost, so the blurred
+        // desktop reads through exactly as strongly as through the sidebar
+        // column (a translucent fill stacked here flattened that glass —
+        // user report); opaque platforms keep the true tone. The resize
+        // grabber lives outside this clipped container, on the root layout's
+        // seam.
         let panel = div()
             .size_full()
             .flex()
@@ -1044,7 +1043,7 @@ impl Shell {
             .when(!self.right_pane_expanded, |el| {
                 el.border_l_1().border_color(theme.border)
             })
-            .bg(panel_bg)
+            .when(!theme.is_glass(), |el| el.bg(bg))
             .overflow_hidden()
             // The titlebar is a glass overlay over the full-height content
             // row; the panel's own chrome starts below it.
