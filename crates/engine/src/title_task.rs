@@ -31,6 +31,10 @@ use crate::store::persist_chats;
 /// is auxiliary, so it never waits on a provider forever.
 const TITLE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// The title request's provider retry budget: short, well inside
+/// [`TITLE_REQUEST_TIMEOUT`].
+const TITLE_MAX_RETRIES: u32 = 2;
+
 /// A title is a few words; cap the reply budget well under any model's floor.
 const TITLE_MAX_TOKENS: u64 = 128;
 
@@ -125,9 +129,10 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
         ..Default::default()
     };
     options.base.base.api_key = Some(spec.api_key.clone());
-    // Background task: retries transient provider failures, silently (no
-    // live chip — the user is not watching a title being minted).
-    options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);
+    // Background task: a short retry budget, silently (no live chip — the
+    // user is not watching a title being minted, and a missing title costs
+    // little).
+    options.base.base.max_retries = Some(TITLE_MAX_RETRIES);
     let context = Context {
         system_prompt: Some(title_system_prompt(&spec.instruction)),
         messages: vec![Message::User(UserMessage {

@@ -1578,6 +1578,117 @@ fn stream_stall_message(idle: Duration) -> String {
     )
 }
 
+/// The mid-stream retry budget, on top of the request layer's HTTP retries.
+const STREAM_MAX_RETRIES: u32 = 2;
+
+/// Re-send a request whose stream failed after the provider accepted it
+/// (`Start` seen) but before any content reached the consumer — an SSE
+/// `overloaded_error`, a dropped body, a stall — since nothing has to be
+/// taken back. A failure before `Start` already went through pi-core's HTTP
+/// retries, and one after content surfaces as-is. Each scheduled retry
+/// reports through `on_retry`, like the request layer's.
+fn retry_stream_fn(
+    inner: pi_core::agent::types::StreamFn,
+    on_retry: pi_core::ai::types::OnRetryCallback,
+) -> pi_core::agent::types::StreamFn {
+    Arc::new(
+        move |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
+            let upstream = inner(model, context, options)?;
+            let output = create_assistant_message_event_stream();
+            tokio::spawn(forward_with_stream_retry(
+                upstream,
+                output.clone(),
+                inner.clone(),
+                model.clone(),
+                context.clone(),
+                options.cloned(),
+                on_retry.clone(),
+            ));
+            Ok(output)
+        },
+    )
+}
+
+/// Forward `upstream` into `output`, re-dialing `inner` for each retryable
+/// content-free failure. Only the first attempt's `Start` is forwarded, so
+/// the consumer sees one message however many attempts it took.
+async fn forward_with_stream_retry(
+    mut upstream: AssistantMessageEventStream,
+    output: AssistantMessageEventStream,
+    inner: pi_core::agent::types::StreamFn,
+    model: PiModel,
+    context: PiContext,
+    options: Option<SimpleStreamOptions>,
+    on_retry: pi_core::ai::types::OnRetryCallback,
+) {
+    let signal = options
+        .as_ref()
+        .and_then(|options| options.base.base.signal.clone());
+    let mut start_forwarded = false;
+    let mut retries = 0;
+    loop {
+        let mut started = false;
+        let mut content = false;
+        let failed = loop {
+            let Some(event) = upstream.next().await else {
+                output.end(None);
+                return;
+            };
+            match &event {
+                AssistantMessageEvent::Start { .. } => {
+                    started = true;
+                    if start_forwarded {
+                        continue;
+                    }
+                    start_forwarded = true;
+                }
+                AssistantMessageEvent::Error { .. } => break event,
+                AssistantMessageEvent::Done { .. } => {
+                    output.push(event);
+                    return;
+                }
+                _ => content = true,
+            }
+            output.push(event);
+        };
+        let AssistantMessageEvent::Error { error: message, .. } = &failed else {
+            unreachable!("the inner loop only breaks on an error event");
+        };
+        if !started
+            || content
+            || retries >= STREAM_MAX_RETRIES
+            || signal.as_ref().is_some_and(CancellationToken::is_cancelled)
+            || !pi_core::ai::utils::retry::is_retryable_assistant_error(message)
+        {
+            output.push(failed);
+            return;
+        }
+        let message = message.clone();
+        retries += 1;
+        let delay_ms = 1000 * 2u64.pow(retries - 1);
+        on_retry(
+            retries,
+            STREAM_MAX_RETRIES,
+            delay_ms,
+            message.error_message.as_deref().unwrap_or_default(),
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+            _ = parent_cancelled(&signal) => {
+                output.push(synthetic_terminal(message, StopReason::Aborted, "Request was aborted"));
+                return;
+            }
+        }
+        upstream = match inner(&model, &context, options.as_ref()) {
+            Ok(upstream) => upstream,
+            Err(_) => {
+                output.push(failed);
+                return;
+            }
+        };
+    }
+}
+
 /// The partial assistant message carried by every non-terminal stream
 /// event — the state a synthetic terminal must preserve.
 fn stream_event_partial(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
@@ -1860,11 +1971,13 @@ fn explorer_tool_allowed(name: &str) -> bool {
     crate::plan_mode::read_only_tool_allowed(name)
 }
 
-/// The retry budget for every engine-owned provider request (Turns,
-/// compaction, title tasks, the gate reviewer): transient transport/HTTP
+/// The retry budget for provider requests on a Turn's critical path (the
+/// Turn itself, its compaction, the gate reviewer): transient transport/HTTP
 /// failures retry at the request layer with pi-core-rs' SDK-shaped policy
-/// (408/409/429/5xx/network, retry-after aware, exponential backoff).
-pub(crate) const PROVIDER_MAX_RETRIES: u32 = 5;
+/// (408/409/429/5xx/network, retry-after aware, exponential backoff capped at
+/// 8s). Ten retries ride out roughly a minute of provider overload — the
+/// user is waiting and can cancel, so waiting beats failing the Turn.
+pub(crate) const PROVIDER_MAX_RETRIES: u32 = 10;
 
 /// Build the `on_retry` callback that fans one scheduled provider retry out
 /// to `WatchTurnRetry` subscribers. Publishing never fails the run: a send
@@ -2190,6 +2303,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         }
         stream_fn(model, context, options)
     });
+    // Every request the Turn makes (its own, compaction, the gate reviewer)
+    // also retries content-free mid-stream failures.
+    let turn_on_retry = on_retry_callback(runtime.retry_events.clone(), chat_id.clone());
+    let stream_fn = retry_stream_fn(stream_fn, turn_on_retry.clone());
     let mut history = chat
         .history
         .read()
@@ -2204,7 +2321,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // the persisted flag. Either way this is never a Turn: no
     // source-context stamping, no turn-diff baseline reset, no status
     // change.
-    let turn_on_retry = on_retry_callback(runtime.retry_events.clone(), chat_id.clone());
     let overflow_recovery = chat.child.is_none() && runtime.take_compact_before_next_turn(&chat_id);
     // The summary responses bill into the Turn's usage batch (a child run's
     // compaction books nothing here — its delegation's metered transport
@@ -2964,6 +3080,148 @@ mod tests {
                 .unwrap()
                 .contains("closed the stream")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Mid-stream retries
+    // -----------------------------------------------------------------------
+
+    /// One scripted attempt: whether the provider accepted the request
+    /// (`Start`), the text streamed before the ending, and the ending — an
+    /// error message, or `None` for a clean `Done`.
+    type Attempt = (bool, Option<&'static str>, Option<&'static str>);
+
+    /// A transport replaying one scripted attempt per call (the last one
+    /// repeats), plus a call counter and the `on_retry` notices it saw.
+    type RetryNotices = Arc<Mutex<Vec<(u32, u64, String)>>>;
+
+    fn scripted_retry_stream(
+        attempts: Vec<Attempt>,
+    ) -> (
+        pi_core::agent::types::StreamFn,
+        Arc<std::sync::atomic::AtomicUsize>,
+        RetryNotices,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let raw: pi_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
+            let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (started, text, error) = attempts[index.min(attempts.len() - 1)];
+            let stream = create_assistant_message_event_stream();
+            let mut partial = watchdog_partial(text.unwrap_or_default());
+            if text.is_none() {
+                partial.content.clear();
+            }
+            if started {
+                stream.push(AssistantMessageEvent::Start {
+                    partial: partial.clone(),
+                });
+            }
+            if let Some(text) = text {
+                stream.push(AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: text.into(),
+                    partial: partial.clone(),
+                });
+            }
+            stream.push(match error {
+                Some(error) => synthetic_terminal(partial, StopReason::Error, error),
+                None => AssistantMessageEvent::Done {
+                    reason: DoneReason::Stop,
+                    message: partial,
+                },
+            });
+            Ok(stream)
+        });
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&notices);
+        let on_retry: pi_core::ai::types::OnRetryCallback =
+            Arc::new(move |attempt, _, delay_ms, error| {
+                sink.lock()
+                    .unwrap()
+                    .push((attempt, delay_ms, error.to_string()));
+            });
+        (retry_stream_fn(raw, on_retry), calls, notices)
+    }
+
+    const OVERLOADED: &str =
+        r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_content_free_mid_stream_failure_is_resent() {
+        let (stream_fn, calls, notices) = scripted_retry_stream(vec![
+            (true, None, Some(OVERLOADED)),
+            (true, Some("answer"), None),
+        ]);
+        let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
+
+        let events = settle_stream(&stream).await;
+
+        // One Start, the second attempt's content, its Done.
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
+        assert!(matches!(events[2], AssistantMessageEvent::Done { .. }));
+        assert_eq!(first_text(&stream.result().await), "answer");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            *notices.lock().unwrap(),
+            vec![(1, 1000, OVERLOADED.to_string())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mid_stream_retries_stop_at_the_budget() {
+        let (stream_fn, calls, notices) =
+            scripted_retry_stream(vec![(true, None, Some(OVERLOADED))]);
+        let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
+
+        // 1s + 2s of backoff outlasts `settle_stream`'s bound.
+        let message = tokio::time::timeout(Duration::from_secs(10), stream.result())
+            .await
+            .expect("the retrying stream settles");
+        assert_eq!(message.stop_reason, StopReason::Error);
+        assert_eq!(message.error_message.as_deref(), Some(OVERLOADED));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let delays: Vec<u64> = notices.lock().unwrap().iter().map(|n| n.1).collect();
+        assert_eq!(delays, vec![1000, 2000]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failures_the_stream_layer_must_not_resend_surface_at_once() {
+        for attempt in [
+            // Streamed content would have to be taken back.
+            (true, Some("half an answer"), Some(OVERLOADED)),
+            // Never accepted: the HTTP layer already retried it.
+            (false, None, Some(OVERLOADED)),
+            // Not transient.
+            (true, None, Some("invalid x-api-key")),
+        ] {
+            let (stream_fn, calls, notices) = scripted_retry_stream(vec![attempt]);
+            let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
+
+            settle_stream(&stream).await;
+
+            assert_eq!(stream.result().await.stop_reason, StopReason::Error);
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(notices.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_the_backoff_aborts() {
+        let (stream_fn, calls, _) = scripted_retry_stream(vec![(true, None, Some(OVERLOADED))]);
+        let cancel = CancellationToken::new();
+        let mut options = SimpleStreamOptions::default();
+        options.base.base.signal = Some(cancel.clone());
+        let stream = stream_fn(&PiModel::default(), &PiContext::default(), Some(&options)).unwrap();
+
+        // The first attempt fails and the backoff starts; cancel inside it.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        cancel.cancel();
+        settle_stream(&stream).await;
+
+        assert_eq!(stream.result().await.stop_reason, StopReason::Aborted);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

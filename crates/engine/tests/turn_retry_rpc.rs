@@ -63,7 +63,7 @@ fn retrying_transport(provider: &ScriptedProvider) -> (StreamFn, Arc<AtomicU32>)
     let stream_fn: StreamFn = Arc::new(move |model, context, options| {
         assert_eq!(
             options.and_then(|options| options.base.base.max_retries),
-            Some(5),
+            Some(10),
             "the Turn's provider requests must carry the engine retry budget"
         );
         // One transport call, two simulated transient failures: the request
