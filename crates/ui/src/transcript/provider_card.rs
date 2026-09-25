@@ -21,6 +21,8 @@ use crate::theme::Theme;
 #[derive(Default)]
 pub(super) struct ProviderCardUi {
     busy: bool,
+    /// The in-flight call is a Write (vs. a Discard): its button says so.
+    writing: bool,
     error: Option<SharedString>,
     key_input: Option<Entity<ComposerInput>>,
     _key_input_events: Option<Subscription>,
@@ -73,6 +75,67 @@ fn state_line(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
         .text_size(crate::typography::ui_rems(11.5))
         .text_color(theme.text_muted)
         .child(text.into())
+}
+
+/// One proposal diff line. The engine emits a header per change (a
+/// `+`/`~`/`-`/`=`/`!` marker and the subject) followed by indented detail
+/// lines; headers get a colored marker column, details sit under the
+/// subject. Anything else (a pre-format proposal) reads as plain text.
+fn diff_line(line: &SharedString, first: bool, theme: &Theme) -> gpui::Div {
+    let mut chars = line.chars();
+    let marker = match (chars.next(), chars.next()) {
+        (Some('+'), Some(' ')) => Some(('+', theme.success)),
+        (Some('~'), Some(' ')) => Some(('~', theme.warning)),
+        (Some('-'), Some(' ')) => Some(('−', theme.danger)),
+        (Some('!'), Some(' ')) => Some(('!', theme.warning)),
+        (Some('='), Some(' ')) => Some(('=', theme.text_faint)),
+        _ => None,
+    };
+    let text = |content: SharedString| {
+        div()
+            .min_w_0()
+            .flex_1()
+            .text_size(crate::typography::ui_rems(11.5))
+            .line_height(px(17.0))
+            .child(content)
+    };
+    match marker {
+        Some((glyph, tint)) => div()
+            .flex()
+            .gap(px(6.0))
+            .when(!first, |row| row.mt(px(6.0)))
+            .child(
+                div()
+                    .w(px(10.0))
+                    .flex_none()
+                    .font_family(theme.font_mono.clone())
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .line_height(px(17.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(tint)
+                    .child(glyph.to_string()),
+            )
+            .child(
+                text(SharedString::from(line[2..].to_string()))
+                    .font_family(theme.font_mono.clone())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text),
+            ),
+        // Detail lines (the engine's 4-space `DETAIL_INDENT`) are JSON: mono,
+        // with the nesting past that prefix kept as padding.
+        None if line.starts_with(' ') => {
+            let body = line.trim_start();
+            let nesting = (line.len() - body.len()).saturating_sub(4);
+            div().flex().pl(px(16.0 + 7.0 * nesting as f32)).child(
+                text(SharedString::from(body.to_string()))
+                    .font_family(theme.font_mono.clone())
+                    .text_color(theme.text_muted),
+            )
+        }
+        None => div()
+            .flex()
+            .child(text(line.clone()).text_color(theme.text_muted)),
+    }
 }
 
 /// A provider's brand mark, or the generic bot glyph.
@@ -133,6 +196,7 @@ impl Transcript {
         let pending = state == ProposalCardState::Pending;
         let ui = self.provider_cards.get(row_id);
         let busy = ui.is_some_and(|ui| ui.busy);
+        let writing = busy && ui.is_some_and(|ui| ui.writing);
         let error = ui.and_then(|ui| ui.error.clone());
         let mut card = card_frame(theme, pending)
             .when(!targets.is_empty(), |card| {
@@ -149,15 +213,19 @@ impl Transcript {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
-                    .pl(px(8.0))
-                    .border_l_2()
-                    .border_color(theme.accent.opacity(if pending { 0.5 } else { 0.2 }))
-                    .font_family(theme.font_mono.clone())
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .line_height(px(16.0))
-                    .text_color(theme.text_muted)
-                    .children(lines.iter().cloned()),
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.hairline(0.04))
+                    .border_1()
+                    .border_color(theme.hairline(0.08))
+                    .when(!pending, |panel| panel.opacity(0.7))
+                    .children(
+                        lines
+                            .iter()
+                            .enumerate()
+                            .map(|(index, line)| diff_line(line, index == 0, theme)),
+                    ),
             );
         }
         card = match state {
@@ -173,9 +241,10 @@ impl Transcript {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .when(busy, |row| row.opacity(0.4))
                         .child(
                             primary_button(theme)
+                                .when(busy && !writing, |button| button.opacity(0.4))
+                                .when(busy, |button| button.cursor_default())
                                 .id(SharedString::from(format!(
                                     "provider-proposal-write-{row_id}"
                                 )))
@@ -183,18 +252,19 @@ impl Transcript {
                                     let row_id = row_id.clone();
                                     move || format!("provider-proposal-write-{row_id}")
                                 })
-                                .hover(|style| style.bg(theme.accent_strong))
                                 .when(!busy, |button| {
-                                    button.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.settle_proposal(
-                                            write_row.clone(),
-                                            write_id.clone(),
-                                            true,
-                                            cx,
-                                        )
-                                    }))
+                                    button
+                                        .hover(|style| style.bg(theme.accent_strong))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settle_proposal(
+                                                write_row.clone(),
+                                                write_id.clone(),
+                                                true,
+                                                cx,
+                                            )
+                                        }))
                                 })
-                                .child("Write"),
+                                .child(if writing { "Writing…" } else { "Write" }),
                         )
                         .child(
                             widgets::ghost_action(theme)
@@ -205,18 +275,20 @@ impl Transcript {
                                     let row_id = row_id.clone();
                                     move || format!("provider-proposal-discard-{row_id}")
                                 })
-                                .hover(move |style| {
-                                    style.bg(danger.opacity(0.10)).text_color(danger_muted)
-                                })
+                                .when(busy, |button| button.opacity(0.4).cursor_default())
                                 .when(!busy, |button| {
-                                    button.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.settle_proposal(
-                                            discard_row.clone(),
-                                            discard_id.clone(),
-                                            false,
-                                            cx,
-                                        )
-                                    }))
+                                    button
+                                        .hover(move |style| {
+                                            style.bg(danger.opacity(0.10)).text_color(danger_muted)
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settle_proposal(
+                                                discard_row.clone(),
+                                                discard_id.clone(),
+                                                false,
+                                                cx,
+                                            )
+                                        }))
                                 })
                                 .child("Discard"),
                         ),
@@ -547,6 +619,7 @@ impl Transcript {
             return;
         }
         ui.busy = true;
+        ui.writing = apply;
         ui.error = None;
         self.remeasure_row(&row_id);
         cx.notify();

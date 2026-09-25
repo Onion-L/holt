@@ -1286,6 +1286,18 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
         if let MessagePart::Input { resolved, .. } = part {
             acc.push(0x10 | *resolved as u8);
         }
+        // Cards settle in place, and `byte_len` only sees their state's
+        // serialized LENGTH — `"pending"` and `"written"` are both 9 bytes, so
+        // a written proposal kept rendering as pending. Hash the whole card.
+        if matches!(
+            part,
+            MessagePart::PlanApproval { .. }
+                | MessagePart::ModelProposal { .. }
+                | MessagePart::ProviderChoice { .. }
+                | MessagePart::KeyRequest { .. }
+        ) {
+            acc.extend_from_slice(&serde_json::to_vec(part).unwrap_or_default());
+        }
     }
     fnv1a(&acc)
 }
@@ -1311,6 +1323,33 @@ mod tests {
             status: Some(status),
             continuation_of: None,
         }
+    }
+
+    #[test]
+    fn a_proposal_card_settling_in_place_changes_the_fingerprint() {
+        let card = |state| MessagePart::ModelProposal {
+            id: "p1".into(),
+            proposal_id: "prop".into(),
+            targets: Vec::new(),
+            summary: "add model".into(),
+            lines: vec!["+ openai/gpt".into()],
+            state,
+        };
+        let pending = assistant(
+            "e1",
+            MessageStatus::Complete,
+            vec![card(holt_doc::ProposalCardState::Pending)],
+        );
+        let written = assistant(
+            "e1",
+            MessageStatus::Complete,
+            vec![card(holt_doc::ProposalCardState::Written)],
+        );
+        // Same serialized state length — the old length-only hash collided.
+        assert_ne!(
+            entry_fingerprint(&pending, false),
+            entry_fingerprint(&written, false)
+        );
     }
 
     fn text_part(id: &str, text: &str) -> MessagePart {
