@@ -1,7 +1,7 @@
 //! One chat, the whole story (spec ticket 09): two Turns, a restart, an
 //! interrupted Turn, automatic compaction before a Turn, in-Turn
-//! compaction, manual `/compact`, overflow and recovery, and another
-//! restart — asserting on the provider's request payloads and the
+//! compaction, manual `/compact`, an overflow recovered in the same Turn,
+//! and another restart — asserting on the provider's request payloads and the
 //! Transcript frames at each step. Every trigger value (automatic,
 //! manual, after overflow) and every notice kind rides the same chat.
 //!
@@ -102,11 +102,11 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         ),
         ScriptedReply::text("mid checkpoint"),
         ScriptedReply::text("the loop reply"),
-        // Turn 7 — the provider rejects for size.
+        // Turn 7 — the provider rejects for size; the Turn compacts and
+        // continues in place.
         ScriptedReply::Failed(
             "The input is too long: prompt is too long for the requested model".into(),
         ),
-        // Turn 8 — the overflow recovery.
         ScriptedReply::text("recovery checkpoint"),
         ScriptedReply::text("the recovered reply"),
     ]);
@@ -222,37 +222,27 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         "{round_two_text}"
     );
 
-    // ── Turn 7: the overflow; restart; Turn 8 recovers ──────────────────
+    // ── Turn 7: the overflow, recovered in the same Turn; restart ───────
     common::run_prompt(&engine, "chat-1", &cwd, "push it over the window").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
-    common::wait_for_transcript_text(&mut transcript, "outgrew the model's context window").await;
-    assert!(compact_flag(&engine).await);
-    drop(engine);
-
-    let engine = fixture.engine(&provider);
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    assert!(
-        compact_flag(&engine).await,
-        "the overflow flag did not survive the restart"
-    );
-    common::run_prompt(&engine, "chat-1", &cwd, "and recover").await;
-    engine
-        .handle(
-            methods::CONTINUE_MESSAGE_QUEUE,
-            serde_json::json!({"chatId":"chat-1"}),
-        )
-        .await
-        .unwrap();
+    common::wait_for_transcript_text(&mut transcript, "the recovered reply").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
+    assert_eq!(requests.len(), 15);
     assert_eq!(
         requests[13].tools, 0,
         "the recovery did not open with a summary round"
     );
-    let run = &requests[14];
-    let run_text = serde_json::to_string(&run.messages).unwrap();
-    assert!(run_text.contains("the recovered reply") || run_text.contains("recovery checkpoint"));
-    assert!(!compact_flag(&engine).await, "the flag was not consumed");
+    let run_text = serde_json::to_string(&requests[14].messages).unwrap();
+    assert!(run_text.contains("recovery checkpoint"), "{run_text}");
+    assert!(run_text.contains("push it over the window"), "{run_text}");
+    assert!(
+        !compact_flag(&engine).await,
+        "a recovered Turn owes nothing"
+    );
+    drop(engine);
+
+    let engine = fixture.engine(&provider);
+    let (mut transcript, _) = common::subscribe(&engine, "chat-1").await;
 
     // The Transcript kept everything: all three trigger values, the
     // interrupted record's rows, and the overflow notice.
@@ -262,7 +252,7 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
         "\"automatic\"",
         "\"manual\"",
         "\"afterOverflow\"",
-        "outgrew the model's context window",
+        "the recovered reply",
         // Rows from before every compaction still exist — the Transcript
         // never shrinks.
         "the story begins",

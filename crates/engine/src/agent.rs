@@ -17,7 +17,7 @@ use holt_proto::{
 use pi_core::agent::harness::messages::convert_to_llm as harness_convert_to_llm;
 use pi_core::{
     agent::{
-        agent_loop::{AgentEventSink, run_agent_loop},
+        agent_loop::{AgentEventSink, run_agent_loop, run_agent_loop_continue},
         types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentToolResult},
     },
     ai::{
@@ -1979,6 +1979,23 @@ fn explorer_tool_allowed(name: &str) -> bool {
 /// user is waiting and can cancel, so waiting beats failing the Turn.
 pub(crate) const PROVIDER_MAX_RETRIES: u32 = 10;
 
+/// Whether a run ended on a request the provider rejected as too long
+/// before producing anything — the one overflow shape a compaction can
+/// retry without taking content back.
+fn ends_on_rejected_overflow(messages: &[AgentMessage], model: &PiModel) -> bool {
+    messages.iter().rev().find_map(|message| match message {
+        AgentMessage::Assistant(assistant) => Some(
+            assistant.error_message.is_some()
+                && assistant.content.is_empty()
+                && pi_core::ai::utils::overflow::is_context_overflow(
+                    assistant,
+                    Some(model.context_window),
+                ),
+        ),
+        _ => None,
+    }) == Some(true)
+}
+
 /// Build the `on_retry` callback that fans one scheduled provider retry out
 /// to `WatchTurnRetry` subscribers. Publishing never fails the run: a send
 /// with no subscriber is a no-op.
@@ -2655,7 +2672,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         before_tool_call: Some(gate),
         after_tool_call: Some(crate::subagents::after_tool_call()),
     };
-    let result = run_agent_loop(
+    let mut result = run_agent_loop(
         vec![prompt_message.clone()],
         AgentContext {
             system_prompt: system_prompt.clone(),
@@ -2668,6 +2685,78 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         Some(stream_fn.clone()),
     )
     .await;
+    // In-Turn overflow recovery (ADR-0011): the provider rejected a request
+    // as too long before producing anything — the estimate missed. Compact
+    // the History as it stands (the failed answer is dropped, the prompt
+    // and every finished round kept) and continue the same Turn, once. The
+    // divider's "after overflow" trigger keeps the miss visible. A second
+    // overflow, or a compaction that fails, falls back to compacting before
+    // the next Turn.
+    if chat.child.is_none()
+        && !cancel.is_cancelled()
+        && let Ok(messages) = &result
+        && ends_on_rejected_overflow(messages, &overflow_model)
+    {
+        let history_now = {
+            let base = run_base.lock().unwrap_or_else(|e| e.into_inner());
+            let mut history = base.history.clone();
+            history.extend(crate::history::repair_history(
+                &messages[base.consumed.min(messages.len())..],
+            ));
+            history
+        };
+        if let Ok(Some(outcome)) = crate::compaction::compact_now(
+            &history_now,
+            &overflow_model,
+            &stream_fn,
+            &api_key,
+            holt_doc::parts::CompactionTrigger::AfterOverflow,
+            Some(&cancel),
+            &compaction_meter,
+            Some(turn_on_retry.clone()),
+        )
+        .await
+        {
+            // The overflow error is superseded by the divider that follows.
+            {
+                let mut parts = base_parts.lock().unwrap_or_else(|e| e.into_inner());
+                if matches!(parts.last(), Some(MessagePart::Error { .. })) {
+                    parts.pop();
+                }
+            }
+            record_mid_turn_compaction(&chat, &outcome.record, &base_parts);
+            let parts = base_parts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            update_assistant_entry(
+                &chat,
+                &entry_id,
+                parts,
+                MessageStatus::Streaming,
+                &runtime.device_id,
+                true,
+            );
+            // The first run's messages are all folded into the compacted
+            // base; the end-of-run consolidation appends only what follows.
+            let first_run = messages.clone();
+            {
+                let mut base = run_base.lock().unwrap_or_else(|e| e.into_inner());
+                base.history = outcome.messages.clone();
+                base.consumed = first_run.len();
+            }
+            result = run_agent_loop_continue(
+                AgentContext {
+                    system_prompt: system_prompt.clone(),
+                    messages: outcome.messages,
+                    tools: Some(tools.clone()),
+                },
+                config.clone(),
+                emit.clone(),
+                Some(cancel.clone()),
+                Some(stream_fn.clone()),
+            )
+            .await
+            .map(|continued| [first_run, continued].concat());
+        }
+    }
     let failure_reason = match result {
         Ok(messages) => {
             let errored = messages
@@ -2734,9 +2823,10 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                 chat.persist_entry(&entry_id);
             }
             // The overflow fallback (ADR-0011): the estimator missed and
-            // the provider said so (or the usage silently exceeded the
-            // window). Stamp the chat — the NEXT Turn compacts
-            // unconditionally — and say so readably. No in-Turn retry.
+            // the in-Turn recovery above could not absorb it (a second
+            // overflow, a failed compaction, or usage that silently
+            // exceeded the window). Stamp the chat — the NEXT Turn compacts
+            // unconditionally — and say so readably.
             let overflowed = messages.iter().rev().find_map(|message| match message {
                 AgentMessage::Assistant(assistant) => {
                     Some(pi_core::ai::utils::overflow::is_context_overflow(

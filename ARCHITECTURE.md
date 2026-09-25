@@ -731,8 +731,11 @@ plus a verbatim recent tail, using pi-core's compaction primitives through
 the same stream function the agent loop uses: automatically before a Turn
 and between tool rounds (`prepare_next_turn`), manually with the `/compact`
 slash command (a typed queue item — the `Compacting` session status is
-interruptible like a run when the queue admits it), and unconditionally on
-the Turn after a context overflow. The Transcript never shrinks — a
+interruptible like a run when the queue admits it), and on a context
+overflow: a request the provider rejects as too long compacts the History
+and continues the same Turn, once; when that cannot absorb it (a second
+overflow, a failed summary, a silent overflow in the usage) the chat is
+flagged and the next Turn compacts unconditionally first. The Transcript never shrinks — a
 Last-message edit is the one exception, replacing the latest user message
 and the conversation after it (ADR-0033) — and dividers (expandable, with
 before/after token counts and the trigger) and notices

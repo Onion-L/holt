@@ -4,8 +4,9 @@
 verbatim recent tail, using pi-core-rs's compaction primitives
 (`should_compact`, `find_cut_point`, `compact`, default
 `reserve_tokens 16384` / `keep_recent_tokens 20000`, no holt settings). It
-runs in two places: before a Turn's first request, and between tool rounds
-inside a Turn through pi's `prepare_next_turn` hook. It is never a Turn
+runs in three places: before a Turn's first request, between tool rounds
+inside a Turn through pi's `prepare_next_turn` hook, and once after a
+request the provider rejected as too long, before the Turn continues. It is never a Turn
 itself: a manual `/compact` puts the session in a `Compacting` status
 (interruptible) and an automatic compaction inside a Turn changes no status.
 
@@ -14,16 +15,20 @@ itself: a manual `/compact` puts the session in a `Compacting` status
 - **Turn-start only, recover from overflow by ending the Turn**: rejected as
   the sole mechanism. Overflow overwhelmingly happens in the middle of long
   tool loops; ending the Turn there costs the user half a Turn every time.
-  It is kept only as the fallback for estimation error: a mid-Turn overflow
-  error ends the Turn, and the chat is marked to compact unconditionally
-  before its next Turn.
+  It is kept only as the last fallback for estimation error: when the
+  in-Turn recovery below cannot absorb an overflow, the Turn ends and the
+  chat is marked to compact unconditionally before its next Turn.
 - **Compact via `transform_context`**: rejected. That hook runs per request
   on a clone and cannot mutate the loop's context, so the summary would be
   regenerated (or cached out-of-band) on every request.
-- **Compact in-Turn and silently retry the failed request**: rejected. It
-  requires re-entering pi's loop after an error and hides estimation bugs
-  behind automatic retries; the transparent path (Turn ends, next Turn
-  compacts) is preferred.
+- **Compact in-Turn and retry the failed request**: adopted (2026-09-25),
+  superseding the earlier rejection. Ending the Turn made the user send
+  another message just to trigger the compaction the engine already knew
+  it owed. The recovery is narrow: only a request rejected as too long
+  before producing any content, only in a main chat, at most once per
+  Turn. The loop re-enters through pi's `run_agent_loop_continue` on the
+  compacted History, and the divider's `after overflow` trigger replaces
+  the error in the Transcript, so the estimation miss stays visible.
 - **Model a compaction as a Turn**: rejected. A Turn is an agent run, and
   Turn-scoped state (the turn-diff baseline of ADR-0003, source-context
   stamping) would be reset by something that touches no files.

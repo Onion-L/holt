@@ -1,9 +1,10 @@
-//! Handle-seam tests for the overflow fallback (ADR-0011, spec ticket 08):
+//! Handle-seam tests for overflow recovery (ADR-0011, spec ticket 08):
 //! when estimation misses and the provider rejects the request for size,
-//! the Turn ends with a readable notice, the chat row carries a persisted
-//! "compact before next Turn" flag, and the next Turn recovers on its own
-//! — an unconditional compaction (trigger `after overflow`) whose flag
-//! survives a restart. No in-Turn retry.
+//! the Turn compacts (trigger `after overflow`) and continues in place,
+//! once. When that cannot absorb it — a second overflow, a failed summary,
+//! or a silent overflow — the Turn ends with a readable notice and the chat
+//! row carries a persisted "compact before next Turn" flag that survives a
+//! restart.
 
 mod common;
 
@@ -35,7 +36,7 @@ fn overflow_usage() -> Usage {
 }
 
 #[tokio::test]
-async fn an_overflow_error_flags_the_chat_and_the_next_turn_recovers() {
+async fn an_overflow_error_compacts_and_continues_the_same_turn() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::Failed(
@@ -43,62 +44,81 @@ async fn an_overflow_error_flags_the_chat_and_the_next_turn_recovers() {
         ),
         ScriptedReply::text("recovery summary"),
         ScriptedReply::text("the recovered turn"),
+        ScriptedReply::text("after the restart"),
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
-    // The overflowing Turn: errored, with the readable notice, and flagged.
+    // One Turn: the rejected request, a summary round, then the same Turn
+    // continues on the compacted History.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "push it over").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
-    common::wait_for_transcript_text(&mut transcript, "outgrew the model's context window").await;
-    assert!(compact_flag(&engine).await);
-
-    // The next Turn compacts FIRST — unconditionally, below the threshold
-    // — then runs on the compacted History.
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "continue").await;
-    engine
-        .handle(
-            methods::CONTINUE_MESSAGE_QUEUE,
-            serde_json::json!({"chatId":"chat-1"}),
-        )
-        .await
-        .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[1].tools, 0, "no summary round before the run");
-    let run = &requests[2];
-    let run_text = serde_json::to_string(&run.messages).unwrap();
+    assert_eq!(requests[1].tools, 0, "no summary round before the retry");
+    let run_text = serde_json::to_string(&requests[2].messages).unwrap();
     assert!(
         run_text.contains("history before this point was compacted"),
         "{run_text}"
     );
-    // The divider carries the after-overflow trigger; the flag is spent.
+    assert!(run_text.contains("push it over"), "{run_text}");
+    // The divider replaces the overflow error; nothing is owed.
     let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
     let snapshot = snapshot.to_string();
-    assert!(snapshot.contains("compactionDivider"), "{snapshot}");
     assert!(snapshot.contains("\"afterOverflow\""), "{snapshot}");
+    assert!(snapshot.contains("the recovered turn"), "{snapshot}");
+    assert!(!snapshot.contains("prompt is too long"), "{snapshot}");
+    assert!(!snapshot.contains("outgrew the model's context window"));
     assert!(!compact_flag(&engine).await);
+    drop(engine);
+
+    // The History replays as summary, prompt, and the recovered answer.
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "and then").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 4);
+    let next_text = serde_json::to_string(&requests[3].messages).unwrap();
+    for expected in [
+        "history before this point was compacted",
+        "push it over",
+        "the recovered turn",
+        "and then",
+    ] {
+        assert_eq!(
+            next_text.matches(expected).count(),
+            1,
+            "{expected}: {next_text}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn the_overflow_flag_survives_a_restart() {
+async fn a_second_overflow_flags_the_chat_across_a_restart() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![
+        ScriptedReply::Failed("exceeds the context window of the model".into()),
+        ScriptedReply::text("in-turn summary"),
         ScriptedReply::Failed("exceeds the context window of the model".into()),
         ScriptedReply::text("recovery summary"),
         ScriptedReply::text("the recovered turn"),
     ]);
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // The in-Turn recovery runs once; overflowing again ends the Turn.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "push it over").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
+    common::wait_for_transcript_text(&mut transcript, "outgrew the model's context window").await;
+    assert_eq!(provider.requests().len(), 3);
+    assert!(compact_flag(&engine).await);
     drop(engine);
 
-    // The flag persisted with the chat row: the fresh engine still
-    // recovers on the next Turn.
+    // The flag persisted with the chat row: the fresh engine compacts
+    // FIRST on the next Turn, then runs.
     let engine = fixture.engine(&provider);
     assert!(compact_flag(&engine).await);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
@@ -112,10 +132,9 @@ async fn the_overflow_flag_survives_a_restart() {
         .unwrap();
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(requests[1].tools, 0);
-    let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
-    assert!(snapshot.to_string().contains("\"afterOverflow\""));
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[3].tools, 0, "no summary round before the run");
+    assert!(!compact_flag(&engine).await);
 }
 
 #[tokio::test]
@@ -167,6 +186,9 @@ async fn a_failed_recovery_keeps_the_flag_for_the_turn_after() {
         ScriptedReply::Failed(
             "The input is too long: prompt is too long for the requested model".into(),
         ),
+        // The in-Turn summary fails: the Turn ends, flagged.
+        ScriptedReply::Failed("summarizer broke".into()),
+        // The next Turn's recovery fails too: it runs uncompacted.
         ScriptedReply::Failed("summarizer broke".into()),
         ScriptedReply::text("ran uncompacted"),
         ScriptedReply::text("recovery summary"),
@@ -178,6 +200,7 @@ async fn a_failed_recovery_keeps_the_flag_for_the_turn_after() {
 
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "push it over").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "errored").await;
+    common::wait_for_transcript_text(&mut transcript, "outgrew the model's context window").await;
     assert!(compact_flag(&engine).await);
 
     // The recovery's summary fails: the Turn proceeds uncompacted, and the
@@ -201,9 +224,9 @@ async fn a_failed_recovery_keeps_the_flag_for_the_turn_after() {
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "try again").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     let requests = provider.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     assert_eq!(
-        requests[3].tools, 0,
+        requests[4].tools, 0,
         "no summary round before the second try"
     );
     assert!(!compact_flag(&engine).await);
