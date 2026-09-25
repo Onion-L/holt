@@ -344,14 +344,21 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `maxRetries`, `delayMs`, `retryAtMs`, `error`) each time a chat's live
   Turn schedules a provider retry, published from the `on_retry` callback
   mounted on every engine-owned request (pi-core-rs request-layer retry:
-  budget 5, SDK-shaped retryable set — 408/409/429/5xx/network — with
-  retry-after-aware backoff). The stream is live-only — no synthetic
+  budget 10, SDK-shaped retryable set — 408/409/429/5xx/network — with
+  retry-after-aware backoff capped at 8s). On top of it the Turn's stream
+  re-sends a failure that arrives after the provider's `Start` but before
+  any content (an SSE `overloaded_error`, a dropped body): budget 2,
+  1s/2s backoff, reported through the same callback; a failure after
+  content surfaces as-is. The stream is live-only — no synthetic
   initial notice, no persistence or replay across restart — and consumers
   must drop the notice when transcript frames resume. Turn-scoped
-  compaction publishes under the same chat; Title tasks, the gate
-  reviewer, and manual `/compact` retry silently with the same budget.
-  The UI renders the latest notice for the selected chat as a transient
-  chip under the streaming entry, never persisted into the transcript.
+  compaction publishes under the same chat, and a subagent's run under its
+  own `{parentChatId}--sub--{uuid}` doc id. The gate reviewer and manual
+  `/compact` retry silently with the same budget; Title tasks retry
+  silently with a budget of 2. The UI renders the latest notice for the
+  selected chat — or for a watched subagent doc, in its tab — as a
+  transient chip under the streaming entry, never persisted into the
+  transcript.
 - Mutations: `Mutate` — the served ops are `createSpace`, `createChat`,
   `renameChat`, `setChatConfig`, `setChatPermissionMode`, `setChatArchived`,
   `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
