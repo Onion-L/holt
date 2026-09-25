@@ -13,8 +13,11 @@ fn main() -> anyhow::Result<()> {
     // to {data_dir}/logs. One file per launch, previous launch kept as `.old`.
     // `usvg::text` logs a WARN per text chunk per rasterization when a mermaid
     // diagram's font falls back — pure noise once the text renders.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,loro_internal=warn,loro=warn,usvg::text=off".into());
+    // `html5ever` WARNs "foster parenting not implemented" per misplaced table
+    // child while web_fetch parses a page; it does foster-parent them.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        "info,loro_internal=warn,loro=warn,usvg::text=off,html5ever=error".into()
+    });
     let log_file = open_log_file("headed");
     {
         use tracing_subscriber::layer::SubscriberExt;
