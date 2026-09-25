@@ -17,9 +17,9 @@ mode and leaves it (its ×). It survives restart, and stays on after a write
 until the user leaves it — one chat often sets up several providers. A Turn
 admitted under Provider Mode keeps the chat's workspace prompt and appends a
 Provider Mode block (research → resolve → propose → stop); its toolset is
-exactly `web_fetch`/`web_search`, `model_proposal`, and
-`request_provider_key` — no file tools, no delegation, no MCP. Turns outside
-the mode mount neither catalog tool, so the catalog-write capability stays
+exactly `web_fetch`/`web_search`, `model_proposal`, `request_provider_key`,
+and `choose_provider` — no file tools, no delegation, no MCP. Turns outside
+the mode mount none of the catalog tools, so the catalog-write capability stays
 nil everywhere else; ADR-0030's reason for scoping it holds, with the scope
 moved from a hidden chat to a mode.
 
@@ -53,6 +53,22 @@ and the prompt asks for the key as soon as the docs say the endpoint needs
 one instead of waiting for a 401. Draft targets keep the planned-probe
 public-host gate, and the key rides only to an approved
 (chat, provider, baseUrl).
+
+An organization often carries several providers (regions, token plans:
+`xiaomi`, `xiaomi-token-plan-cn`, …), and users name the organization.
+The assistant resolves the name to one provider without asking when it
+can — the provider already settled earlier in the chat, else the only one
+in the organization that serves the named model, else the only configured
+one — because the proposal card names its target (icon, display name, id)
+and a correction simply re-proposes. When several still match it calls
+`choose_provider` with the candidate ids and stops; the engine fills each
+option (name, endpoint host, configured) from the catalog, so the
+assistant cannot invent a choice, and the options render as a
+`ProviderChoice` part. A click settles it through `SettleProviderChoice`,
+which stamps the card and queues the fixed message "Use provider <id>"; a
+typed answer works too, and any new Turn retires a still-pending choice.
+A written card reads "Written to <provider>" with a link to that provider
+in Settings.
 
 Carried over unchanged: ADR-0029's invariant (only a human action writes,
 and it writes the change exactly as stored) and ADR-0031's key rules (the
