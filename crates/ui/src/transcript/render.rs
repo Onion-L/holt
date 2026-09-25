@@ -1316,6 +1316,9 @@ impl Transcript {
                     // clipped line instead of wrapping inside the 80% column cap.
                     let bubble = div()
                         .min_w_0()
+                        // Editing stretches the bubble to its full cap so the
+                        // inline input doesn't shrink-wrap to the text width.
+                        .when(editing, |el| el.w_full())
                         .max_w(px(MAX_CONTENT_WIDTH * 0.8))
                         .bg(crate::theme::user_bubble_bg())
                         .rounded(px(Theme::BUBBLE_RADIUS))
@@ -1330,6 +1333,7 @@ impl Transcript {
                         div().w_full().flex().justify_end().child(
                             div()
                                 .min_w_0()
+                                .when(editing, |el| el.w_full())
                                 .flex()
                                 .flex_col()
                                 .items_end()
