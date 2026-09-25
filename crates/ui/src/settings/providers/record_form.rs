@@ -323,8 +323,9 @@ pub(super) fn record_form_dialog(
     card.into_any_element()
 }
 
-/// The fetch-from-vendor dialog: the probed listing as checkbox rows over
-/// the two numbers a servable record needs. The vendor listing carries no
+/// The fetch-from-vendor dialog: the probed listing as checkbox rows, each
+/// with its own display-name field (prefilled with the id), over the two
+/// numbers a servable record needs. The vendor listing carries no
 /// metadata, so context window and max tokens are shared fields — prefilled
 /// from the provider's first known model — and every added row stays
 /// editable through the record form afterward.
@@ -396,34 +397,49 @@ pub(super) fn fetch_models_dialog(
         .map(|(row, id)| {
             let ticked = checked.contains(id);
             let toggle_id = id.clone();
+            // The name field sits beside the toggle area, not inside it: a
+            // click to edit must not flip the checkbox.
             div()
-                .id(("fetch-id", row))
-                .cursor_pointer()
-                .h(px(30.0))
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
-                    page.toggle_fetch_id(toggle_id.clone(), cx);
-                }))
-                .child(widgets::checkbox(
-                    theme,
-                    if ticked {
-                        widgets::CheckboxState::Checked
-                    } else {
-                        widgets::CheckboxState::Unchecked
-                    },
-                ))
                 .child(
                     div()
+                        .id(("fetch-id", row))
+                        .cursor_pointer()
+                        .h(px(36.0))
                         .flex_1()
                         .min_w_0()
-                        .truncate()
-                        .font_family(theme.font_mono.clone())
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.text)
-                        .child(SharedString::from(id.clone())),
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .on_click(cx.listener(move |page: &mut ProvidersPage, _, _, cx| {
+                            page.toggle_fetch_id(toggle_id.clone(), cx);
+                        }))
+                        .child(widgets::checkbox(
+                            theme,
+                            if ticked {
+                                widgets::CheckboxState::Checked
+                            } else {
+                                widgets::CheckboxState::Unchecked
+                            },
+                        ))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text)
+                                .child(SharedString::from(id.clone())),
+                        ),
                 )
+                .children(dialog.names.get(id).map(|input| {
+                    bordered_input(theme, input.clone())
+                        .w(px(200.0))
+                        .flex_none()
+                        .into_any_element()
+                }))
                 .into_any_element()
         })
         .collect();
@@ -485,7 +501,8 @@ pub(super) fn fetch_models_dialog(
     card.into_any_element()
 }
 
-/// The record one fetched id becomes: id + the probed dialect, the
+/// The record one fetched id becomes: id + the dialog's display name (empty
+/// falls back to the id, like the manual form) + the probed dialect, the
 /// provider's default endpoint (baseUrl omitted — the engine fills it),
 /// zero costs, and the dialog's two numbers. The vendor listing carries no
 /// metadata, so the window and max tokens are the user's call, and every
@@ -494,12 +511,14 @@ pub(super) fn fetch_record(
     provider: &str,
     dialect: &str,
     id: &str,
+    name: &str,
     context_window: u64,
     max_tokens: u64,
 ) -> serde_json::Value {
+    let name = if name.is_empty() { id } else { name };
     serde_json::json!({
         "id": id,
-        "name": id,
+        "name": name,
         "api": dialect,
         "provider": provider,
         "reasoning": false,
@@ -616,7 +635,7 @@ pub(super) fn build_record_json(
 }
 
 impl ProvidersPage {
-    /// The Models header's "Fetch from vendor": a fresh ProbeProvider
+    /// The Models header's "Fetch models": a fresh ProbeProvider
     /// call; the dialog opens only on `ok` — the status line carries the
     /// failure verdict.
     pub(super) fn open_fetch(&mut self, provider: String, cx: &mut Context<Self>) {
@@ -713,12 +732,28 @@ impl ProvidersPage {
                 input
             }),
         );
+        // One display-name field per listing row, prefilled with the id —
+        // the default the record would carry anyway, now editable.
+        let names = ids
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    cx.new(|cx| {
+                        let mut input = ComposerInput::new(id.as_str(), cx);
+                        input.set_text(id.clone(), cx);
+                        input
+                    }),
+                )
+            })
+            .collect();
         self.fetch_dialog = Some(FetchDialog {
             checked: ids.iter().cloned().collect(),
             ids,
             provider,
             dialect,
             inputs,
+            names,
             saving: false,
             error: None,
         });
@@ -790,6 +825,11 @@ impl ProvidersPage {
         }
         let provider = dialog.provider.clone();
         let dialect = dialog.dialect.clone();
+        let names: HashMap<String, String> = dialog
+            .names
+            .iter()
+            .map(|(id, input)| (id.clone(), input.read(cx).text().trim().to_string()))
+            .collect();
         if let Some(dialog) = self.fetch_dialog.as_mut() {
             dialog.saving = true;
             dialog.error = None;
@@ -797,7 +837,8 @@ impl ProvidersPage {
         self.task = Some(cx.spawn(async move |this, cx| {
             let mut failure = None;
             for id in ids {
-                let record = fetch_record(&provider, &dialect, &id, window, max_tokens);
+                let name = names.get(&id).map(String::as_str).unwrap_or("");
+                let record = fetch_record(&provider, &dialect, &id, name, window, max_tokens);
                 let result = engine
                     .client()
                     .call(
@@ -1145,8 +1186,9 @@ mod tests {
 
     /// The fetch flow: a fresh probe opens the dialog with the listing
     /// minus what the provider already offers, and the Add button saves one
-    /// complete record per checked id — dialect from the probe, no baseUrl
-    /// (the engine fills the provider's default endpoint).
+    /// complete record per checked id — name from the row's field (empty
+    /// falls back to the id), dialect from the probe, no baseUrl (the
+    /// engine fills the provider's default endpoint).
     #[gpui::test]
     fn fetch_from_vendor_saves_records_for_the_checked_ids(cx: &mut gpui::TestAppContext) {
         let mut harness = providers_harness(cx);
@@ -1173,6 +1215,22 @@ mod tests {
         assert_eq!(checked, ids.iter().cloned().collect());
         assert_eq!(dialect, "openai-completions");
 
+        // The row's display-name field: prefilled with the id, and what it
+        // holds is the saved name.
+        let prefilled = harness.page.update(&mut *harness.visual, |page, cx| {
+            page.fetch_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.names.get("acme-9"))
+                .map(|input| input.read(cx).text().to_string())
+        });
+        assert_eq!(prefilled.as_deref(), Some("acme-9"));
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog");
+            dialog.names["acme-9"].update(cx, |input, cx| {
+                input.set_text("DeepSeek Flash 9", cx)
+            });
+        });
+
         harness.click("save-fetch");
         harness.pump();
 
@@ -1180,11 +1238,22 @@ mod tests {
         assert_eq!(records.len(), 1, "one SaveModelRecord for acme-9");
         assert_eq!(records[0]["providerId"], "acme");
         assert_eq!(records[0]["record"]["id"], "acme-9");
+        assert_eq!(records[0]["record"]["name"], "DeepSeek Flash 9");
         assert_eq!(records[0]["record"]["api"], "openai-completions");
         // The fake listing carries no metadata, so the window prefills to
         // the conservative default and baseUrl stays with the engine.
         assert_eq!(records[0]["record"]["contextWindow"], 200_000);
         assert!(records[0]["record"].get("baseUrl").is_none());
+    }
+
+    /// An emptied name field falls back to the id, matching the manual
+    /// record form's blank-name behavior.
+    #[test]
+    fn a_fetched_record_without_a_name_falls_back_to_the_id() {
+        let record = fetch_record("acme", "openai-completions", "acme-9", "", 200_000, 8192);
+        assert_eq!(record["name"], "acme-9");
+        let named = fetch_record("acme", "openai-completions", "acme-9", "Acme 9", 1, 1);
+        assert_eq!(named["name"], "Acme 9");
     }
 
     /// The key row's Test button: one ProbeProvider call, verdict rendered.

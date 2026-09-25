@@ -1,6 +1,5 @@
-//! The Add Provider dialog: the manual definition form, the top action
-//! row ("Add with AI" hands off to Provider Mode, ADR-0037), and
-//! client-side shape checks.
+//! The Add Provider dialog: the manual definition form, the page's top
+//! action row, and client-side shape checks.
 
 use super::*;
 
@@ -13,9 +12,9 @@ pub(super) const NEW_PROVIDER_FIELDS: [(&str, &str); 5] = [
     ("apiKey", "API key (optional)"),
 ];
 
-/// The page's top action row: "Add with AI" (a new Provider Mode chat) and
-/// the manual Add Provider next to the global reset ghost button, all pushed
-/// right by a spacer; the reset opens the confirm dialog.
+/// The page's top action row: the manual Add Provider button next to the
+/// global reset ghost button, all pushed right by a spacer; the reset opens
+/// the confirm dialog.
 pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
@@ -26,28 +25,6 @@ pub(super) fn top_action_row(theme: &Theme, cx: &mut Context<ProvidersPage>) -> 
         .gap(px(8.0))
         .pb(px(6.0))
         .child(div().flex_1())
-        .child({
-            let hover_theme = theme.clone();
-            action_button(theme)
-                .id("add-provider-with-ai")
-                .debug_selector(|| "add-provider-with-ai".into())
-                .hover(move |style| widgets::ghost_hover(&hover_theme, style))
-                .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ProvidersPageEvent::StartProviderChat);
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            crate::icons::icon(crate::icons::CLOUD)
-                                .size(px(13.0))
-                                .text_color(theme.text_muted),
-                        )
-                        .child("Add with AI"),
-                )
-        })
         .child(
             action_button(theme)
                 .id("open-add-provider")
@@ -377,33 +354,6 @@ mod tests {
         assert!(
             new_provider_problem("acme", "https://x.example/v1", "openai-completions").is_none()
         );
-    }
-
-    /// "Add with AI" is a hand-off, not a surface: the page only asks the
-    /// shell for a Provider Mode chat (ADR-0037).
-    #[gpui::test]
-    fn add_with_ai_asks_the_shell_for_a_provider_chat(cx: &mut gpui::TestAppContext) {
-        let mut harness = providers_harness(cx);
-        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let sink = events.clone();
-        let _subscription = harness.visual.update(|_, cx| {
-            cx.subscribe(&harness.page, move |_, event: &ProvidersPageEvent, _| {
-                sink.borrow_mut().push(event.clone());
-            })
-        });
-        harness.click("add-provider-with-ai");
-        assert!(
-            matches!(
-                events.borrow().as_slice(),
-                [ProvidersPageEvent::StartProviderChat]
-            ),
-            "one StartProviderChat: {:?}",
-            events.borrow()
-        );
-        let open = harness
-            .page
-            .update(&mut *harness.visual, |page, _| page.add_dialog);
-        assert!(!open, "no dialog opens");
     }
 
     /// Fills the manual form and saves. Returns the fake's recorded calls.

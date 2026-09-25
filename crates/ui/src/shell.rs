@@ -1717,18 +1717,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Settings' "Add with AI": leave Settings for the new-chat canvas with
-    /// Provider Mode drafted, so the first send opens a Provider Mode chat.
-    fn start_provider_chat(&mut self, cx: &mut Context<Self>) {
-        if let Some(page) = self.providers_page.as_ref() {
-            page.update(cx, |page, cx| page.clear_revealed(cx));
-        }
-        self.open_new_session(cx);
-        self.nav.push(NavEntry::Chat(String::new()));
-        self.composer
-            .update(cx, |composer, cx| composer.provider_command(true, cx));
-    }
-
     // ---- back/forward (route history) ----
 
     fn navigate_back(&mut self, cx: &mut Context<Self>) {
@@ -1781,16 +1769,12 @@ impl Shell {
         let state = self.state.clone();
         let page = cx.new(|cx| ProvidersPage::new(state, cx));
         // Action failures surface as the shell's window-top error
-        // alert, not inside the page; "Add with AI" lands on the
-        // new-chat canvas with Provider Mode drafted (ADR-0037).
+        // alert, not inside the page.
         self.providers_sub = Some(cx.subscribe(
             &page,
             |this: &mut Shell, _, event: &ProvidersPageEvent, cx| match event {
                 ProvidersPageEvent::Error(message) => {
                     this.show_provider_error(message.clone(), cx);
-                }
-                ProvidersPageEvent::StartProviderChat => {
-                    this.start_provider_chat(cx);
                 }
             },
         ));

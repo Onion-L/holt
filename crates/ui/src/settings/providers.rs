@@ -4,7 +4,7 @@
 //! (ADR-0028's catalog layers).
 //! `record_form` — the manual model-record dialog (ADR-0029).
 //! `add_dialog` — the Add Provider dialog and the manual definition
-//! form; "Add with AI" hands off to a Provider Mode chat (ADR-0037).
+//! form.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -39,13 +39,11 @@ use record_form::*;
 #[cfg(test)]
 mod test_support;
 
-/// Surfaced to the shell, which renders it as a window-top modal — action
-/// failures (save/remove key, RPC errors) never paint inside the page.
+/// Action failures surface to the shell, which renders them as a
+/// window-top modal.
 #[derive(Debug, Clone)]
 pub enum ProvidersPageEvent {
     Error(SharedString),
-    /// "Add with AI": open a new chat in Provider Mode (ADR-0037).
-    StartProviderChat,
 }
 
 /// One ProbeProvider reply, as the settings page consumes it. `status`
@@ -73,14 +71,18 @@ pub(super) enum ProbeState {
 }
 
 /// The fetch-from-vendor dialog: a ProbeProvider listing minus the ids the
-/// provider already offers, checkboxes over what to add, and the two
-/// numbers a servable record needs (the vendor listing carries none).
+/// provider already offers, checkboxes over what to add, a per-row
+/// display-name field, and the two numbers a servable record needs (the
+/// vendor listing carries none).
 pub(super) struct FetchDialog {
     provider: String,
     dialect: String,
     ids: Vec<String>,
     checked: HashSet<String>,
     inputs: HashMap<String, Entity<ComposerInput>>,
+    /// Per-id display-name inputs, prefilled with the id; empty falls back
+    /// to the id, like the manual record form.
+    names: HashMap<String, Entity<ComposerInput>>,
     saving: bool,
     error: Option<String>,
 }
@@ -312,7 +314,7 @@ impl Render for ProvidersPage {
                                                 .on_click(cx.listener(move |page, _, _, cx| {
                                                     page.open_fetch(fetch_id.clone(), cx)
                                                 }))
-                                                .child("Fetch from vendor"),
+                                                .child("Fetch models"),
                                         )
                                         .child(
                                             widgets::ghost_action(&theme)
