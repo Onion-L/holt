@@ -294,6 +294,10 @@ pub struct AppState {
     /// the engine LRU — closing a tab MUST go through
     /// [`Self::unwatch_subagent_doc`].
     sub_watch_tasks: HashMap<String, Task<()>>,
+    /// Live provider-retry notices of watched subagent docs, keyed like
+    /// `sub_transcripts` and dropped the same way `turn_retry` is: when
+    /// that doc's frames resume.
+    sub_retries: HashMap<String, TurnRetryNotice>,
 }
 
 impl Default for AppState {
@@ -339,6 +343,7 @@ impl AppState {
             change_requests_visible: true,
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
+            sub_retries: HashMap::new(),
             auto_selected: false,
             chats_synced: false,
             spaces_synced: false,
@@ -461,10 +466,13 @@ impl AppState {
     /// One scheduled provider retry arrived for a chat's live Turn. Stored
     /// only when it belongs to the selected chat — a notice for a background
     /// chat must not flash its chip after the user switches to it late;
-    /// apply_transcript_frame drops the notice when frames resume.
+    /// apply_transcript_frame drops the notice when frames resume. A
+    /// watched subagent doc keeps its own notice for its tab.
     pub fn apply_turn_retry(&mut self, notice: TurnRetryNotice) {
         if Some(&notice.chat_id) == self.selected_chat.as_ref() {
             self.turn_retry = Some(notice);
+        } else if self.sub_transcripts.contains_key(&notice.chat_id) {
+            self.sub_retries.insert(notice.chat_id.clone(), notice);
         }
     }
 
@@ -642,6 +650,11 @@ impl AppState {
             .unwrap_or(&[])
     }
 
+    /// A subagent doc's live provider-retry notice, if it is backing off.
+    pub fn sub_retry(&self, doc_id: &str) -> Option<&TurnRetryNotice> {
+        self.sub_retries.get(doc_id)
+    }
+
     /// Watch a SUBAGENT doc (`WatchDocMessages` works for any doc id).
     /// Single-flight per key; a frozen snapshot already in place wins — the
     /// watch would race the (complete) blob with a possibly-purged live doc.
@@ -662,12 +675,14 @@ impl AppState {
     pub fn unwatch_subagent_doc(&mut self, doc_id: &str) {
         self.sub_watch_tasks.remove(doc_id);
         self.sub_transcripts.remove(doc_id);
+        self.sub_retries.remove(doc_id);
     }
 
     /// Frozen-blob path: the finished subagent's uploaded transcript, no
     /// watch needed (and any in-flight watch is superseded).
     pub fn set_subagent_snapshot(&mut self, doc_id: String, entries: Vec<SessionMessageEntry>) {
         self.sub_watch_tasks.remove(&doc_id);
+        self.sub_retries.remove(&doc_id);
         self.sub_transcripts.insert(doc_id, entries);
     }
 
@@ -1815,6 +1830,7 @@ fn spawn_subagent_watch(
                             tracing::warn!(%doc_id, error = %err, "resubscribing subagent watch");
                             desync = true;
                         }
+                        state.sub_retries.remove(&doc_id);
                         cx.notify();
                     }
                 });
@@ -2770,5 +2786,35 @@ mod tests {
         assert!(!s.send_queued("c-remote", now));
         // …but the explicit undelivered flag still tells the truth.
         assert!(s.send_undelivered("c-remote", now));
+    }
+
+    fn retry_notice(chat_id: &str) -> TurnRetryNotice {
+        TurnRetryNotice {
+            chat_id: chat_id.into(),
+            attempt: 1,
+            max_retries: 10,
+            delay_ms: 500,
+            retry_at_ms: 0,
+            error: "429 overloaded".into(),
+        }
+    }
+
+    #[test]
+    fn a_watched_subagent_keeps_its_own_retry_notice_until_it_is_unwatched() {
+        let mut s = AppState {
+            selected_chat: Some("c-1".into()),
+            ..AppState::default()
+        };
+        s.sub_transcripts.insert("c-1-sub".into(), Vec::new());
+
+        s.apply_turn_retry(retry_notice("c-1-sub"));
+        // Neither the selected chat's chip nor an unwatched doc picks it up.
+        s.apply_turn_retry(retry_notice("c-other"));
+        assert!(s.turn_retry.is_none());
+        assert_eq!(s.sub_retry("c-1-sub"), Some(&retry_notice("c-1-sub")));
+        assert!(s.sub_retry("c-other").is_none());
+
+        s.unwatch_subagent_doc("c-1-sub");
+        assert!(s.sub_retry("c-1-sub").is_none());
     }
 }

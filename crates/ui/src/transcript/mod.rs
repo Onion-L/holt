@@ -1542,8 +1542,7 @@ impl Transcript {
                     Vec::new(),
                     TranscriptReplayState::Populated,
                     HashMap::new(),
-                    // Subagent docs are read-only snapshots: no retry chip.
-                    None,
+                    s.sub_retry(doc_id).cloned(),
                 ),
                 None => {
                     let replay = if !s.transcript_replayed {
