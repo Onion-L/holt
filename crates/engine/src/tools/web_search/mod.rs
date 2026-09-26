@@ -32,8 +32,8 @@ pub(crate) struct Backend {
     pub(crate) id: &'static str,
     /// The display name.
     pub(crate) name: &'static str,
-    /// Settings-group copy flagging an access requirement (Brave needs
-    /// international access); `None` for backends with nothing to flag.
+    /// Settings-group copy flagging an access requirement; `None` for
+    /// backends with nothing to flag.
     pub(crate) note: Option<&'static str>,
 }
 
@@ -54,7 +54,7 @@ pub(crate) const BACKENDS: [Backend; 3] = [
     Backend {
         id: "brave",
         name: "Brave",
-        note: Some("Needs international access"),
+        note: None,
     },
 ];
 

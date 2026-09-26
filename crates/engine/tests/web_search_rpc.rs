@@ -76,7 +76,7 @@ async fn the_state_lists_the_picker_options() {
         json!([
             { "id": "zhipu", "name": "Zhipu" },
             { "id": "bocha", "name": "Bocha" },
-            { "id": "brave", "name": "Brave", "note": "Needs international access" },
+            { "id": "brave", "name": "Brave" },
         ])
     );
 }

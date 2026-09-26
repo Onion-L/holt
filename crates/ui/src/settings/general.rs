@@ -1875,7 +1875,7 @@ mod tests {
         vec![
             backend_option("zhipu", "Zhipu", None),
             backend_option("bocha", "Bocha", None),
-            backend_option("brave", "Brave", Some("Needs international access")),
+            backend_option("brave", "Brave", None),
         ]
     }
 
@@ -1916,7 +1916,7 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert!(rows[1].selected);
         assert_eq!(rows[1].note, None);
-        assert_eq!(rows[2].note.as_deref(), Some("Needs international access"));
+        assert_eq!(rows[2].note.as_deref(), None);
         // Unconfigured: no vendor starts selected.
         assert!(
             backend_rows(&launch_backends(), None)
