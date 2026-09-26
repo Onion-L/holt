@@ -846,6 +846,40 @@ impl Shell {
                         // surface's header controls row.
                         let mode_controls =
                             viewer.update(cx, |viewer, cx| viewer.render_header_controls(cx));
+                        // The collapsed tree column's way back (spec decision
+                        // 2, independent collapse): the column's own hide
+                        // control leaves with it, so the editor header hosts
+                        // the same tree icon while it is hidden.
+                        let tree_reveal = (!self.file_tree_visible).then(|| {
+                            div()
+                                .id("reveal-file-tree")
+                                .flex_none()
+                                .size(px(20.0))
+                                .rounded(px(5.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|style| style.bg(crate::theme::ink(0.09)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| {
+                                        crate::image_viewer::ViewerTooltip(
+                                            "Show file sidebar".into(),
+                                        )
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.set_file_tree_visible(true, cx);
+                                    this.focus_file_tree(window, cx);
+                                }))
+                                .child(
+                                    icon(crate::icons::TREE_SIDEBAR)
+                                        .size(px(12.0))
+                                        .text_color(theme.text_muted.opacity(0.8)),
+                                )
+                        });
                         // The file surface's own 36px header row: the entry name
                         // with its full path as the muted companion (diff-surface
                         // convention). The body renders the read-only viewer.
@@ -890,7 +924,8 @@ impl Shell {
                                                     .text_color(theme.text_muted.opacity(0.7))
                                                     .child(path),
                                             )
-                                            .children(mode_controls),
+                                            .children(mode_controls)
+                                            .children(tree_reveal),
                                     )
                                     .child(div().flex_1().min_h_0().child(viewer)),
                             )

@@ -1226,9 +1226,7 @@ mod tests {
         assert_eq!(prefilled.as_deref(), Some("acme-9"));
         harness.page.update(&mut *harness.visual, |page, cx| {
             let dialog = page.fetch_dialog.as_ref().expect("the fetch dialog");
-            dialog.names["acme-9"].update(cx, |input, cx| {
-                input.set_text("DeepSeek Flash 9", cx)
-            });
+            dialog.names["acme-9"].update(cx, |input, cx| input.set_text("DeepSeek Flash 9", cx));
         });
 
         harness.click("save-fetch");

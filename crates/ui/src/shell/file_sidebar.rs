@@ -639,6 +639,18 @@ impl Shell {
         })
     }
 
+    /// The tree search row's hide control: beside an open tab the tree is its
+    /// own column and hides alone (spec decision 2, independent collapse —
+    /// reopening is the picker's File row / the ⌘P palette). Filling the pane
+    /// (the pick-a-file empty state) it closes the whole pane instead.
+    pub(super) fn hide_file_tree_control(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.resolved_right_active(cx), RightSurface::Files) {
+            self.toggle_right_pane(cx);
+        } else {
+            self.set_file_tree_visible(false, cx);
+        }
+    }
+
     /// The width flip + tween behind the tree column's visibility. Focus (and
     /// therefore `Window`) is the caller's concern.
     pub(super) fn set_file_tree_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -758,9 +770,9 @@ impl Shell {
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(crate::settings::badge_combo("mod-p")),
             )
-            // The column's own hide control (ticket 11): the top-right
-            // file-tree button is gone, so the panel carries its collapse —
-            // reopening is the surface picker's File row.
+            // The column's own hide control (ticket 11): beside an open tab
+            // it collapses the tree column alone; filling the pane it closes
+            // the pane. Reopening is the surface picker's File row.
             .child(
                 div()
                     .id("hide-file-tree")
@@ -778,7 +790,7 @@ impl Shell {
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_right_pane(cx);
+                        this.hide_file_tree_control(cx);
                     }))
                     .child(
                         icon(crate::icons::TREE_SIDEBAR)
@@ -2227,6 +2239,60 @@ mod surface_tests {
                 // leaves the column exactly as it was.
                 shell.add_terminal_surface(cx);
                 assert!(shell.file_tree_visible);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn tree_hide_control_collapses_the_column_beside_an_open_tab(cx: &mut gpui::TestAppContext) {
+        // `open_file` persists navigation: give the debounced settings store
+        // a real home for this test app.
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| {
+            let mut state = crate::state::AppState::new();
+            state.selected_space = Some("space-1".into());
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.route = Route::Chat;
+            shell
+        });
+
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                // Beside an open tab the tree is its own column: the hide
+                // control collapses the COLUMN alone — the pane and the tab
+                // stay (spec decision 2, independent collapse).
+                shell.open_file("/tmp/space-1/notes.md".into(), None, true, cx);
+                assert!(shell.right_pane_open(cx));
+                assert!(shell.file_tree_visible);
+                shell.hide_file_tree_control(cx);
+                assert!(!shell.file_tree_visible);
+                assert!(shell.right_pane_open(cx));
+                assert!(matches!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::File(_)
+                ));
+
+                // Filling the pane (the pick-a-file empty state) the same
+                // control closes the pane: close the tab — the pick heals to
+                // the surface picker — then choose File again and hide.
+                shell.close_file_tab("space-1", 1, cx);
+                shell.add_file_surface(cx);
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Files);
+                shell.hide_file_tree_control(cx);
+                assert!(!shell.right_pane_open(cx));
             });
         });
     }
