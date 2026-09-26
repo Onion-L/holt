@@ -2756,10 +2756,11 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
 
 /// The transcript retry chip (WatchTurnRetry): the streaming entry's
 /// provider request hit a transient failure and is backing off. Same shape
-/// as the ErrorChip but in the warning wash — it reports a recoverable
-/// pause, not a verdict — with a small spinner standing in for the retry
-/// clock. The chip only exists while the stream is quiet: transcript frames
-/// resume it away.
+/// as the ErrorChip but in the busy wash — it reports a recoverable pause
+/// in the working stream, not a verdict, so it rides the accent family
+/// like the streaming indicator it interrupts — with a small spinner
+/// standing in for the retry clock. The chip only exists while the stream
+/// is quiet: transcript frames resume it away.
 fn retry_chip(
     attempt: u32,
     max_retries: u32,
@@ -2767,8 +2768,7 @@ fn retry_chip(
     error: SharedString,
     theme: &Theme,
 ) -> AnyElement {
-    let warning_muted = theme.warning_muted;
-    let warning = theme.warning;
+    let busy = theme.busy;
     div()
         .py(px(4.0))
         .w_full()
@@ -2782,8 +2782,8 @@ fn retry_chip(
                 .overflow_hidden()
                 .rounded(px(10.0))
                 .border_1()
-                .border_color(warning.opacity(0.16))
-                .bg(warning.opacity(0.05))
+                .border_color(busy.opacity(0.16))
+                .bg(busy.opacity(0.05))
                 .px(px(8.0))
                 .py(px(7.0))
                 .text_size(px(12.0))
@@ -2792,21 +2792,21 @@ fn retry_chip(
                         .flex_none()
                         .size(px(20.0))
                         .rounded(px(6.0))
-                        .bg(warning.opacity(0.12))
+                        .bg(busy.opacity(0.12))
                         .flex()
                         .items_center()
                         .justify_center()
                         .child(
                             crate::icons::icon(crate::icons::REFRESH)
                                 .size(px(12.0))
-                                .text_color(warning_muted.opacity(0.8)),
+                                .text_color(busy.opacity(0.8)),
                         ),
                 )
                 .child(
                     div()
                         .flex_none()
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(warning_muted.opacity(0.9))
+                        .text_color(busy.opacity(0.9))
                         .child(SharedString::from(format!(
                             "Retrying · attempt {attempt}/{max_retries}"
                         ))),
