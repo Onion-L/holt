@@ -1,0 +1,185 @@
+<!doctype html>
+<!--
+  Holt landing page — a two-colour risograph poster with tear-off download tabs.
+  Static, no build step. Preview: open site/index.html
+  Download links and version resolve from the latest GitHub release at load;
+  the static hrefs fall back to the releases page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Holt — Your agent, in plain sight.</title>
+<meta name="description" content="Holt is a native desktop coding agent for macOS. Every step visible, every line yours to review." />
+<meta property="og:title" content="Holt — Your agent, in plain sight." />
+<meta property="og:description" content="A native desktop coding agent for macOS." />
+<!-- Crawlers need an absolute URL here; swap in the real domain once the site is deployed. -->
+<meta property="og:image" content="assets/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="theme-color" content="#1a1917" />
+<link rel="icon" type="image/png" href="assets/favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { --wall: #1a1917; --paper: #f4efe3; --blue: #0078bf; --pink: #ff48b0; }
+  html, body { margin: 0; }
+  body {
+    background: var(--wall); min-height: 100vh; padding: 56px 16px 72px; overflow-x: hidden;
+    font-family: Geist, -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: "Geist Mono", Menlo, monospace; }
+
+  .sheet {
+    container-type: inline-size; position: relative; isolation: isolate;
+    width: min(760px, 100%); margin: 0 auto; padding: 5cqw 5cqw 0; color: var(--blue);
+    background:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .09 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"),
+      var(--paper);
+    box-shadow: 0 2px 0 #0003, 0 40px 90px -20px #000;
+    transform: rotate(-.6deg);
+  }
+  .tape { position: absolute; top: -14px; width: 120px; height: 30px; background: #ffffff55; box-shadow: 0 1px 2px #0002; z-index: 2; }
+  .tape.l { left: 8%; transform: rotate(-6deg); }
+  .tape.r { right: 8%; transform: rotate(5deg); }
+  .meta { display: flex; justify-content: space-between; font-size: max(10px, 1.6cqw); letter-spacing: .08em; text-transform: uppercase; }
+
+  .art { position: relative; margin-top: 3cqw; height: 74cqw; }
+  .art img { position: absolute; left: 50%; top: 0; width: 76cqw; transform: translateX(-50%); mix-blend-mode: multiply; }
+  .art .m-blue { filter: url(#riso-blue); }
+  .art .m-pink {
+    filter: url(#riso-pink); transform: translate(calc(-50% + 1.6cqw), 1.1cqw);
+    -webkit-mask: radial-gradient(circle, #000 1.1px, transparent 1.5px) 0 0 / 4px 4px;
+            mask: radial-gradient(circle, #000 1.1px, transparent 1.5px) 0 0 / 4px 4px;
+  }
+  .big {
+    position: absolute; left: 0; right: 0; bottom: -2cqw; margin: 0; text-align: center;
+    font: 400 44cqw/.8 Anton, Impact, sans-serif; letter-spacing: -0.01em; color: var(--pink); mix-blend-mode: multiply;
+  }
+
+  .row { display: flex; align-items: flex-end; justify-content: space-between; gap: 4cqw; padding: 5cqw 0 4cqw; }
+  .slogan { margin: 0; font-size: 6.2cqw; font-weight: 700; line-height: .95; letter-spacing: -0.045em; }
+  .slogan span { color: var(--pink); mix-blend-mode: multiply; }
+  .gh {
+    flex: none; display: inline-flex; align-items: center; padding: 1.5cqw 2.3cqw; border: 2px solid var(--blue);
+    font: 500 max(11px, 1.8cqw) "Geist Mono", monospace; transition: background .15s, color .15s;
+  }
+  .gh svg { width: 1.2em; height: 1.2em; margin-right: .6em; }
+  .gh:hover, .gh:focus-visible { background: var(--blue); color: var(--paper); outline: none; }
+  .note {
+    text-align: right; margin: -1cqw 2cqw 1.6cqw 0; transform: rotate(-3deg); transform-origin: right;
+    font: italic 400 max(18px, 4.2cqw)/1 "Instrument Serif", serif; color: var(--pink); mix-blend-mode: multiply;
+  }
+  .note::after { content: " ↘"; font-style: normal; font-size: .8em; }
+  .note.off::after { content: none; }
+
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 0 -5cqw; }
+  .grp + .grp { border-left: 2px solid var(--blue); }
+  .gl { padding: 0 2.4cqw 1.2cqw; font: 500 max(10px, 1.6cqw) "Geist Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
+  .strip { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 2px dashed var(--blue); }
+  .grp:first-child .strip::before { content: "✂"; position: absolute; left: 1.2cqw; top: -.62em; font-size: max(14px, 2.4cqw); background: var(--paper); line-height: 1; padding: 0 .2em; }
+  .tab {
+    position: relative; min-height: 34cqw; display: flex; flex-direction: column; align-items: center; gap: 1.4cqw; padding: 2.2cqw 0 3cqw;
+    border-left: 2px dashed var(--blue); transform-origin: 50% 0; transition: transform .2s ease-out, opacity .2s;
+  }
+  .tab:first-child { border-left: 0; }
+  .tab b { font: 400 max(14px, 3cqw)/1 Anton, Impact, sans-serif; color: var(--pink); mix-blend-mode: multiply; }
+  .tab span { writing-mode: vertical-rl; font: 500 max(9px, 1.7cqw) "Geist Mono", monospace; letter-spacing: .04em; white-space: nowrap; }
+  @media (hover: hover) { .tab:hover { transform: rotate(3deg); } }
+  .tab:focus-visible { outline: 2px solid var(--pink); outline-offset: -4px; }
+  .tab.torn { transform: translateY(70%) rotate(14deg); opacity: 0; transition: transform .6s cubic-bezier(.5,0,.8,.5), opacity .6s ease-in; pointer-events: none; }
+
+  .foot { text-align: center; margin-top: 44px; font-size: 12px; color: #8a867c; letter-spacing: .04em; }
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 10px); opacity: 0; transition: .2s ease-out;
+    background: var(--paper); color: var(--blue); font: 500 12px "Geist Mono", monospace; padding: 8px 12px; border: 2px solid var(--blue);
+  }
+  .toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0s !important; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Ink → spot colour: near-white drops out (hides the icon edge), black becomes the ink. -->
+  <filter id="riso-blue" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 .47  0 0 0 0 .75  -.37 -.37 -.37 1.1 -.04" /></filter>
+  <filter id="riso-pink" color-interpolation-filters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 .28  0 0 0 0 .69  -.37 -.37 -.37 1.1 -.04" /></filter>
+</svg>
+
+<main class="sheet">
+  <i class="tape l"></i><i class="tape r"></i>
+  <div class="meta mono"><span>Holt</span><span>Native coding agent</span><span>Vol. <span data-version>0.1.5</span></span></div>
+  <div class="art">
+    <img class="m-pink" src="assets/art.jpg" alt="" />
+    <img class="m-blue" src="assets/art.jpg" alt="Holt mascot" />
+    <h1 class="big">HOLT</h1>
+  </div>
+  <div class="row">
+    <p class="slogan">Your agent,<br /><span>in plain sight.</span></p>
+    <a class="gh" href="https://github.com/Onion-L/holt"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Star on GitHub ↗</a>
+  </div>
+  <div class="note">tear one off</div>
+  <div class="tabs" id="tabs">
+    <div class="grp">
+      <div class="gl">Apple Silicon</div>
+      <div class="strip" data-arch="arm64">
+        <a class="tab" aria-label="Download Holt for Apple Silicon Macs" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-arm64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-arm64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-arm64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-arm64.dmg</span></a>
+      </div>
+    </div>
+    <div class="grp">
+      <div class="gl">Intel</div>
+      <div class="strip" data-arch="x64">
+        <a class="tab" aria-label="Download Holt for Intel Macs" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-x64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-x64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-x64.dmg</span></a>
+        <a class="tab" tabindex="-1" aria-hidden="true" href="https://github.com/Onion-L/holt/releases/latest"><b>↓</b><span>holt-x64.dmg</span></a>
+      </div>
+    </div>
+  </div>
+</main>
+<div class="foot mono">v<span data-version>0.1.5</span> · signed &amp; notarized · GPL-3.0</div>
+<div class="toast" id="toast" role="status">downloading…</div>
+
+<script>
+  // Point the tabs at the latest release's DMGs (Holt-<version>-<arch>.dmg).
+  fetch('https://api.github.com/repos/Onion-L/holt/releases/latest')
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(rel => {
+      document.querySelectorAll('[data-version]').forEach(el => el.textContent = rel.tag_name.replace(/^v/, ''));
+      document.querySelectorAll('.strip[data-arch]').forEach(strip => {
+        const dmg = rel.assets.find(a => a.name.endsWith(`-${strip.dataset.arch}.dmg`));
+        if (dmg) strip.querySelectorAll('.tab').forEach(t => t.href = dmg.browser_download_url);
+      });
+    })
+    .catch(() => {});
+
+  // The DMGs are macOS-only; say so instead of inviting a pointless download.
+  if (!/Mac/.test(navigator.platform) || navigator.maxTouchPoints > 1) {
+    const note = document.querySelector('.note');
+    note.textContent = 'macOS only';
+    note.classList.add('off');
+  }
+
+  const toast = document.getElementById('toast');
+  document.querySelectorAll('#tabs .tab').forEach(tab => tab.addEventListener('click', () => {
+    const file = tab.href.endsWith('.dmg') && tab.href.split('/').pop();
+    toast.textContent = file ? `downloading ${file}…` : 'opening releases…';
+    tab.classList.add('torn');
+    toast.classList.add('on');
+    setTimeout(() => toast.classList.remove('on'), 1600);
+    setTimeout(() => tab.classList.remove('torn'), 2600);
+  }));
+</script>
+</body>
+</html>
