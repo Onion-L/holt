@@ -3,5 +3,12 @@
   "compatibility_date": "2025-01-01",
   "assets": {
     "directory": "./site"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "persist": true
+    }
   }
 }
