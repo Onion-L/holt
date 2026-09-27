@@ -43,7 +43,7 @@ use crate::{
     popover::{self, Loadable},
     state::AppState,
     theme::Theme,
-    token_display::compact_tokens,
+    token_display::{compact_tokens, compact_tokens_precise},
 };
 
 use super::widgets;
@@ -379,8 +379,9 @@ fn toggle_hidden(hidden: &mut BTreeSet<String>, summary: &Summary, id: &str) {
 // The metric tiles
 // ---------------------------------------------------------------------------
 
-/// One tile's printed state: the compact value on the tile, the exact
-/// counts its hover tooltip shows.
+/// One tile's printed state: the compact value on the tile, a finer
+/// compact echo on hover. Raw digits never print — the tooltip must not
+/// grow with the counts it spells.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MetricTile {
     label: &'static str,
@@ -388,16 +389,16 @@ struct MetricTile {
     detail: String,
 }
 
-/// The six range metrics. Token tiles print [`compact_tokens`] and spell
-/// the exact count on hover; Cache hit prints the engine's own rate — the
-/// one computed with cache writes out of the denominator — and Active
-/// days names its range.
+/// The six range metrics. Token tiles print [`compact_tokens`], echoed one
+/// decimal finer on hover; Cache hit prints the engine's own rate — the
+/// one computed with cache writes out of the denominator — and names the
+/// compact fraction on hover; Active days names its range.
 fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
     let totals = &reply.totals;
     let token_tile = |label: &'static str, tokens: u64| MetricTile {
         label,
         value: compact_tokens(tokens),
-        detail: format!("{tokens} tokens"),
+        detail: format!("{} tokens", compact_tokens_precise(tokens)),
     };
     let mut tiles = vec![
         token_tile("Input", totals.input),
@@ -410,8 +411,8 @@ fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
         value: totals.cache_hit.map_or_else(|| "—".to_string(), percent),
         detail: format!(
             "{} of {} prompt tokens served from cache",
-            totals.cache_read,
-            totals.input + totals.cache_read
+            compact_tokens_precise(totals.cache_read),
+            compact_tokens_precise(totals.input + totals.cache_read)
         ),
     });
     tiles.push(MetricTile {
@@ -1534,8 +1535,8 @@ impl UsagePage {
             )
     }
 
-    /// One metric tile: the muted label over the compact value, the
-    /// exact counts on hover. `divided` draws the hairline separating
+    /// One metric tile: the muted label over the compact value, a finer
+    /// compact count on hover. `divided` draws the hairline separating
     /// the cell from the one on its left.
     fn metric_cell(
         &self,
@@ -2794,7 +2795,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_tiles_print_compact_and_hover_exact() {
+    fn metric_tiles_print_compact_and_hover_finer() {
         let tiles = metric_tiles(&decode_reply(summary_reply_json()));
         let by_label = |name: &str| {
             tiles
@@ -2808,8 +2809,8 @@ mod tests {
         assert_eq!(by_label("Cache read").value, "40");
         assert_eq!(by_label("Cache write").value, "10");
         // The hit tile prints the engine's own rate as a percentage — the
-        // one with cache writes out of the denominator — and spells the
-        // exact fraction on hover.
+        // one with cache writes out of the denominator — and echoes the
+        // fraction on hover, compact like everything else.
         assert_eq!(by_label("Cache hit").value, "7.4%");
         assert_eq!(
             by_label("Cache hit").detail,
@@ -2819,6 +2820,27 @@ mod tests {
         assert_eq!(
             by_label("Active days").detail,
             "3 of 30 days in range had usage"
+        );
+
+        // Billion-scale counts stay compact on hover too — one decimal
+        // finer than the tile, never raw digits, so the tooltip's width
+        // is bounded no matter how the range grows.
+        let mut huge = decode_reply(summary_reply_json());
+        huge.totals.input = 47_707_741;
+        huge.totals.cache_read = 1_519_624_030;
+        let tiles = metric_tiles(&huge);
+        let by_label = |name: &str| {
+            tiles
+                .iter()
+                .find(|tile| tile.label == name)
+                .unwrap_or_else(|| panic!("no {name} tile"))
+        };
+        assert_eq!(by_label("Input").value, "47.7M");
+        assert_eq!(by_label("Input").detail, "47.71M tokens");
+        assert_eq!(by_label("Cache read").value, "1.5B");
+        assert_eq!(
+            by_label("Cache hit").detail,
+            "1.52B of 1.57B prompt tokens served from cache"
         );
 
         // A range with no prompt tokens has no rate to print.
