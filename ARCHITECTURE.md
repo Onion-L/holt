@@ -426,7 +426,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Open, and nothing in the surface writes: no accept, undo, discard, stage,
   or commit.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
-  worktrees (`CreateWorktree` / `DeleteWorktree`), change requests
+  worktree lifecycle RPCs (`CreateWorktree` / `DeleteWorktree` — the
+  run-carried `WorktreeSpec` IS served: a chat's persisted isolation intent
+  materializes a dedicated worktree Space at admission, ADR-0038), change
+  requests
   (`WatchCheckoutChangeRequest` — a stream that never emits), uploads
   (`UploadChunk` / `UploadCommit` / `ReadAttachmentChunk`), and the
   sync/account surface (`SignIn`, `SignInHeadless`, `SignOut`, `ListOrgs`,
@@ -687,8 +690,8 @@ keeps images in its retained tail and summarizes older content as text.
 
 PNG, JPEG, static WebP, and the first frame of GIF/animated WebP are supported.
 APNG and other formats are not visual-read formats. Decoding applies image
-orientation, caps input at 25 MiB and decoded pixels at 32 * 1024 * 1024,
-and sets a 256 MiB codec allocation ceiling. The UI preserves source detail
+orientation, caps input at 25 MiB and decoded pixels at 64 * 1024 * 1024,
+and sets a 512 MiB codec allocation ceiling. The UI preserves source detail
 within these limits. Model input becomes PNG with a maximum edge of 2048
 pixels and maximum size of 5 MiB, proportionally reduced as necessary;
 tool text records original/output dimensions and first-frame conversion.

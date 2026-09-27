@@ -912,6 +912,14 @@ impl RegistryDoc {
             ),
             ("config", config),
             (
+                "worktree",
+                chat.worktree
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or(Value::Null),
+            ),
+            (
                 "lastMessagePreview",
                 opt_str(chat.last_message_preview.as_deref()),
             ),
@@ -1275,6 +1283,14 @@ impl RegistryDoc {
                     ("branch", opt_str(chat.branch.as_deref())),
                     ("checkoutId", opt_str(chat.checkout_id.as_deref())),
                     ("config", config),
+                    (
+                        "worktree",
+                        chat.worktree
+                            .as_ref()
+                            .map(serde_json::to_value)
+                            .transpose()?
+                            .unwrap_or(Value::Null),
+                    ),
                     (
                         "lastMessagePreview",
                         opt_str(chat.last_message_preview.as_deref()),

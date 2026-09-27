@@ -4,7 +4,7 @@ use std::path::Path;
 
 use image::{DynamicImage, ImageDecoder, ImageFormat};
 
-pub const MAX_PIXELS: u64 = 32 * 1024 * 1024;
+pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 pub const MODEL_MAX_EDGE: u32 = 2048;
 pub const MODEL_MAX_BYTES: usize = 5 * 1024 * 1024;
 
@@ -79,14 +79,14 @@ pub fn decode(bytes: &[u8]) -> Result<(DynamicImage, bool), String> {
     }
     let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(256 * 1024 * 1024);
+    limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
     let mut decoder = reader
         .into_decoder()
         .map_err(|e| format!("Image could not be opened: {e}"))?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err("Image exceeds the 32 megapixel decode limit.".into());
+        return Err("Image exceeds the 64 megapixel decode limit.".into());
     }
     let orientation = decoder
         .orientation()
@@ -223,10 +223,10 @@ mod tests {
 
         let mut oversized = Vec::new();
         {
-            let encoder = png::Encoder::new(&mut oversized, 8192, 4097);
+            let encoder = png::Encoder::new(&mut oversized, 8192, 8193);
             let mut writer = encoder.write_header().unwrap();
             writer.write_chunk(png::chunk::IDAT, &[]).unwrap();
         }
-        assert!(decode(&oversized).unwrap_err().contains("32 megapixel"));
+        assert!(decode(&oversized).unwrap_err().contains("64 megapixel"));
     }
 }

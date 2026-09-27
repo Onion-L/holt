@@ -286,6 +286,12 @@ impl WorkspaceDoc {
             Some(config) => row.insert("config", LoroValue::from(serde_json::to_value(config)?))?,
             None => row.delete("config")?,
         }
+        match &chat.worktree {
+            Some(worktree) => {
+                row.insert("worktree", LoroValue::from(serde_json::to_value(worktree)?))?
+            }
+            None => row.delete("worktree")?,
+        }
         set_opt_str(
             &row,
             "lastMessagePreview",
@@ -708,6 +714,10 @@ pub(crate) struct RawChat {
     plan_mode: Option<holt_proto::ChatPlanState>,
     #[serde(default)]
     provider_mode: bool,
+    // Doc-store chat rows may predate session worktrees (ADR-0038): the
+    // field decodes as absent on older rows.
+    #[serde(default)]
+    worktree: Option<holt_proto::WorktreeSpec>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -754,6 +764,7 @@ impl From<RawChat> for Chat {
             compact_before_next_turn: raw.compact_before_next_turn,
             plan_mode: raw.plan_mode,
             provider_mode: raw.provider_mode,
+            worktree: raw.worktree,
         }
     }
 }
@@ -825,6 +836,7 @@ mod tests {
             }),
             compact_before_next_turn: false,
             plan_mode: None,
+            worktree: None,
             provider_mode: false,
             last_message_preview: None,
             last_message_at: None,

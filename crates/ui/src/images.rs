@@ -33,10 +33,10 @@ pub const THUMB_MAX_EDGE: u32 = 256;
 /// with it).
 const THUMB_CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 /// Viewer decode guard: larger images are rejected before pixel allocation.
-const VIEWER_MAX_PIXELS: u64 = 32 * 1024 * 1024;
+const VIEWER_MAX_PIXELS: u64 = 64 * 1024 * 1024;
 /// Hard decode ceiling fed to the codec as an allocation limit — a hostile
 /// header can claim dimensions that would decompress to gigabytes.
-const DECODE_MAX_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+const DECODE_MAX_ALLOC_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Classify a path as previewable by extension (cheap, sync — the render
 /// path; magic bytes are verified when the bytes load).
@@ -560,7 +560,7 @@ fn decode_to_render(
         .map_err(|error| gpui::SharedString::from(format!("image could not be opened: {error}")))?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > VIEWER_MAX_PIXELS {
-        return Err("Image exceeds the 32 megapixel decode limit.".into());
+        return Err("Image exceeds the 64 megapixel decode limit.".into());
     }
     let orientation = decoder.orientation().map_err(|error| {
         gpui::SharedString::from(format!("image orientation unreadable: {error}"))

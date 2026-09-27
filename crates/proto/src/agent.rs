@@ -520,11 +520,14 @@ pub struct UsageChatBreakdown {
     pub total: u64,
 }
 
-/// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
-/// by the HOST while draining the queued Run — not by the sender over a
-/// blocking CreateWorktree RPC — so the send path stays durable: a lost relay
-/// frame can't wedge the composer on "Sending…" while the session runs anyway
-/// (2026-08-18 user report).
+/// Isolated-worktree directive riding [`RunRequest`] and persisted as a
+/// chat's isolation intent (`Chat.worktree`, ADR-0038). The worktree is
+/// created by the HOST at admission — not by the sender over a blocking
+/// CreateWorktree RPC — so the send path stays durable: a lost relay frame
+/// can't wedge the composer on "Sending…" while the session runs anyway
+/// (2026-08-18 user report). Once absorbed into the chat row, the intent
+/// outlives the request: later sends carry no spec and still resolve to the
+/// worktree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeSpec {

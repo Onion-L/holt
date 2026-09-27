@@ -575,6 +575,116 @@ impl Git {
             .unwrap_or(false)
     }
 
+    /// Materialize (or reuse) a chat's session worktree (ADR-0038): a linked
+    /// worktree of `repo_path` at `<worktrees_root>/<chat_id>` on the
+    /// `holt/<chat_id>` branch. The base ref applies only when the branch must
+    /// be created; an existing, correctly-registered worktree is reused as-is —
+    /// dirty files, extra commits, and a user's branch switch are never
+    /// undone, and the creation branch may be long gone. Registration damage
+    /// is reported, never auto-deleted. Returns the worktree path.
+    pub(crate) async fn materialize_worktree(
+        &self,
+        repo_path: &str,
+        base: &str,
+        chat_id: &str,
+        worktrees_root: &Path,
+    ) -> Result<String, String> {
+        if !crate::store::id_is_path_safe(chat_id) {
+            return Err("chat id is not safe for a worktree path".into());
+        }
+        let wt_path = worktrees_root.join(chat_id);
+        let base = base.to_string();
+        let chat_id = chat_id.to_string();
+        // git_worktree_add does not create intermediate directories.
+        std::fs::create_dir_all(worktrees_root).map_err(|error| {
+            format!(
+                "could not create the worktrees root {}: {error}",
+                worktrees_root.display()
+            )
+        })?;
+        self.with_repo(repo_path, move |repo| {
+            let branch_name = format!("holt/{chat_id}");
+            let common = normalize(repo.commondir());
+            // A directory already at the target path must be this chat's own
+            // registered worktree of THIS repo — anything else is a collision
+            // a human has to resolve (the files stay put either way).
+            if wt_path.exists() {
+                return match Repository::open(&wt_path) {
+                    Ok(wt_repo) if normalize(wt_repo.commondir()) != common => Err(format!(
+                        "session worktree path {} is registered to another repository ({})",
+                        wt_path.display(),
+                        normalize(wt_repo.commondir()).display()
+                    )),
+                    Ok(_) => match repo.find_worktree(&chat_id) {
+                        Ok(wt) if same_path(wt.path(), &wt_path) => {
+                            Ok(wt_path.display().to_string())
+                        }
+                        Ok(wt) => Err(format!(
+                            "session worktree {chat_id} is registered at an unexpected path ({})",
+                            wt.path().display()
+                        )),
+                        Err(_) => Err(format!(
+                            "session worktree path {} is not registered for chat {chat_id}",
+                            wt_path.display()
+                        )),
+                    },
+                    Err(error) => Err(format!(
+                        "session worktree path {} exists but is not a usable work tree ({error})",
+                        wt_path.display()
+                    )),
+                };
+            }
+            // Stale registration with a missing directory (crash, manual rm):
+            // prune the metadata so re-creation starts clean.
+            if let Ok(wt) = repo.find_worktree(&chat_id) {
+                if wt.path().exists() {
+                    return Err(format!(
+                        "session worktree {chat_id} is registered at an unexpected path ({})",
+                        wt.path().display()
+                    ));
+                }
+                wt.prune(None).map_err(git_message)?;
+            }
+            match repo.find_branch(&branch_name, git2::BranchType::Local) {
+                // The branch exists: reuse it — `base` never re-applies.
+                Ok(_) => {}
+                Err(_) => {
+                    let commit = repo
+                        .revparse_single(&base)
+                        .map_err(|error| format!("base ref {base} does not resolve: {error}"))?
+                        .peel_to_commit()
+                        .map_err(|error| format!("base ref {base} is not a commit: {error}"))?;
+                    repo.branch(&branch_name, &commit, false)
+                        .map_err(git_message)?;
+                }
+            }
+            let reference = repo
+                .find_reference(&format!("refs/heads/{branch_name}"))
+                .map_err(git_message)?;
+            let mut opts = git2::WorktreeAddOptions::new();
+            opts.reference(Some(&reference));
+            repo.worktree(&chat_id, &wt_path, Some(&opts))
+                .map_err(git_message)?;
+            // git_worktree_add checks the branch out as part of creation; a
+            // missing checkout would starve every run's tools.
+            let populated = std::fs::read_dir(&wt_path)
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .any(|entry| entry.file_name() != ".git")
+                })
+                .unwrap_or(false);
+            if !populated {
+                return Err(format!(
+                    "session worktree {} was created without a checkout",
+                    wt_path.display()
+                ));
+            }
+            Ok(wt_path.display().to_string())
+        })
+        .await
+    }
+
     /// Run `op` against the repository resolved from `repo_path`: resolve
     /// its common git dir, take the per-checkout lock, then execute on the
     /// blocking pool.
@@ -1189,6 +1299,12 @@ fn status_sides(
 /// the same lock key.
 fn normalize(path: &Path) -> PathBuf {
     path.components().collect()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let normalize_existing =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| normalize(path));
+    normalize_existing(left) == normalize_existing(right)
 }
 
 // ---- checkout identity ----

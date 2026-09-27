@@ -864,7 +864,7 @@ fn bash_tool(context: &AgentToolContext) -> AgentTool {
 fn image_read_tool(context: &AgentToolContext, allow_images: bool) -> AgentTool {
     use base64::Engine as _;
     let mut tool = with_execution_context(create_read_tool(ReadToolOptions::default()), context);
-    tool.description = "Read text files or images at a local path. Text supports offset/limit. Images: static PNG/JPEG and first-frame GIF/WebP, up to 25 MiB and 32 megapixels. Model input is proportionally resized to at most 2048 pixels per edge and 5 MiB PNG; source files are unchanged. Image input requires a visual model. Directories cannot be read — use `ls` to list a directory's entries.".into();
+    tool.description = "Read text files or images at a local path. Text supports offset/limit. Images: static PNG/JPEG and first-frame GIF/WebP, up to 25 MiB and 64 megapixels. Model input is proportionally resized to at most 2048 pixels per edge and 5 MiB PNG; source files are unchanged. Image input requires a visual model. Directories cannot be read — use `ls` to list a directory's entries.".into();
     let context = context.clone();
     tool.execute = Arc::new(move |id, params, signal, update| {
         let context = context.clone();

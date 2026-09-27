@@ -508,6 +508,15 @@ impl Composer {
                                 serde_json::Value::String(branch.clone()),
                             );
                         }
+                        // Best-effort pre-stamp of the isolation intent: the
+                        // engine's durable carrier is the queued Run's
+                        // WorktreeSpec (ADR-0038) — this only makes the footer
+                        // and sidebar correct before the first admission.
+                        if let Some(spec) = &run_worktree
+                            && let Ok(value) = serde_json::to_value(spec)
+                        {
+                            object.insert("worktree".into(), value);
+                        }
                         if let Some(config) = resolved.chat_config()
                             && let Ok(config) = serde_json::to_value(&config)
                         {

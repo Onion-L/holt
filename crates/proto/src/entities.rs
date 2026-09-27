@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::WorktreeSpec;
 use crate::{PermissionMode, ProviderId, ReasoningLevel};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +290,14 @@ pub struct Chat {
     /// restart; recovery never starts a Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_mode: Option<ChatPlanState>,
+    /// Session-worktree isolation intent (ADR-0038): `Some` pins every run
+    /// of this chat to a dedicated linked worktree of `repo_path`, materialized
+    /// at admission from `base` on first use. Absorbed at command acceptance
+    /// and never cleared — the request's cwd is only a fallback for chats
+    /// without one, so a mid-queue message can never fall back to the main
+    /// checkout. Shares the run-carried `WorktreeSpec` shape on purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeSpec>,
     /// Provider Mode (ADR-0037): the chat's Turns may propose provider and
     /// model catalog changes and request keys. Mutually exclusive with Plan
     /// Mode; exiting keeps pending cards writable.
@@ -1077,6 +1086,32 @@ pub struct ChatConnectivity {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use serde_json::json;
+
+    // Session worktrees (ADR-0038): rows stored before the field existed
+    // decode with `worktree: None`; new rows round-trip the intent.
+    #[test]
+    fn chat_worktree_intent_is_additive_and_round_trips() {
+        let legacy = json!({
+            "id": "c1",
+            "deviceId": "d1",
+            "archived": false,
+            "pinned": false,
+            "createdAt": "2026-07-19T12:00:00Z",
+        });
+        let chat: Chat = serde_json::from_value(legacy).unwrap();
+        assert_eq!(chat.worktree, None);
+
+        let mut bound = chat;
+        bound.worktree = Some(crate::agent::WorktreeSpec {
+            repo_path: "/repo".into(),
+            base: "main".into(),
+        });
+        let value = serde_json::to_value(&bound).unwrap();
+        assert_eq!(value["worktree"]["repoPath"], "/repo");
+        assert_eq!(value["worktree"]["base"], "main");
+        assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), bound);
+    }
 
     #[test]
     fn skill_listing_round_trips_as_camel_case() {

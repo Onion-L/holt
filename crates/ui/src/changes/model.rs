@@ -1335,6 +1335,7 @@ rename to new_name.rs
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            worktree: None,
             provider_mode: false,
         }
     }

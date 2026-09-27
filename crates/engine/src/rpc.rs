@@ -166,6 +166,11 @@ impl EngineService {
         if params.space_id.trim().is_empty() {
             return Err(RpcError::BadParams("spaceId must not be empty".into()));
         }
+        let _chats_store = self
+            .runtime
+            .chats_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let chat_ids: Vec<String> = {
             let mut chats = self
                 .runtime
@@ -178,18 +183,17 @@ impl EngineService {
                 .map(|chat| chat.id.clone())
                 .collect();
             chats.retain(|chat| chat.space_id.as_deref() != Some(params.space_id.as_str()));
-            drop(chats);
             if !ids.is_empty() {
-                self.runtime
-                    .persist_chats_locked()
+                crate::store::persist_chats(&self.data_dir, &chats)
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
+            }
+            drop(chats);
+            for chat_id in &ids {
+                self.runtime.remove_chat(chat_id);
+                self.terminals.close_chat(chat_id);
             }
             ids
         };
-        for chat_id in &chat_ids {
-            self.runtime.remove_chat(chat_id);
-            self.terminals.close_chat(chat_id);
-        }
         if !chat_ids.is_empty() {
             self.runtime.publish_chats();
         }
@@ -297,6 +301,7 @@ impl EngineService {
             compact_before_next_turn: false,
             plan_mode: None,
             provider_mode: false,
+            worktree: params.worktree,
         });
         drop(chats);
         self.runtime
@@ -417,6 +422,11 @@ impl EngineService {
         if params.chat_id.trim().is_empty() {
             return Err(RpcError::BadParams("chatId must not be empty".into()));
         }
+        let _chats_store = self
+            .runtime
+            .chats_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut chats = self
             .runtime
             .chats
@@ -425,11 +435,12 @@ impl EngineService {
         let before = chats.len();
         chats.retain(|chat| chat.id != params.chat_id);
         let removed = chats.len() != before;
+        if removed {
+            crate::store::persist_chats(&self.data_dir, &chats)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
         drop(chats);
         if removed {
-            self.runtime
-                .persist_chats_locked()
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
             self.runtime.remove_chat(&params.chat_id);
             self.terminals.close_chat(&params.chat_id);
             self.runtime.publish_chats();
@@ -541,6 +552,13 @@ impl EngineService {
                 "messageId and prompt must not be empty".into(),
             ));
         }
+        // Session worktrees (ADR-0038): the isolation intent persists at
+        // command acceptance, before the run becomes durable queue work — a
+        // crash between the ledger write and admission must not drop it
+        // (recovery clears `started` without re-reading the spec).
+        if let Some(spec) = &request.worktree {
+            self.absorb_worktree_intent(&chat, spec)?;
+        }
         {
             let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
             if chat.is_removed() {
@@ -558,6 +576,220 @@ impl EngineService {
         }
         self.kick_queue(chat);
         Ok(())
+    }
+
+    /// Persist the session-worktree isolation intent at acceptance: an unset
+    /// intent fills, an equal one is idempotent, a different one is rejected —
+    /// the intent is chat-owned and never overwritten. A registry row is
+    /// minted when `createChat` never arrived (the mutate is best-effort), so
+    /// the run cannot land on a rowless chat (ADR-0038).
+    fn absorb_worktree_intent(
+        &self,
+        chat: &Arc<ChatRuntime>,
+        spec: &holt_proto::WorktreeSpec,
+    ) -> Result<(), RpcError> {
+        if chat.is_removed() {
+            return Err(RpcError::Failed("chat was deleted".into()));
+        }
+        let _chats_store = self
+            .runtime
+            .chats_store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if chat.is_removed() {
+            return Err(RpcError::Failed("chat was deleted".into()));
+        }
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            match chats.iter_mut().find(|row| row.id == chat.chat_id) {
+                Some(row) => match &row.worktree {
+                    None => row.worktree = Some(spec.clone()),
+                    Some(existing) if existing == spec => {}
+                    Some(existing) => {
+                        return Err(RpcError::BadParams(format!(
+                            "chat is already bound to a different session worktree (base {} of {})",
+                            existing.base, existing.repo_path
+                        )));
+                    }
+                },
+                None => chats.push(Chat {
+                    id: chat.chat_id.clone(),
+                    device_id: self.engine_info.device_id.clone(),
+                    title: None,
+                    title_source: TitleSource::Automatic,
+                    title_task_started: false,
+                    archived: false,
+                    pinned: false,
+                    cwd: Some(spec.repo_path.clone()),
+                    branch: None,
+                    checkout_id: None,
+                    source_context: None,
+                    config: None,
+                    last_message_preview: None,
+                    last_message_at: None,
+                    created_at: Utc::now(),
+                    space_id: None,
+                    last_seen_at: None,
+                    room_gen: None,
+                    compact_before_next_turn: false,
+                    plan_mode: None,
+                    provider_mode: false,
+                    worktree: Some(spec.clone()),
+                }),
+            }
+        }
+        crate::store::persist_chats(
+            &self.data_dir,
+            &self.runtime.chats.read().unwrap_or_else(|e| e.into_inner()),
+        )
+        .map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.runtime.publish_chats();
+        Ok(())
+    }
+
+    /// The chat's persisted isolation intent, if any — the single source the
+    /// admission resolves the working directory from.
+    fn worktree_intent(&self, chat_id: &str) -> Option<holt_proto::WorktreeSpec> {
+        let chats = self.runtime.chats.read().unwrap_or_else(|e| e.into_inner());
+        chats
+            .iter()
+            .find(|row| row.id == chat_id)
+            .and_then(|row| row.worktree.clone())
+    }
+
+    /// The chat's dedicated worktree Space (ADR-0038): an ensure-style lookup
+    /// over the same registry `createSpace` serves. The same id at the same
+    /// path, or the same (device, path) under any id, reuses the existing row;
+    /// the same id at a DIFFERENT path is registration damage and fails the
+    /// Turn. Persisting the Space before the chat re-parents keeps a
+    /// mid-failure world consistent — an unclaimed Space row is harmless and
+    /// gets reused.
+    fn ensure_worktree_space(&self, chat_id: &str, worktree_path: &str) -> Result<Space, RpcError> {
+        let space_id = format!("wt-{chat_id}");
+        let device_id = self.engine_info.device_id.clone();
+        let git_dir = crate::git::discover_git_dir(std::path::Path::new(worktree_path));
+        let checkout_id = git_dir
+            .as_ref()
+            .map(|git_dir| crate::git::checkout_identity(&device_id, git_dir));
+        let mut spaces = self
+            .spaces
+            .write()
+            .map_err(|_| RpcError::Failed("spaces lock poisoned".into()))?;
+        if let Some(index) = spaces.iter().position(|space| space.id == space_id) {
+            let existing = &mut spaces[index];
+            if existing.path != worktree_path {
+                return Err(RpcError::Failed(format!(
+                    "worktree space {space_id} is bound to another path ({})",
+                    existing.path
+                )));
+            }
+            let changed =
+                existing.git_detected != git_dir.is_some() || existing.checkout_id != checkout_id;
+            if changed {
+                existing.git_detected = git_dir.is_some();
+                existing.git_checked_at = Some(Utc::now());
+                existing.checkout_id = checkout_id.clone();
+                let refreshed = existing.clone();
+                persist_spaces(&self.data_dir, &spaces)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let value = serde_json::to_value(&*spaces)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.spaces_tx.send_replace(value);
+                return Ok(refreshed);
+            }
+            return Ok(existing.clone());
+        }
+        if let Some(index) = spaces
+            .iter()
+            .position(|space| space.device_id == device_id && space.path == worktree_path)
+        {
+            let existing = &mut spaces[index];
+            let changed =
+                existing.git_detected != git_dir.is_some() || existing.checkout_id != checkout_id;
+            if changed {
+                existing.git_detected = git_dir.is_some();
+                existing.git_checked_at = Some(Utc::now());
+                existing.checkout_id = checkout_id.clone();
+                let refreshed = existing.clone();
+                persist_spaces(&self.data_dir, &spaces)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let value = serde_json::to_value(&*spaces)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                self.spaces_tx.send_replace(value);
+                return Ok(refreshed);
+            }
+            return Ok(existing.clone());
+        }
+        let space = Space {
+            id: space_id,
+            device_id,
+            path: worktree_path.to_string(),
+            name: None,
+            git_detected: git_dir.is_some(),
+            git_checked_at: None,
+            checkout_id: checkout_id.clone(),
+            created_at: Utc::now(),
+        };
+        spaces.push(space.clone());
+        persist_spaces(&self.data_dir, &spaces).map_err(|error| {
+            spaces.pop();
+            RpcError::Failed(error.to_string())
+        })?;
+        let value =
+            serde_json::to_value(&*spaces).map_err(|error| RpcError::Failed(error.to_string()))?;
+        self.spaces_tx.send_replace(value);
+        Ok(space)
+    }
+
+    /// Persist the visible record of a pre-execution preparation failure
+    /// (ADR-0038): the user entry exactly as admission would have written it,
+    /// plus one system Error entry carrying the reason. No Turn runs, so no
+    /// History entry exists for the user message — the edit path treats such
+    /// entries as transcript-only.
+    fn persist_preparation_failure(
+        &self,
+        chat: Arc<ChatRuntime>,
+        message_id: &str,
+        parts: Vec<MessagePart>,
+        timestamp: i64,
+        reason: &str,
+    ) {
+        let user = SessionMessageEntry {
+            id: message_id.to_string(),
+            role: MessageRole::User,
+            parts,
+            created_at: timestamp,
+            device_id: self.engine_info.device_id.clone(),
+            status: None,
+            continuation_of: None,
+        };
+        let error_entry = SessionMessageEntry {
+            id: format!("{message_id}-prep-error"),
+            role: MessageRole::System,
+            parts: vec![MessagePart::Error {
+                id: "e0".into(),
+                message: reason.to_string(),
+            }],
+            created_at: timestamp,
+            device_id: self.engine_info.device_id.clone(),
+            status: None,
+            continuation_of: None,
+        };
+        {
+            let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
+            match transcript.iter_mut().find(|entry| entry.id == message_id) {
+                Some(slot) => *slot = user,
+                None => transcript.push(user),
+            }
+            transcript.push(error_entry);
+        }
+        chat.persist_entry(message_id);
+        chat.persist_entry(&format!("{message_id}-prep-error"));
+        self.runtime.publish_chats();
     }
 
     async fn queue_command(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -603,8 +835,8 @@ impl EngineService {
                 message_id,
                 request,
             } => {
-                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(id) = message_id {
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                     queue.promote(&id)?;
                 } else {
                     let mut request = request
@@ -613,8 +845,13 @@ impl EngineService {
                         return Err(RpcError::BadParams("prompt must not be empty".into()));
                     }
                     request.prompt = prompt;
+                    if let Some(spec) = &request.worktree {
+                        self.absorb_worktree_intent(&chat, spec)?;
+                    }
+                    let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                     queue.enqueue_priority(request, uuid::Uuid::new_v4().to_string())?;
                 }
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                 queue.pause(false)?;
                 if let Some(cancel) = chat
                     .cancel
@@ -646,6 +883,9 @@ impl EngineService {
                 } else {
                     message_id
                 };
+                if let Some(spec) = &request.worktree {
+                    self.absorb_worktree_intent(&chat, spec)?;
+                }
                 {
                     let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
                     if chat.is_removed() {
@@ -675,7 +915,7 @@ impl EngineService {
         &self,
         chat_id: &str,
         chat: Arc<ChatRuntime>,
-        request: RunRequest,
+        mut request: RunRequest,
         message_id: String,
         mut parts: Vec<MessagePart>,
         mut preview: String,
@@ -728,6 +968,7 @@ impl EngineService {
         // checkpoint wins — the Turn is built from the body the queue holds
         // now, not from the pick-time snapshot.
         let mut invocation: Vec<MessagePart> = Vec::new();
+        let mut mentions = false;
         if queued {
             let admitted = {
                 let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -751,21 +992,76 @@ impl EngineService {
                         }];
                         title_prompt = Some(current);
                     }
-                    // Inline mentions resolve against a fresh catalog at
-                    // admission: resolved `<skill>` blocks prepend the
-                    // model-visible prompt and seed the run entry's opening
-                    // chips; unresolved mentions stay ordinary text.
-                    let (model_prompt, chips) = self
-                        .skills
-                        .resolve_prompt_mentions(&request.cwd, &prompt)
-                        .await;
-                    prompt = model_prompt;
-                    invocation = chips;
+                    mentions = true;
                 }
                 // Manual Compaction is admitted by the driver itself — it
                 // never becomes a Turn (ADR-0011).
                 PendingKind::Compact => unreachable!("Compaction never enters start_turn"),
             }
+        }
+
+        // Session worktrees (ADR-0038): the chat's persisted isolation intent
+        // — not the request's cwd — decides where this run executes. The
+        // request carries no spec on later sends, so a message queued behind
+        // the creating one, or sent after a failed materialization, still
+        // resolves through the intent and can never fall back to the main
+        // checkout. Materialization happens at drain time.
+        let intent = self.worktree_intent(chat_id);
+        let worktree_chat = intent.is_some();
+        let mut preparation_failure: Option<String> = None;
+        if let Some(spec) = intent {
+            match self
+                .git
+                .materialize_worktree(
+                    &spec.repo_path,
+                    &spec.base,
+                    chat_id,
+                    &self.data_dir.join("worktrees"),
+                )
+                .await
+            {
+                Ok(worktree_cwd) => {
+                    // A Stop during materialization must not launch the Turn
+                    // afterwards; the worktree itself stays for reuse.
+                    if cancel.is_cancelled() || chat.is_removed() {
+                        return Err(RpcError::Failed("Turn interrupted before execution".into()));
+                    }
+                    request.cwd = worktree_cwd;
+                }
+                Err(error) => preparation_failure = Some(error),
+            }
+        }
+        if preparation_failure.is_none() && (cancel.is_cancelled() || chat.is_removed()) {
+            return Err(RpcError::Failed("Turn interrupted before execution".into()));
+        }
+        let worktree_space = if worktree_chat && preparation_failure.is_none() {
+            match self.ensure_worktree_space(chat_id, &request.cwd) {
+                Ok(space) => Some(space),
+                Err(error) => {
+                    preparation_failure = Some(error.to_string());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Inline mentions resolve against a fresh catalog at admission —
+        // against the RESOLVED working directory, so a worktree chat's
+        // project skills come from the worktree: resolved `<skill>` blocks
+        // prepend the model-visible prompt and seed the run entry's opening
+        // chips; unresolved mentions stay ordinary text.
+        if mentions && preparation_failure.is_none() {
+            let (model_prompt, chips) = self
+                .skills
+                .resolve_prompt_mentions(&request.cwd, &prompt)
+                .await;
+            prompt = model_prompt;
+            invocation = chips;
+        }
+        if let Some(error) = preparation_failure {
+            let reason = format!("Session worktree could not be prepared: {error}");
+            self.persist_preparation_failure(chat.clone(), &message_id, parts, timestamp, &reason);
+            return Err(RpcError::Failed(reason));
         }
         let baseline = self.git.turn_baseline(&request.cwd).await.ok();
         // Resolve live checkout identity only when this message reaches
@@ -814,6 +1110,17 @@ impl EngineService {
                 if let Some(source) = source {
                     row.branch = Some(source.branch.clone());
                     row.source_context = Some(source);
+                } else {
+                    row.branch = None;
+                    row.source_context = None;
+                }
+                // Session worktree (ADR-0038): re-parent to the worktree
+                // Space and stamp the worktree's own checkout identity —
+                // Changes matches diffs by checkout_id first, so a stale id
+                // would keep matching the main checkout.
+                if let Some(space) = &worktree_space {
+                    row.space_id = Some(space.id.clone());
+                    row.checkout_id = space.checkout_id.clone();
                 }
                 planning = row.plan_mode.is_some();
                 provider_mode = row.provider_mode;
@@ -1139,6 +1446,9 @@ impl EngineService {
         // a settle.
         let _persistence = chat.persistence.lock().unwrap_or_else(|e| e.into_inner());
         let mut history = chat.history.write().unwrap_or_else(|e| e.into_inner());
+        // A user entry with no History counterpart never ran (pre-execution
+        // preparation failure, ADR-0038): the edit is transcript-only —
+        // History has no tail for this message to truncate.
         let history_index = history
             .iter()
             .enumerate()
@@ -1147,20 +1457,17 @@ impl EngineService {
                 matches!(message, pi_core::agent::types::AgentMessage::User(user) if user.timestamp == target.created_at)
             })
             .map(|(index, _)| index);
-        let Some(history_index) = history_index else {
-            drop(history);
-            self.resume_after_edit_failure(&chat, attended);
-            return Err(RpcError::Failed(
-                "the message is not present in chat history".into(),
-            ));
-        };
-        history.truncate(history_index);
+        if let Some(history_index) = history_index {
+            history.truncate(history_index);
+        }
         if let Err(error) = crate::store::rewrite_transcript(&self.data_dir, chat_id, &entries) {
             drop(history);
             self.resume_after_edit_failure(&chat, attended);
             return Err(RpcError::Failed(error.to_string()));
         }
-        if let Err(error) = crate::history::rewrite(&self.data_dir, chat_id, &history) {
+        if history_index.is_some()
+            && let Err(error) = crate::history::rewrite(&self.data_dir, chat_id, &history)
+        {
             drop(history);
             self.resume_after_edit_failure(&chat, attended);
             return Err(RpcError::Failed(error.to_string()));
@@ -1984,6 +2291,11 @@ struct CreateChatParams {
     branch: Option<String>,
     #[serde(default)]
     config: Option<ChatConfig>,
+    /// Session-worktree isolation intent (ADR-0038). Best-effort pre-stamp —
+    /// the durable carrier is the queued Run's `WorktreeSpec` absorbed in
+    /// `enqueue_run`.
+    #[serde(default)]
+    worktree: Option<holt_proto::WorktreeSpec>,
 }
 
 #[derive(Deserialize)]

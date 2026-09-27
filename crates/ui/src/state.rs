@@ -393,6 +393,15 @@ impl AppState {
     // ---- reducers (pure) ----
 
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) {
+        // The selected chat's previous Space, captured before this frame
+        // replaces the rows: a session-worktree migration (ADR-0038) re-parents
+        // the chat mid-life and the selection follows that CHANGE — and only
+        // that change, so ordinary watch frames never move the project pick.
+        let selected_previous_space = self
+            .selected_chat
+            .as_deref()
+            .and_then(|id| self.chats.iter().find(|c| c.id == id))
+            .and_then(|c| c.space_id.clone());
         sort_chats(&mut chats);
         self.chats = chats;
         self.chats_synced = true;
@@ -416,6 +425,21 @@ impl AppState {
             self.message_queue_task = None;
             self.turn_change_sets.clear();
             self.turn_change_set_task = None;
+        } else if let Some(chat) = self
+            .selected_chat
+            .as_deref()
+            .and_then(|id| self.chats.iter().find(|c| c.id == id))
+            && chat.space_id != selected_previous_space
+        {
+            match chat.space_id.clone() {
+                Some(space_id) => {
+                    self.selected_space = Some(space_id);
+                    self.no_project = false;
+                }
+                None => {
+                    self.no_project = true;
+                }
+            }
         }
     }
 
@@ -1920,6 +1944,7 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            worktree: None,
             provider_mode: false,
         }
     }
@@ -1963,6 +1988,7 @@ mod tests {
             room_gen: None,
             compact_before_next_turn: false,
             plan_mode: None,
+            worktree: None,
             provider_mode: false,
         }
     }
@@ -2374,6 +2400,33 @@ mod tests {
             .map(|(_, c)| c.id.as_str())
             .collect();
         assert_eq!(overview, ["old", "new", "dangling"]);
+    }
+
+    #[test]
+    fn apply_chats_follows_a_space_migration_not_the_space_value() {
+        let mut state = AppState::new();
+        let mut a = chat("a", 0, None);
+        a.space_id = Some("s1".into());
+        state.apply_chats(vec![a.clone()]);
+        state.selected_chat = Some("a".into());
+        state.selected_space = Some("s1".into());
+        // The session-worktree migration re-parents the chat: the project
+        // pick follows the change.
+        let mut migrated = a.clone();
+        migrated.space_id = Some("wt-a".into());
+        state.apply_chats(vec![migrated.clone()]);
+        assert_eq!(state.selected_space.as_deref(), Some("wt-a"));
+        // An ordinary frame with an unchanged space_id never moves the pick —
+        // the user may have chosen another project meanwhile.
+        state.selected_space = Some("s2".into());
+        let unchanged = migrated.clone();
+        state.apply_chats(vec![unchanged]);
+        assert_eq!(state.selected_space.as_deref(), Some("s2"));
+        // A second migration follows again.
+        let mut moved_again = migrated;
+        moved_again.space_id = Some("s3".into());
+        state.apply_chats(vec![moved_again]);
+        assert_eq!(state.selected_space.as_deref(), Some("s3"));
     }
 
     #[test]
