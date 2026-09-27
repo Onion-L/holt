@@ -17,3 +17,5 @@ vendor/**/.git
 docs/research/
 docs/spark/
 .agents/skills/spark/
+
+video/
