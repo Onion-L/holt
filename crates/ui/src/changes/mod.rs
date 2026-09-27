@@ -92,7 +92,7 @@ pub const ACCENT_BAR_WIDTH: f32 = 3.0;
 pub const SPLIT_MARKER_WIDTH: f32 = 18.0;
 /// Hairline between the two split columns.
 pub const SPLIT_DIVIDER_WIDTH: f32 = 1.0;
-const DIFF_TEXT_SIZE: f32 = 12.0;
+pub(crate) const DIFF_TEXT_SIZE: f32 = 12.0;
 
 /// How the diff is laid out. Persisted in `ui-settings.json` (`diffSplit`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -8,7 +8,10 @@
 use gpui::{AnyElement, Context, Render, SharedString, div, prelude::*, px};
 use holt_proto::{TurnFileChange, TurnFileChangeStatus};
 
-use crate::changes::{FileDiff, FileStatus, render_file_body_with_syntax};
+use crate::changes::{
+    ACCENT_BAR_WIDTH, DIFF_TEXT_SIZE, FileDiff, FileStatus, LineKind, MARKER_WIDTH, gutter_width,
+    render_file_body_with_syntax,
+};
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -53,6 +56,9 @@ pub struct TurnReview {
     /// index; this is the review's stable one.
     files: Vec<TurnFileChange>,
     load: ReviewLoad,
+    /// Memoized scroll-content width of the loaded body (the text system is
+    /// window-scoped, so measuring happens lazily at render); cleared per aim.
+    content_width: Option<gpui::Pixels>,
     generation: u64,
     fetch: Option<gpui::Task<()>>,
 }
@@ -66,6 +72,7 @@ impl TurnReview {
             message_id: String::new(),
             files: Vec::new(),
             load: ReviewLoad::Idle,
+            content_width: None,
             generation: 0,
             fetch: None,
         }
@@ -103,6 +110,7 @@ impl TurnReview {
     fn select(&mut self, path: String, cx: &mut Context<Self>) {
         self.generation += 1;
         self.load = ReviewLoad::Loading { path: path.clone() };
+        self.content_width = None;
         cx.notify();
         self.fetch = Some(self.spawn_fetch(path, self.generation, cx));
     }
@@ -242,9 +250,71 @@ impl TurnReview {
     }
 }
 
+/// The scroll content's minimum width: row chrome plus the widest rendered
+/// text (diff lines at the body size, meta notes / hunk headers / notices at
+/// theirs), so an over-long line scrolls into view horizontally instead of
+/// clipping at the pane edge. Measured against the window's text system.
+fn body_content_width(file: &FileDiff, theme: &Theme, window: &gpui::Window) -> gpui::Pixels {
+    let font = gpui::font(theme.font_mono.clone());
+    let text_system = window.text_system();
+    let width_at = |text: &str, size: f32| -> f32 {
+        let run = gpui::TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: theme.text,
+            ..Default::default()
+        };
+        text_system
+            .layout_line(text, px(size), &[run], None)
+            .width
+            .into()
+    };
+    // The diff row's fixed columns: accent bar, both gutters, the +/− marker,
+    // and the text's left padding (meta rows fold the same total into their
+    // left padding).
+    let chrome = ACCENT_BAR_WIDTH + 2.0 * gutter_width(file) + MARKER_WIDTH + 12.0;
+    let lines = file
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .map(|line| {
+            let size = if line.kind == LineKind::Meta {
+                10.5
+            } else {
+                DIFF_TEXT_SIZE
+            };
+            chrome + width_at(&line.text, size)
+        });
+    let headers = file
+        .hunks
+        .iter()
+        .map(|hunk| 2.0 * Theme::SPACE_LG + width_at(&hunk.header, 11.0));
+    let notices = file
+        .notices
+        .iter()
+        .map(|notice| 2.0 * Theme::SPACE_LG + width_at(notice, 11.0));
+    let widest = lines.chain(headers).chain(notices).fold(0.0_f32, f32::max);
+    // Trailing slack so the last glyph never sits flush against the edge.
+    px(widest + 8.0)
+}
+
 impl Render for TurnReview {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        // Measure the loaded body once (the text system is window-scoped) so
+        // the scroll content can widen past the pane for long lines.
+        let content_width = if let ReviewLoad::Loaded { file, .. } = &self.load {
+            Some(match self.content_width {
+                Some(width) => width,
+                None => {
+                    let width = body_content_width(file, &theme, window);
+                    self.content_width = Some(width);
+                    width
+                }
+            })
+        } else {
+            None
+        };
         let body = match &self.load {
             ReviewLoad::Idle => {
                 centered_note("Nothing to review — the Turn changed no files.", &theme)
@@ -316,7 +386,11 @@ impl Render for TurnReview {
                 truncated,
                 ..
             } => div()
-                .w_full()
+                // size_full is load-bearing: without a definite height the
+                // column grows to the diff's content height, the scroll
+                // region's `flex_1` has nothing to distribute, and the pane
+                // can never scroll (extent stays zero).
+                .size_full()
                 .flex()
                 .flex_col()
                 .child(
@@ -376,11 +450,17 @@ impl Render for TurnReview {
                     // diffs).
                     div()
                         .id("turn-review-scroll")
+                        .debug_selector(|| "turn-review-scroll".into())
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
+                        .overflow_scroll()
                         .py(px(8.0))
-                        .child(render_file_body_with_syntax(file, None, &theme)),
+                        .child(
+                            div()
+                                .debug_selector(|| "turn-review-content".into())
+                                .min_w(content_width.unwrap_or_default())
+                                .child(render_file_body_with_syntax(file, None, &theme)),
+                        ),
                 )
                 .into_any_element(),
         };
@@ -612,5 +692,94 @@ mod tests {
         review.update(cx, |review, cx| review.retry(cx));
         cx.run_until_parked();
         assert!(review.read_with(cx, |review, _| review.failed_error().is_some()));
+    }
+
+    /// The Loaded body's scroll region must be clamped to the pane: the
+    /// container column needs a definite height, otherwise it grows to the
+    /// diff's content height and the `overflow_y_scroll` child's extent
+    /// stays zero — the pane could never scroll (user report).
+    #[gpui::test]
+    fn the_loaded_scroll_region_is_clamped_to_the_pane(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.update(|cx| cx.new(|_| AppState::new()));
+        let added: String = (0..400).fold(String::new(), |acc, ix| acc + &format!("line {ix}\n"));
+        let tall = text_pair_to_file(
+            &file(TurnFileChangeStatus::Added, "big.txt", None),
+            &text(None, Some(&added)),
+        );
+        let (_review, cx) = cx.add_window_view(move |_, _| {
+            let mut review = TurnReview::new(state.clone());
+            review.load = ReviewLoad::Loaded {
+                path: "big.txt".into(),
+                file: tall,
+                additions: 400,
+                deletions: 0,
+                truncated: false,
+            };
+            review
+        });
+        cx.run_until_parked();
+
+        let scroll = cx
+            .debug_bounds("turn-review-scroll")
+            .expect("the scroll region renders");
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(
+            scroll.bottom() <= viewport.height + px(1.0),
+            "the scroll region is clamped to the pane, not grown to the diff: {:?} vs {:?}",
+            scroll,
+            viewport,
+        );
+        assert!(
+            scroll.size.height > px(100.0),
+            "and it fills the pane below the summary bar"
+        );
+    }
+
+    /// A line wider than the pane must widen the scroll CONTENT (not the
+    /// scroll region), which is what gives the two-axis scroller its
+    /// horizontal extent.
+    #[gpui::test]
+    fn a_wide_line_creates_horizontal_scroll_extent(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.update(|cx| cx.new(|_| AppState::new()));
+        let wide_line = "x".repeat(600);
+        let new_text = format!("short\n{wide_line}\nshort\n");
+        let wide = text_pair_to_file(
+            &file(TurnFileChangeStatus::Added, "wide.txt", None),
+            &text(None, Some(&new_text)),
+        );
+        let (_review, cx) = cx.add_window_view(move |_, _| {
+            let mut review = TurnReview::new(state.clone());
+            review.load = ReviewLoad::Loaded {
+                path: "wide.txt".into(),
+                file: wide,
+                additions: 3,
+                deletions: 0,
+                truncated: false,
+            };
+            review
+        });
+        cx.run_until_parked();
+
+        let scroll = cx
+            .debug_bounds("turn-review-scroll")
+            .expect("the scroll region renders");
+        let content = cx
+            .debug_bounds("turn-review-content")
+            .expect("the scroll content renders");
+        assert!(
+            content.size.width > scroll.size.width,
+            "the wide line widens the content past the viewport: {:?} vs {:?}",
+            content,
+            scroll,
+        );
+        // Sanity: the measured width covers the 600-char line, so scrolling
+        // to the right edge reveals all of it (12px mono ≈ 7px per glyph).
+        assert!(content.size.width > px(3000.0));
     }
 }
