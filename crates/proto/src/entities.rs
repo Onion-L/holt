@@ -1036,6 +1036,21 @@ pub enum TerminalEvent {
     },
 }
 
+/// The app's self-update posture (the `UpdateStatus` stream). `available`
+/// is set only when a newer release with an asset for this arch exists and
+/// the running binary is inside an `.app` bundle it can replace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub current_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<String>,
+    /// An `ApplyUpdate` is downloading/installing; stays set after success
+    /// until the process restarts onto the new bundle.
+    #[serde(default)]
+    pub applying: bool,
+}
+
 /// Live edge-connectivity posture (the `WatchConnectivity` stream): the truth
 /// the connection pill, composer honesty, and queued-send badges render.
 /// Derived engine-side from the registry room's reconnect state, the OS

@@ -2783,6 +2783,11 @@ impl RpcService for EngineService {
                 };
                 RpcReply::value(&snapshot)
             }
+            methods::UPDATE_STATUS => Ok(Self::watch_value(self.updater.subscribe())),
+            methods::APPLY_UPDATE => {
+                self.updater.apply().await.map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LOCAL_DEVICE => RpcReply::value(&serde_json::json!({

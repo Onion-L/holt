@@ -212,6 +212,9 @@ pub struct AppState {
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
     pub connectivity: holt_proto::Connectivity,
+    /// App self-update posture (UpdateStatus): drives the sidebar's update
+    /// button.
+    pub update: holt_proto::UpdateStatus,
     /// Sorted (see [`sort_spaces`]).
     pub spaces: Vec<Space>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
@@ -313,6 +316,7 @@ impl AppState {
             workspace_scope: None,
             auth: None,
             connectivity: holt_proto::Connectivity::default(),
+            update: holt_proto::UpdateStatus::default(),
             spaces: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
@@ -485,6 +489,10 @@ impl AppState {
 
     pub fn apply_connectivity(&mut self, connectivity: holt_proto::Connectivity) {
         self.connectivity = connectivity;
+    }
+
+    pub fn apply_update_status(&mut self, update: holt_proto::UpdateStatus) {
+        self.update = update;
     }
 
     /// One scheduled provider retry arrived for a chat's live Turn. Stored
@@ -1112,7 +1120,7 @@ impl AppState {
         self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
-        let mut watch_tasks = Vec::with_capacity(6);
+        let mut watch_tasks = Vec::with_capacity(7);
         watch_tasks.extend([
             spawn_watch(
                 cx,
@@ -1145,6 +1153,12 @@ impl AppState {
                 handle.clone(),
                 methods::AUTH_STATUS,
                 AppState::apply_auth_value,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::UPDATE_STATUS,
+                AppState::apply_update_status,
             ),
         ]);
         self.watch_tasks = watch_tasks;

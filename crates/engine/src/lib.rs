@@ -62,6 +62,7 @@ mod turn_change_store;
 mod turn_change_watch;
 mod turn_changes;
 mod turn_events;
+mod update;
 mod usage;
 mod usage_stats;
 mod web_search_settings;
@@ -180,6 +181,7 @@ struct EngineService {
     /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
     turn_events: turn_events::TurnEvents,
+    updater: Arc<update::Updater>,
 }
 
 impl LocalEngine {
@@ -278,6 +280,7 @@ impl LocalEngine {
                 search_backend_resolver: config.search_backend_resolver.clone(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),
+                updater: update::Updater::new(),
             },
             _instance_lock: lock,
         })

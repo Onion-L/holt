@@ -434,8 +434,13 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`UploadChunk` / `UploadCommit` / `ReadAttachmentChunk`), and the
   sync/account surface (`SignIn`, `SignInHeadless`, `SignOut`, `ListOrgs`,
   `CreateOrg`, `SelectOrg`, `ListRepos`, `AddRepo`, `CloneRepo`,
-  `CreateRepo`, `ImportLocalWorkspace`, `ApplyUpdate`, `RetryDelivery`,
-  `StopEngine`, `UpdateStatus`) — all `UnknownMethod`.
+  `CreateRepo`, `ImportLocalWorkspace`, `RetryDelivery`, `StopEngine`) —
+  all `UnknownMethod`.
+- App self-update (`crates/engine/src/update.rs`): `UpdateStatus` streams
+  the latest GitHub release when it is newer and ships this arch's DMG
+  (checked only when running from an `.app` bundle); `ApplyUpdate`
+  downloads it, verifies the bundle's Developer ID signature, and swaps it
+  in place of the running bundle. The UI relaunches on success.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips
 methods that error with `UnknownMethod`.

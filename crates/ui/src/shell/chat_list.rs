@@ -807,7 +807,13 @@ impl Shell {
                     .px(px(Theme::SPACE_SM))
                     .pb(px(12.0))
                     .flex_none()
-                    .child(settings_row),
+                    .flex()
+                    .items_center()
+                    .gap(px(Theme::SPACE_SM))
+                    .child(div().flex_1().child(settings_row))
+                    .when_some(self.render_update_button(theme, cx), |el, button| {
+                        el.child(button)
+                    }),
             )
             .into_any_element()
     }
@@ -843,6 +849,73 @@ impl Shell {
             )
             .child(SharedString::from("Settings"))
             .into_any_element()
+    }
+
+    /// Accent download disc beside the settings row, shown only while the
+    /// engine reports a newer installable release; a spinner while applying.
+    fn render_update_button(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let update = &self.state.read(cx).update;
+        let version = update.available.clone()?;
+        let applying = update.applying;
+        let glyph = if applying {
+            loaders::mini_mono_spinner("update-spinner", 2.0, theme.on_accent, cx.entity_id(), cx)
+                .into_any_element()
+        } else {
+            icon(icons::DOWNLOAD_MINIMALISTIC)
+                .size(px(14.0))
+                .text_color(theme.on_accent)
+                .into_any_element()
+        };
+        let tooltip: SharedString = if applying {
+            format!("Installing Holt {version}…").into()
+        } else {
+            format!("Update to Holt {version}").into()
+        };
+        Some(
+            div()
+                .id("sidebar-update")
+                .flex_none()
+                .size(px(24.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.accent)
+                .when(!applying, |el| {
+                    el.cursor_pointer()
+                        .hover(|style| style.bg(theme.accent_strong))
+                        .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx)))
+                })
+                .tooltip(move |_, cx| {
+                    cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
+                        .into()
+                })
+                .child(glyph)
+                .into_any_element(),
+        )
+    }
+
+    /// Install the available release, then relaunch onto the new bundle.
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::APPLY_UPDATE, serde_json::json!({}))
+                .await;
+            this.update(cx, |shell, cx| match result {
+                Ok(_) => cx.restart(),
+                Err(err) => shell.push_holt_notice(
+                    HoltNoticeKind::Error,
+                    format!("Update failed: {err}").into(),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
