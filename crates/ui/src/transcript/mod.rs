@@ -338,6 +338,10 @@ pub struct Transcript {
     /// recently (click "Show full output" after a diff → see the output).
     blob_fetch_order: HashMap<SharedString, u64>,
     blob_fetch_counter: u64,
+    /// Last laid-out width of the transcript root (== the list viewport
+    /// width), recorded by a canvas probe each frame. Seeds the inline
+    /// message edit's first-frame height measurement.
+    list_width: std::rc::Rc<std::cell::Cell<f32>>,
     _observe: Subscription,
 }
 
@@ -529,6 +533,7 @@ impl Transcript {
             blob_details: HashMap::new(),
             blob_fetch_order: HashMap::new(),
             blob_fetch_counter: 0,
+            list_width: std::rc::Rc::new(std::cell::Cell::new(0.0)),
             _observe: observe,
         };
         this.sync(cx);
@@ -2153,10 +2158,12 @@ impl Transcript {
     ) {
         let input = cx.new(|cx| ComposerInput::new("Edit message", cx));
         input.update(cx, |input, cx| input.set_text(text, cx));
-        let events = cx.subscribe(&input, |this, _, event, cx| {
-            if matches!(event, ComposerInputEvent::Submitted) {
-                this.submit_message_edit(cx);
-            }
+        let events = cx.subscribe(&input, |this, _, event, cx| match event {
+            ComposerInputEvent::Submitted => this.submit_message_edit(cx),
+            // The bubble heights itself from the input's measured content
+            // height; re-render to pick up fresh measurements.
+            ComposerInputEvent::Edited | ComposerInputEvent::ViewportChanged => cx.notify(),
+            _ => {}
         });
         self.message_edit = Some(InlineMessageEdit {
             message_id,

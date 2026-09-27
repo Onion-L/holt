@@ -126,6 +126,13 @@ impl gpui::Element for ComposerTextElement {
             let scrolled =
                 input.clamp_scroll(f32::from(bounds.size.height), f32::from(bounds.size.width));
             input.last_bounds = Some(bounds);
+            // `content_height` flaps across a frame's measure probes and only
+            // settles with the final layout; ancestors sized from it (the
+            // inline message edit bubble) re-render on this signal.
+            if input.notified_height != input.content_height {
+                input.notified_height = input.content_height;
+                cx.emit(ComposerInputEvent::ViewportChanged);
+            }
             if scrolled {
                 cx.emit(ComposerInputEvent::ViewportChanged);
             }

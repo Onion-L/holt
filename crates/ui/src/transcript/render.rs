@@ -1275,13 +1275,34 @@ impl Transcript {
                             .as_mut()
                             .is_some_and(|edit| std::mem::take(&mut edit.focus_pending))
                     {
+                        // First edit frame: measure now — at the width the
+                        // row's gutters and the bubble's `max_w` cap leave
+                        // the input — so the explicit wrapper height below
+                        // is correct on the FIRST paint instead of snapping
+                        // one frame later. A stale probe width (mid-resize)
+                        // still converges via ViewportChanged.
+                        let list_width = self.list_width.get();
+                        let seed_width = (list_width - 96.0).min(MAX_CONTENT_WIDTH * 0.8) - 32.0;
+                        if seed_width > 0.0 {
+                            input.update(cx, |input, cx| {
+                                input.premeasure(px(seed_width), window, cx)
+                            });
+                        }
                         window.focus(&input.focus_handle(cx), cx);
                     }
                     let editing = inline_editor.is_some();
                     let bubble_child = if let Some(input) = inline_editor {
+                        // taffy measures the leaf at the unclamped row width
+                        // before applying the bubble's `max_w` clamp and never
+                        // re-aggregates ancestor heights, so a multi-line
+                        // draft would overflow the bubble background. Height
+                        // the wrapper explicitly from the input's own
+                        // measurement (converges via ViewportChanged).
+                        let edit_height = input.read(cx).measured_display_height();
                         div()
                             .w_full()
                             .min_w_0()
+                            .h(px(edit_height))
                             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                                 if event.keystroke.key == "escape" {
                                     cx.stop_propagation();
@@ -1603,99 +1624,111 @@ impl Transcript {
         };
         let edit_entry_id = row.entry_id.clone();
         let edit_chat_id = self.chat_id.clone().unwrap_or_default();
-        let strip = row.timestamp.map(|ms| {
-            let timestamp = div()
-                .text_size(crate::typography::ui_rems(12.0))
-                .text_color(theme.text_muted.opacity(0.55))
-                .child(SharedString::from(format_timestamp(ms, &chrono::Local)));
-            let copy = copy_text.map(|text| {
-                let entry_id = copy_entry_id.clone();
-                let fade_key = format!("copy-message-hover-{entry_id}");
-                div()
-                    .id(SharedString::from(format!("copy-message-{entry_id}")))
-                    .size(px(Theme::SPACE_MD * 2.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .cursor_pointer()
-                    // Same quiet icon-button treatment as the copy action
-                    // over transcript code blocks.
-                    .bg(motion::hover_blend(
-                        &fade_key,
-                        gpui::transparent_black(),
-                        crate::theme::ink(0.08),
-                    ))
-                    .on_hover(motion::hover_listener(fade_key))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.copy_message(entry_id.clone(), text.clone(), cx)
-                    }))
-                    .child(
-                        crate::icons::icon(if copied_message {
-                            crate::icons::CHECK
-                        } else {
-                            crate::icons::COPY
-                        })
-                        .size(px(14.0))
-                        .text_color(theme.text_muted),
-                    )
-            });
-            let metadata = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(Theme::SPACE_SM));
-            let edit = edit_text.map(|text| {
-                let entry_id = edit_entry_id.clone();
-                let chat_id = edit_chat_id.clone();
-                div()
-                    .id(SharedString::from(format!("edit-message-{entry_id}")))
-                    .size(px(Theme::SPACE_MD * 2.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .cursor_pointer()
-                    .bg(motion::hover_blend(
-                        &format!("edit-message-hover-{entry_id}"),
-                        gpui::transparent_black(),
-                        crate::theme::ink(0.08),
-                    ))
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(TranscriptEvent::EditLastMessage {
-                            chat_id: chat_id.clone(),
-                            message_id: entry_id.to_string(),
-                            text: text.clone(),
-                        });
-                    }))
-                    .child(
-                        crate::icons::icon(crate::icons::PEN)
+        // While this entry is being edited inline its hover strip is
+        // replaced by the editor's own Cancel/Send affordance — no
+        // timestamp, edit, or copy affordances underneath it.
+        let strip = row
+            .timestamp
+            .filter(|_| {
+                self.message_edit
+                    .as_ref()
+                    .is_none_or(|edit| edit.message_id != row.entry_id.as_ref())
+            })
+            .map(|ms| {
+                let timestamp = div()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted.opacity(0.55))
+                    .child(SharedString::from(format_timestamp(ms, &chrono::Local)));
+                let copy = copy_text.map(|text| {
+                    let entry_id = copy_entry_id.clone();
+                    let fade_key = format!("copy-message-hover-{entry_id}");
+                    div()
+                        .id(SharedString::from(format!("copy-message-{entry_id}")))
+                        .size(px(Theme::SPACE_MD * 2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .cursor_pointer()
+                        // Same quiet icon-button treatment as the copy action
+                        // over transcript code blocks.
+                        .bg(motion::hover_blend(
+                            &fade_key,
+                            gpui::transparent_black(),
+                            crate::theme::ink(0.08),
+                        ))
+                        .on_hover(motion::hover_listener(fade_key))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.copy_message(entry_id.clone(), text.clone(), cx)
+                        }))
+                        .child(
+                            crate::icons::icon(if copied_message {
+                                crate::icons::CHECK
+                            } else {
+                                crate::icons::COPY
+                            })
                             .size(px(14.0))
                             .text_color(theme.text_muted),
-                    )
+                        )
+                });
+                let metadata = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(Theme::SPACE_SM));
+                let edit = edit_text.map(|text| {
+                    let entry_id = edit_entry_id.clone();
+                    let chat_id = edit_chat_id.clone();
+                    let fade_key = format!("edit-message-hover-{entry_id}");
+                    div()
+                        .id(SharedString::from(format!("edit-message-{entry_id}")))
+                        .size(px(Theme::SPACE_MD * 2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .cursor_pointer()
+                        .bg(motion::hover_blend(
+                            &fade_key,
+                            gpui::transparent_black(),
+                            crate::theme::ink(0.08),
+                        ))
+                        .on_hover(motion::hover_listener(fade_key))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(TranscriptEvent::EditLastMessage {
+                                chat_id: chat_id.clone(),
+                                message_id: entry_id.to_string(),
+                                text: text.clone(),
+                            });
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::PEN)
+                                .size(px(14.0))
+                                .text_color(theme.text_muted),
+                        )
+                });
+                let metadata = metadata.child(timestamp).children(edit).children(copy);
+                div()
+                    .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
+                    .pt(px(Theme::SPACE_SM))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    // No horizontal inset: the original's `px-1` netted out flush
+                    // because its message text was inset by the same amount (group
+                    // padding 4 + inner VStack 4 = 8 = group 4 + px-1 4). Here the
+                    // markdown text / user bubble sit AT the content column edges,
+                    // so the label must too — assistant label's left edge on the
+                    // text's first-character x, user label's right edge on the
+                    // bubble's right edge (user-reported 4px drift).
+                    .when(is_user_row, |el| el.justify_end())
+                    .when(hovered, |el| {
+                        el.child(motion::fade_quick(
+                            SharedString::from(format!("meta-{}", row.id)),
+                            metadata,
+                        ))
+                    })
             });
-            let metadata = metadata.child(timestamp).children(edit).children(copy);
-            div()
-                .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
-                .pt(px(Theme::SPACE_SM))
-                .w_full()
-                .flex()
-                .items_center()
-                // No horizontal inset: the original's `px-1` netted out flush
-                // because its message text was inset by the same amount (group
-                // padding 4 + inner VStack 4 = 8 = group 4 + px-1 4). Here the
-                // markdown text / user bubble sit AT the content column edges,
-                // so the label must too — assistant label's left edge on the
-                // text's first-character x, user label's right edge on the
-                // bubble's right edge (user-reported 4px drift).
-                .when(is_user_row, |el| el.justify_end())
-                .when(hovered, |el| {
-                    el.child(motion::fade_quick(
-                        SharedString::from(format!("meta-{}", row.id)),
-                        metadata,
-                    ))
-                })
-        });
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
         div()
@@ -3780,6 +3813,7 @@ impl Render for Transcript {
         } else {
             list_el.into_any_element()
         };
+        let list_width = self.list_width.clone();
         let root = div()
             .relative()
             .size_full()
@@ -3791,6 +3825,17 @@ impl Render for Transcript {
             // selection registry before any row's text elements re-register
             // (document paint order = selection order; see markdown/render.rs).
             .child(crate::markdown::render::selection_frame_reset())
+            // Layout probe: the root's laid-out width == the list viewport
+            // width (the rail is an absolute overlay). Read by the inline
+            // message edit's first-frame measurement seed.
+            .child(
+                gpui::canvas(
+                    move |bounds, _, _| list_width.set(f32::from(bounds.size.width)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(content)
             .child(rail);
         if let Some(preview) = self.attachment_preview.clone() {

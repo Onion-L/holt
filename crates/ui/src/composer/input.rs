@@ -384,7 +384,10 @@ pub struct ComposerInput {
     line_starts: Vec<usize>,
     pub(super) last_bounds: Option<Bounds<Pixels>>,
     pub(super) line_height: Pixels,
-    content_height: f32,
+    pub(super) content_height: f32,
+    /// The `content_height` last settled at prepaint — a change emits
+    /// `ViewportChanged` so ancestors sized from the measurement re-render.
+    pub(super) notified_height: f32,
     max_line_width: f32,
     pub(super) last_width: f32,
     /// Raw Markdown → chip display projection from the last layout pass.
@@ -477,6 +480,7 @@ impl ComposerInput {
             last_bounds: None,
             line_height: px(INPUT_LINE_HEIGHT),
             content_height: INPUT_LINE_HEIGHT,
+            notified_height: INPUT_LINE_HEIGHT,
             max_line_width: 0.0,
             last_width: 0.0,
             projection: TextProjection::default(),
@@ -668,6 +672,31 @@ impl ComposerInput {
 
     pub fn measured_content_height(&self) -> f32 {
         self.content_height
+    }
+
+    /// The height the text element actually lays out at: measured content
+    /// clamped to the element's own cap (internal scroll past it). Ancestors
+    /// that size themselves from the measurement use this, not the raw
+    /// content height.
+    pub fn measured_display_height(&self) -> f32 {
+        self.content_height.min(TEXTAREA_MAX - TEXTAREA_PAD_V)
+    }
+
+    /// Shape at `width` immediately, in the input's own text style. A
+    /// render-time seed: the first painted frame already lays out at the
+    /// measured height instead of converging one frame later. The element
+    /// re-measures during layout; if the seeded width was stale, the
+    /// prepaint `ViewportChanged` still converges.
+    pub fn premeasure(&mut self, width: Pixels, window: &mut Window, cx: &App) {
+        let theme = Theme::of(cx);
+        let mut style = window.text_style();
+        style.font_family = theme.font_sans.clone();
+        style.font_size = crate::typography::ui_rems(INPUT_TEXT_SIZE).into();
+        style.color = theme.text;
+        self.layout_text(width, &style, window, cx);
+        // The seed is the frame's settled value: prepaint emits no
+        // ViewportChanged for it, so no corrective frame is scheduled.
+        self.notified_height = self.content_height;
     }
 
     pub fn set_placeholder(
@@ -2198,5 +2227,230 @@ mod tests {
                 assert_eq!(input.text(), "abcd", "the newline action is a no-op");
             });
         });
+    }
+
+    /// The inline message edit renders this input inside the transcript's
+    /// user bubble (right-aligned column under the 80% cap) inside the
+    /// virtualized List. The bubble background must grow to cover the
+    /// wrapped multi-line content, not stop after the first line.
+    #[gpui::test]
+    fn bubble_background_covers_wrapped_edit_content(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let input = cx.update(|cx| cx.new(|cx| ComposerInput::new("Edit message", cx)));
+        input.update(cx, |input, cx| {
+            input.set_text(
+                "实现在chat内，输入框内按键盘的上键，切换到前一个输入的内容，可以一直按直到第一个为止。再补一段让它必然换行。实现在chat内，输入框内按键盘的上键，切换到前一个输入的内容。",
+                cx,
+            );
+        });
+
+        struct EditRow {
+            list: gpui::ListState,
+            input: Entity<ComposerInput>,
+            _events: gpui::Subscription,
+        }
+        impl Render for EditRow {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let input = self.input.clone();
+                let edit_height = input.read(cx).measured_display_height();
+                gpui::list(self.list.clone(), move |_, _, _| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div().w_full().flex().justify_end().child(
+                                div()
+                                    .min_w_0()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_end()
+                                    .child(
+                                        div()
+                                            .id("bubble")
+                                            .debug_selector(|| "bubble".into())
+                                            .min_w_0()
+                                            .w_full()
+                                            .max_w(px(736.0 * 0.8))
+                                            .bg(gpui::red())
+                                            .px(px(16.0))
+                                            .py(px(10.0))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .h(px(edit_height))
+                                                    .child(input.clone()),
+                                            ),
+                                    )
+                                    .child(div().id("actions").pt(px(6.0)).h(px(30.0))),
+                            ),
+                        )
+                        .into_any_element()
+                })
+                .size_full()
+            }
+        }
+        let row_input = input.clone();
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            let events = cx.subscribe(&row_input, |_, _, event: &ComposerInputEvent, cx| {
+                if matches!(
+                    event,
+                    ComposerInputEvent::Edited | ComposerInputEvent::ViewportChanged
+                ) {
+                    cx.notify();
+                }
+            });
+            EditRow {
+                list: gpui::ListState::new(1, gpui::ListAlignment::Top, px(200.0)),
+                input: row_input.clone(),
+                _events: events,
+            }
+        });
+        cx.run_until_parked();
+
+        let (content_height, element_height, last_width) = cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                (
+                    input.content_height,
+                    input.last_bounds.map(|b| f32::from(b.size.height)),
+                    input.last_width,
+                )
+            })
+        });
+        assert!(
+            content_height > INPUT_LINE_HEIGHT,
+            "the draft wraps to multiple lines at the bubble cap (last_width {last_width})"
+        );
+        assert_eq!(
+            element_height,
+            Some(content_height),
+            "the text element is laid out at the measured content height"
+        );
+        let bubble = cx.debug_bounds("bubble").expect("the bubble renders");
+        assert!(
+            f32::from(bubble.size.height) >= content_height + 20.0 - 0.5,
+            "the bubble background covers every wrapped line: bubble {:?}, content {content_height}",
+            bubble.size.height,
+        );
+    }
+
+    /// The transcript seeds the edit input's measurement (via `premeasure`)
+    /// before the first paint, so the bubble's explicit height is correct on
+    /// frame one. Every rendered frame must use the same height — an
+    /// unseeded first frame renders one line tall and snaps a frame later
+    /// (the edit-click jitter).
+    #[gpui::test]
+    fn seeded_edit_bubble_does_not_snap(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let input = cx.update(|cx| cx.new(|cx| ComposerInput::new("Edit message", cx)));
+        input.update(cx, |input, cx| {
+            input.set_text(
+                "实现在chat内，输入框内按键盘的上键，切换到前一个输入的内容，可以一直按直到第一个为止。再补一段让它必然换行。实现在chat内，输入框内按键盘的上键，切换到前一个输入的内容。",
+                cx,
+            );
+        });
+
+        struct EditRow {
+            list: gpui::ListState,
+            input: Entity<ComposerInput>,
+            seed_pending: bool,
+            heights: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
+            _events: gpui::Subscription,
+        }
+        impl Render for EditRow {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                if std::mem::take(&mut self.seed_pending) {
+                    // Mirrors Transcript::render_row's first-edit-frame seed:
+                    // the window is wider than the bubble cap, so the capped
+                    // width wins.
+                    let seed_width = 736.0_f32 * 0.8 - 32.0;
+                    self.input
+                        .update(cx, |input, cx| input.premeasure(px(seed_width), window, cx));
+                }
+                let input = self.input.clone();
+                let edit_height = input.read(cx).measured_display_height();
+                self.heights.borrow_mut().push(edit_height);
+                gpui::list(self.list.clone(), move |_, _, _| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div().w_full().flex().justify_end().child(
+                                div()
+                                    .min_w_0()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_end()
+                                    .child(
+                                        div()
+                                            .id("bubble")
+                                            .debug_selector(|| "bubble".into())
+                                            .min_w_0()
+                                            .w_full()
+                                            .max_w(px(736.0 * 0.8))
+                                            .bg(gpui::red())
+                                            .px(px(16.0))
+                                            .py(px(10.0))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .h(px(edit_height))
+                                                    .child(input.clone()),
+                                            ),
+                                    )
+                                    .child(div().id("actions").pt(px(6.0)).h(px(30.0))),
+                            ),
+                        )
+                        .into_any_element()
+                })
+                .size_full()
+            }
+        }
+        let row_input = input.clone();
+        let heights = std::rc::Rc::new(std::cell::RefCell::new(Vec::<f32>::new()));
+        let heights_in_view = heights.clone();
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            let events = cx.subscribe(&row_input, |_, _, event: &ComposerInputEvent, cx| {
+                if matches!(
+                    event,
+                    ComposerInputEvent::Edited | ComposerInputEvent::ViewportChanged
+                ) {
+                    cx.notify();
+                }
+            });
+            EditRow {
+                list: gpui::ListState::new(1, gpui::ListAlignment::Top, px(200.0)),
+                input: row_input.clone(),
+                seed_pending: true,
+                heights: heights_in_view.clone(),
+                _events: events,
+            }
+        });
+        cx.run_until_parked();
+
+        let content_height = cx.update(|_, cx| input.update(cx, |input, _| input.content_height));
+        let bubble = cx.debug_bounds("bubble").expect("the bubble renders");
+        assert!(
+            f32::from(bubble.size.height) >= content_height + 20.0 - 0.5,
+            "the bubble background covers every wrapped line"
+        );
+        let frames = heights.borrow();
+        assert!(
+            content_height > INPUT_LINE_HEIGHT,
+            "the draft wraps to multiple lines at the bubble cap"
+        );
+        assert!(
+            frames.iter().all(|h| (*h - content_height).abs() < 0.01),
+            "every rendered frame used the settled height, no snap: {frames:?}"
+        );
     }
 }
