@@ -1269,6 +1269,11 @@ impl Transcript {
                         .as_ref()
                         .filter(|edit| edit.message_id == row.entry_id.as_ref())
                         .map(|edit| edit.input.clone());
+                    let edit_state = self
+                        .message_edit
+                        .as_ref()
+                        .filter(|edit| edit.message_id == row.entry_id.as_ref())
+                        .map(|edit| (edit.pending, edit.error.clone()));
                     if let Some(input) = inline_editor.as_ref()
                         && self
                             .message_edit
@@ -1360,7 +1365,18 @@ impl Transcript {
                                 .items_end()
                                 .child(bubble)
                                 .when(editing, |el| {
-                                    el.child(
+                                    let (edit_pending, edit_error) =
+                                        edit_state.clone().unwrap_or((false, None));
+                                    el.when_some(edit_error, |el, error| {
+                                        el.child(
+                                            div()
+                                                .pt(px(6.0))
+                                                .text_size(crate::typography::ui_rems(12.0))
+                                                .text_color(theme.danger_muted)
+                                                .child(error),
+                                        )
+                                    })
+                                    .child(
                                         div()
                                             .pt(px(6.0))
                                             .flex()
@@ -1387,6 +1403,7 @@ impl Transcript {
                                                         "edit-send-{}",
                                                         row.id
                                                     )))
+                                                    .when(edit_pending, |el| el.opacity(0.5))
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.submit_message_edit(cx)
                                                     })),

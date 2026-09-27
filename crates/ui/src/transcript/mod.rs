@@ -349,6 +349,10 @@ struct InlineMessageEdit {
     message_id: String,
     input: Entity<ComposerInput>,
     focus_pending: bool,
+    /// The edit RPC is in flight — Send/Enter stay inert until it settles.
+    pending: bool,
+    /// The last failed submit, surfaced under the editor until the next try.
+    error: Option<SharedString>,
     _events: Subscription,
 }
 
@@ -2169,26 +2173,34 @@ impl Transcript {
             message_id,
             input,
             focus_pending: true,
+            pending: false,
+            error: None,
             _events: events,
         });
         cx.notify();
     }
 
     fn submit_message_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.message_edit.as_ref() else {
-            return;
-        };
         let Some(chat_id) = self.chat_id.clone() else {
             return;
         };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(edit) = self.message_edit.as_mut() else {
+            return;
+        };
+        if edit.pending {
+            return;
+        }
         let prompt = edit.input.read(cx).text().trim().to_string();
         if prompt.is_empty() {
             return;
         }
         let message_id = edit.message_id.clone();
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
+        edit.pending = true;
+        edit.error = None;
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let result = crate::attachments::call_with_timeout(
                 &engine,
@@ -2203,10 +2215,23 @@ impl Transcript {
             )
             .await;
             this.update(cx, |this, cx| {
-                if let Err(error) = result {
-                    tracing::warn!(error = %error, "message edit failed");
-                } else {
-                    this.message_edit = None;
+                // A stale completion (the user cancelled or started another
+                // edit in flight) must not clobber the current editor.
+                let current = this
+                    .message_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.message_id == message_id);
+                if current {
+                    match result {
+                        Ok(_) => this.message_edit = None,
+                        Err(error) => {
+                            if let Some(edit) = this.message_edit.as_mut() {
+                                edit.pending = false;
+                                edit.error =
+                                    Some(format!("Could not send the edit: {error}").into());
+                            }
+                        }
+                    }
                 }
                 cx.notify();
             })
@@ -2691,5 +2716,115 @@ mod tests {
         assert_eq!(single_line("plain"), "plain");
         assert_eq!(single_line(""), "");
         assert_eq!(single_line("\n\n"), "");
+    }
+
+    /// The inline edit's Send/Enter stay inert while its RPC is in flight;
+    /// a failure keeps the editor open and surfaces the error for retry.
+    #[gpui::test]
+    fn message_edit_submit_is_guarded_and_surfaces_failures(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use holt_rpc::{RpcError, RpcReply, RpcService, memory_client};
+
+        #[derive(Default)]
+        struct EditEngine {
+            calls: std::sync::Mutex<Vec<serde_json::Value>>,
+            fail: std::sync::atomic::AtomicBool,
+        }
+        #[async_trait::async_trait]
+        impl RpcService for EditEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                params: serde_json::Value,
+            ) -> Result<RpcReply, RpcError> {
+                if method == holt_rpc::methods::EDIT_LAST_MESSAGE {
+                    self.calls.lock().unwrap().push(params);
+                    return if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                        Err(RpcError::Failed("engine refused".into()))
+                    } else {
+                        RpcReply::value(&serde_json::json!({}))
+                    };
+                }
+                Err(RpcError::UnknownMethod(method.into()))
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = std::sync::Arc::new(EditEngine::default());
+        let client = {
+            let _enter = runtime.enter();
+            memory_client(engine.clone())
+        };
+        let pump = |cx: &gpui::VisualTestContext| {
+            for _ in 0..20 {
+                runtime.block_on(async { tokio::task::yield_now().await });
+                cx.run_until_parked();
+            }
+        };
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| {
+            let mut s = AppState::new();
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: "original".into(),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: None,
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            s
+        });
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+
+        // A second submit while the first is in flight is inert.
+        transcript.update(cx, |this, cx| {
+            this.begin_message_edit("m-1".into(), "original".into(), cx);
+            this.submit_message_edit(cx);
+            assert!(this.message_edit.as_ref().is_some_and(|e| e.pending));
+            this.submit_message_edit(cx);
+        });
+        pump(cx);
+        assert_eq!(engine.calls.lock().unwrap().len(), 1);
+        transcript.update(cx, |this, _| {
+            assert!(this.message_edit.is_none(), "a successful edit closes");
+        });
+
+        // A failure keeps the editor open, disarms the guard, and surfaces
+        // the error until the retry.
+        engine.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        transcript.update(cx, |this, cx| {
+            this.begin_message_edit("m-1".into(), "original".into(), cx);
+            this.submit_message_edit(cx);
+        });
+        pump(cx);
+        assert_eq!(engine.calls.lock().unwrap().len(), 2);
+        transcript.update(cx, |this, cx| {
+            let edit = this.message_edit.as_ref().expect("failed edit stays open");
+            assert!(!edit.pending);
+            assert!(edit.error.is_some(), "the failure surfaces for retry");
+            this.submit_message_edit(cx);
+            let edit = this.message_edit.as_ref().unwrap();
+            assert!(edit.pending, "the retry re-arms");
+            assert!(edit.error.is_none(), "the retry clears the error");
+        });
+        engine
+            .fail
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        pump(cx);
+        assert_eq!(engine.calls.lock().unwrap().len(), 3);
+        transcript.update(cx, |this, _| {
+            assert!(this.message_edit.is_none(), "the retried edit closes");
+        });
     }
 }

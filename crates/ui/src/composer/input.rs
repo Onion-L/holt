@@ -406,6 +406,11 @@ pub struct ComposerInput {
     /// One-line fields (secret keys): never wrap — long content pans
     /// horizontally, and pasted/typed newlines are stripped.
     single_line: bool,
+    /// Per-instance cap on the laid-out height (internal scroll past it).
+    /// Hosts that cannot grow — the queued-message editor lives in a
+    /// fixed-height `uniform_list` row — clamp to a single line; `None`
+    /// means the composer textarea cap.
+    max_display_height: Option<f32>,
     /// Bumped once per `layout_text` pass — the flip logic uses it to apply at
     /// most one compact↔expanded flip per layout (a flip is only re-evaluated
     /// after the input has been measured in the new mode).
@@ -488,6 +493,7 @@ impl ComposerInput {
             mentions_enabled: false,
             masked: false,
             single_line: false,
+            max_display_height: None,
             layout_epoch: 0,
             display_is_placeholder: true,
             blink_anchor: Instant::now(),
@@ -679,7 +685,19 @@ impl ComposerInput {
     /// that size themselves from the measurement use this, not the raw
     /// content height.
     pub fn measured_display_height(&self) -> f32 {
-        self.content_height.min(TEXTAREA_MAX - TEXTAREA_PAD_V)
+        self.content_height.min(self.display_cap())
+    }
+
+    /// Cap the laid-out height: content past it scrolls internally. Used by
+    /// fixed-height hosts (the queued-message editor's `uniform_list` row)
+    /// where a growing input would paint over its neighbours.
+    pub fn set_max_display_height(&mut self, height: f32) {
+        self.max_display_height = Some(height);
+    }
+
+    fn display_cap(&self) -> f32 {
+        self.max_display_height
+            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V)
     }
 
     /// Shape at `width` immediately, in the input's own text style. A
@@ -2061,9 +2079,10 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child(ComposerTextElement {
                 input: cx.entity(),
-                // Internal scrolling once content exceeds the 260px textarea
-                // box minus its `pt-4 pb-1` padding.
-                max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
+                // Internal scrolling once content exceeds the display cap
+                // (the 260px textarea box minus its `pt-4 pb-1` padding,
+                // unless the host clamped it lower).
+                max_content_height: self.display_cap(),
             })
     }
 }
@@ -2452,5 +2471,64 @@ mod tests {
             frames.iter().all(|h| (*h - content_height).abs() < 0.01),
             "every rendered frame used the settled height, no snap: {frames:?}"
         );
+    }
+
+    /// Fixed-height hosts (the queued-message editor's 30px `uniform_list`
+    /// row) clamp the laid-out height: multi-line content scrolls
+    /// internally instead of painting over neighbouring rows.
+    #[gpui::test]
+    fn clamped_input_scrolls_internally_within_a_fixed_row(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let input = cx.update(|cx| cx.new(|cx| ComposerInput::new("Edit the queued message", cx)));
+        input.update(cx, |input, cx| {
+            input.set_max_display_height(INPUT_LINE_HEIGHT);
+            input.set_text("one\ntwo\nthree\nfour", cx);
+        });
+
+        struct Row {
+            input: Entity<ComposerInput>,
+        }
+        impl Render for Row {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .h(px(30.0))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .child(self.input.clone())
+            }
+        }
+        let row_input = input.clone();
+        let (_view, cx) = cx.add_window_view(move |_, _| Row { input: row_input });
+        cx.run_until_parked();
+
+        let (content, bounds, display) = cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                (
+                    input.content_height,
+                    input.last_bounds.map(|b| f32::from(b.size.height)),
+                    input.measured_display_height(),
+                )
+            })
+        });
+        assert!(
+            content > INPUT_LINE_HEIGHT,
+            "multi-line content measures taller than one line"
+        );
+        assert!(
+            bounds.is_some_and(|b| (b - INPUT_LINE_HEIGHT).abs() < 0.5),
+            "the leaf self-clamps to one line: {bounds:?}"
+        );
+        assert_eq!(display, INPUT_LINE_HEIGHT);
+        cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                assert!(
+                    input_max_scroll(input.content_height, INPUT_LINE_HEIGHT) > 0.0,
+                    "the overflow scrolls internally"
+                );
+            });
+        });
     }
 }

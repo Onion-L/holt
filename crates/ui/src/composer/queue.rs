@@ -7,6 +7,7 @@ use gpui::{
 };
 use holt_rpc::methods;
 
+use super::layout::INPUT_LINE_HEIGHT;
 use super::{Composer, ComposerInput, ComposerInputEvent};
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
@@ -185,7 +186,13 @@ impl Composer {
         };
         let placeholder = "Edit the queued message";
         let input = cx.new(|cx| ComposerInput::new(placeholder, cx));
-        input.update(cx, |input, cx| input.set_text(body.clone(), cx));
+        input.update(cx, |input, cx| {
+            // The editor lives in a fixed 30px `uniform_list` row: clamp the
+            // laid-out height to one line so a multi-line draft scrolls
+            // internally instead of painting over neighbouring rows.
+            input.set_max_display_height(INPUT_LINE_HEIGHT);
+            input.set_text(body.clone(), cx);
+        });
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.save_queue_edit(cx);
