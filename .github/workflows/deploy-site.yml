@@ -25,5 +25,8 @@ jobs:
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
+          # wrangler-action@v3 defaults to wrangler 3, which rejects
+          # assets-only workers (no `main`). Static assets need wrangler 4.
+          wranglerVersion: '4'
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 33cb12c112241599f30db76874a7ecbb
