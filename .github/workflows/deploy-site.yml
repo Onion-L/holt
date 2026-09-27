@@ -1,0 +1,29 @@
+# Deploys the landing page (site/) to the Cloudflare Worker `holt` on every
+# push to main that touches it. Requires the CLOUDFLARE_API_TOKEN repo secret
+# (account 33cb12c112241599f30db76874a7ecbb, "Workers Scripts: Edit").
+name: Deploy site
+
+on:
+  push:
+    branches: ['main']
+    paths: ['site/**', 'wrangler.jsonc', '.github/workflows/deploy-site.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 33cb12c112241599f30db76874a7ecbb
