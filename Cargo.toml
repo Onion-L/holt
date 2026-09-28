@@ -9,6 +9,7 @@ members = [
     "crates/ui",
     "crates/syntax",
     "apps/holt",
+    "apps/holt-runner",
 ]
 # The vendored gpui fork keeps its own (trimmed) workspace root.
 exclude = ["vendor/gpui"]

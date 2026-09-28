@@ -3322,6 +3322,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "holt-runner"
+version = "0.1.7"
+dependencies = [
+ "anyhow",
+ "futures",
+ "holt-engine",
+ "holt-rpc",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "holt-syntax"
 version = "0.1.7"
 dependencies = [
