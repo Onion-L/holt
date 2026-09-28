@@ -117,6 +117,8 @@
   .tab.torn { transform: translateY(70%) rotate(14deg); opacity: 0; transition: transform .6s cubic-bezier(.5,0,.8,.5), opacity .6s ease-in; pointer-events: none; }
 
   .foot { text-align: center; margin-top: 44px; font-size: 12px; color: #8a867c; letter-spacing: .04em; }
+  .foot a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+  .foot a:hover { color: var(--paper); }
   .toast {
     position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 10px); opacity: 0; transition: .2s ease-out;
     background: var(--paper); color: var(--blue); font: 500 12px "Geist Mono", monospace; padding: 8px 12px; border: 2px solid var(--blue);
@@ -183,7 +185,7 @@
     </div>
   </div>
 </main>
-<div class="foot mono">v<span data-version>0.1.5</span> · signed &amp; notarized · GPL-3.0</div>
+<div class="foot mono">v<span data-version>0.1.5</span> · signed &amp; notarized · GPL-3.0 · <a href="changelog.html">changelog</a></div>
 <div class="toast" id="toast" role="status">downloading…</div>
 
 <script>
