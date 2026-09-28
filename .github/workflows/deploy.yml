@@ -1,0 +1,25 @@
+# Deploy the landing page (site/) to the `holt` Cloudflare Worker on push.
+# Needs the CLOUDFLARE_API_TOKEN repo secret ("Edit Cloudflare Workers" template).
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

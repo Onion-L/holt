@@ -1,5 +1,6 @@
 {
   "name": "holt",
+  "account_id": "33cb12c112241599f30db76874a7ecbb",
   "compatibility_date": "2025-01-01",
   "assets": {
     "directory": "./site"
