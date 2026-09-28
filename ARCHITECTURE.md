@@ -47,6 +47,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (ADR-0028): `SaveModelRecord` /
   `RemoveModelRecord` (a complete record replaces a same-id entry outright),
   `SaveCustomProvider` / `RemoveCustomProvider` (user-defined providers),
+  `SetProviderLogo` / `RemoveProviderLogo` (a custom provider's logo,
+  inlined into its `ListProviders` row),
   `SetHiddenModels` (listings only — resolution keeps working),
   `ListHiddenModels` (the greyed ids the Settings page unhides), and
   `ResetProviderCatalog` (per-provider, or global when `providerId` is
@@ -622,6 +624,9 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
 - `turn-changes/<chatId>/<messageId>.json` — one settled Turn's frozen change
   set (ADR-0024).
 - `images/` — Holt-managed pasted pixels.
+- `provider-logos/<providerId>.{png,svg}` — custom provider logos, normalized
+  on upload (rasters → PNG ≤ 128px, SVG verbatim); removed with the
+  definition.
 - Per-feature settings records: `provider-credentials.json`,
   `provider-store.json`, `provider-settings.json`, `title-settings.json`,
   `web-search.json`, `permission-mode-default.json`, `mcp.json` (the MCP

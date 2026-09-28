@@ -139,14 +139,12 @@ fn diff_line(line: &SharedString, first: bool, theme: &Theme) -> gpui::Div {
 }
 
 /// A provider's brand mark, or the generic bot glyph.
-fn provider_mark(provider_id: &str, theme: &Theme) -> gpui::Svg {
-    let (path, tint) =
-        crate::pickers::provider_brand_icon(&holt_proto::ProviderId::from(provider_id))
-            .unwrap_or((crate::icons::BOT, Some(theme.text_muted)));
-    crate::icons::icon(path)
-        .size(px(14.0))
-        .flex_none()
-        .text_color(tint.unwrap_or(theme.text))
+fn provider_mark(provider_id: &str, theme: &Theme) -> gpui::AnyElement {
+    match crate::pickers::provider_brand_icon(&holt_proto::ProviderId::from(provider_id)) {
+        Some(mark) => mark.render(px(14.0), theme.text),
+        None => crate::provider_logos::BrandMark::icon(crate::icons::BOT)
+            .render(px(14.0), theme.text_muted),
+    }
 }
 
 /// The proposal's target providers: mark, name, and the concrete id — an

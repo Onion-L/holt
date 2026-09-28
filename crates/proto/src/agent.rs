@@ -61,6 +61,28 @@ pub struct Provider {
     /// never part of the compiled catalog. Builtin rows are not.
     #[serde(default)]
     pub custom: bool,
+    /// A user-set logo for a custom provider; builtin rows use the UI's
+    /// compiled brand marks and never carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<ProviderLogo>,
+}
+
+/// A custom provider's stored logo, inlined into its [`Provider`] row. The
+/// engine normalizes uploads: rasters become a PNG of at most 128px on the
+/// long edge; SVGs are kept verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderLogo {
+    pub format: ProviderLogoFormat,
+    /// Base64 of the stored file.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderLogoFormat {
+    Png,
+    Svg,
 }
 
 impl Provider {
@@ -77,6 +99,7 @@ impl Provider {
                 configured: variant.configured,
                 variants: Vec::new(),
                 custom: self.custom,
+                logo: self.logo.clone(),
             })
             .collect()
     }

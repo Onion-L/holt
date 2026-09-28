@@ -64,6 +64,13 @@ pub mod methods {
     /// replace the provider's hidden set wholesale.
     pub const SAVE_CUSTOM_PROVIDER: &str = "SaveCustomProvider";
     pub const REMOVE_CUSTOM_PROVIDER: &str = "RemoveCustomProvider";
+    /// A custom provider's logo: params `{providerId, data}` with `data`
+    /// the base64 of a PNG/JPEG/WebP/GIF or SVG file. The engine stores a
+    /// normalized copy (rasters → PNG ≤ 128px; SVG verbatim) that
+    /// `ListProviders` inlines as the row's `logo`. Builtin ids are
+    /// rejected. `RemoveProviderLogo` params are `{providerId}`.
+    pub const SET_PROVIDER_LOGO: &str = "SetProviderLogo";
+    pub const REMOVE_PROVIDER_LOGO: &str = "RemoveProviderLogo";
     pub const SAVE_MODEL_RECORD: &str = "SaveModelRecord";
     pub const REMOVE_MODEL_RECORD: &str = "RemoveModelRecord";
     pub const SET_HIDDEN_MODELS: &str = "SetHiddenModels";

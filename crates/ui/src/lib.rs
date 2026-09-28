@@ -40,6 +40,7 @@ pub mod notifications;
 pub mod path_refs;
 pub mod pickers;
 pub mod popover;
+pub mod provider_logos;
 pub mod rail;
 pub mod settings;
 pub mod shell;

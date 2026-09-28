@@ -91,6 +91,7 @@ pub(super) fn add_provider_dialog(
         .child(manual_tab(
             page.new_provider_error.clone(),
             &page.new_provider_inputs,
+            page.new_provider_logo.as_deref(),
             theme,
             cx,
         ))
@@ -102,9 +103,58 @@ pub(super) fn add_provider_dialog(
 pub(super) fn manual_tab(
     error: Option<String>,
     inputs: &HashMap<&'static str, Entity<ComposerInput>>,
+    logo: Option<&std::path::Path>,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
+    let logo_name = logo.map(|path| {
+        SharedString::from(
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        )
+    });
+    let logo_row = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(widgets::field_label(theme, "Logo (optional)"))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    action_button(theme)
+                        .flex_none()
+                        .id("choose-new-provider-logo")
+                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .on_click(cx.listener(|page, _, _, cx| page.pick_new_provider_logo(cx)))
+                        .child("Choose image…"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child(logo_name.clone().unwrap_or_else(|| {
+                            "PNG, JPG, WebP, or SVG (tinted to the theme)".into()
+                        })),
+                )
+                .children(logo_name.map(|_| {
+                    widgets::ghost_action(theme)
+                        .flex_none()
+                        .id("clear-new-provider-logo")
+                        .hover(move |style| widgets::ghost_hover(theme, style))
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.new_provider_logo = None;
+                            cx.notify();
+                        }))
+                        .child("Clear")
+                })),
+        );
     let field = |key: &'static str, label: &str| {
         div()
             .flex_1()
@@ -133,6 +183,7 @@ pub(super) fn manual_tab(
         .child(field("baseUrl", "Base URL"))
         .child(field("defaultApi", "Default API dialect"))
         .child(field("apiKey", "API key (optional)"))
+        .child(logo_row)
         .children(error.map(|message| {
             div()
                 .text_size(crate::typography::ui_rems(11.0))
@@ -225,6 +276,7 @@ impl ProvidersPage {
     pub(super) fn close_add_dialog(&mut self, cx: &mut Context<Self>) {
         self.add_dialog = false;
         self.new_provider_error = None;
+        self.new_provider_logo = None;
         cx.notify();
     }
 
@@ -249,6 +301,7 @@ impl ProvidersPage {
         // every other key entry right after the definition; empty means
         // "leave any stored key untouched" — never a clearing write.
         let api_key = field(self, "apiKey", cx);
+        let logo = self.new_provider_logo.clone();
         if let Some(problem) = new_provider_problem(&id, &base_url, &default_api) {
             self.new_provider_error = Some(problem);
             cx.notify();
@@ -281,6 +334,13 @@ impl ProvidersPage {
                 ),
                 _ => None,
             };
+            let logo_result = match (&result, logo) {
+                (Ok(_), Some(path)) => Some(match read_logo_file(&path) {
+                    Ok(bytes) => upload_logo_bytes(engine.client(), &id, &bytes).await,
+                    Err(error) => Err(error),
+                }),
+                _ => None,
+            };
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
@@ -296,6 +356,9 @@ impl ProvidersPage {
                         if let Some(Err(error)) = key_result {
                             page.fail(error.to_string(), cx);
                         }
+                        if let Some(Err(error)) = logo_result {
+                            page.fail(format!("Logo not saved: {error}"), cx);
+                        }
                     }
                     Err(error) => page.new_provider_error = Some(error.to_string()),
                 }
@@ -303,6 +366,23 @@ impl ProvidersPage {
             })
             .ok();
         }));
+    }
+
+    /// Choose the Add dialog's logo file; it uploads with the definition.
+    pub(super) fn pick_new_provider_logo(&mut self, cx: &mut Context<Self>) {
+        // `runModal` must run outside every gpui borrow (see the backdrop
+        // picker in Settings → Appearance).
+        cx.spawn(async move |page, cx| {
+            let Some(path) = crate::file_dialog::pick_logo() else {
+                return;
+            };
+            page.update(cx, |page, cx| {
+                page.new_provider_logo = Some(path);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn remove_custom_provider(
@@ -361,9 +441,18 @@ mod tests {
         harness: &mut ProvidersHarness<'_>,
         key: &str,
     ) -> Vec<serde_json::Value> {
+        fill_and_save_manual_with_logo(harness, key, None)
+    }
+
+    fn fill_and_save_manual_with_logo(
+        harness: &mut ProvidersHarness<'_>,
+        key: &str,
+        logo: Option<std::path::PathBuf>,
+    ) -> Vec<serde_json::Value> {
         harness.click("open-add-provider");
         harness.pump();
         harness.page.update(&mut *harness.visual, |page, cx| {
+            page.new_provider_logo = logo;
             for (field, text) in [
                 ("id", "acme"),
                 ("name", "Acme Labs"),
@@ -463,5 +552,33 @@ mod tests {
             Some("sk-original"),
             "the stored key survived the re-save"
         );
+    }
+
+    /// A logo picked in the dialog uploads right after the definition,
+    /// under the new provider's id; none picked means no logo call.
+    #[gpui::test]
+    fn the_add_dialog_logo_uploads_after_the_definition(cx: &mut gpui::TestAppContext) {
+        let mut harness = providers_harness(cx);
+        let logo = harness._dir.path().join("acme.svg");
+        std::fs::write(&logo, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+        let saves = fill_and_save_manual_with_logo(&mut harness, "", Some(logo));
+        assert_eq!(saves.len(), 1);
+        let calls = harness.engine.logo_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "one logo upload: {calls:?}");
+        assert_eq!(calls[0].0, methods::SET_PROVIDER_LOGO);
+        assert_eq!(calls[0].1["providerId"], "acme");
+        let data = calls[0].1["data"].as_str().unwrap();
+        assert_eq!(
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).unwrap(),
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        );
+        let pending = harness.page.update(&mut *harness.visual, |page, _| {
+            page.new_provider_logo.clone()
+        });
+        assert!(pending.is_none(), "the picked file clears with the dialog");
+
+        harness.engine.logo_calls.lock().unwrap().clear();
+        fill_and_save_manual(&mut harness, "");
+        assert!(harness.engine.logo_calls.lock().unwrap().is_empty());
     }
 }

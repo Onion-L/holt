@@ -54,7 +54,10 @@ impl Pickers {
                 pickers.catalog_rev += 1;
                 pickers.providers = match result {
                     Ok(value) => match serde_json::from_value::<Vec<Provider>>(value) {
-                        Ok(list) => Loadable::Ready(list),
+                        Ok(list) => {
+                            crate::provider_logos::sync(&list, cx);
+                            Loadable::Ready(list)
+                        }
                         Err(err) => Loadable::Error(err.to_string()),
                     },
                     Err(err) => Loadable::Error(err.to_string()),

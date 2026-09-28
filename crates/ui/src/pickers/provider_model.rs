@@ -9,6 +9,7 @@ use holt_proto::{ChatConfig, Model, Provider, ProviderId, ReasoningLevel};
 use holt_rpc::methods;
 
 use crate::popover::{self, Loadable};
+use crate::provider_logos::BrandMark;
 use crate::theme::Theme;
 
 use super::Pickers;
@@ -450,14 +451,14 @@ impl Pickers {
             let abbreviation = descriptor.abbreviation.clone();
             let provider_name: SharedString = descriptor.name.clone().into();
             let brand_mark: AnyElement = match provider_brand_icon(&provider) {
-                Some((path, tint)) => crate::icons::icon(path)
-                    .size(px(18.0))
-                    .text_color(tint.unwrap_or(if is_viewed {
+                Some(mark) => mark.render(
+                    px(18.0),
+                    if is_viewed {
                         theme.text
                     } else {
                         theme.text_muted
-                    }))
-                    .into_any_element(),
+                    },
+                ),
                 None => div()
                     .text_size(crate::typography::ui_rems(10.0))
                     .text_color(if is_viewed {
@@ -663,8 +664,8 @@ impl Pickers {
         let is_selected = Some(row.provider.clone()) == effective
             && self.selected_model(cx).map(|m| m.id.as_str()) == Some(row.model.id.as_str());
         let is_active = ix == self.active;
-        let (icon_path, tint) =
-            provider_brand_icon(&row.provider).unwrap_or((crate::icons::BOT, None));
+        let brand_mark = provider_brand_icon(&row.provider)
+            .unwrap_or_else(|| BrandMark::icon(crate::icons::BOT));
         let label: SharedString = row.model.label.clone().into();
         let provider_name = row.provider_name.clone();
         // Provider attribution (field report: several connected opencode
@@ -767,12 +768,7 @@ impl Pickers {
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
-                        .child(
-                            crate::icons::icon(icon_path)
-                                .size(px(11.0))
-                                .flex_none()
-                                .text_color(tint.unwrap_or(theme.text_muted.opacity(0.7))),
-                        )
+                        .child(brand_mark.render(px(11.0), theme.text_muted.opacity(0.7)))
                         .child(
                             div()
                                 .flex_none()
@@ -1030,10 +1026,15 @@ fn empty_list_note(theme: &Theme, copy: &str) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn provider_brand_icon(
-    provider: &ProviderId,
-) -> Option<(&'static str, Option<gpui::Hsla>)> {
-    provider_brand_icon_for(provider, crate::theme::current_appearance()).map(|path| (path, None))
+/// The compiled brand icon for a catalog provider id.
+pub(crate) fn builtin_brand_icon(provider: &ProviderId) -> Option<&'static str> {
+    provider_brand_icon_for(provider, crate::theme::current_appearance())
+}
+
+/// A provider's mark: the compiled brand icon, else a custom provider's
+/// logo (see [`crate::provider_logos`]).
+pub(crate) fn provider_brand_icon(provider: &ProviderId) -> Option<BrandMark> {
+    crate::provider_logos::brand_mark(provider)
 }
 
 #[cfg(test)]
@@ -1073,6 +1074,7 @@ mod tests {
             configured,
             variants: Vec::new(),
             custom: false,
+            logo: None,
         }
     }
 

@@ -726,6 +726,7 @@ mod tests {
             configured: variants.iter().any(|v| v.configured),
             variants,
             custom: false,
+            logo: None,
         };
         let providers = vec![
             row("openai", vec![variant("openai", true)]),
@@ -756,6 +757,7 @@ mod tests {
             configured: false,
             variants: vec![variant("minimax", false), variant("minimax-cn", false)],
             custom: false,
+            logo: None,
         };
         assert!(offered_providers(&[org]).is_empty());
         // A standalone configured row flattens to itself.
@@ -766,6 +768,7 @@ mod tests {
             configured: true,
             variants: vec![variant("openai", true)],
             custom: false,
+            logo: None,
         };
         let offered = offered_providers(&[standalone]);
         assert_eq!(offered.len(), 1);

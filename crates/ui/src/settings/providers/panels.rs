@@ -319,23 +319,29 @@ pub(super) fn provider_model_list(
     }
 }
 
+/// A pending custom-provider removal, awaiting its confirm dialog.
+pub(super) struct RemoveConfirm {
+    provider: String,
+    org: String,
+    name: String,
+}
+
 /// The panel's bottom row: reset to the catalog (two-step), and for custom
-/// providers the definition removal (two-step; the armed copy names what
-/// stays behind — the key and model records survive a definition removal).
+/// providers the definition removal (through a confirm dialog).
 pub(super) fn panel_danger_row(
     index: usize,
     provider_id: &str,
-    custom: bool,
+    provider: &Provider,
     armed: bool,
-    remove_armed: bool,
     theme: &Theme,
     cx: &mut Context<ProvidersPage>,
 ) -> AnyElement {
     let danger = theme.danger;
     let danger_muted = theme.danger_muted;
+    let custom = provider.custom;
     let reset_provider = provider_id.to_string();
     let remove_provider = provider_id.to_string();
-    let remove_org = provider_id.to_string();
+    let remove_name = provider.name.clone();
     div()
         .pt(px(12.0))
         .border_t_1()
@@ -364,14 +370,67 @@ pub(super) fn panel_danger_row(
                         .id(("remove-custom-provider", index))
                         .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
                         .on_click(cx.listener(move |page, _, _, cx| {
-                            page.arm_or_remove(remove_provider.clone(), remove_org.clone(), cx)
+                            page.confirm_remove = Some(RemoveConfirm {
+                                provider: remove_provider.clone(),
+                                org: remove_provider.clone(),
+                                name: remove_name.clone(),
+                            });
+                            cx.notify();
                         }))
-                        .child(if remove_armed {
-                            "Confirm remove — the API key and model records stay"
-                        } else {
-                            "Remove provider"
-                        })
+                        .child("Remove provider")
                 })),
+        )
+        .into_any_element()
+}
+
+/// Confirm removing a custom provider's definition; the copy names what
+/// stays behind.
+pub(super) fn remove_provider_dialog(
+    confirm: &RemoveConfirm,
+    theme: &Theme,
+    cx: &mut Context<ProvidersPage>,
+) -> AnyElement {
+    let provider = confirm.provider.clone();
+    let org = confirm.org.clone();
+    popover::dialog_card(theme)
+        .on_mouse_down_out(cx.listener(|page, _, _, cx| {
+            page.confirm_remove = None;
+            cx.notify();
+        }))
+        .child(popover::dialog_title(
+            theme,
+            &format!("Remove {}?", confirm.name),
+        ))
+        .child(div().mt(px(6.0)).child(popover::dialog_body(
+            theme,
+            "The provider definition and its logo are deleted. The API key and model \
+             records stay, so adding a provider with the same id brings them back.",
+        )))
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(theme, "Cancel", "remove-provider-cancel")
+                        .id("remove-provider-cancel")
+                        .debug_selector(|| "remove-provider-cancel".into())
+                        .on_click(cx.listener(|page, _, _, cx| {
+                            page.confirm_remove = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    popover::btn_danger(theme, "Remove")
+                        .id("remove-provider-confirm")
+                        .debug_selector(|| "remove-provider-confirm".into())
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.confirm_remove = None;
+                            page.remove_custom_provider(provider.clone(), org.clone(), cx);
+                        })),
+                ),
         )
         .into_any_element()
 }
@@ -581,6 +640,9 @@ impl ProvidersPage {
                         .unwrap_or_else(|error| Loadable::Error(error.to_string())),
                     Err(error) => Loadable::Error(error.to_string()),
                 };
+                if let Some(rows) = page.providers.ready() {
+                    crate::provider_logos::sync(rows, cx);
+                }
                 page.apply_focus(cx);
                 cx.notify();
             })
@@ -754,7 +816,6 @@ impl ProvidersPage {
     pub(super) fn close_panel_forms(&mut self) {
         self.record_form = None;
         self.armed_reset = None;
-        self.armed_remove = None;
         self.hidden_expanded.clear();
     }
 
@@ -967,21 +1028,6 @@ impl ProvidersPage {
         }
     }
 
-    pub(super) fn arm_or_remove(
-        &mut self,
-        provider: String,
-        org_id: String,
-        cx: &mut Context<Self>,
-    ) {
-        if self.armed_remove.as_deref() == Some(provider.as_str()) {
-            self.armed_remove = None;
-            self.remove_custom_provider(provider, org_id, cx);
-        } else {
-            self.armed_remove = Some(provider);
-            cx.notify();
-        }
-    }
-
     pub(super) fn reset_provider(&mut self, provider: String, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -1174,6 +1220,32 @@ mod tests {
     #[gpui::test]
     fn focusing_a_variant_expands_its_organization_on_it(cx: &mut gpui::TestAppContext) {
         use crate::settings::providers::test_support::*;
+
+        /// Removing a custom provider goes through the confirm dialog: Cancel
+        /// sends nothing, Remove sends the definition removal.
+        #[gpui::test]
+        fn removing_a_custom_provider_asks_first(cx: &mut gpui::TestAppContext) {
+            let mut harness = providers_harness(cx);
+            let arm = |harness: &mut ProvidersHarness<'_>| {
+                harness.page.update(&mut *harness.visual, |page, cx| {
+                    page.confirm_remove = Some(RemoveConfirm {
+                        provider: "acme".into(),
+                        org: "acme".into(),
+                        name: "Acme".into(),
+                    });
+                    cx.notify();
+                });
+                harness.pump();
+            };
+            arm(&mut harness);
+            harness.click("remove-provider-cancel");
+            assert!(harness.engine.removed.lock().unwrap().is_empty());
+            arm(&mut harness);
+            harness.click("remove-provider-confirm");
+            let removed = harness.engine.removed.lock().unwrap().clone();
+            assert_eq!(removed.len(), 1, "{removed:?}");
+            assert_eq!(removed[0]["providerId"], "acme");
+        }
 
         let harness = providers_harness(cx);
         harness.page.update(&mut *harness.visual, |page, cx| {

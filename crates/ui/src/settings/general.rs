@@ -1938,6 +1938,7 @@ mod tests {
                 },
             ],
             custom: false,
+            logo: None,
         }];
         let configured = configured_providers(&providers);
         assert_eq!(configured.len(), 1);
@@ -1989,6 +1990,7 @@ mod tests {
                 configured,
             }],
             custom: false,
+            logo: None,
         }
     }
 

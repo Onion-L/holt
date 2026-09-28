@@ -3144,6 +3144,33 @@ impl RpcService for EngineService {
                 self.refresh_catalog_windows();
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::SET_PROVIDER_LOGO => {
+                let provider = required_string(&params, "providerId")?;
+                let data = required_string(&params, "data")?;
+                if data.len() > crate::provider_logos::MAX_UPLOAD_BYTES.div_ceil(3) * 4 {
+                    return Err(RpcError::BadParams(
+                        "logo exceeds the 8 MiB upload limit".into(),
+                    ));
+                }
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    data.as_bytes(),
+                )
+                .map_err(|error| RpcError::BadParams(format!("data is not base64: {error}")))?;
+                self.providers
+                    .settings
+                    .set_custom_provider_logo(provider, &bytes)
+                    .map_err(RpcError::BadParams)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::REMOVE_PROVIDER_LOGO => {
+                let provider = required_string(&params, "providerId")?;
+                self.providers
+                    .settings
+                    .remove_custom_provider_logo(provider)
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::SAVE_MODEL_RECORD => {
                 let provider = required_string(&params, "providerId")?;
                 let mut record = params

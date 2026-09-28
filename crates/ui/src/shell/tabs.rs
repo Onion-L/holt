@@ -287,14 +287,7 @@ impl Shell {
                             provider
                                 .as_ref()
                                 .and_then(crate::pickers::provider_brand_icon),
-                            |el, (path, tint)| {
-                                el.child(
-                                    icon(path)
-                                        .size(px(14.0))
-                                        .flex_none()
-                                        .text_color(tint.unwrap_or(theme.text_muted)),
-                                )
-                            },
+                            |el, mark| el.child(mark.render(px(14.0), theme.text_muted)),
                         )
                         .child(
                             div()

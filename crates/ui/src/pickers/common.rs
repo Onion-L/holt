@@ -18,7 +18,7 @@ impl Pickers {
         kind: PickerKind,
         label: SharedString,
         set: bool,
-        chip_icon: Option<(&'static str, Option<gpui::Hsla>)>,
+        chip_icon: Option<crate::provider_logos::BrandMark>,
         // The chip never collapses while identity resolves (user report):
         // `icon_loading` swaps the brand slot for the pixel-glyph loader
         // (provider unknown), `label_loading` swaps the text for a ghost bar
@@ -98,13 +98,7 @@ impl Pickers {
             })
             .when_some(
                 (!icon_loading).then_some(chip_icon).flatten(),
-                |el, (path, tint)| {
-                    el.child(
-                        crate::icons::icon(path)
-                            .size(px(16.0))
-                            .text_color(tint.unwrap_or(theme.text_muted)),
-                    )
-                },
+                |el, mark| el.child(mark.render(px(16.0), theme.text_muted)),
             )
             .when(label_loading, |el| {
                 el.child(popover::skeleton_bar(56.0, cx.entity_id(), cx))

@@ -19,6 +19,10 @@ pub(super) struct FakeProvidersEngine {
     pub(super) probes: std::sync::Mutex<Vec<serde_json::Value>>,
     /// The canned ProbeProvider listing (bare ids, one already offered).
     pub(super) probe_ids: Vec<String>,
+    /// SetProviderLogo / RemoveProviderLogo calls: (method, params).
+    pub(super) logo_calls: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    /// RemoveCustomProvider params, in call order.
+    pub(super) removed: std::sync::Mutex<Vec<serde_json::Value>>,
     /// The store RevealProviderKey reads (provider → key).
     pub(super) keys: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
@@ -89,6 +93,17 @@ impl holt_rpc::RpcService for FakeProvidersEngine {
             methods::LIST_HIDDEN_MODELS => RpcReply::value(&serde_json::Value::Array(Vec::new())),
             methods::SAVE_CUSTOM_PROVIDER => {
                 self.custom_saves.lock().unwrap().push(params.clone());
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::REMOVE_CUSTOM_PROVIDER => {
+                self.removed.lock().unwrap().push(params.clone());
+                RpcReply::value(&serde_json::json!({}))
+            }
+            methods::SET_PROVIDER_LOGO | methods::REMOVE_PROVIDER_LOGO => {
+                self.logo_calls
+                    .lock()
+                    .unwrap()
+                    .push((method.to_string(), params.clone()));
                 RpcReply::value(&serde_json::json!({}))
             }
             methods::SAVE_PROVIDER_KEY => {
@@ -182,6 +197,8 @@ pub(super) fn providers_harness<'a>(cx: &'a mut gpui::TestAppContext) -> Provide
         probes: std::sync::Mutex::new(Vec::new()),
         probe_ids: vec!["acme-9".to_string(), "acme-1".to_string()],
         keys: std::sync::Mutex::new(Default::default()),
+        logo_calls: std::sync::Mutex::new(Vec::new()),
+        removed: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

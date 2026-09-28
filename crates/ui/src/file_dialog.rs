@@ -6,11 +6,25 @@
 
 use std::path::PathBuf;
 
+/// Extensions a custom provider logo may be picked from — the engine's
+/// normalizer accepts these rasters and SVG.
+pub const LOGO_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg"];
+
 /// Pick one image file. `None` on cancel, or on platforms without a native
 /// dialog.
+pub fn pick_image() -> Option<PathBuf> {
+    pick_file(crate::chat_backdrop::SUPPORTED_EXTENSIONS)
+}
+
+/// Pick one custom provider logo.
+pub fn pick_logo() -> Option<PathBuf> {
+    pick_file(LOGO_EXTENSIONS)
+}
+
+/// Pick one file with one of `extensions`.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // objc 0.2's msg_send carries a cfg(cargo-clippy) branch
-pub fn pick_image() -> Option<PathBuf> {
+fn pick_file(extensions: &[&str]) -> Option<PathBuf> {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::ffi::{CStr, CString};
@@ -32,10 +46,9 @@ pub fn pick_image() -> Option<PathBuf> {
         let _: () = msg_send![panel, setCanChooseDirectories: false];
         let _: () = msg_send![panel, setAllowsMultipleSelection: false];
         // Extension filter rather than the UTType `setAllowedContentTypes`
-        // API: dynamic messaging needs no extra framework link. The list is
-        // the backdrop decoder's contract, shared with the drop targets.
+        // API: dynamic messaging needs no extra framework link.
         let types: *mut Object = msg_send![class!(NSMutableArray), array];
-        for &extension in crate::chat_backdrop::SUPPORTED_EXTENSIONS {
+        for &extension in extensions {
             let s = ns_string(extension);
             let _: () = msg_send![types, addObject: s];
         }
@@ -66,6 +79,6 @@ pub fn pick_image() -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn pick_image() -> Option<PathBuf> {
+fn pick_file(_extensions: &[&str]) -> Option<PathBuf> {
     None
 }

@@ -540,7 +540,7 @@ fn save_original_reply(data: &str, destination: &Path) -> Result<(), gpui::Share
 /// Decode image bytes with explicit budgets and convert to gpui-ready BGRA,
 /// EXIF orientation applied. `max_edge` proportionally downscales (the
 /// thumbnail path); `None` keeps source detail (the viewer path).
-fn decode_to_render(
+pub(crate) fn decode_to_render(
     bytes: &[u8],
     max_edge: Option<u32>,
 ) -> Result<(Arc<RenderImage>, u32, u32), gpui::SharedString> {

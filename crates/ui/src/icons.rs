@@ -141,6 +141,7 @@ macro_rules! icon_assets {
                     )),)+
                     _ => load_font_asset(path)
                         .or_else(|| load_provider_asset(path))
+                        .or_else(|| crate::provider_logos::load_svg_asset(path))
                         .or_else(|| load_app_asset(path)),
                 })
             }

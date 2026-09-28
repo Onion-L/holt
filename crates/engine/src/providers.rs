@@ -74,6 +74,7 @@ impl ProviderAdapter {
                         configured: variant.configured,
                         variants: vec![variant],
                         custom: false,
+                        logo: None,
                     });
                 }
             }
@@ -97,6 +98,7 @@ impl ProviderAdapter {
                     configured,
                 }],
                 custom: true,
+                logo: self.settings.custom_provider_logo(&provider.id),
             });
         }
         rows
@@ -618,6 +620,18 @@ mod tests {
         assert_eq!(row.name, "Acme Gateway");
         assert_eq!(row.variants.len(), 1);
         assert!(!row.configured);
+        assert!(row.logo.is_none());
+
+        adapter
+            .settings
+            .set_custom_provider_logo("acme", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+            .unwrap();
+        let rows = futures::executor::block_on(adapter.providers());
+        let row = rows.iter().find(|row| row.id.0 == "acme").unwrap();
+        assert_eq!(
+            row.logo.as_ref().map(|logo| logo.format),
+            Some(holt_proto::ProviderLogoFormat::Svg)
+        );
 
         assert!(adapter.is_eligible("acme"));
         let models = adapter.models_for("acme");

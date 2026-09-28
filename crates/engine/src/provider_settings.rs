@@ -8,7 +8,7 @@ use std::{
 use pi_core::ai::{compat, types::Model as CoreModel};
 use serde::{Deserialize, Serialize};
 
-use crate::{EngineError, provider_store};
+use crate::{EngineError, provider_logos::ProviderLogoStore, provider_store};
 
 const FILE_NAME: &str = "provider-settings.json";
 
@@ -73,6 +73,9 @@ pub(crate) fn custom_provider_problem(provider: &CustomProvider) -> Option<&'sta
 pub struct ProviderSettingsStore {
     path: PathBuf,
     settings: Arc<RwLock<StoredSettings>>,
+    /// Custom provider logos live beside the settings file, one file each;
+    /// they follow the definition's lifetime (remove / reset drop them).
+    logos: ProviderLogoStore,
 }
 
 impl ProviderSettingsStore {
@@ -103,6 +106,7 @@ impl ProviderSettingsStore {
         Ok(Self {
             path,
             settings: Arc::new(RwLock::new(settings)),
+            logos: ProviderLogoStore::new(data_dir),
         })
     }
 
@@ -143,6 +147,35 @@ impl ProviderSettingsStore {
             .custom_providers
             .get(provider_id)
             .cloned()
+    }
+
+    pub fn custom_provider_logo(&self, provider_id: &str) -> Option<holt_proto::ProviderLogo> {
+        self.logos.load(provider_id)
+    }
+
+    /// Store a logo for an existing custom provider; `Err` carries a
+    /// user-facing reason (unknown provider, unsupported or oversized image).
+    pub fn set_custom_provider_logo(&self, provider_id: &str, bytes: &[u8]) -> Result<(), String> {
+        if self.custom_provider(provider_id).is_none() {
+            return Err(format!("{provider_id} is not a custom provider"));
+        }
+        self.logos.save(provider_id, bytes)
+    }
+
+    pub fn remove_custom_provider_logo(&self, provider_id: &str) -> Result<(), EngineError> {
+        self.logos.remove(provider_id)
+    }
+
+    /// Best-effort logo cleanup after the definition is gone: a leftover
+    /// file is inert (rows only read logos for live definitions).
+    fn drop_logo(&self, provider_id: &str) {
+        if let Err(error) = self.logos.remove(provider_id) {
+            tracing::warn!(
+                target: "holt::engine",
+                provider = provider_id,
+                "could not remove a custom provider logo: {error}"
+            );
+        }
     }
 
     pub fn hidden_models_for(&self, provider_id: &str) -> Vec<String> {
@@ -294,6 +327,7 @@ impl ProviderSettingsStore {
             return Ok(false);
         }
         self.commit(settings, previous)?;
+        self.drop_logo(provider_id);
         Ok(true)
     }
 
@@ -335,6 +369,7 @@ impl ProviderSettingsStore {
             return Ok(false);
         }
         self.commit(settings, previous)?;
+        self.drop_logo(provider_id);
         Ok(true)
     }
 
@@ -348,7 +383,11 @@ impl ProviderSettingsStore {
             .unwrap_or_else(|error| error.into_inner());
         let previous = settings.clone();
         *settings = StoredSettings::default();
-        self.commit(settings, previous)
+        self.commit(settings, previous)?;
+        if let Err(error) = self.logos.remove_all() {
+            tracing::warn!(target: "holt::engine", "could not remove provider logos: {error}");
+        }
+        Ok(())
     }
 
     fn commit(
@@ -735,6 +774,42 @@ mod tests {
         assert!(settings.custom_provider("acme").is_none());
         let restored = ProviderSettingsStore::load(dir.path()).unwrap();
         assert!(restored.custom_providers().is_empty());
+    }
+
+    #[test]
+    fn custom_provider_logos_follow_the_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#;
+        assert!(
+            settings.set_custom_provider_logo("openai", svg).is_err(),
+            "only custom providers take a logo"
+        );
+
+        settings
+            .upsert_custom_provider(custom_provider("acme"))
+            .unwrap();
+        settings.set_custom_provider_logo("acme", svg).unwrap();
+        assert!(settings.custom_provider_logo("acme").is_some());
+        settings.remove_custom_provider_logo("acme").unwrap();
+        assert!(settings.custom_provider_logo("acme").is_none());
+
+        // Removing, resetting, or resetting everything drops the file.
+        settings.set_custom_provider_logo("acme", svg).unwrap();
+        assert!(settings.remove_custom_provider("acme").unwrap());
+        settings
+            .upsert_custom_provider(custom_provider("acme"))
+            .unwrap();
+        assert!(settings.custom_provider_logo("acme").is_none());
+        settings.set_custom_provider_logo("acme", svg).unwrap();
+        assert!(settings.reset_provider("acme").unwrap());
+        settings
+            .upsert_custom_provider(custom_provider("acme"))
+            .unwrap();
+        assert!(settings.custom_provider_logo("acme").is_none());
+        settings.set_custom_provider_logo("acme", svg).unwrap();
+        settings.reset_all().unwrap();
+        assert!(settings.custom_provider_logo("acme").is_none());
     }
 
     #[test]

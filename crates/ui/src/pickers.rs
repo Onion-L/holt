@@ -65,8 +65,8 @@ pub use logic::{
 };
 pub use mode::{MODE_TIERS, mode_description, mode_icon, mode_index, mode_label};
 pub(crate) use mode::{resolve_permission_mode, set_chat_permission_mode};
-pub(crate) use provider_model::provider_brand_icon;
 use provider_model::{ModelRail, ModelRowData, ModelRowsKey};
+pub(crate) use provider_model::{builtin_brand_icon, provider_brand_icon};
 
 /// Dev/testing knob: `HOLT_SLOW_CATALOG_MS=<ms>` delays every provider and
 /// model catalog result app-side — the chip/tab/list loading states are
@@ -1274,10 +1274,11 @@ impl Render for Pickers {
         // remembered pick): a ghost label instead of a bare icon.
         let chip_label_loading =
             !no_providers && model_label.is_empty() && (catalog_loading || models_loading);
-        let provider_icon: (&'static str, Option<gpui::Hsla>) = match self.effective_provider(cx) {
-            Some(provider) => provider_brand_icon(&provider).unwrap_or((crate::icons::BOT, None)),
-            None if no_providers => (crate::icons::TERMINAL, Some(theme.text_muted)),
-            None => (crate::icons::BOT, Some(theme.text_muted)),
+        let provider_icon: crate::provider_logos::BrandMark = match self.effective_provider(cx) {
+            Some(provider) => provider_brand_icon(&provider)
+                .unwrap_or_else(|| crate::provider_logos::BrandMark::icon(crate::icons::BOT)),
+            None if no_providers => crate::provider_logos::BrandMark::icon(crate::icons::TERMINAL),
+            None => crate::provider_logos::BrandMark::icon(crate::icons::BOT),
         };
         let explicit_options = self.explicit_options(cx);
         let traits_set = traits_summary(

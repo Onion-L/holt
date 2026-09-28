@@ -532,13 +532,11 @@ impl Shell {
                             provider
                                 .as_ref()
                                 .and_then(crate::pickers::provider_brand_icon),
-                            |el, (path, tint)| {
-                                el.child(
-                                    icon(path)
-                                        .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                                        .flex_none()
-                                        .text_color(tint.unwrap_or(subline).opacity(0.8)),
-                                )
+                            |el, mark| {
+                                el.child(mark.render(
+                                    px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE),
+                                    subline.opacity(0.8),
+                                ))
                             },
                         )
                     })

@@ -5,6 +5,7 @@
 //! `record_form` — the manual model-record dialog (ADR-0029).
 //! `add_dialog` — the Add Provider dialog and the manual definition
 //! form.
+//! `logo_dialog` — a custom provider's logo: upload a file or paste SVG.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -29,10 +30,12 @@ use crate::{
 };
 
 mod add_dialog;
+mod logo_dialog;
 mod panels;
 mod record_form;
 
 use add_dialog::*;
+use logo_dialog::*;
 use panels::*;
 use record_form::*;
 
@@ -114,6 +117,9 @@ pub struct ProvidersPage {
     add_dialog: bool,
     new_provider_inputs: HashMap<&'static str, Entity<ComposerInput>>,
     new_provider_error: Option<String>,
+    /// The logo file picked in the Add Provider dialog, uploaded right
+    /// after the definition saves.
+    new_provider_logo: Option<std::path::PathBuf>,
     /// The mounted model-record form, targeting the expanded panel's active
     /// variant (ADR-0029's manual half of the write path).
     record_form: Option<RecordForm>,
@@ -138,9 +144,10 @@ pub struct ProvidersPage {
     /// second executes. The GLOBAL reset rides a confirm dialog instead
     /// (`confirm_reset_all`) — the armed-button copy never fit the row.
     armed_reset: Option<String>,
-    /// The same two-step for removing a custom provider's definition —
-    /// the armed copy states what stays behind (the key, the records).
-    armed_remove: Option<String>,
+    /// The remove-custom-provider confirm dialog.
+    confirm_remove: Option<RemoveConfirm>,
+    /// The logo dialog of an expanded custom provider.
+    logo_dialog: Option<LogoDialog>,
     /// The global reset's confirm dialog is open.
     confirm_reset_all: bool,
     task: Option<Task<()>>,
@@ -163,29 +170,12 @@ impl Render for ProvidersPage {
             .map(|(index, provider)| {
                 let id = provider.id.to_string();
                 let brand_mark = match crate::pickers::provider_brand_icon(&provider.id) {
-                    Some((path, tint)) => crate::icons::icon(path)
-                        .size(px(22.))
-                        .text_color(tint.unwrap_or(theme.text))
-                        .into_any_element(),
-                    // Custom providers carry no brand icon: a small bordered
-                    // monogram tile, capped at two glyphs so it never spills
-                    // past the mark column.
-                    None => div()
-                        .size(px(26.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(theme.border)
-                        .overflow_hidden()
-                        .text_size(crate::typography::ui_rems(10.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(
-                            provider.abbreviation.chars().take(2).collect::<String>(),
-                        ))
-                        .into_any_element(),
+                    Some(mark) => mark.render(px(22.), theme.text),
+                    // A custom provider without a logo: its monogram tile.
+                    None => {
+                        crate::provider_logos::monogram(&provider.abbreviation, px(26.), &theme)
+                            .into_any_element()
+                    }
                 };
                 let expanded = self.expanded.as_deref() == Some(id.as_str());
                 let collapsing = self.collapsing.as_deref() == Some(id.as_str());
@@ -235,9 +225,8 @@ impl Render for ProvidersPage {
                     let danger_row = panel_danger_row(
                         index,
                         &variant_id,
-                        provider.custom,
+                        &provider,
                         self.armed_reset.as_deref() == Some(variant_id.as_str()),
-                        self.armed_remove.as_deref() == Some(variant_id.as_str()),
                         &theme,
                         cx,
                     );
@@ -414,13 +403,56 @@ impl Render for ProvidersPage {
                     }
                 });
                 let expand_id = id.clone();
-                let header_children: Vec<AnyElement> = vec![
+                // An open custom provider's mark opens its logo dialog:
+                // hover shows the pen (the row toggle stays on the rest of
+                // the header).
+                let mark_slot = if provider.custom && expanded {
+                    let logo_provider = provider.clone();
+                    let group = SharedString::from(format!("provider-logo-{index}"));
+                    div()
+                        .id(("provider-logo", index))
+                        .debug_selector(|| "provider-logo".into())
+                        .group(group.clone())
+                        .relative()
+                        .size(px(36.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            cx.stop_propagation();
+                            page.open_logo_dialog(&logo_provider, cx);
+                        }))
+                        .child(brand_mark)
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(px(8.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(theme.bg.opacity(0.75))
+                                .opacity(0.)
+                                .group_hover(group, |style| style.opacity(1.))
+                                .child(
+                                    crate::icons::icon(crate::icons::PEN)
+                                        .size(px(14.))
+                                        .text_color(theme.text),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
                     div()
                         .w(px(36.))
                         .flex()
                         .justify_center()
                         .child(brand_mark)
-                        .into_any_element(),
+                        .into_any_element()
+                };
+                let header_children: Vec<AnyElement> = vec![
+                    mark_slot,
                     div()
                         .flex_1()
                         .min_w_0()
@@ -531,6 +563,28 @@ impl Render for ProvidersPage {
                 .child(page)
                 .child(popover::modal(
                     "reset-all-providers-dialog",
+                    window.viewport_size(),
+                    card,
+                ))
+                .into_any_element();
+        }
+        if let Some(confirm) = self.confirm_remove.as_ref() {
+            let card = remove_provider_dialog(confirm, &theme, cx);
+            return div()
+                .child(page)
+                .child(popover::modal(
+                    "remove-provider-dialog",
+                    window.viewport_size(),
+                    card,
+                ))
+                .into_any_element();
+        }
+        if let Some(dialog) = self.logo_dialog.as_ref() {
+            let card = logo_dialog(dialog, &theme, cx);
+            return div()
+                .child(page)
+                .child(popover::modal(
+                    "provider-logo-dialog",
                     window.viewport_size(),
                     card,
                 ))
@@ -671,6 +725,7 @@ impl ProvidersPage {
             add_dialog: false,
             new_provider_inputs: HashMap::new(),
             new_provider_error: None,
+            new_provider_logo: None,
             record_form: None,
             probes: HashMap::new(),
             fetch_dialog: None,
@@ -679,7 +734,8 @@ impl ProvidersPage {
             hidden: HashMap::new(),
             hidden_expanded: HashSet::new(),
             armed_reset: None,
-            armed_remove: None,
+            confirm_remove: None,
+            logo_dialog: None,
             confirm_reset_all: false,
             task: None,
             collapse_task: None,
