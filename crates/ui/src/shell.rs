@@ -2350,7 +2350,10 @@ impl Shell {
                         .flex_none()
                         .text_color(theme.danger),
                 )
-                .child(error)
+                // min_w(0) beats flex `min-width: auto` — gpui measures text
+                // min-content as the full unwrapped width, so without it a
+                // long unbreakable URL cannot shrink and overflows the chip.
+                .child(div().min_w(px(0.0)).overflow_hidden().child(error))
                 .child(
                     div()
                         .id("provider-error-dismiss")
@@ -2448,7 +2451,15 @@ impl Shell {
                 this.set_holt_notice_hover(id, *hovered, cx);
             }))
             .child(icon(glyph).size(px(15.0)).flex_none().text_color(accent))
-            .child(notice.message.clone())
+            // min_w(0) beats flex `min-width: auto` — gpui measures text
+            // min-content as the full unwrapped width, so without it a long
+            // unbreakable URL cannot shrink and overflows past the chip.
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(notice.message.clone()),
+            )
             .child(
                 div()
                     .id(("holt-notice-dismiss", id))
