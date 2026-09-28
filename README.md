@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  English · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue" /></a>
   <img alt="Rust stable" src="https://img.shields.io/badge/rust-stable-orange" />
 </p>
@@ -25,20 +29,42 @@
 
 Why not.
 
-Holt is the agent. Model services plug in as providers; local coding-agent
-CLIs are not interchangeable runtimes. One coherent agent loop drives every
-chat. No cloud. No accounts, no sync, no telemetry. Chats, transcripts, and
-credentials live under `~/.holt` and nowhere else. No daemon, no CLI. A headed
-desktop app that embeds its backend in-process over a typed memory-RPC
-transport.
+- **One agent.** Holt is the agent — a single Rust agent loop drives every
+  chat. Model services plug in as providers; Holt doesn't wrap other coding-agent
+  CLIs.
+- **Local only.** No cloud, no accounts, no sync, no telemetry. Chats,
+  transcripts, and credentials live under `~/.holt` and nowhere else.
+- **One process.** No daemon, no CLI. A native desktop app that embeds its
+  backend in-process over a typed memory-RPC transport.
 
-## Quick start
+## Features
+
+- **Bring your own model** — built-in providers plus custom providers and model
+  records, editable live in Settings without a restart.
+- **Permission modes** — per chat: confirm each change, let a model review
+  pass judge it, or grant full access. Reads are never gated.
+- **Plan mode** — the agent inspects the workspace and writes a plan for
+  approval before touching anything.
+- **Review every Turn** — per-Turn change sets with diffs, plus branches,
+  checkout diffs, history, and fetch on a built-in git2 backend.
+- **Extensible** — skills from the standard skill roots, MCP servers, subagents,
+  and pluggable web search (Zhipu, Bocha, Brave).
+- **Built-in terminals** — chat-owned terminal panes next to the transcript.
+
+## Install
+
+Grab the signed and notarized DMG for your Mac (Apple Silicon or Intel) from
+[Releases](https://github.com/Onion-L/holt/releases/latest). macOS only for now.
+
+Then open **Settings → Providers** and add an API key before starting a run.
+
+### Build from source
+
+Requires macOS and stable Rust (pinned in `rust-toolchain.toml`).
 
 ```bash
 cargo run --release -p holt
 ```
-
-Then open **Settings → Providers** and add an API key before starting a run.
 
 Data lives under `~/.holt`; override with `HOLT_DATA_DIR`.
 
@@ -70,9 +96,9 @@ decisions behind it.
 ## Development
 
 ```bash
+cargo fmt --all --check
 cargo check --workspace
-cargo clippy --workspace
-cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
