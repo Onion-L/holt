@@ -76,6 +76,23 @@
   }
   .gh svg { width: 1.2em; height: 1.2em; margin-right: .6em; }
   .gh:hover, .gh:focus-visible { background: var(--blue); color: var(--paper); outline: none; }
+  .film { margin: 1cqw 0 3cqw; }
+  .film-cap { display: flex; justify-content: space-between; padding: 0 2.4cqw 1.2cqw; font: 500 max(10px, 1.6cqw) "Geist Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
+  .film-frame { position: relative; border: 2px solid var(--blue); background: #0c0b0a; transform: rotate(.4deg); }
+  .film-frame video { display: block; width: 100%; aspect-ratio: 16 / 9; }
+  .ftape { position: absolute; top: -12px; width: 70px; height: 22px; background: #ffffff55; box-shadow: 0 1px 2px #0002; z-index: 2; }
+  .ftape.l { left: 6%; transform: rotate(-7deg); }
+  .ftape.r { right: 6%; transform: rotate(6deg); }
+  .play {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.6cqw;
+    border: 0; padding: 0; cursor: pointer; background: transparent; color: var(--pink);
+    font: 500 max(11px, 1.8cqw) "Geist Mono", monospace; letter-spacing: .08em; text-transform: uppercase; text-shadow: 0 1px 0 #0006;
+  }
+  .play svg { width: max(30px, 7cqw); height: auto; filter: drop-shadow(0 2px 6px #000a); transition: transform .15s; }
+  .play:hover, .play:focus-visible { outline: none; background: #f4efe314; }
+  .play:hover svg, .play:focus-visible svg { transform: scale(1.1); }
+  .play[hidden] { display: none; }
+
   .note {
     text-align: right; margin: -1cqw 2cqw 1.6cqw 0; transform: rotate(-3deg); transform-origin: right;
     font: italic 400 max(18px, 4.2cqw)/1 "Instrument Serif", serif; color: var(--pink); mix-blend-mode: multiply;
@@ -131,6 +148,19 @@
     <p class="slogan">Your agent,<br /><span>in plain sight.</span></p>
     <a class="gh" href="https://github.com/Onion-L/holt"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Star on GitHub ↗</a>
   </div>
+  <div class="film">
+    <div class="film-cap"><span>Now showing</span><span>The launch film · 0:41</span></div>
+    <div class="film-frame">
+      <i class="ftape l"></i><i class="ftape r"></i>
+      <video id="film" preload="none" playsinline poster="assets/launch-poster.jpg">
+        <source src="assets/launch.mp4" type="video/mp4" />
+      </video>
+      <button class="play" id="play" aria-label="Play the launch film, 41 seconds, with sound">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.2v13.6L19.4 12z"/></svg>
+        <span>play — sound on</span>
+      </button>
+    </div>
+  </div>
   <div class="note">tear one off</div>
   <div class="tabs" id="tabs">
     <div class="grp">
@@ -175,6 +205,19 @@
     note.textContent = 'macOS only';
     note.classList.add('off');
   }
+
+  // The film is click-to-play (it carries a score; 7 MB shouldn't load uninvited).
+  const film = document.getElementById('film');
+  const playBtn = document.getElementById('play');
+  playBtn.addEventListener('click', () => {
+    film.controls = true;
+    playBtn.hidden = true;
+    film.play();
+  });
+  film.addEventListener('ended', () => {
+    film.controls = false;
+    playBtn.hidden = false;
+  });
 
   const toast = document.getElementById('toast');
   document.querySelectorAll('#tabs .tab').forEach(tab => tab.addEventListener('click', () => {
