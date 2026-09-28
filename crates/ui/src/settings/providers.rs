@@ -167,9 +167,24 @@ impl Render for ProvidersPage {
                         .size(px(22.))
                         .text_color(tint.unwrap_or(theme.text))
                         .into_any_element(),
+                    // Custom providers carry no brand icon: a small bordered
+                    // monogram tile, capped at two glyphs so it never spills
+                    // past the mark column.
                     None => div()
-                        .text_center()
-                        .child(SharedString::from(provider.abbreviation.clone()))
+                        .size(px(26.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme.border)
+                        .overflow_hidden()
+                        .text_size(crate::typography::ui_rems(10.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(
+                            provider.abbreviation.chars().take(2).collect::<String>(),
+                        ))
                         .into_any_element(),
                 };
                 let expanded = self.expanded.as_deref() == Some(id.as_str());
@@ -227,114 +242,136 @@ impl Render for ProvidersPage {
                         cx,
                     );
                     let variant_selector = variant_selector(&provider, &variant_id, &theme, cx);
+                    let hover_theme = theme.clone();
+                    let key_row =
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .children(input.map(|input| {
+                                secret_field(&theme, input, revealed, index, &variant_id, cx)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .into_any_element()
+                            }))
+                            .child(
+                                action_button(&theme)
+                                    .flex_none()
+                                    .id(("save-provider", index))
+                                    .hover(move |style| widgets::ghost_hover(&hover_theme, style))
+                                    .on_click(cx.listener(move |page, _, _, cx| {
+                                        page.save(save_id.clone(), cx)
+                                    }))
+                                    .child("Save"),
+                            )
+                            .child(
+                                action_button(&theme)
+                                    .flex_none()
+                                    .id(("test-provider", index))
+                                    .debug_selector(|| "test-provider".into())
+                                    .text_color(theme.text_muted)
+                                    .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                    .on_click(cx.listener(move |page, _, _, cx| {
+                                        page.probe(test_id.clone(), cx)
+                                    }))
+                                    .child("Test"),
+                            );
+                    let key_header = div()
+                        .flex()
+                        .items_center()
+                        .child(widgets::field_label(&theme, "API key"))
+                        .child(div().flex_1())
+                        .child(
+                            widgets::ghost_action(&theme)
+                                .id(("remove-provider", index))
+                                .mr(px(-10.0))
+                                .py(px(2.0))
+                                .hover(move |style| {
+                                    style.bg(danger.opacity(0.10)).text_color(danger_muted)
+                                })
+                                .on_click(cx.listener(move |page, _, _, cx| {
+                                    page.remove(remove_id.clone(), cx)
+                                }))
+                                .child("Remove key"),
+                        );
+                    let models_header = div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(widgets::field_label(&theme, "Models"))
+                        .children(model_count.map(|count| {
+                            div()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_muted.opacity(0.7))
+                                .child(SharedString::from(format!("{count}")))
+                                .into_any_element()
+                        }))
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(2.0))
+                                // Pull the ghost padding back so the action
+                                // text lines up with the key row's right edge.
+                                .mr(px(-10.0))
+                                .child(
+                                    widgets::ghost_action(&theme)
+                                        .id(("fetch-vendor", index))
+                                        .debug_selector(|| "fetch-vendor".into())
+                                        .py(px(2.0))
+                                        .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                        .on_click(cx.listener(move |page, _, _, cx| {
+                                            page.open_fetch(fetch_id.clone(), cx)
+                                        }))
+                                        .child(
+                                            crate::icons::icon(crate::icons::REFRESH)
+                                                .size(px(12.0))
+                                                .text_color(theme.text_muted),
+                                        )
+                                        .child("Fetch models"),
+                                )
+                                .child(
+                                    widgets::ghost_action(&theme)
+                                        .id(("toggle-record-form", index))
+                                        .debug_selector(|| "toggle-record-form".into())
+                                        .py(px(2.0))
+                                        .hover(|style| style.bg(crate::theme::ink(0.04)))
+                                        .on_click(cx.listener(move |page, _, _, cx| {
+                                            page.open_record_form(add_record_id.clone(), cx);
+                                        }))
+                                        .child(
+                                            crate::icons::icon(crate::icons::PLUS)
+                                                .size(px(12.0))
+                                                .text_color(theme.text_muted),
+                                        )
+                                        .child("Add model"),
+                                ),
+                        );
                     let content = div()
                         .pl(px(56.0))
-                        .pr(px(8.0))
-                        .pt(px(8.0))
-                        .pb(px(16.0))
+                        .pr(px(16.0))
+                        .pt(px(4.0))
+                        .pb(px(12.0))
                         .flex()
                         .flex_col()
-                        .gap(px(16.0))
+                        .gap(px(20.0))
                         .children(variant_selector)
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .gap(px(8.0))
-                                .child(widgets::field_label(&theme, "API key"))
-                                .children(input.map(|input| {
-                                    secret_field(&theme, input, revealed, index, &variant_id, cx)
-                                        .w_full()
-                                        .into_any_element()
-                                }))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(
-                                            action_button(&theme)
-                                                .id(("save-provider", index))
-                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.save(save_id.clone(), cx)
-                                                }))
-                                                .child("Save"),
-                                        )
-                                        .child(
-                                            widgets::ghost_action(&theme)
-                                                .id(("test-provider", index))
-                                                .debug_selector(|| "test-provider".into())
-                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.probe(test_id.clone(), cx)
-                                                }))
-                                                .child("Test"),
-                                        )
-                                        .child(
-                                            widgets::ghost_action(&theme)
-                                                .id(("remove-provider", index))
-                                                .hover(move |style| {
-                                                    style
-                                                        .bg(danger.opacity(0.10))
-                                                        .text_color(danger_muted)
-                                                })
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.remove(remove_id.clone(), cx)
-                                                }))
-                                                .child("Remove"),
-                                        ),
-                                )
+                                .child(key_header)
+                                .child(key_row)
                                 .children(probe_status_line(index, probe, &theme)),
                         )
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(8.0))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(widgets::field_label(&theme, "Models"))
-                                        .children(model_count.map(|count| {
-                                            div()
-                                                .text_size(crate::typography::ui_rems(11.0))
-                                                .text_color(theme.text_muted.opacity(0.7))
-                                                .child(SharedString::from(format!("{count}")))
-                                                .into_any_element()
-                                        }))
-                                        .child(div().flex_1())
-                                        .child(
-                                            widgets::ghost_action(&theme)
-                                                .id(("fetch-vendor", index))
-                                                .debug_selector(|| "fetch-vendor".into())
-                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.open_fetch(fetch_id.clone(), cx)
-                                                }))
-                                                .child("Fetch models"),
-                                        )
-                                        .child(
-                                            widgets::ghost_action(&theme)
-                                                .id(("toggle-record-form", index))
-                                                .debug_selector(|| "toggle-record-form".into())
-                                                .hover(|style| style.bg(crate::theme::ink(0.04)))
-                                                .on_click(cx.listener(move |page, _, _, cx| {
-                                                    page.open_record_form(
-                                                        add_record_id.clone(),
-                                                        cx,
-                                                    );
-                                                }))
-                                                .child(
-                                                    crate::icons::icon(crate::icons::PLUS)
-                                                        .size(px(12.0))
-                                                        .text_color(theme.text_muted),
-                                                )
-                                                .child("Add model"),
-                                        ),
-                                )
+                                .gap(px(6.0))
+                                .child(models_header)
                                 .child(model_list),
                         )
                         .children(hidden_list)
@@ -360,6 +397,12 @@ impl Render for ProvidersPage {
                                 ("provider-panel-open", panel_epoch),
                                 motion::PROVIDER_EXPAND.animation(),
                                 move |panel, progress| {
+                                    // Settled panels size to their content: the
+                                    // height estimate only drives the reveal, so a
+                                    // miscount never clips or pads the open panel.
+                                    if progress >= 1.0 {
+                                        return panel;
+                                    }
                                     panel
                                         .h(px(motion::lerp(0.0, panel_height, progress)))
                                         .opacity(progress)
@@ -385,7 +428,20 @@ impl Render for ProvidersPage {
                         .flex_col()
                         .gap(px(3.0))
                         .child(widgets::row_title(&theme, provider.name))
-                        .child(widgets::row_description(&theme, status))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(div().size(px(6.0)).flex_none().rounded_full().bg(
+                                    if provider.configured {
+                                        theme.success
+                                    } else {
+                                        theme.text_muted.opacity(0.4)
+                                    },
+                                ))
+                                .child(widgets::row_description(&theme, status)),
+                        )
                         .into_any_element(),
                     // The row's affordance: the whole row toggles, so the
                     // chevron carries the expanded/collapsing state.
@@ -399,9 +455,21 @@ impl Render for ProvidersPage {
                     .text_color(theme.text_muted)
                     .into_any_element(),
                 ];
+                // The open organization reads as one card: header and panel
+                // share a quiet surface, so its controls never bleed into the
+                // next row. The border is always present (transparent when
+                // closed) so opening doesn't shift the list by a pixel.
                 div()
                     .flex()
                     .flex_col()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(if panel_mounted {
+                        theme.border
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .when(panel_mounted, |card| card.bg(crate::theme::ink(0.02)))
                     .child(
                         widgets::flat_row()
                             .id(("provider-row", index))

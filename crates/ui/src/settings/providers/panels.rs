@@ -33,15 +33,16 @@ pub(super) fn provider_controls_height(
     } else {
         0.0
     };
-    // The key section is label + full-width input + its own
-    // Save/Test/Remove row, plus the probe status line while a probe has
-    // run on this variant. The danger row is always mounted; the hidden
-    // block adds its own height when present. The Add-model action rides
-    // the Models header.
-    180.0
+    // The key section is its header (label + Remove key) over the input
+    // row that carries Save/Test inline, plus the probe status line while a
+    // probe has run on this variant. The danger row (separator + resets) is
+    // always mounted; the hidden block adds its own height when present.
+    // Only the reveal animation reads this — a settled panel sizes to its
+    // content.
+    150.0
         + list_height
         + hidden_height
-        + if variants { 34.0 } else { 0.0 }
+        + if variants { 60.0 } else { 0.0 }
         + 44.0
         + if probe_status { 26.0 } else { 0.0 }
 }
@@ -116,12 +117,7 @@ pub(super) fn variant_selector(
         return None;
     }
     let org_id = provider.id.to_string();
-    let mut row = div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(6.0))
-        .child(widgets::field_label(theme, "Provider"));
+    let mut row = div().flex().flex_wrap().items_center().gap(px(6.0));
     for variant in &provider.variants {
         let variant_id = variant.id.to_string();
         let selected = variant_id == active_variant;
@@ -156,7 +152,15 @@ pub(super) fn variant_selector(
             move |page, _, _, cx| page.switch_variant(org_id.clone(), variant_id.clone(), cx)
         })));
     }
-    Some(row.into_any_element())
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(widgets::field_label(theme, "Endpoint"))
+            .child(row)
+            .into_any_element(),
+    )
 }
 
 pub(super) fn provider_model_list(
@@ -186,7 +190,7 @@ pub(super) fn provider_model_list(
             let models = Arc::new(models);
             let row_models = Arc::clone(&models);
             let row_theme = theme.clone();
-            gpui::uniform_list(
+            let list = gpui::uniform_list(
                 ("provider-model-list", index),
                 count,
                 move |range, _window, cx| {
@@ -196,14 +200,22 @@ pub(super) fn provider_model_list(
                             .map(|model| {
                                 let raw_id =
                                     model.id.strip_prefix(&provider_prefix).unwrap_or(&model.id);
+                                let group = SharedString::from(format!(
+                                    "provider-model-row-{index}-{raw_id}"
+                                ));
                                 let mut list_row = div()
+                                    .group(group.clone())
+                                    .w_full()
                                     .h(px(32.0))
+                                    .px(px(8.0))
+                                    .rounded(px(6.0))
                                     .flex()
                                     .items_center()
                                     .gap(px(12.0))
+                                    .hover(|style| style.bg(crate::theme::ink(0.03)))
                                     .child(
                                         div()
-                                            .w(px(200.0))
+                                            .w(px(220.0))
                                             .flex_none()
                                             .truncate()
                                             .text_size(crate::typography::ui_rems(12.0))
@@ -235,6 +247,11 @@ pub(super) fn provider_model_list(
                                                 gpui::ElementId::from(("remove-model", index)),
                                                 raw_id.to_string(),
                                             ))
+                                            .flex_none()
+                                            .px(px(6.0))
+                                            .py(px(4.0))
+                                            .opacity(0.0)
+                                            .group_hover(group.clone(), |s| s.opacity(1.0))
                                             .on_click(cx.listener(move |page, _, _, cx| {
                                                 page.remove_model(
                                                     provider.clone(),
@@ -265,6 +282,11 @@ pub(super) fn provider_model_list(
                                                 gpui::ElementId::from(("hide-model", index)),
                                                 raw_id.to_string(),
                                             ))
+                                            .flex_none()
+                                            .px(px(6.0))
+                                            .py(px(4.0))
+                                            .opacity(0.0)
+                                            .group_hover(group.clone(), |s| s.opacity(1.0))
                                             .on_click(cx.listener(move |page, _, _, cx| {
                                                 page.hide_model(
                                                     provider.clone(),
@@ -291,7 +313,8 @@ pub(super) fn provider_model_list(
             .h(px(height))
             .w_full()
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .into_any_element()
+            .into_any_element();
+            div().mx(px(-8.0)).child(list).into_any_element()
         }
     }
 }
@@ -314,37 +337,42 @@ pub(super) fn panel_danger_row(
     let remove_provider = provider_id.to_string();
     let remove_org = provider_id.to_string();
     div()
-        .flex()
-        .items_center()
-        .gap(px(8.0))
+        .pt(px(12.0))
+        .border_t_1()
+        .border_color(theme.border)
         .child(
-            widgets::ghost_action(theme)
-                .id(("reset-provider", index))
-                .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-                .on_click(
-                    cx.listener(move |page, _, _, cx| {
-                        page.arm_or_reset(reset_provider.clone(), cx)
-                    }),
+            div()
+                .ml(px(-10.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    widgets::ghost_action(theme)
+                        .id(("reset-provider", index))
+                        .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.arm_or_reset(reset_provider.clone(), cx)
+                        }))
+                        .child(if armed {
+                            "Confirm reset — drops this provider's user-written entries"
+                        } else {
+                            "Reset to catalog"
+                        }),
                 )
-                .child(if armed {
-                    "Confirm reset — drops this provider's user-written entries"
-                } else {
-                    "Reset to catalog"
-                }),
+                .children(custom.then(|| {
+                    widgets::ghost_action(theme)
+                        .id(("remove-custom-provider", index))
+                        .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            page.arm_or_remove(remove_provider.clone(), remove_org.clone(), cx)
+                        }))
+                        .child(if remove_armed {
+                            "Confirm remove — the API key and model records stay"
+                        } else {
+                            "Remove provider"
+                        })
+                })),
         )
-        .children(custom.then(|| {
-            widgets::ghost_action(theme)
-                .id(("remove-custom-provider", index))
-                .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-                .on_click(cx.listener(move |page, _, _, cx| {
-                    page.arm_or_remove(remove_provider.clone(), remove_org.clone(), cx)
-                }))
-                .child(if remove_armed {
-                    "Confirm remove — the API key and model records stay"
-                } else {
-                    "Remove provider"
-                })
-        }))
         .into_any_element()
 }
 
@@ -434,6 +462,7 @@ pub(super) fn hidden_rows(
                 .child(SharedString::from(format!("{count}"))),
         );
     let block = div()
+        .w_full()
         .flex()
         .flex_col()
         .items_start()
@@ -462,14 +491,16 @@ pub(super) fn hidden_rows(
                         let idle = row_theme.text_muted.opacity(0.55);
                         let hover = row_theme.text_muted;
                         div()
+                            .w_full()
                             .h(px(32.0))
+                            .px(px(8.0))
                             .flex()
                             .items_center()
                             .gap(px(12.0))
                             .opacity(0.55)
                             .child(
                                 div()
-                                    .w(px(200.0))
+                                    .w(px(220.0))
                                     .flex_none()
                                     .truncate()
                                     .text_size(crate::typography::ui_rems(12.0))
@@ -494,6 +525,9 @@ pub(super) fn hidden_rows(
                                         gpui::ElementId::from(("unhide-model", index)),
                                         raw_id.to_string(),
                                     ))
+                                    .flex_none()
+                                    .px(px(6.0))
+                                    .py(px(4.0))
                                     .hover(move |style| style.text_color(hover))
                                     .on_click(cx.listener(move |page, _, _, cx| {
                                         page.unhide_model(
@@ -518,7 +552,11 @@ pub(super) fn hidden_rows(
     .w_full()
     .occlude()
     .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
-    Some(block.child(list).into_any_element())
+    Some(
+        block
+            .child(div().w_full().mx(px(-8.0)).child(list))
+            .into_any_element(),
+    )
 }
 
 impl ProvidersPage {
