@@ -394,15 +394,37 @@ impl GeneralPage {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        let instruction = effective_instruction(
+            self.custom_instruction_enabled,
+            self.instruction.read(cx).text(),
+        );
+        self.save_title_settings(instruction, false, cx);
+    }
+
+    /// Commit a model pick on its own: the stored instruction rides along
+    /// unchanged, and an unsaved style draft survives the reply.
+    fn save_model(&mut self, cx: &mut Context<Self>) {
+        let Some(instruction) = self
+            .settings
+            .ready()
+            .map(|state| state.settings.instruction.clone())
+        else {
+            return;
+        };
+        self.save_title_settings(instruction, true, cx);
+    }
+
+    fn save_title_settings(
+        &mut self,
+        instruction: String,
+        keep_draft: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.save_error = Some("Engine not connected".into());
             cx.notify();
             return;
         };
-        let instruction = effective_instruction(
-            self.custom_instruction_enabled,
-            self.instruction.read(cx).text(),
-        );
         let params = serde_json::json!({
             "modelId": self.selected_model,
             "instruction": instruction,
@@ -416,7 +438,12 @@ impl GeneralPage {
                 match result {
                     Ok(value) => match serde_json::from_value::<TitleSettingsState>(value) {
                         Ok(state) => {
-                            page.apply_state(state, cx);
+                            if keep_draft {
+                                page.selected_model = state.settings.model_id.clone();
+                                page.settings = Loadable::Ready(state);
+                            } else {
+                                page.apply_state(state, cx);
+                            }
                             page.save_error = None;
                         }
                         Err(error) => page.save_error = Some(error.to_string()),
@@ -877,59 +904,47 @@ impl GeneralPage {
         };
 
         div()
-            .mt(px(28.0))
-            .child(widgets::section_label(theme, "Notifications"))
-            .child(div().mt(px(4.0)).child(widgets::row_description(
+            .mt(px(GROUP_GAP))
+            .child(group_header(
                 theme,
+                "Notifications",
+                None,
                 "Device-local. Banners appear only while no Holt window is active.",
-            )))
+            ))
             .child(
-                widgets::flat_row()
+                group_rows()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(widgets::row_title(theme, "Completion notifications"))
-                            .child(widgets::row_description(
+                        group_row()
+                            .child(row_text(
                                 theme,
+                                "Completion notifications",
                                 "Show a system banner when a background Turn succeeds or fails.",
-                            )),
+                            ))
+                            .child(
+                                div()
+                                    .id("completion-notifications-toggle")
+                                    .debug_selector(|| "completion-notifications-toggle".into())
+                                    .flex_none()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        settings::update(SavePolicy::Immediate, cx, |settings| {
+                                            settings.completion_notifications =
+                                                !settings.completion_notifications;
+                                        });
+                                        cx.notify();
+                                    }))
+                                    .child(widgets::toggle_switch(theme, master_on)),
+                            ),
                     )
                     .child(
-                        div()
-                            .id("completion-notifications-toggle")
-                            .debug_selector(|| "completion-notifications-toggle".into())
-                            .flex_none()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                settings::update(SavePolicy::Immediate, cx, |settings| {
-                                    settings.completion_notifications =
-                                        !settings.completion_notifications;
-                                });
-                                cx.notify();
-                            }))
-                            .child(widgets::toggle_switch(theme, master_on)),
-                    ),
-            )
-            .child(
-                widgets::flat_row()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(widgets::row_title(theme, "Play sound"))
-                            .child(widgets::row_description(
+                        group_row()
+                            .child(row_text(
                                 theme,
+                                "Play sound",
                                 "Play the system notification sound with each banner.",
-                            )),
-                    )
-                    .child(sound_switch),
+                            ))
+                            .child(sound_switch),
+                    ),
             )
     }
 
@@ -978,69 +993,42 @@ impl GeneralPage {
                 .debug_selector(|| "jev-unavailable".into())
                 .into_any_element(),
             Loadable::Ready(state) => {
-                let unconfigured = state.api_key_masked.is_none();
-                let mut column = div().flex().flex_col();
-                if unconfigured {
-                    column = column.child(
-                        div()
-                            .id("jev-unconfigured")
-                            .debug_selector(|| "jev-unconfigured".into())
-                            .pb(px(4.0))
-                            .child(widgets::row_description(theme, "No key stored yet.")),
+                let configured = state.api_key_masked.is_some();
+                let mut actions = Vec::new();
+                if configured {
+                    actions.push(
+                        remove_button(theme, "remove-jev")
+                            .on_click(cx.listener(|page, _, _, cx| page.remove_jev(cx)))
+                            .child("Remove")
+                            .into_any_element(),
                     );
                 }
-                column = column.child(
-                    widgets::flat_row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(theme, "API key"))
-                                .child(widgets::row_description(
-                                    theme,
-                                    "Your own TypeSafe key, stored on this device, separate \
-                                     from your provider keys.",
-                                )),
-                        )
-                        .child(jev_key_field(
+                actions.push(
+                    save_button(theme, "save-jev")
+                        .on_click(cx.listener(|page, _, _, cx| page.save_jev(cx)))
+                        .child("Save")
+                        .into_any_element(),
+                );
+                let card = group_rows().child(
+                    group_row()
+                        .items_start()
+                        .child(row_text(
                             theme,
-                            self.jev_key.clone(),
-                            self.jev_key_field_state(cx),
-                            self.jev_draft_concealed,
-                            cx,
+                            "API key",
+                            "Stored on this device, separate from your provider keys.",
+                        ))
+                        .child(control_with_actions(
+                            jev_key_field(
+                                theme,
+                                self.jev_key.clone(),
+                                self.jev_key_field_state(cx),
+                                self.jev_draft_concealed,
+                                cx,
+                            ),
+                            actions,
                         )),
                 );
-
-                let save_theme = theme.clone();
-                let save = widgets::ghost_action(theme)
-                    .id("save-jev")
-                    .debug_selector(|| "save-jev".into())
-                    .border_1()
-                    .border_color(theme.border)
-                    .hover(move |style| widgets::ghost_hover(&save_theme, style))
-                    .on_click(cx.listener(|page, _, _, cx| page.save_jev(cx)))
-                    .child("Save");
-                let danger = theme.danger;
-                let danger_muted = theme.danger_muted;
-                let remove = widgets::ghost_action(theme)
-                    .id("remove-jev")
-                    .debug_selector(|| "remove-jev".into())
-                    .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-                    .on_click(cx.listener(|page, _, _, cx| page.remove_jev(cx)))
-                    .child("Remove");
-                column = column.child(
-                    div()
-                        .mt(px(8.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(remove)
-                        .child(save),
-                );
+                let mut column = div().flex().flex_col().child(card);
                 if let Some(error) = self.jev_error.clone() {
                     column = column.child(
                         widgets::error_strip(theme, error)
@@ -1051,16 +1039,21 @@ impl GeneralPage {
                 column.into_any_element()
             }
         };
+        let status = self
+            .jev
+            .ready()
+            .map(|state| status_pill(theme, state.api_key_masked.is_some(), "jev-unconfigured"));
         div()
             .id("jev-group")
-            .mt(px(32.0))
-            .child(widgets::section_label(theme, "Jev (TypeSafe)"))
-            .child(div().mt(px(4.0)).child(widgets::row_description(
+            .mt(px(GROUP_GAP))
+            .child(group_header(
                 theme,
+                "Jev (TypeSafe)",
+                status,
                 "Your own TypeSafe API key. Jev-powered features use it as they \
                  arrive; the key is stored and ready either way.",
-            )))
-            .child(div().mt(px(12.0)).child(body))
+            ))
+            .child(body)
             .into_any_element()
     }
 
@@ -1154,17 +1147,19 @@ impl GeneralPage {
                     .id("web-search-backend-dropdown")
                     .debug_selector(|| "web-search-backend-dropdown".into())
                     .relative()
-                    .w(px(220.0))
-                    .h(px(30.0))
+                    .flex_none()
+                    .w(px(CONTROL_WIDTH))
+                    .h(px(CONTROL_HEIGHT))
                     .px(px(10.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(if self.backend_menu.is_open() {
-                        theme.border_strong
+                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .bg(if self.backend_menu.is_open() {
+                        theme.ink(0.09)
                     } else {
-                        theme.border
+                        theme.ink(0.05)
                     })
-                    .bg(theme.input_glass_bg())
+                    .when(!self.backend_menu.is_open(), |el| {
+                        el.hover(|style| style.bg(crate::theme::ink(0.07)))
+                    })
                     .flex()
                     .flex_row()
                     .items_center()
@@ -1196,100 +1191,63 @@ impl GeneralPage {
                         ))
                     });
 
-                let mut column = div().flex().flex_col();
-                if unconfigured {
-                    column = column.child(
-                        div()
-                            .id("web-search-unconfigured")
-                            .debug_selector(|| "web-search-unconfigured".into())
-                            .pb(px(4.0))
-                            .child(widgets::row_description(
-                                theme,
-                                "No backend configured — the agent has no web search tool.",
-                            )),
-                    );
-                }
-                column = column.child(
-                    widgets::flat_row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(theme, "Backend"))
-                                .child(widgets::row_description(
-                                    theme,
-                                    "The search service the agent queries.",
-                                )),
-                        )
-                        .child(backend_trigger),
-                );
-                column = column.child(
-                    widgets::flat_row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(theme, "API key"))
-                                .child(widgets::row_description(
-                                    theme,
-                                    "Stored on this device, separate from your provider keys.",
-                                )),
-                        )
-                        .child(web_search_key_field(
-                            theme,
-                            self.web_search_key.clone(),
-                            self.key_field_state(cx),
-                            self.web_search_draft_concealed,
-                            cx,
-                        )),
-                );
-                if hint {
-                    column = column.child(
+                let key_text = row_text(
+                    theme,
+                    "API key",
+                    "Stored on this device, separate from your provider keys.",
+                )
+                .when(hint, |text| {
+                    text.child(
                         div()
                             .id("web-search-hint")
                             .debug_selector(|| "web-search-hint".into())
-                            .mt(px(-6.0))
                             .child(widgets::row_description(
                                 theme,
                                 "An existing Zhipu provider key is configured; it works for \
                                  Zhipu search too.",
                             )),
+                    )
+                });
+
+                let mut actions = Vec::new();
+                if !unconfigured {
+                    actions.push(
+                        remove_button(theme, "remove-web-search")
+                            .on_click(cx.listener(|page, _, _, cx| page.remove_web_search(cx)))
+                            .child("Remove")
+                            .into_any_element(),
                     );
                 }
-
-                let save_theme = theme.clone();
-                let save = widgets::ghost_action(theme)
-                    .id("save-web-search")
-                    .debug_selector(|| "save-web-search".into())
-                    .border_1()
-                    .border_color(theme.border)
-                    .hover(move |style| widgets::ghost_hover(&save_theme, style))
-                    .on_click(cx.listener(|page, _, _, cx| page.save_web_search(cx)))
-                    .child("Save");
-                let danger = theme.danger;
-                let danger_muted = theme.danger_muted;
-                let remove = widgets::ghost_action(theme)
-                    .id("remove-web-search")
-                    .debug_selector(|| "remove-web-search".into())
-                    .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-                    .on_click(cx.listener(|page, _, _, cx| page.remove_web_search(cx)))
-                    .child("Remove");
-                column = column.child(
-                    div()
-                        .mt(px(8.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(remove)
-                        .child(save),
+                actions.push(
+                    save_button(theme, "save-web-search")
+                        .on_click(cx.listener(|page, _, _, cx| page.save_web_search(cx)))
+                        .child("Save")
+                        .into_any_element(),
                 );
+                let card =
+                    group_rows()
+                        .child(
+                            group_row()
+                                .child(row_text(
+                                    theme,
+                                    "Backend",
+                                    "The search service the agent queries.",
+                                ))
+                                .child(backend_trigger),
+                        )
+                        .child(group_row().items_start().child(key_text).child(
+                            control_with_actions(
+                                web_search_key_field(
+                                    theme,
+                                    self.web_search_key.clone(),
+                                    self.key_field_state(cx),
+                                    self.web_search_draft_concealed,
+                                    cx,
+                                ),
+                                actions,
+                            ),
+                        ));
+                let mut column = div().flex().flex_col().child(card);
                 if let Some(error) = self.web_search_error.clone() {
                     column = column.child(
                         widgets::error_strip(theme, error)
@@ -1300,18 +1258,143 @@ impl GeneralPage {
                 column.into_any_element()
             }
         };
+        let status = self
+            .web_search
+            .ready()
+            .map(|state| status_pill(theme, state.backend.is_some(), "web-search-unconfigured"));
         div()
             .id("web-search-group")
-            .mt(px(32.0))
-            .child(widgets::section_label(theme, "Web search"))
-            .child(div().mt(px(4.0)).child(widgets::row_description(
+            .mt(px(GROUP_GAP))
+            .child(group_header(
                 theme,
+                "Web search",
+                status,
                 "One search service, chosen by you, with its own key. Without one the agent has \
                  no web search tool; reading a page is a separate tool.",
-            )))
-            .child(div().mt(px(12.0)).child(body))
+            ))
+            .child(body)
             .into_any_element()
     }
+}
+
+/// Shared geometry for the right-hand controls (dropdown triggers, key
+/// fields), so every row's control lines up on one column.
+const CONTROL_WIDTH: f32 = 280.0;
+const CONTROL_HEIGHT: f32 = 32.0;
+/// Vertical space between groups — wider than the row rhythm so each
+/// group reads as its own block without a surface around it.
+const GROUP_GAP: f32 = 40.0;
+/// No Jev-powered feature ships yet, so the key group stays hidden rather
+/// than suggest the key does something. The load/save/remove plumbing is
+/// kept; flip this once a feature consumes the key.
+const JEV_GROUP_VISIBLE: bool = false;
+
+/// A group's caption: the section label (with an optional status pill
+/// beside it) over its muted description.
+fn group_header(
+    theme: &Theme,
+    title: &str,
+    status: Option<AnyElement>,
+    description: &str,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(widgets::section_label(theme, title.to_string()))
+                .children(status),
+        )
+        .child(widgets::row_description(theme, description.to_string()))
+}
+
+/// A group's row stack: rows sit directly on the page.
+fn group_rows() -> gpui::Div {
+    div().mt(px(4.0)).flex().flex_col()
+}
+
+/// One row inside [`group_rows`].
+fn group_row() -> gpui::Div {
+    widgets::flat_row()
+}
+
+/// A row's title + description column.
+fn row_text(theme: &Theme, title: &str, description: &str) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .child(widgets::row_title(theme, title.to_string()))
+        .child(widgets::row_description(theme, description.to_string()))
+}
+
+/// The right-hand control column of a row that commits explicitly: the
+/// control with its actions hung right under it, so Save/Remove read as
+/// part of the field instead of floating at the group's edge.
+fn control_with_actions(control: impl IntoElement, actions: Vec<AnyElement>) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(CONTROL_WIDTH))
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(control)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(px(6.0))
+                .children(actions),
+        )
+}
+
+/// The status pill beside a keyed group's title.
+fn status_pill(theme: &Theme, configured: bool, id: &'static str) -> AnyElement {
+    if configured {
+        widgets::badge_active(theme, "Configured").into_any_element()
+    } else {
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .flex_none()
+            .px(px(8.0))
+            .py(px(2.0))
+            .rounded_full()
+            .bg(theme.ink(0.06))
+            .text_size(crate::typography::ui_rems(10.5))
+            .text_color(theme.text_muted)
+            .child("Not configured")
+            .into_any_element()
+    }
+}
+
+/// The filled Save button every group shares.
+fn save_button(theme: &Theme, id: &'static str) -> gpui::Stateful<gpui::Div> {
+    let hover_theme = theme.clone();
+    widgets::ghost_action(theme)
+        .id(id)
+        .debug_selector(move || id.into())
+        .bg(theme.ink(0.06))
+        .text_color(theme.text)
+        .hover(move |style| style.bg(hover_theme.ink(0.10)))
+}
+
+/// The quiet destructive Remove action.
+fn remove_button(theme: &Theme, id: &'static str) -> gpui::Stateful<gpui::Div> {
+    let danger = theme.danger;
+    let danger_muted = theme.danger_muted;
+    widgets::ghost_action(theme)
+        .id(id)
+        .debug_selector(move || id.into())
+        .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
 }
 
 /// The API-key field for the Jev group — the same affordance as the
@@ -1329,17 +1412,16 @@ fn jev_key_field(
     div()
         .id("jev-key-field")
         .debug_selector(|| "jev-key-field".into())
-        .w(px(300.0))
-        .h(px(36.0))
-        .pl(px(12.0))
-        .pr(px(6.0))
+        .flex_none()
+        .w(px(CONTROL_WIDTH))
+        .h(px(CONTROL_HEIGHT))
+        .pl(px(10.0))
+        .pr(px(2.0))
         .flex()
         .items_center()
         .gap(px(8.0))
         .rounded(px(Theme::CONTROL_RADIUS))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.input_glass_bg())
+        .bg(theme.ink(0.05))
         .child(div().flex_1().min_w_0().child(input))
         .child(
             widgets::ghost_action(theme)
@@ -1377,17 +1459,16 @@ fn web_search_key_field(
     div()
         .id("web-search-key-field")
         .debug_selector(|| "web-search-key-field".into())
-        .w(px(300.0))
-        .h(px(36.0))
-        .pl(px(12.0))
-        .pr(px(6.0))
+        .flex_none()
+        .w(px(CONTROL_WIDTH))
+        .h(px(CONTROL_HEIGHT))
+        .pl(px(10.0))
+        .pr(px(2.0))
         .flex()
         .items_center()
         .gap(px(8.0))
         .rounded(px(Theme::CONTROL_RADIUS))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.input_glass_bg())
+        .bg(theme.ink(0.05))
         // The input's root is `w_full`: without a shrinkable track it claims
         // the whole content box and pushes the flex-none eye past the border.
         .child(div().flex_1().min_w_0().child(input))
@@ -1469,8 +1550,11 @@ impl Render for GeneralPage {
                         .id(SharedString::from(format!("title-model-option-{index}")))
                         .on_click(cx.listener(move |page, _, _, cx| {
                             cx.stop_propagation();
+                            // A pick is a complete edit: commit it right
+                            // away instead of parking it behind Save.
                             page.selected_model = row_id.clone();
                             page.close_model_menu(cx);
+                            page.save_model(cx);
                             cx.notify();
                         }))
                         .child(
@@ -1519,17 +1603,19 @@ impl Render for GeneralPage {
                 let model_trigger = div()
                     .id("title-model-dropdown")
                     .relative()
-                    .w(px(220.0))
-                    .h(px(30.0))
+                    .flex_none()
+                    .w(px(CONTROL_WIDTH))
+                    .h(px(CONTROL_HEIGHT))
                     .px(px(10.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(if self.model_menu.is_open() {
-                        theme.border_strong
+                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .bg(if self.model_menu.is_open() {
+                        theme.ink(0.09)
                     } else {
-                        theme.border
+                        theme.ink(0.05)
                     })
-                    .bg(theme.input_glass_bg())
+                    .when(!self.model_menu.is_open(), |el| {
+                        el.hover(|style| style.bg(crate::theme::ink(0.07)))
+                    })
                     .flex()
                     .flex_row()
                     .items_center()
@@ -1555,108 +1641,115 @@ impl Render for GeneralPage {
                         ))
                     });
 
-                let save_theme = theme.clone();
-                let mut column = div().flex().flex_col();
-                column = column.child(
-                    widgets::flat_row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(&theme, "Title model"))
-                                .child(widgets::row_description(
-                                    &theme,
-                                    "Choose a configured provider model. Disabled keeps the fallback title.",
-                                )),
-                        )
-                        .child(model_trigger),
-                );
-                if let Some(warning) = state.warning.clone() {
-                    column = column.child(widgets::warning_strip(&theme, warning));
-                }
-                column = column.child(
-                    widgets::flat_row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(3.0))
-                                .child(widgets::row_title(&theme, "Custom title style"))
-                                .child(widgets::row_description(
-                                    &theme,
-                                    "Style notes for automatic titles — language, tone, naming \
-                                     conventions. The core naming rules are built in.",
-                                )),
-                        )
-                        .child(
-                            div()
-                                .id("custom-title-prompt-toggle")
-                                .cursor_pointer()
-                                .on_click(cx.listener(|page, _, _, cx| {
-                                    page.custom_instruction_enabled =
-                                        !page.custom_instruction_enabled;
-                                    cx.notify();
-                                }))
-                                .child(widgets::toggle_switch(
-                                    &theme,
-                                    self.custom_instruction_enabled,
-                                )),
-                        ),
-                );
+                let mut card = group_rows()
+                    .child(
+                        group_row()
+                            .child(row_text(
+                                &theme,
+                                "Title model",
+                                "Choose a configured provider model. Disabled keeps the \
+                                 fallback title.",
+                            ))
+                            .child(model_trigger),
+                    )
+                    .child(
+                        group_row()
+                            .child(row_text(
+                                &theme,
+                                "Custom title style",
+                                "Style notes for automatic titles — language, tone, naming \
+                                 conventions. The core naming rules are built in.",
+                            ))
+                            .child(
+                                div()
+                                    .id("custom-title-prompt-toggle")
+                                    .flex_none()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|page, _, _, cx| {
+                                        page.custom_instruction_enabled =
+                                            !page.custom_instruction_enabled;
+                                        cx.notify();
+                                    }))
+                                    .child(widgets::toggle_switch(
+                                        &theme,
+                                        self.custom_instruction_enabled,
+                                    )),
+                            ),
+                    );
                 if self.custom_instruction_enabled {
                     let restore_theme = theme.clone();
-                    column = column.child(
+                    // The notes editor hangs off the toggle row it belongs to:
+                    // no hairline between them.
+                    card = card.child(
                         div()
-                            .mt(px(8.0))
+                            .pb(px(14.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(widgets::field_label(&theme, "Title style notes"))
+                                    .child(
+                                        widgets::ghost_action(&theme)
+                                            .id("restore-title-instruction")
+                                            .mr(px(-10.0))
+                                            .py(px(2.0))
+                                            .hover(move |style| {
+                                                widgets::ghost_hover(&restore_theme, style)
+                                            })
+                                            .on_click(cx.listener(|page, _, _, cx| {
+                                                page.instruction.update(cx, |input, cx| {
+                                                    input.set_text(
+                                                        holt_proto::DEFAULT_TITLE_INSTRUCTION,
+                                                        cx,
+                                                    );
+                                                });
+                                                cx.notify();
+                                            }))
+                                            .child("Restore default"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(12.0))
+                                    .py(px(8.0))
+                                    .rounded(px(Theme::CONTROL_RADIUS))
+                                    .bg(theme.ink(0.05))
+                                    .child(self.instruction.clone()),
+                            ),
+                    );
+                }
+                // The model commits on pick; only the style notes are a
+                // draft, so the bar shows while they differ from the record.
+                let dirty = effective_instruction(
+                    self.custom_instruction_enabled,
+                    self.instruction.read(cx).text(),
+                ) != state.settings.instruction;
+                if dirty {
+                    card = card.child(
+                        div()
+                            .pt(px(4.0))
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_between()
-                            .child(widgets::field_label(&theme, "Title style notes"))
+                            .justify_end()
+                            .gap(px(12.0))
+                            .child(widgets::row_description(&theme, "Unsaved changes"))
                             .child(
-                                widgets::ghost_action(&theme)
-                                    .id("restore-title-instruction")
-                                    .hover(move |style| widgets::ghost_hover(&restore_theme, style))
-                                    .on_click(cx.listener(|page, _, _, cx| {
-                                        page.instruction.update(cx, |input, cx| {
-                                            input.set_text(
-                                                holt_proto::DEFAULT_TITLE_INSTRUCTION,
-                                                cx,
-                                            );
-                                        });
-                                        cx.notify();
-                                    }))
-                                    .child("Restore default"),
+                                save_button(&theme, "save-title-settings")
+                                    .on_click(cx.listener(|page, _, _, cx| page.save(cx)))
+                                    .child("Save"),
                             ),
                     );
-                    column = column.child(
-                        div()
-                            .mt(px(8.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.input_glass_bg())
-                            .child(self.instruction.clone()),
-                    );
                 }
-                column = column.child(
-                    div().mt(px(8.0)).flex().flex_row().justify_end().child(
-                        widgets::ghost_action(&theme)
-                            .id("save-title-settings")
-                            .border_1()
-                            .border_color(theme.border)
-                            .hover(move |style| widgets::ghost_hover(&save_theme, style))
-                            .on_click(cx.listener(|page, _, _, cx| page.save(cx)))
-                            .child("Save"),
-                    ),
-                );
+                let mut column = div().flex().flex_col().child(card);
+                if let Some(warning) = state.warning.clone() {
+                    column = column.child(widgets::warning_strip(&theme, warning));
+                }
                 if let Some(error) = self.save_error.clone() {
                     column = column.child(widgets::error_strip(&theme, error));
                 }
@@ -1672,23 +1765,26 @@ impl Render for GeneralPage {
                     .child(widgets::page_header(&theme, "General", None))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Everyday preferences — starting with how new chats are named.",
+                        "Notifications, automatic chat titles, and keys for built-in tools.",
                     ))
                     .child(Self::render_notifications(&theme, cx))
                     .child(
                         div()
-                            .mt(px(32.0))
-                            .child(widgets::section_label(&theme, "Automatic chat titles")),
+                            .mt(px(GROUP_GAP))
+                            .child(group_header(
+                                &theme,
+                                "Automatic chat titles",
+                                None,
+                                "A new chat keeps its first-line title immediately, then one \
+                                 background request to this model can replace it. Your manual \
+                                 renames always win.",
+                            ))
+                            .child(body),
                     )
-                    .child(div().mt(px(4.0)).child(widgets::row_description(
-                        &theme,
-                        "A new chat keeps its first-line title immediately, then one \
-                             background request to this model can replace it. Your manual \
-                             renames always win.",
-                    )))
-                    .child(div().mt(px(12.0)).child(body))
                     .child(self.render_web_search(&theme, cx))
-                    .child(self.render_jev(&theme, cx)),
+                    .when(JEV_GROUP_VISIBLE, |page| {
+                        page.child(self.render_jev(&theme, cx))
+                    }),
             )
     }
 }
@@ -2473,8 +2569,8 @@ mod tests {
     /// The Jev group: the masked key from `GetJevSettings` is what the
     /// field shows; Save rides `SaveJevSettings` (an untouched field
     /// re-reads the stored key through `RevealJevKey` instead of writing
-    /// the mask); the eye reveals and re-conceals; Remove returns the
-    /// group to its unconfigured note.
+    /// the mask); the eye reveals and re-conceals; Remove clears the
+    /// stored key.
     #[gpui::test]
     fn the_jev_group_masks_saves_reveals_and_removes(cx: &mut gpui::TestAppContext) {
         let harness = web_search_harness_with(
@@ -2499,19 +2595,28 @@ mod tests {
             h.visual
                 .read(|cx| h.page.read(cx).jev_key.read(cx).text().to_string())
         };
+        let stored = |h: &WebSearchHarness| {
+            h.visual.read(|cx| {
+                h.page
+                    .read(cx)
+                    .jev
+                    .ready()
+                    .and_then(|state| state.api_key_masked.clone())
+            })
+        };
         assert_eq!(text(&harness), "sk-j…mnop");
-        assert!(harness.visual.debug_bounds("jev-unconfigured").is_none());
+        assert_eq!(stored(&harness).as_deref(), Some("sk-j…mnop"));
+
+        // The group is hidden until a Jev feature ships
+        // (`JEV_GROUP_VISIBLE`), so drive the page methods its buttons'
+        // listeners call.
+        assert_eq!(
+            harness.visual.debug_bounds("save-jev").is_some(),
+            JEV_GROUP_VISIBLE
+        );
 
         // Saving untouched re-reads and re-saves the stored key — the
         // masked display itself is never written as a key.
-        // The Jev group renders below the window fold in the test scene,
-        // so simulate_click cannot reach its buttons — drive the page
-        // methods the buttons' listeners call (the idiom is the Web search
-        // group's, whose click path is covered above) and assert the
-        // buttons themselves render.
-        assert!(harness.visual.debug_bounds("save-jev").is_some());
-        assert!(harness.visual.debug_bounds("remove-jev").is_some());
-        assert!(harness.visual.debug_bounds("toggle-jev-key").is_some());
         harness
             .page
             .update(&mut *harness.visual, |page, cx| page.save_jev(cx));
@@ -2541,6 +2646,6 @@ mod tests {
             .update(&mut *harness.visual, |page, cx| page.remove_jev(cx));
         harness.pump();
         assert_eq!(text(&harness), "");
-        assert!(harness.visual.debug_bounds("jev-unconfigured").is_some());
+        assert_eq!(stored(&harness), None);
     }
 }
