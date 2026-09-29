@@ -486,12 +486,6 @@ impl FileTreePanel {
         let Some(active) = self.active.clone() else {
             return;
         };
-        // Only real Space identities persist; `cwd:` fallback keys stay
-        // session-only. The KEY carries that (a chat-selected root still
-        // belongs to its Space).
-        if active.space_key.starts_with("cwd:") {
-            return;
-        }
         let record = crate::settings::current(cx)
             .file_navigation
             .get(&active.space_key)
@@ -1929,8 +1923,9 @@ mod restore_tests {
             "the canvas restores too"
         );
 
-        // A `cwd:`-keyed root (spaceless chat) never seeds — even from a
-        // stale record stored under that exact key.
+        // A spaceless chat (pre-ADR-0039 relic the boot adoption missed)
+        // has no root at all — no `cwd:`-keyed browsing, and a stale record
+        // stored under such a key stays unread.
         cx.update(|cx| {
             let stale = crate::settings::SpaceFileNavigation {
                 tabs: Vec::new(),
@@ -1952,11 +1947,7 @@ mod restore_tests {
         });
         let tree = cx.new(|cx| FileTreePanel::new(state, cx));
         cx.run_until_parked();
-        assert_eq!(
-            tree.read_with(cx, |tree, _| tree.expanded_for("cwd:/tmp/solo")),
-            Some(Vec::new()),
-            "cwd: keys are session-only — the stale record is ignored"
-        );
+        assert!(tree.read_with(cx, |tree, _| tree.active.is_none()));
     }
 
     #[gpui::test]

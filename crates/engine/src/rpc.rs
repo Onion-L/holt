@@ -10,7 +10,7 @@ use holt_doc::{
 use holt_proto::{
     AuthState, Chat, ChatConfig, JevSettingsState, PendingKind, RunRequest, SessionStatus, Space,
     TitleSettings, TitleSettingsState, TitleSource, TurnChangeSetReply, WebSearchBackendOption,
-    WebSearchSettingsState,
+    WebSearchSettingsState, WorkspaceGitStatus,
 };
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use pi_core::ai::auth::types::CredentialStore;
@@ -36,6 +36,45 @@ const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a G
 const NO_TURN_RECORDED: &str = "no turn recorded for this chat yet";
 
 impl EngineService {
+    /// Refresh a registered space after its live Git-status stream observes a
+    /// repository appearing or disappearing under the space root.
+    fn refresh_space_git_state(&self, root: &std::path::Path, snapshot: &WorkspaceGitStatus) {
+        let root = root.to_path_buf();
+        let git_dir = snapshot
+            .workdir
+            .as_deref()
+            .and_then(|_| crate::git::discover_git_dir(&root));
+        let checkout_id = git_dir
+            .as_ref()
+            .map(|git_dir| crate::git::checkout_identity(&self.engine_info.device_id, git_dir));
+        let mut spaces = self
+            .spaces
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(space) = spaces.iter_mut().find(|space| {
+            std::path::Path::new(&space.path)
+                .canonicalize()
+                .map(|path| path == root)
+                .unwrap_or(false)
+        }) else {
+            return;
+        };
+        let changed = space.git_detected != git_dir.is_some() || space.checkout_id != checkout_id;
+        if !changed {
+            return;
+        }
+        space.git_detected = git_dir.is_some();
+        space.git_checked_at = Some(Utc::now());
+        space.checkout_id = checkout_id;
+        if let Err(error) = persist_spaces(&self.data_dir, &spaces) {
+            tracing::warn!(%error, "failed to persist refreshed Git space state");
+            return;
+        }
+        if let Ok(value) = serde_json::to_value(&*spaces) {
+            self.spaces_tx.send_replace(value);
+        }
+    }
+
     fn watch_spaces(&self) -> RpcReply {
         let receiver = self.spaces_tx.subscribe();
         let stream =
@@ -115,6 +154,11 @@ impl EngineService {
                 "spaceId, deviceId, and path must not be empty".into(),
             ));
         }
+        // The Home row is engine-owned (ADR-0039); it is ensured at boot,
+        // never minted through the registry mutate.
+        if params.space_id == holt_proto::HOME_SPACE_ID {
+            return Err(RpcError::BadParams("the Home space id is reserved".into()));
+        }
 
         let mut spaces = self
             .spaces
@@ -163,6 +207,11 @@ impl EngineService {
     fn delete_space(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let params: DeleteSpaceParams = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        if params.space_id == holt_proto::HOME_SPACE_ID {
+            return Err(RpcError::BadParams(
+                "the Home space cannot be deleted".into(),
+            ));
+        }
         if params.space_id.trim().is_empty() {
             return Err(RpcError::BadParams("spaceId must not be empty".into()));
         }
@@ -228,6 +277,11 @@ impl EngineService {
                 "spaceId and name must not be empty".into(),
             ));
         }
+        if params.space_id == holt_proto::HOME_SPACE_ID {
+            return Err(RpcError::BadParams(
+                "the Home space cannot be renamed".into(),
+            ));
+        }
         let mut spaces = self
             .spaces
             .write()
@@ -251,7 +305,11 @@ impl EngineService {
         if params.chat_id.trim().is_empty() {
             return Err(RpcError::BadParams("chatId must not be empty".into()));
         }
-        let space = params.space_id.as_deref().and_then(|space_id| {
+        let space_id = params
+            .space_id
+            .clone()
+            .or_else(|| Some(holt_proto::HOME_SPACE_ID.to_string()));
+        let space = space_id.as_deref().and_then(|space_id| {
             self.spaces
                 .read()
                 .ok()?
@@ -295,7 +353,7 @@ impl EngineService {
             last_message_preview: None,
             last_message_at: None,
             created_at: Utc::now(),
-            space_id: params.space_id,
+            space_id,
             last_seen_at: None,
             room_gen: None,
             compact_before_next_turn: false,
@@ -3493,8 +3551,19 @@ impl RpcService for EngineService {
                 let canonical = std::path::Path::new(&root)
                     .canonicalize()
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
-                let stream = crate::git_status_watch::subscribe(canonical, self.git.clone())
-                    .map_err(RpcError::Failed)?;
+                let stream =
+                    crate::git_status_watch::subscribe(canonical.clone(), self.git.clone())
+                        .map_err(RpcError::Failed)?;
+                use futures::StreamExt;
+                let service = self.clone();
+                let stream = stream.map(move |value| {
+                    if let Ok(snapshot) =
+                        serde_json::from_value::<WorkspaceGitStatus>(value.clone())
+                    {
+                        service.refresh_space_git_state(&canonical, &snapshot);
+                    }
+                    value
+                });
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
             methods::CREATE_WORKSPACE_ENTRY => {

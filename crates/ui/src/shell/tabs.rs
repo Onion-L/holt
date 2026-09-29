@@ -104,7 +104,7 @@ impl Shell {
                 .filter(|id| state.space_row(id).is_some())
         };
         self.state.update(cx, |s, cx| {
-            if target.is_some() {
+            if let Some(target) = target {
                 s.select_space(target, cx);
             }
             s.select_chat(None, cx);

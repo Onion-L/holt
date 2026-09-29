@@ -26,6 +26,13 @@ pub struct Device {
     pub version: Option<String>,
 }
 
+/// The Home space (ADR-0039): the engine-owned default every project-less
+/// chat belongs to. Deterministic id — the `wt-`-style convention (ADR-0038)
+/// applied to a singleton — so both ends recognize the row without a schema
+/// field. Undeletable and unrenameable; the project picker hides it behind
+/// its "Work outside a project" row instead of listing it.
+pub const HOME_SPACE_ID: &str = "home";
+
 /// A synced (device, folder) pair — the unit of organization in the sidebar.
 /// Sessions belong to exactly one space; the space fixes their host device and
 /// base cwd. Folders need not be git repos: `git_detected` is stamped by the
@@ -264,9 +271,10 @@ pub struct Chat {
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// The space this chat belongs to. Invariant: `Some` for every UI-created
-    /// chat; rows with a missing/dangling space id are not rendered (the host
-    /// device's repair sweep deletes its own danglers).
+    /// The space this chat belongs to. Invariant: `Some` for every chat —
+    /// project-less chats belong to the Home space (ADR-0039), and boot
+    /// adopts any legacy `None` rows into it. Rows whose space id no longer
+    /// resolves are not rendered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
     /// Synced LWW seen marker — compared against `last_message_at` to derive

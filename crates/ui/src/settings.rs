@@ -266,6 +266,9 @@ pub struct UiSettings {
     /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
+    /// The Home canvas's first-project hint (ADR-0039) was dismissed.
+    #[serde(default)]
+    pub home_hint_dismissed: bool,
     /// Open session tabs in visual order (drag-reorder edits in place).
     /// Device-local: a tab is a local viewport onto the synced session list —
     /// closing one never archives the session. Ids of archived/deleted chats
@@ -362,6 +365,7 @@ impl Default for UiSettings {
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
             last_space_id: None,
+            home_hint_dismissed: false,
             open_tabs: None,
             space_filter: None,
             tab_order: std::collections::HashMap::new(),
@@ -1094,6 +1098,7 @@ mod tests {
             disabled_skills: vec!["grill".into()],
             file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
+            home_hint_dismissed: true,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);

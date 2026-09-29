@@ -371,8 +371,7 @@ impl Shell {
         if let Some(space_id) = filter
             && self.state.read(cx).selected_chat.is_none()
         {
-            self.state
-                .update(cx, |s, cx| s.select_space(Some(space_id), cx));
+            self.state.update(cx, |s, cx| s.select_space(space_id, cx));
         }
         self.close_spaces_menu(cx);
         self.schedule_save(cx);
@@ -396,7 +395,7 @@ impl Shell {
         self.settings.space_filter = Some(space_id.clone());
         self.settings.last_space_id = Some(space_id.clone());
         self.state.update(cx, |s, cx| {
-            s.select_space(Some(space_id), cx);
+            s.select_space(space_id, cx);
             s.select_chat(None, cx);
         });
         self.schedule_save(cx);
@@ -748,7 +747,7 @@ impl Shell {
                     _ => icons::FOLDER,
                 };
                 let menu_space = match &row {
-                    SpacesMenuRow::Space(id) => Some(id.clone()),
+                    SpacesMenuRow::Space(id) if id != holt_proto::HOME_SPACE_ID => Some(id.clone()),
                     _ => None,
                 };
                 let activate = row.clone();
@@ -1055,14 +1054,11 @@ impl Shell {
             chats
                 .into_iter()
                 .map(|(status, chat)| {
-                    // Line 1 is the project name (t3code's project row);
-                    // project-less sessions read as their home-dir cwd `~`.
-                    let space = state.space_for_chat(&chat);
-                    let folder = match (space, chat.space_id.as_deref()) {
-                        (Some(space), _) => space.display_name().to_string(),
-                        (None, None) => "~".to_string(),
-                        (None, Some(_)) => "?".to_string(),
-                    };
+                    // Line 1 is the project name (t3code's project row).
+                    let folder = state
+                        .space_for_chat(&chat)
+                        .map(|space| space.display_name().to_string())
+                        .unwrap_or_else(|| "?".to_string());
                     // The branch shows whenever the engine has stamped one —
                     // main-checkout sessions included, not just worktrees.
                     let branch = crate::change_requests::conversation_branch(&chat, &state.spaces)
@@ -2406,7 +2402,9 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let mut overlays: Vec<AnyElement> = Vec::new();
 
-        if let Some((space_id, position)) = self.space_menu.get().cloned() {
+        if let Some((space_id, position)) = self.space_menu.get().cloned()
+            && space_id != holt_proto::HOME_SPACE_ID
+        {
             let closing = self.space_menu.closing_since();
             let rename_id = space_id.clone();
             let delete_id = space_id.clone();
@@ -2612,6 +2610,19 @@ mod tests {
     // ---- sidebar view options ----
 
     /// [`chat`] with the two timestamps the sort orders read.
+    fn home_space() -> holt_proto::Space {
+        holt_proto::Space {
+            id: holt_proto::HOME_SPACE_ID.into(),
+            device_id: "test-device".into(),
+            path: "/tmp/holt-home".into(),
+            name: Some("Home".into()),
+            git_detected: false,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: Utc::now(),
+        }
+    }
+
     fn chat_at(id: &str, updated: i64, created: i64) -> holt_proto::Chat {
         holt_proto::Chat {
             last_message_at: Some(Utc.timestamp_opt(updated, 0).unwrap()),
@@ -2650,9 +2661,15 @@ mod tests {
             let mut state = AppState::new();
             state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
             state.local_device_id = Some("test-device".into());
-            // "recent" was touched last; "older" was created last.
-            state.chats.push(chat_at("recent", 10, 1));
-            state.chats.push(chat_at("older", 5, 9));
+            state.spaces.push(home_space());
+            // "recent" was touched last; "older" was created last. Both
+            // live in the Home space (ADR-0039: no spaceless rows).
+            let mut recent = chat_at("recent", 10, 1);
+            recent.space_id = Some(holt_proto::HOME_SPACE_ID.into());
+            let mut older = chat_at("older", 5, 9);
+            older.space_id = Some(holt_proto::HOME_SPACE_ID.into());
+            state.chats.push(recent);
+            state.chats.push(older);
             state
         });
         let shell = cx.new(|cx| {
@@ -2910,9 +2927,13 @@ mod tests {
             let mut state = AppState::new();
             state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
             state.local_device_id = Some("test-device".into());
-            state.chats.push(chat_at("plain", 10, 1));
+            state.spaces.push(home_space());
+            let mut plain = chat_at("plain", 10, 1);
+            plain.space_id = Some(holt_proto::HOME_SPACE_ID.into());
             let mut pinned = chat_at("kept", 5, 9);
             pinned.pinned = true;
+            pinned.space_id = Some(holt_proto::HOME_SPACE_ID.into());
+            state.chats.push(plain);
             state.chats.push(pinned);
             state
         });

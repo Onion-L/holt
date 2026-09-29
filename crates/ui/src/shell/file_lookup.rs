@@ -707,7 +707,7 @@ mod tests {
         cx.update(|_, cx| {
             shell.update(cx, |shell, cx| {
                 shell.state.update(cx, |state, cx| {
-                    state.select_space(Some("space-2".into()), cx);
+                    state.select_space("space-2".into(), cx);
                 });
                 let settled = shell.file_lookup.as_ref().expect("open").request;
                 shell.refresh_file_lookup_if_owner_changed(cx);

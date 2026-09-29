@@ -518,6 +518,7 @@ impl Composer {
             &self.slash.skills,
             &commands,
             &crate::settings::current(cx).disabled_skills,
+            self.state.read(cx).target_in_home_space(),
         );
     }
 

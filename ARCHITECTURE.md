@@ -247,9 +247,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Terminals (ADR-0017): `OpenTerminal`, `WriteTerminal`, `ResizeTerminal`,
   `SubscribeTerminal`, and `CloseTerminal` serve user-operated PTYs in
   `engine::terminals`, rooted at the owning Chat's working directory.
-  Chat-less terminals (the new-chat canvas, the no-project empty state)
-  carry an explicit `cwd` — the selected Space's path — and fall back to
-  the user's home directory when neither exists.
+  Chat-less terminals (the new-chat canvas) carry an explicit `cwd` —
+  the selected Space's path (the Home space guarantees one) — and fall
+  back to the user's home directory only before the first spaces frame.
   `ListTerminals` supplies running status for close confirmation;
   `CloseAllTerminals` releases sessions when the window closes. The default
   login shell inherits the user's environment and shell configuration.

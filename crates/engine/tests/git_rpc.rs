@@ -623,7 +623,12 @@ async fn first_space(engine: &LocalEngine) -> Space {
     };
     let value = spaces.next().await.expect("spaces snapshot");
     let spaces: Vec<Space> = serde_json::from_value(value).unwrap();
-    spaces.into_iter().next().expect("one registered space")
+    // The boot-ensured Home row (ADR-0039) sorts first; the fixture's
+    // registered space is what these tests mean by "first".
+    spaces
+        .into_iter()
+        .find(|space| space.id != holt_proto::HOME_SPACE_ID)
+        .expect("one registered space")
 }
 
 async fn working_tree_diff(engine: &LocalEngine, cwd: &str) -> CheckoutDiff {
@@ -727,8 +732,11 @@ async fn worktree_space_mints_a_distinct_identity() {
     };
     let value = spaces.next().await.unwrap();
     let spaces: Vec<Space> = serde_json::from_value(value).unwrap();
+    // Two git-detected rows beyond the boot-ensured Home space (which has
+    // no repo and therefore no identity).
     let ids: Vec<&str> = spaces
         .iter()
+        .filter(|s| s.git_detected)
         .map(|s| s.checkout_id.as_deref().unwrap())
         .collect();
     assert_eq!(ids.len(), 2);

@@ -30,7 +30,7 @@ use holt_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use holt_engine::{EngineConfig, LocalEngine};
 use holt_proto::{
     AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, EngineInfo,
-    Session, Space, WorkspaceScope,
+    HOME_SPACE_ID, Session, Space, WorkspaceScope,
 };
 use holt_rpc::retries::TurnRetryNotice;
 use holt_rpc::{RpcClient, RpcError, memory_client, methods};
@@ -224,11 +224,6 @@ pub struct AppState {
     /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
     /// its project.
     pub selected_space: Option<String>,
-    /// Deliberate "Don't work in a project" pick: while set, the canvas mints
-    /// project-less sessions (cwd `~` on the picked device) and
-    /// [`Self::selected_space_row`] reads as `None` — healing must NOT
-    /// re-select a project underneath it.
-    pub no_project: bool,
     pub selected_chat: Option<String>,
     /// Boot auto-select happened (or a manual selection superseded it).
     pub auto_selected: bool,
@@ -321,7 +316,6 @@ impl AppState {
             chats: Vec::new(),
             sessions: Vec::new(),
             selected_space: None,
-            no_project: false,
             selected_chat: None,
             transcript: Vec::new(),
             transcript_replayed: false,
@@ -435,14 +429,10 @@ impl AppState {
             .and_then(|id| self.chats.iter().find(|c| c.id == id))
             && chat.space_id != selected_previous_space
         {
-            match chat.space_id.clone() {
-                Some(space_id) => {
-                    self.selected_space = Some(space_id);
-                    self.no_project = false;
-                }
-                None => {
-                    self.no_project = true;
-                }
+            // A chat implies its space; the Home space covers project-less
+            // rows (ADR-0039), so a dangling `None` just leaves the pick.
+            if let Some(space_id) = chat.space_id.clone() {
+                self.selected_space = Some(space_id);
             }
         }
     }
@@ -464,10 +454,10 @@ impl AppState {
         {
             self.selected_space = self.first_space_id();
         }
-        // First frame with no selection yet: pick the first project so the
-        // canvas never boots project-less by accident — unless the user
-        // deliberately opted out.
-        if self.selected_space.is_none() && !self.no_project {
+        // First frame with no selection yet: pick the first space (the
+        // boot-ensured Home space guarantees one exists) so the canvas
+        // never boots without a working directory.
+        if self.selected_space.is_none() {
             self.selected_space = self.first_space_id();
         }
     }
@@ -865,11 +855,20 @@ impl AppState {
     }
 
     pub fn selected_space_row(&self) -> Option<&Space> {
-        if self.no_project {
-            return None;
-        }
         let id = self.selected_space.as_deref()?;
         self.spaces.iter().find(|s| s.id == id)
+    }
+
+    /// Whether the send target (the selected chat, else the canvas pick)
+    /// is the Home space — where `/init` has no repository to bootstrap
+    /// (ADR-0039).
+    pub fn target_in_home_space(&self) -> bool {
+        match self.selected_chat_row() {
+            Some(chat) => chat.space_id.as_deref() == Some(HOME_SPACE_ID),
+            None => self
+                .selected_space_row()
+                .is_some_and(|space| space.id == HOME_SPACE_ID),
+        }
     }
 
     pub fn space_row(&self, space_id: &str) -> Option<&Space> {
@@ -922,10 +921,12 @@ impl AppState {
     pub fn overview_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
         let mut rows: Vec<(ChatIndicator, &Chat)> = self
             .visible_chats()
-            .filter(|c| match c.space_id.as_deref() {
-                // Project-less sessions are first-class rows.
-                None => true,
-                Some(id) => self.space_row(id).is_some(),
+            // A live space row is guaranteed (ADR-0039: the Home space backs
+            // project-less chats); a dangling id hides the row.
+            .filter(|c| {
+                c.space_id
+                    .as_deref()
+                    .is_some_and(|id| self.space_row(id).is_some())
             })
             .map(|c| (self.display_status_for(c, now), c))
             .collect();
@@ -1062,7 +1063,6 @@ impl AppState {
         self.chats.clear();
         self.sessions.clear();
         self.selected_space = None;
-        self.no_project = false;
         self.selected_chat = None;
         self.auto_selected = false;
         self.chats_synced = false;
@@ -1319,18 +1319,15 @@ impl AppState {
         self.turn_change_sets.clear();
         self.turn_change_set_task = None;
         if let Some(id) = chat_id.as_deref() {
-            // A chat implies its project (or the lack of one); `select_chat(None)`
-            // (the new-session canvas) keeps the current project pick.
-            if let Some(chat) = self.chats.iter().find(|c| c.id == id) {
-                match chat.space_id.clone() {
-                    Some(space_id) => {
-                        self.selected_space = Some(space_id);
-                        self.no_project = false;
-                    }
-                    None => {
-                        self.no_project = true;
-                    }
-                }
+            // A chat implies its space; `select_chat(None)` (the new-session
+            // canvas) keeps the current space pick.
+            if let Some(space_id) = self
+                .chats
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|chat| chat.space_id.clone())
+            {
+                self.selected_space = Some(space_id);
             }
             self.mark_chat_seen(id, cx);
         }
@@ -1356,17 +1353,14 @@ impl AppState {
         cx.notify();
     }
 
-    /// Select a project; the caller (shell) decides which chat to land on.
-    /// `None` is the deliberate "Don't work in a project" opt-out.
-    pub fn select_space(&mut self, space_id: Option<String>, cx: &mut Context<Self>) {
-        self.no_project = space_id.is_none();
-        if self.selected_space == space_id && space_id.is_some() {
+    /// Select a project (the Home space included — ADR-0039's "Work
+    /// outside a project"); the caller (shell) decides which chat to land on.
+    pub fn select_space(&mut self, space_id: String, cx: &mut Context<Self>) {
+        if self.selected_space.as_deref() == Some(space_id.as_str()) {
             cx.notify();
             return;
         }
-        if space_id.is_some() {
-            self.selected_space = space_id;
-        }
+        self.selected_space = Some(space_id);
         cx.notify();
     }
 
@@ -2382,6 +2376,35 @@ mod tests {
         assert_eq!(state.selected_space, None);
     }
 
+    /// `/init` availability reads the send target's space (ADR-0039): the
+    /// selected chat's, else the canvas pick. Home → unavailable.
+    #[test]
+    fn target_in_home_space_follows_chat_then_canvas() {
+        let mut state = AppState::new();
+        state.apply_spaces(vec![
+            space(HOME_SPACE_ID, "dev", "/home-default", 0),
+            space("p1", "dev", "/work/api", 1),
+        ]);
+        // Canvas on a real project.
+        state.selected_space = Some("p1".into());
+        assert!(!state.target_in_home_space());
+        // Canvas on Home.
+        state.selected_space = Some(HOME_SPACE_ID.into());
+        assert!(state.target_in_home_space());
+        // A selected chat outranks the canvas pick: a Home chat stays Home
+        // even while the canvas pick remembers a project.
+        let mut c1 = chat("c1", 1, None);
+        c1.space_id = Some(HOME_SPACE_ID.into());
+        state.chats.push(c1);
+        state.selected_chat = Some("c1".into());
+        assert!(state.target_in_home_space());
+        let mut c2 = chat("c2", 2, None);
+        c2.space_id = Some("p1".into());
+        state.chats.push(c2);
+        state.selected_chat = Some("c2".into());
+        assert!(!state.target_in_home_space());
+    }
+
     #[test]
     fn chats_in_space_filters_and_orders() {
         let mut state = AppState::new();
@@ -2403,17 +2426,16 @@ mod tests {
             .map(|c| c.id.as_str())
             .collect();
         assert_eq!(ids, ["old", "new"]);
-        // The overview shows every live-space chat (idle included) PLUS
-        // project-less chats (first-class since the project selectors);
-        // chats of unknown spaces stay hidden. Completed ("old") outranks
-        // idle ("new"/"dangling").
+        // The overview shows every live-space chat (idle included); chats
+        // of unknown or missing spaces stay hidden (ADR-0039 made a missing
+        // space unreachable). Completed ("old") outranks idle ("new").
         let now = Utc::now();
         let overview: Vec<&str> = state
             .overview_chats(now)
             .iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
-        assert_eq!(overview, ["old", "new", "dangling"]);
+        assert_eq!(overview, ["old", "new"]);
     }
 
     #[test]

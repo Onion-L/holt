@@ -20,8 +20,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use holt_proto::Space;
 pub use holt_proto::{EngineInfo, WorkspaceScope};
+use holt_proto::{HOME_SPACE_ID, Space};
 use tokio::sync::watch;
 
 mod agent;
@@ -196,7 +196,9 @@ impl LocalEngine {
         // Lazy checkout-identity backfill (ADR-0002): git-detected spaces
         // persisted before this feature gain their canonical identity now.
         let backfilled = backfill_checkout_ids(&device_id, &mut spaces);
-        if backfilled {
+        // The Home space (ADR-0039) is engine-owned and always present.
+        let home_ensured = ensure_home_space(&device_id, &config.data_dir, &mut spaces)?;
+        if backfilled || home_ensured {
             store::persist_spaces(&config.data_dir, &spaces)?;
         }
         let spaces = Arc::new(RwLock::new(spaces));
@@ -210,6 +212,27 @@ impl LocalEngine {
         // ADR-0037 retired the Settings setup chat (ADR-0030): rows older
         // builds left behind are deleted with their records on startup.
         let mut chats = load_chats(&config.data_dir)?;
+        // ADR-0039 one-time adoption: chats minted before the Home space
+        // (when the canvas allowed project-less `~`-cwd sessions) join it
+        // now. A `~`/unset cwd moves into the Home folder; any other cwd
+        // was an explicit pick and stays. Afterwards `space_id: None` is
+        // unreachable.
+        let home_path = home_space_path(&config.data_dir)
+            .to_string_lossy()
+            .into_owned();
+        let mut adopted = false;
+        for chat in &mut chats {
+            if chat.space_id.is_none() {
+                chat.space_id = Some(HOME_SPACE_ID.to_string());
+                if chat.cwd.as_deref().is_none_or(|cwd| cwd == "~") {
+                    chat.cwd = Some(home_path.clone());
+                }
+                adopted = true;
+            }
+        }
+        if adopted {
+            store::persist_chats(&config.data_dir, &chats)?;
+        }
         let retired: Vec<String> = chats
             .iter()
             .filter(|chat| {
@@ -303,6 +326,57 @@ impl Drop for LocalEngine {
     }
 }
 
+/// The Home space folder (ADR-0039): `<data_dir>/workspace/default`.
+pub(crate) fn home_space_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("workspace").join("default")
+}
+
+/// Register (or repair) the Home space row and create its folder. Returns
+/// whether the registry changed and must be persisted. Idempotent: an
+/// existing row only picks up a moved data dir or refreshed git stamps.
+fn ensure_home_space(
+    device_id: &str,
+    data_dir: &Path,
+    spaces: &mut Vec<Space>,
+) -> Result<bool, EngineError> {
+    let path = home_space_path(data_dir);
+    std::fs::create_dir_all(&path)?;
+    let git_dir = git::discover_git_dir(&path);
+    let checkout_id = git_dir
+        .as_ref()
+        .map(|git_dir| git::checkout_identity(device_id, git_dir));
+    let path = path.to_string_lossy().into_owned();
+    if let Some(row) = spaces.iter_mut().find(|space| space.id == HOME_SPACE_ID) {
+        let mut changed = false;
+        // The data dir may have moved (HOLT_DATA_DIR): the row follows it.
+        if row.path != path {
+            row.path = path;
+            changed = true;
+        }
+        if row.device_id != device_id {
+            row.device_id = device_id.to_string();
+            changed = true;
+        }
+        if row.git_detected != git_dir.is_some() || row.checkout_id != checkout_id {
+            row.git_detected = git_dir.is_some();
+            row.checkout_id = checkout_id;
+            changed = true;
+        }
+        return Ok(changed);
+    }
+    spaces.push(Space {
+        id: HOME_SPACE_ID.to_string(),
+        device_id: device_id.to_string(),
+        path,
+        name: Some("Home".to_string()),
+        git_detected: git_dir.is_some(),
+        git_checked_at: None,
+        checkout_id,
+        created_at: chrono::Utc::now(),
+    });
+    Ok(true)
+}
+
 /// Stamp git-detected spaces that predate checkout identities with their
 /// canonical id (ADR-0002). Returns whether anything changed.
 fn backfill_checkout_ids(device_id: &str, spaces: &mut [Space]) -> bool {
@@ -320,7 +394,17 @@ fn backfill_checkout_ids(device_id: &str, spaces: &mut [Space]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holt_proto::Chat;
     use holt_rpc::{RpcReply, RpcService, methods};
+
+    fn space_ids(frame: &serde_json::Value) -> Vec<&str> {
+        frame
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect()
+    }
 
     #[test]
     fn device_id_is_stable_across_assembles() {
@@ -337,6 +421,187 @@ mod tests {
         drop(first);
         let second = LocalEngine::assemble(&config).unwrap();
         assert_eq!(second.engine_info().device_id, id);
+    }
+
+    fn config_for(data_dir: &Path) -> EngineConfig {
+        EngineConfig {
+            data_dir: data_dir.to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+        }
+    }
+
+    /// The Home space (ADR-0039): registered and on disk at every boot,
+    /// idempotently — a re-assemble neither duplicates the row nor touches
+    /// the folder.
+    #[test]
+    fn home_space_is_ensured_at_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        let spaces = engine.service.spaces.read().unwrap();
+        let home = spaces
+            .iter()
+            .find(|space| space.id == HOME_SPACE_ID)
+            .expect("home row");
+        let expected = home_space_path(dir.path());
+        assert_eq!(home.path, expected.to_string_lossy());
+        assert_eq!(home.name.as_deref(), Some("Home"));
+        assert!(expected.is_dir());
+        drop(spaces);
+        drop(engine);
+
+        // Re-assemble: the row is repaired in place, never re-minted.
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        assert_eq!(
+            engine
+                .service
+                .spaces
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|space| space.id == HOME_SPACE_ID)
+                .count(),
+            1
+        );
+    }
+
+    /// ADR-0039 adoption: legacy spaceless chats join the Home space at
+    /// boot; a `~`/unset cwd moves into the Home folder while an explicit
+    /// cwd is preserved.
+    #[test]
+    fn boot_adopts_spaceless_chats_into_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home_space_path(dir.path()).to_string_lossy().into_owned();
+        let legacy = vec![Chat {
+            id: "tilde".into(),
+            device_id: "d".into(),
+            cwd: Some("~".into()),
+            space_id: None,
+            ..test_chat("tilde")
+        }];
+        crate::store::persist_chats(dir.path(), &legacy).unwrap();
+
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        let chats = engine.service.runtime.chats.read().unwrap().clone();
+        let row = chats.iter().find(|chat| chat.id == "tilde").unwrap();
+        assert_eq!(row.space_id.as_deref(), Some(HOME_SPACE_ID));
+        assert_eq!(row.cwd.as_deref(), Some(home.as_str()));
+        drop(engine);
+
+        // Already-adopted rows are untouched; an explicit cwd survives.
+        let mut explicit = legacy;
+        explicit[0].cwd = Some("/tmp/explicit".into());
+        crate::store::persist_chats(dir.path(), &explicit).unwrap();
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        let chats = engine.service.runtime.chats.read().unwrap().clone();
+        let row = chats.iter().find(|chat| chat.id == "tilde").unwrap();
+        assert_eq!(row.cwd.as_deref(), Some("/tmp/explicit"));
+    }
+
+    fn test_chat(id: &str) -> Chat {
+        Chat {
+            id: id.to_string(),
+            device_id: "d".into(),
+            title: None,
+            title_source: holt_proto::TitleSource::Automatic,
+            title_task_started: false,
+            archived: false,
+            pinned: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+            plan_mode: None,
+            provider_mode: false,
+            worktree: None,
+        }
+    }
+
+    /// The Home row is engine-owned: registry mutates refuse it.
+    #[tokio::test]
+    async fn home_space_rejects_registry_mutates() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        for params in [
+            serde_json::json!({ "op": "renameSpace", "spaceId": HOME_SPACE_ID, "name": "X" }),
+            serde_json::json!({ "op": "deleteSpace", "spaceId": HOME_SPACE_ID }),
+            serde_json::json!({
+                "op": "createSpace",
+                "spaceId": HOME_SPACE_ID,
+                "deviceId": engine.engine_info().device_id,
+                "path": "/tmp/fake-home",
+                "gitDetected": false,
+            }),
+        ] {
+            let Err(error) = engine.handle(methods::MUTATE, params).await else {
+                panic!("mutate unexpectedly succeeded");
+            };
+            assert!(error.to_string().contains("Home"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn create_chat_without_space_uses_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        engine
+            .handle(
+                methods::MUTATE,
+                serde_json::json!({ "op": "createChat", "chatId": "chat-home" }),
+            )
+            .await
+            .unwrap();
+
+        let chats = engine.service.runtime.chats.read().unwrap();
+        let chat = chats.iter().find(|chat| chat.id == "chat-home").unwrap();
+        assert_eq!(chat.space_id.as_deref(), Some(HOME_SPACE_ID));
+        assert_eq!(
+            chat.cwd.as_deref(),
+            Some(home_space_path(dir.path()).to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn home_git_status_refreshes_space_metadata() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = LocalEngine::assemble(&config_for(dir.path())).unwrap();
+        let home = home_space_path(dir.path());
+        git2::Repository::init(&home).unwrap();
+
+        let RpcReply::Stream(mut status) = engine
+            .handle(
+                methods::WATCH_WORKSPACE_GIT_STATUS,
+                serde_json::json!({ "spaceId": HOME_SPACE_ID }),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("WatchWorkspaceGitStatus did not return a stream");
+        };
+        let snapshot = status.next().await.unwrap();
+        assert_eq!(
+            snapshot["workdir"].as_str(),
+            Some(home.canonicalize().unwrap().to_string_lossy().as_ref())
+        );
+
+        let spaces = engine.service.spaces.read().unwrap();
+        let home = spaces
+            .iter()
+            .find(|space| space.id == HOME_SPACE_ID)
+            .unwrap();
+        assert!(home.git_detected);
+        assert!(home.checkout_id.is_some());
     }
 
     #[test]
@@ -496,7 +761,7 @@ mod tests {
         else {
             panic!("WatchSpaces did not return a stream");
         };
-        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+        assert_eq!(space_ids(&spaces.next().await.unwrap()), ["home"]);
 
         engine
             .handle(
@@ -513,9 +778,14 @@ mod tests {
             .unwrap();
 
         let update = spaces.next().await.unwrap();
-        assert_eq!(update.as_array().unwrap().len(), 1);
-        assert_eq!(update[0]["id"], "space-1");
-        assert_eq!(update[0]["path"], "/tmp/project");
+        let space_1 = update
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "space-1")
+            .cloned()
+            .unwrap();
+        assert_eq!(space_1["path"], "/tmp/project");
         drop(spaces);
         drop(engine);
 
@@ -528,8 +798,7 @@ mod tests {
             panic!("WatchSpaces did not return a stream");
         };
         let restored = spaces.next().await.unwrap();
-        assert_eq!(restored.as_array().unwrap().len(), 1);
-        assert_eq!(restored[0]["id"], "space-1");
+        assert_eq!(space_ids(&restored), ["home", "space-1"]);
     }
 
     #[tokio::test]
@@ -551,7 +820,7 @@ mod tests {
         else {
             panic!("WatchSpaces did not return a stream");
         };
-        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+        assert_eq!(space_ids(&spaces.next().await.unwrap()), ["home"]);
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -605,8 +874,7 @@ mod tests {
             .unwrap();
 
         let spaces_update = spaces.next().await.unwrap();
-        assert_eq!(spaces_update.as_array().unwrap().len(), 1);
-        assert_eq!(spaces_update[0]["id"], "space-2");
+        assert_eq!(space_ids(&spaces_update), ["home", "space-2"]);
         let chats_update = chats.next().await.unwrap();
         assert_eq!(chats_update.as_array().unwrap().len(), 1);
         assert_eq!(chats_update[0]["id"], "chat-standalone");
@@ -623,8 +891,7 @@ mod tests {
             panic!("WatchSpaces did not return a stream");
         };
         let restored = spaces.next().await.unwrap();
-        assert_eq!(restored.as_array().unwrap().len(), 1);
-        assert_eq!(restored[0]["id"], "space-2");
+        assert_eq!(space_ids(&restored), ["home", "space-2"]);
         let RpcReply::Stream(mut chats) = engine
             .handle(methods::WATCH_CHATS, serde_json::json!({}))
             .await
@@ -656,7 +923,7 @@ mod tests {
         else {
             panic!("WatchSpaces did not return a stream");
         };
-        assert_eq!(spaces.next().await.unwrap(), serde_json::json!([]));
+        assert_eq!(space_ids(&spaces.next().await.unwrap()), ["home"]);
 
         engine
             .handle(
@@ -694,7 +961,14 @@ mod tests {
             .unwrap();
 
         let update = spaces.next().await.unwrap();
-        assert_eq!(update[0]["name"], "Legal Notes");
+        let renamed = update
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "space-1")
+            .cloned()
+            .unwrap();
+        assert_eq!(renamed["name"], "Legal Notes");
         drop(spaces);
         drop(engine);
 
@@ -707,7 +981,14 @@ mod tests {
             panic!("WatchSpaces did not return a stream");
         };
         let restored = spaces.next().await.unwrap();
-        assert_eq!(restored[0]["name"], "Legal Notes");
+        let restored_renamed = restored
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "space-1")
+            .cloned()
+            .unwrap();
+        assert_eq!(restored_renamed["name"], "Legal Notes");
     }
 
     #[test]

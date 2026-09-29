@@ -610,7 +610,8 @@ async fn projects_key_on_full_paths_and_unresolvable_chats_group_together() {
             days_ago_at(0, 12, 5),
         )],
     );
-    // A live chat whose row carries no cwd parks in the deleted group too.
+    // A ledger with no surviving chat row parks in the deleted group too
+    // (a live row can no longer be cwd-less: boot adopts it into Home).
     write_ledger(
         dir.path(),
         "chat-c",
@@ -643,7 +644,6 @@ async fn projects_key_on_full_paths_and_unresolvable_chats_group_together() {
         vec![
             chat_row("chat-a", json!("/work/api")),
             chat_row("chat-b", json!("/other/api")),
-            chat_row("chat-c", Value::Null),
         ],
     );
 

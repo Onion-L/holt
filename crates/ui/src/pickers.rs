@@ -327,10 +327,9 @@ impl Pickers {
             .map(ComposerDefaults::load)
             .unwrap_or_default();
         // Restore the last project pick (the canvas's "defaults to last
-        // selected" rule). Vanished rows heal in `apply_spaces`. A remembered
-        // "Don't work in a project" opt-out is deliberately NOT restored: the
-        // menu row is gone, so a stale saved opt-out would strand the canvas
-        // in a state the picker can no longer express.
+        // selected" rule) — the Home space id included: a remembered "Work
+        // outside a project" canvas comes back as itself. Vanished rows heal
+        // in `apply_spaces`.
         {
             let project = defaults.project.clone();
             state.update(cx, |s, _| {

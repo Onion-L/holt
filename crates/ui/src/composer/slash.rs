@@ -158,14 +158,18 @@ impl SlashCandidate {
 /// skills after. The valid-entry filter rides the listing's shape — only
 /// `skills` entries are invocable; shadowed and invalid entries never
 /// enter the menu. Skills the user disabled on the Skills settings page
-/// (`disabled`, by catalog-unique name) are hidden too.
+/// (`disabled`, by catalog-unique name) are hidden too. `init_unavailable`
+/// drops the `/init` command — the Home space has no repository to
+/// bootstrap (ADR-0039).
 pub(crate) fn popup_candidates(
     listing: &SkillListing,
     commands: &[SlashCommand],
     disabled: &[String],
+    init_unavailable: bool,
 ) -> Vec<SlashCandidate> {
     commands
         .iter()
+        .filter(|command| !(init_unavailable && command.name == "init"))
         .map(|command| SlashCandidate::Command {
             name: command.name.clone(),
             description: command.description.clone(),
@@ -380,7 +384,7 @@ mod tests {
             description: "Compact the session.".into(),
             input_hint: None,
         }];
-        let candidates = popup_candidates(&listing, &commands, &[]);
+        let candidates = popup_candidates(&listing, &commands, &[], false);
         assert_eq!(
             candidates,
             vec![
@@ -410,6 +414,38 @@ mod tests {
         assert!(candidates[0].filter_label().starts_with("compact"));
     }
 
+    /// The Home space never offers `/init` (ADR-0039): the flag drops that
+    /// one command and nothing else.
+    #[test]
+    fn popup_candidates_drop_init_for_the_home_space() {
+        let commands = vec![
+            SlashCommand {
+                name: "compact".into(),
+                description: "Compact.".into(),
+                input_hint: None,
+            },
+            SlashCommand {
+                name: "init".into(),
+                description: "Generate AGENTS.md.".into(),
+                input_hint: None,
+            },
+        ];
+        let listing = SkillListing::default();
+        let candidates = popup_candidates(&listing, &commands, &[], true);
+        let names: Vec<String> = candidates
+            .iter()
+            .map(|candidate| candidate.row_label().to_string())
+            .collect();
+        assert_eq!(names, ["compact".to_string()]);
+        // Without the flag the command is back.
+        let candidates = popup_candidates(&listing, &commands, &[], false);
+        let names: Vec<String> = candidates
+            .iter()
+            .map(|candidate| candidate.row_label().to_string())
+            .collect();
+        assert_eq!(names, ["compact".to_string(), "init".to_string()]);
+    }
+
     #[test]
     fn popup_candidates_take_only_invocable_entries_from_a_listing() {
         // Shadowed and invalid entries ride their own arrays; the menu
@@ -436,7 +472,7 @@ mod tests {
                 message: "description is required".into(),
             }],
         };
-        let candidates = popup_candidates(&listing, &[], &[]);
+        let candidates = popup_candidates(&listing, &[], &[], false);
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].title(), "[$grill](/roots/grill/SKILL.md)");
         assert_eq!(
@@ -455,7 +491,7 @@ mod tests {
             ..SkillListing::default()
         };
         let disabled = vec!["grill".to_string()];
-        let candidates = popup_candidates(&listing, &[], &disabled);
+        let candidates = popup_candidates(&listing, &[], &disabled, false);
         assert_eq!(
             candidates,
             vec![SlashCandidate::Skill {

@@ -93,8 +93,7 @@ impl FileTabs {
     }
 }
 
-/// Per-Space file state on the shell. Keys are space ids (or `cwd:`-prefixed
-/// working directories for chats that predate their space).
+/// Per-Space file state on the shell, keyed by space id (ADR-0020).
 #[derive(Default)]
 pub struct FileStateMap {
     map: HashMap<String, FileTabs>,
@@ -156,15 +155,12 @@ impl FileStateMap {
     }
 
     /// The space key for the shell's current selection: the selected chat's
-    /// space, the chat's own cwd when it has none, the selected space on the
-    /// new-chat canvas, `None` when there is nothing to browse.
+    /// space, else the selected space on the new-chat canvas, `None` when
+    /// there is nothing to browse. Every chat carries a space since the
+    /// Home space adopted the stragglers (ADR-0039).
     pub fn space_key(state: &AppState) -> Option<String> {
         if let Some(chat) = state.selected_chat_row() {
-            Some(
-                chat.space_id
-                    .clone()
-                    .or_else(|| chat.cwd.clone().map(|cwd| format!("cwd:{cwd}")))?,
-            )
+            chat.space_id.clone()
         } else {
             state.selected_space.clone()
         }
@@ -262,17 +258,10 @@ mod tests {
                 state.selected_chat = Some("chat-2".into());
                 assert_eq!(FileStateMap::space_key(state).as_deref(), Some("space-1"));
 
-                // A spaceless chat falls back to its own cwd.
+                // A spaceless row (pre-ADR-0039 relic the boot adoption
+                // missed) has nothing to browse — no cwd-keyed fallback.
                 state.chats.push(chat("chat-3", None, Some("/tmp/solo")));
                 state.selected_chat = Some("chat-3".into());
-                assert_eq!(
-                    FileStateMap::space_key(state).as_deref(),
-                    Some("cwd:/tmp/solo")
-                );
-
-                // A spaceless chat without a cwd has nothing to browse.
-                state.chats.push(chat("chat-4", None, None));
-                state.selected_chat = Some("chat-4".into());
                 assert_eq!(FileStateMap::space_key(state), None);
             });
         });

@@ -532,7 +532,7 @@ async fn worktree_space_conflict_fails_visibly_without_reparenting_chat() {
     assert!(provider.requests().is_empty());
     let row = chat_row(&engine, "chat-1").await;
     assert_eq!(row.cwd.as_deref(), Some(repo_path.as_str()));
-    assert_eq!(row.space_id, None);
+    assert_eq!(row.space_id.as_deref(), Some(holt_proto::HOME_SPACE_ID));
     assert_eq!(row.branch, None);
     assert!(wt_path(&fixture, "chat-1").exists());
 }

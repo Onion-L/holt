@@ -1203,20 +1203,13 @@ impl Shell {
             self.space_boot_applied = true;
             if state.read(cx).selected_chat.is_none() {
                 // A set sidebar filter is an explicit standing choice — the
-                // canvas defaults (project) follow it, even
-                // over a remembered "no project" opt-out. Otherwise the last
-                // selected project stands, unless opted out.
+                // canvas defaults (project) follow it. Otherwise the last
+                // selected project stands.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
                 let filter = self.settings.space_filter.clone().filter(&exists);
-                let target = match filter {
-                    Some(filter) => Some(filter),
-                    None if !state.read(cx).no_project => {
-                        self.settings.last_space_id.clone().filter(&exists)
-                    }
-                    None => None,
-                };
+                let target = filter.or_else(|| self.settings.last_space_id.clone().filter(&exists));
                 if target.is_some() {
-                    state.update(cx, |s, cx| s.select_space(target, cx));
+                    state.update(cx, |s, cx| s.select_space(target.unwrap(), cx));
                 }
             }
         }
@@ -2549,7 +2542,7 @@ impl Shell {
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
-        let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+        let (border, text) = (theme.border, theme.text);
 
         // Settings route: just the section outlet — the section label lives in
         // the unified window titlebar now (render_title_bar). Settings never
@@ -2569,8 +2562,6 @@ impl Shell {
 
         let _ = (text, border);
         let has_selection = self.state.read(cx).selected_chat.is_some();
-        let has_spaces = !self.state.read(cx).spaces.is_empty();
-        let no_project = self.state.read(cx).no_project;
         // Frost signal: only a selected chat with transcript content frosts
         // the backdrop — the canvas and fresh chats read the picture sharp.
         let chat_frosted = has_selection && {
@@ -2579,63 +2570,16 @@ impl Shell {
         };
 
         // Content outlet: selected chat → transcript; nothing selected → a
-        // bare canvas (the composer stack carries the affordances); no spaces
-        // at all → the onboarding card. The composer sits below the first two
-        // (new-chat mode mints the chat id on first send).
+        // bare canvas (the composer stack carries the affordances). The
+        // composer sits below (new-chat mode mints the chat id on first
+        // send). The Home space guarantees a working directory from the
+        // first boot, so there is no blocking onboarding step anymore —
+        // a first-project hint rides the canvas instead (ADR-0039).
         let outlet: AnyElement = if has_selection {
             // Re-roll the new-chat mark while the canvas is hidden, so the
             // next bare-canvas visit shows a fresh random shape.
             self.new_chat_mark = random_mark_index();
             self.transcript.clone().into_any_element()
-        } else if !has_spaces && !no_project {
-            // Onboarding (first boot / after the destructive wipe): no folders
-            // to work in yet — one clear affordance.
-            let _ = faint;
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .child(motion::fade_in(
-                    "no-spaces-canvas",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .child(loaders::holt_mark_loader(
-                            "onboarding-mark",
-                            theme,
-                            56.0,
-                            loaders::MARK_SHAPES[self.new_chat_mark],
-                            cx.entity_id(),
-                            cx,
-                        ))
-                        .child(
-                            div()
-                                .mt(px(16.0))
-                                .text_size(crate::typography::ui_rems(16.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .child(SharedString::from("Add a project to get started")),
-                        )
-                        .child(
-                            div()
-                                .mt(px(6.0))
-                                .text_size(crate::typography::ui_rems(13.0))
-                                .text_color(theme.text_muted.opacity(0.7))
-                                .child(SharedString::from(
-                                    "A project is a folder on this machine.",
-                                )),
-                        )
-                        .child(
-                            popover::btn_primary(&theme_owned, "Add a project")
-                                .id("onboarding-add-space")
-                                .mt(px(20.0))
-                                .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
-                        ),
-                ))
-                .into_any_element()
         } else {
             // New-chat canvas: the holt mark (mona) over a prompt naming the
             // selected project (user request). The project selectors live
@@ -2650,6 +2594,16 @@ impl Shell {
                 Some(name) => format!("What should we build in {name}?").into(),
                 None => "What should we build?".into(),
             };
+            // First-project hint: only while the Home space is the whole
+            // world (ADR-0039) — the canvas works without a project, the
+            // hint just keeps the folder onboarding one click away.
+            let show_hint = !self.settings.home_hint_dismissed
+                && self.state.read(cx).spaces.len() == 1
+                && self
+                    .state
+                    .read(cx)
+                    .selected_space_row()
+                    .is_some_and(|space| space.id == holt_proto::HOME_SPACE_ID);
             div()
                 .size_full()
                 .flex()
@@ -2677,7 +2631,41 @@ impl Shell {
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(prompt),
-                        ),
+                        )
+                        .when(show_hint, |canvas| {
+                            canvas.child(
+                                div()
+                                    .mt(px(20.0))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        popover::btn_primary(&theme_owned, "Add a project")
+                                            .id("home-add-space")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.open_add_space(cx);
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("home-add-space-dismiss")
+                                            .ml(px(10.0))
+                                            .text_size(crate::typography::ui_rems(12.0))
+                                            .text_color(theme.text_faint)
+                                            .hover(|style| style.text_color(theme.text_muted))
+                                            .child(SharedString::from("Dismiss"))
+                                            .on_click(cx.listener(|_, _, _, cx| {
+                                                crate::settings::update(
+                                                    crate::settings::SavePolicy::Immediate,
+                                                    cx,
+                                                    |current| {
+                                                        current.home_hint_dismissed = true;
+                                                    },
+                                                );
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                        }),
                 ))
                 .into_any_element()
         };
@@ -2771,7 +2759,7 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
-                    .when(has_spaces, |el| el.child(self.composer.clone()))
+                    .child(self.composer.clone())
             })
             .child(
                 div()

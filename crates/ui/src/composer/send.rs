@@ -50,10 +50,10 @@ impl Composer {
         )
     }
 
-    /// New-chat sends need a project: with none picked (empty device, or a
-    /// selection healed away) the send button dims and submit is a no-op —
-    /// project-less `~`-cwd sessions are no longer mintable from the canvas.
-    /// Existing chats carry their own project, so they always send.
+    /// New-chat sends need a space row: transiently absent only before the
+    /// first spaces frame lands (the engine's Home space guarantees one
+    /// afterwards — ADR-0039). Existing chats carry their own space, so
+    /// they always send.
     fn send_blocked(&self, cx: &App) -> bool {
         if self.pasting.get(&self.current_key).copied().unwrap_or(0) > 0 {
             return true;
@@ -65,7 +65,7 @@ impl Composer {
         if state.selected_chat.is_some() {
             return self.sending || !self.pickers.read(cx).can_send(cx);
         }
-        // New-chat canvas: needs a project and a configured provider/model.
+        // New-chat canvas: needs a space row and a configured provider/model.
         self.sending || state.selected_space_row().is_none() || !self.pickers.read(cx).can_send(cx)
     }
 
@@ -151,6 +151,14 @@ impl Composer {
             }
             super::slash::Parsed::MalformedInit => {
                 self.failure = Some("Usage: /init (no arguments)".into());
+                self.failure_key = None;
+                cx.notify();
+                return;
+            }
+            // `/init` bootstraps a repository's AGENTS.md; the Home space
+            // has no repository to bootstrap (ADR-0039).
+            super::slash::Parsed::Init if self.state.read(cx).target_in_home_space() => {
+                self.failure = Some("/init needs a project — pick a project first".into());
                 self.failure_key = None;
                 cx.notify();
                 return;
@@ -423,13 +431,12 @@ impl Composer {
 
                 // Resolve the working directory: existing chats keep theirs;
                 // a new chat always runs in its SPACE's folder (ADR-0007 —
-                // the reuse-worktree arm is gone), unless a fresh isolated
-                // worktree is minted off the picked base ref on send (a
-                // WorktreeSpec riding the Run command).
+                // the reuse-worktree arm is gone) — the Home space when the
+                // canvas has no project picked (ADR-0039) — unless a fresh
+                // isolated worktree is minted off the picked base ref on
+                // send (a WorktreeSpec riding the Run command).
                 let cwd = if is_new {
-                    // Project-less sessions run from the home dir — "~" is
-                    // expanded by the engine when the run spawns.
-                    space_path.clone().or_else(|| Some("~".to_string()))
+                    space_path.clone()
                 } else {
                     existing_cwd
                 }
@@ -476,10 +483,10 @@ impl Composer {
                 }
 
                 // Best-effort Mutate createChat with the picked config: the
-                // engine resolves device + cwd from the PROJECT row when one
-                // is picked; project-less chats name the local device outright
-                // (idempotent; the doc host would materialize the chat on
-                // first command anyway, so failures are non-fatal).
+                // engine resolves device + cwd from the space row (the Home
+                // row for a "Work outside a project" canvas; idempotent —
+                // the doc host would materialize the chat on first command
+                // anyway, so failures are non-fatal).
                 if is_new {
                     let mut mutate = serde_json::json!({
                         "op": "createChat",
