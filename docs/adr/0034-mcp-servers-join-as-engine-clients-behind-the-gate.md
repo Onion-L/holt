@@ -32,7 +32,12 @@ limit — the `enabled_tools`/`disabled_tools` lists (deny wins) are the
 intended throttle. stdio children inherit a sanitized environment:
 credential-shaped variables (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
 `*KEY*`, `*AUTH*`) are stripped unless the server's own `env` sets them
-explicitly.
+explicitly. The child's PATH — and the resolution of a bare `command`
+name — comes from the server's explicit `env.PATH` when set, otherwise
+from the user's login shell (`shell_env::login_path`, probed once per
+process; the inherited PATH is the fallback), because a
+Dock-launched app inherits launchd's minimal PATH, which cannot resolve
+`npx`-style commands at all.
 
 Servers live in `~/.holt/mcp.json` (`mcpServers`, strict unknown-key
 error, `${VAR}`/`${VAR:-default}` stored unexpanded and expanded at run

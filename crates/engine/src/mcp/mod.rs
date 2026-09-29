@@ -380,7 +380,20 @@ async fn connect(server: &McpServer) -> Result<LiveServer, String> {
             // (ADR-0034): server behavior must not change with whichever
             // chat runs first.
             let cwd = cwd.as_deref().map(expand);
-            let sanitized = config::sanitize_child_env(&env);
+            let mut sanitized = config::sanitize_child_env(&env);
+            // A Dock launch has a minimal PATH. Use the login shell's PATH
+            // unless this server explicitly chose one, including for bare
+            // command lookup and the child's own subprocesses (ADR-0034).
+            if !env.contains_key("PATH")
+                && let Some(path) = crate::shell_env::login_path().await
+            {
+                sanitized.insert("PATH".into(), path);
+            }
+            let command = sanitized
+                .get("PATH")
+                .and_then(|path| crate::shell_env::resolve_command(&command, path))
+                .map(|resolved| resolved.to_string_lossy().into_owned())
+                .unwrap_or(command);
             let mut process = tokio::process::Command::new(&command);
             process.args(&args).env_clear().envs(&sanitized);
             if let Some(cwd) = cwd {

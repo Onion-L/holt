@@ -49,6 +49,49 @@ fn marker_path(data_dir: &Path) -> String {
     data_dir.join("fixture-started").display().to_string()
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_path_resolves_bare_command_and_reaches_child() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = common::Fixture::new();
+    let bin = fixture.data_dir.path().join("private-bin");
+    std::fs::create_dir(&bin).unwrap();
+    symlink(
+        env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
+        bin.join("private-mcp"),
+    )
+    .unwrap();
+    let path = bin.display().to_string();
+    let dump = fixture.data_dir.path().join("child-env");
+    write_mcp_config(
+        fixture.data_dir.path(),
+        serde_json::json!({
+            "fixture": {
+                "command": "private-mcp",
+                "env": { "PATH": path, "FIXTURE_ENV_DUMP": dump }
+            }
+        }),
+    );
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text("plain reply")]);
+    let engine = fixture.engine(&provider);
+    common::setup_ungated_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "hello").await;
+    common::wait_for_transcript_text(&mut transcript, "plain reply").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    assert!(
+        provider.requests()[0]
+            .tool_names
+            .iter()
+            .any(|name| name == "mcp__fixture__echo")
+    );
+    let child_env = std::fs::read_to_string(&dump).unwrap();
+    assert!(child_env.lines().any(|line| line == format!("PATH={path}")));
+}
+
 #[tokio::test]
 async fn a_stdio_servers_tools_join_the_toolset_and_run_in_a_turn() {
     let fixture = common::Fixture::new();
