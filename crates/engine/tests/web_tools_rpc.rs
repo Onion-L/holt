@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use common::{Fixture, ScriptedProvider, ScriptedReply};
 use futures::future::BoxFuture;
-use holt_engine::{LocalEngine, SearchBackend, SearchBackendResolver, SearchHit};
+use holt_engine::{LocalEngine, SearchBackend, SearchBackendResolver, SearchResults};
 use holt_rpc::{RpcService as _, methods};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -30,8 +30,8 @@ impl SearchBackend for EmptyBackend {
         _query: &'a str,
         _max_results: usize,
         _cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
-        Box::pin(async { Ok(Vec::new()) })
+    ) -> BoxFuture<'a, Result<SearchResults, String>> {
+        Box::pin(async { Ok(SearchResults::Hits(Vec::new())) })
     }
 }
 
@@ -215,8 +215,8 @@ async fn a_scripted_web_search_call_folds_a_chip_and_never_gates() {
     // Configured before the prompt: admission resolves the backend once.
     engine
         .handle(
-            methods::SAVE_WEB_SEARCH_SETTINGS,
-            json!({ "backend": "zhipu", "apiKey": "sk-1234567890" }),
+            methods::SAVE_WEB_SEARCH_BACKEND,
+            json!({ "kind": "zhipu", "apiKey": "sk-1234567890" }),
         )
         .await
         .unwrap();

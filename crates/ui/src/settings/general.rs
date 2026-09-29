@@ -7,8 +7,9 @@
 //! missing-credentials warning.
 //!
 //! It also hosts the Web search group (web-tools ticket 07): the user's
-//! search backend and its own key, read and saved through the four
-//! web-search RPCs. The backend is the user's choice — a same-vendor
+//! configured search backends — built-in vendors, each with its own key,
+//! and search tools on `mcp.json` servers — one active at a time, read and
+//! saved through the web-search RPCs. The backend is the user's choice — a same-vendor
 //! provider key only ever surfaces as a display-only hint.
 
 use gpui::{
@@ -16,7 +17,7 @@ use gpui::{
     Task, Window, div, prelude::*, px,
 };
 use holt_proto::{
-    JevSettingsState, Model, Provider, TitleSettingsState, WebSearchBackendOption,
+    JevSettingsState, Model, Provider, TitleSettingsState, WebSearchEntryView,
     WebSearchSettingsState,
 };
 use holt_rpc::methods;
@@ -113,30 +114,83 @@ fn zhipu_hint_visible(backend: Option<&str>, providers: &[Provider]) -> bool {
             })
 }
 
+/// The MCP search tool kind — and the picker id of an MCP entry not saved
+/// yet (saved ones carry a generated `mcp-…` id).
+const MCP_KIND: &str = "mcp";
+
 /// One rendered backend row in the Web search picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BackendRow {
+    /// A built-in kind (which is also its entry id), a saved MCP entry's
+    /// id, or [`MCP_KIND`] for a new one.
     id: String,
     name: String,
-    /// Settings copy flagging an access requirement (Brave needs
-    /// international access).
+    /// Settings copy: a built-in's access requirement, or what an MCP row
+    /// is.
     note: Option<String>,
     selected: bool,
+    /// The entry the next Turn mounts.
+    active: bool,
 }
 
-/// The picker's rows: every launch backend the engine offers, in engine
-/// order, with the stored selection marked. Unconfigured leaves none marked —
-/// the picker starts on no backend, never a default vendor.
-fn backend_rows(backends: &[WebSearchBackendOption], selected: Option<&str>) -> Vec<BackendRow> {
-    backends
+/// The picker's rows: every built-in backend the engine offers, in engine
+/// order, then the saved MCP search tools, then a row for a new one — with the pick and the active entry marked. No pick leaves
+/// none selected — the picker starts on no backend, never a default vendor.
+fn backend_rows(state: &WebSearchSettingsState, pick: Option<&str>) -> Vec<BackendRow> {
+    let builtins = state.backends.iter().map(|backend| {
+        (
+            backend.id.clone(),
+            backend.name.clone(),
+            backend.note.clone(),
+        )
+    });
+    let mcps = state
+        .entries
         .iter()
-        .map(|backend| BackendRow {
-            id: backend.id.clone(),
-            name: backend.name.clone(),
-            note: backend.note.clone(),
-            selected: selected == Some(backend.id.as_str()),
+        .filter(|entry| entry.kind == MCP_KIND)
+        .map(|entry| {
+            (
+                entry.id.clone(),
+                format!(
+                    "{} / {}",
+                    entry.server.as_deref().unwrap_or_default(),
+                    entry.tool.as_deref().unwrap_or_default()
+                ),
+                Some("MCP tool".to_string()),
+            )
+        });
+    let new_mcp = std::iter::once((
+        MCP_KIND.to_string(),
+        "New MCP search tool".to_string(),
+        Some("A tool on a server in mcp.json".to_string()),
+    ));
+    builtins
+        .chain(mcps)
+        .chain(new_mcp)
+        .map(|(id, name, note)| BackendRow {
+            selected: pick == Some(id.as_str()),
+            active: state.active.as_deref() == Some(id.as_str()),
+            id,
+            name,
+            note,
         })
         .collect()
+}
+
+/// The MCP entry's two menus: its `mcp.json` server and that server's tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpMenu {
+    Server,
+    Tool,
+}
+
+impl McpMenu {
+    fn id(self) -> &'static str {
+        match self {
+            McpMenu::Server => "web-search-server",
+            McpMenu::Tool => "web-search-tool",
+        }
+    }
 }
 
 /// What the web-search API-key field currently shows.
@@ -164,9 +218,24 @@ pub struct GeneralPage {
     web_search: Loadable<WebSearchSettingsState>,
     /// The provider catalog, read for the Zhipu same-vendor hint.
     providers: Loadable<Vec<Provider>>,
-    /// The picker's backend id — the stored one until the user picks again.
-    web_search_backend: Option<String>,
+    /// The picker's row id (see [`BackendRow::id`]) — the active entry
+    /// until the user picks again. The fields below edit this pick.
+    web_search_pick: Option<String>,
     web_search_key: Entity<ComposerInput>,
+    /// An MCP entry's `mcp.json` server, picked from `mcp_servers`.
+    web_search_server: Option<String>,
+    /// An MCP entry's search tool: set from the tool menu, or typed when
+    /// the server's tools can't be listed.
+    web_search_tool: Entity<ComposerInput>,
+    /// Server names from `GetMcpSettings`, read when the server menu opens.
+    mcp_servers: Loadable<Vec<String>>,
+    /// The picked server's tool names from `TestMcpServer`, read when the
+    /// tool menu opens. An error swaps the menu for a text field.
+    mcp_tools: Loadable<Vec<String>>,
+    /// The server `mcp_tools` belongs to.
+    mcp_tools_server: Option<String>,
+    mcp_servers_task: Option<Task<()>>,
+    mcp_tools_task: Option<Task<()>>,
     /// The raw stored key the field currently shows, fetched by
     /// `RevealWebSearchKey`; `None` while it shows the engine's masked
     /// display or the user's draft.
@@ -176,6 +245,8 @@ pub struct GeneralPage {
     web_search_draft_concealed: bool,
     web_search_error: Option<String>,
     backend_menu: Popup<()>,
+    server_menu: Popup<()>,
+    tool_menu: Popup<()>,
     /// The engine-owned Jev record (ADR-0027): the user's own TypeSafe
     /// key, mounted by future Jev-powered features.
     jev: Loadable<JevSettingsState>,
@@ -226,12 +297,21 @@ impl GeneralPage {
             task: None,
             web_search: Loadable::Idle,
             providers: Loadable::Idle,
-            web_search_backend: None,
+            web_search_pick: None,
             web_search_key,
+            web_search_server: None,
+            web_search_tool: cx.new(|cx| ComposerInput::new("Tool name", cx)),
+            mcp_servers: Loadable::Idle,
+            mcp_tools: Loadable::Idle,
+            mcp_tools_server: None,
+            mcp_servers_task: None,
+            mcp_tools_task: None,
             web_search_revealed_key: None,
             web_search_draft_concealed: true,
             web_search_error: None,
             backend_menu: Popup::default(),
+            server_menu: Popup::default(),
+            tool_menu: Popup::default(),
             jev: Loadable::Idle,
             jev_key,
             jev_revealed_key: None,
@@ -255,9 +335,8 @@ impl GeneralPage {
             return KeyField::Revealed;
         }
         let stored = self
-            .web_search
-            .ready()
-            .and_then(|state| state.api_key_masked.as_deref());
+            .picked_entry()
+            .and_then(|entry| entry.api_key_masked.as_deref());
         if stored == Some(text) {
             KeyField::Stored
         } else {
@@ -291,21 +370,233 @@ impl GeneralPage {
         self.settings = Loadable::Ready(state);
     }
 
-    /// Echo a web-search reply (read, save, or remove) into the group's
-    /// editable state: the picker selection, the key field, and the
-    /// reveal/draft flags all reset to the stored truth.
+    /// Echo a web-search reply (read, save, set-active, or remove) into
+    /// the group's editable state: the pick returns to the active entry and
+    /// its fields reset to the stored truth.
     fn apply_web_search_state(&mut self, state: WebSearchSettingsState, cx: &mut Context<Self>) {
-        self.web_search_backend = state.backend.clone();
-        let masked = state.api_key_masked.clone().unwrap_or_default();
-        // The record lands before the field is re-texted: the edit the
-        // `set_text` emits re-derives the projection against this state.
+        self.web_search_pick = state.active.clone();
         self.web_search = Loadable::Ready(state);
+        self.load_pick_fields(cx);
+    }
+
+    /// The saved entry the pick names; `None` for an unsaved built-in or a
+    /// new MCP entry.
+    fn picked_entry(&self) -> Option<&WebSearchEntryView> {
+        let pick = self.web_search_pick.as_deref()?;
+        self.web_search
+            .ready()?
+            .entries
+            .iter()
+            .find(|entry| entry.id == pick)
+    }
+
+    /// The pick's backend kind: the saved entry's, or the pick itself (a
+    /// built-in id, or [`MCP_KIND`]).
+    fn picked_kind(&self) -> Option<String> {
+        match self.picked_entry() {
+            Some(entry) => Some(entry.kind.clone()),
+            None => self.web_search_pick.clone(),
+        }
+    }
+
+    /// Fill the fields from the picked entry — its masked key, server, and
+    /// tool — or clear them for an unsaved pick. The pick is set first: the
+    /// edit `set_text` emits re-derives the key projection against it.
+    fn load_pick_fields(&mut self, cx: &mut Context<Self>) {
+        let entry = self.picked_entry().cloned();
+        let masked = entry
+            .as_ref()
+            .and_then(|entry| entry.api_key_masked.clone())
+            .unwrap_or_default();
+        let server = entry.as_ref().and_then(|entry| entry.server.clone());
+        let tool = entry
+            .as_ref()
+            .and_then(|entry| entry.tool.clone())
+            .unwrap_or_default();
         self.web_search_revealed_key = None;
         self.web_search_draft_concealed = true;
         self.web_search_key.update(cx, |input, cx| {
             input.set_masked(false, cx);
             input.set_text(masked, cx);
         });
+        self.web_search_tool
+            .update(cx, |input, cx| input.set_text(tool, cx));
+        self.set_web_search_server(server);
+    }
+
+    /// Point the MCP fields at `server`; its tool list is read again on
+    /// the next tool-menu open.
+    fn set_web_search_server(&mut self, server: Option<String>) {
+        if server != self.mcp_tools_server {
+            self.mcp_tools = Loadable::Idle;
+            self.mcp_tools_server = None;
+            self.mcp_tools_task = None;
+        }
+        self.web_search_server = server;
+    }
+
+    /// Pick a server from the menu. A new server clears the tool (it
+    /// belonged to the old one); re-picking one retries its tool list.
+    fn pick_mcp_server(&mut self, server: String, cx: &mut Context<Self>) {
+        if self.web_search_server.as_ref() != Some(&server) {
+            self.web_search_tool
+                .update(cx, |input, cx| input.set_text("", cx));
+        }
+        self.set_web_search_server(None);
+        self.set_web_search_server(Some(server));
+        self.web_search_error = None;
+        cx.notify();
+    }
+
+    fn pick_mcp_tool(&mut self, tool: String, cx: &mut Context<Self>) {
+        self.web_search_tool
+            .update(cx, |input, cx| input.set_text(tool, cx));
+        self.web_search_error = None;
+        cx.notify();
+    }
+
+    /// Read the `mcp.json` server names, unless already read.
+    fn load_mcp_servers(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.mcp_servers, Loadable::Loading | Loadable::Ready(_)) {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.mcp_servers = Loadable::Error("Engine not connected".into());
+            return;
+        };
+        self.mcp_servers = Loadable::Loading;
+        self.mcp_servers_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::GET_MCP_SETTINGS, serde_json::json!({}))
+                .await;
+            this.update(cx, |page, cx| {
+                page.mcp_servers = match result {
+                    Ok(value) => Loadable::Ready(
+                        value["servers"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|server| server["name"].as_str().map(str::to_string))
+                            .collect(),
+                    ),
+                    Err(error) => Loadable::Error(error.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// List the picked server's tools through `TestMcpServer`, unless
+    /// already read for it.
+    fn load_mcp_tools(&mut self, cx: &mut Context<Self>) {
+        let Some(server) = self.web_search_server.clone() else {
+            return;
+        };
+        if self.mcp_tools_server.as_ref() == Some(&server) {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.mcp_tools = Loadable::Error("Engine not connected".into());
+            return;
+        };
+        self.mcp_tools = Loadable::Loading;
+        self.mcp_tools_server = Some(server.clone());
+        self.mcp_tools_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::TEST_MCP_SERVER,
+                    serde_json::json!({ "name": server }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                page.mcp_tools = match result {
+                    Ok(value) if value["status"] == "ok" => Loadable::Ready(
+                        value["toolNames"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|tool| tool.as_str().map(str::to_string))
+                            .collect(),
+                    ),
+                    Ok(value) => Loadable::Error(
+                        value["reason"]
+                            .as_str()
+                            .unwrap_or("the server didn't answer")
+                            .to_string(),
+                    ),
+                    Err(error) => Loadable::Error(error.to_string()),
+                };
+                // Nothing to pick from: fall back to typing the name.
+                if page.tool_menu.is_open() && page.mcp_tools.ready().is_none() {
+                    page.close_mcp_menu(McpMenu::Tool, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Pick a picker row. A saved entry becomes active right away; an
+    /// unsaved one only loads empty fields until Save.
+    fn pick_web_search_backend(&mut self, id: String, cx: &mut Context<Self>) {
+        self.web_search_pick = Some(id.clone());
+        self.web_search_error = None;
+        self.load_pick_fields(cx);
+        let switch = self.web_search.ready().is_some_and(|state| {
+            state.active.as_deref() != Some(id.as_str())
+                && state.entries.iter().any(|entry| entry.id == id)
+        });
+        if switch {
+            self.call_web_search(
+                methods::SET_ACTIVE_WEB_SEARCH_BACKEND,
+                serde_json::json!({ "id": id }),
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
+    /// Send a web-search RPC that replies the settings state, and echo the
+    /// reply (or the error) into the group.
+    fn call_web_search(
+        &mut self,
+        method: &'static str,
+        params: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.web_search_error = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(method, params).await;
+            this.update(cx, |page, cx| {
+                page.apply_web_search_reply(result, cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn apply_web_search_reply(
+        &mut self,
+        result: Result<serde_json::Value, holt_rpc::RpcError>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(value) => match serde_json::from_value::<WebSearchSettingsState>(value) {
+                Ok(state) => {
+                    self.apply_web_search_state(state, cx);
+                    self.web_search_error = None;
+                }
+                Err(error) => self.web_search_error = Some(error.to_string()),
+            },
+            Err(error) => self.web_search_error = Some(error.to_string()),
+        }
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -477,12 +768,23 @@ impl GeneralPage {
             cx.notify();
             return;
         };
+        let Some(id) = self.picked_entry().map(|entry| entry.id.clone()) else {
+            return;
+        };
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(methods::REVEAL_WEB_SEARCH_KEY, serde_json::json!({}))
+                .call(
+                    methods::REVEAL_WEB_SEARCH_KEY,
+                    serde_json::json!({ "id": id.clone() }),
+                )
                 .await;
             this.update(cx, |page, cx| {
+                // The user picked another row meanwhile: the key is not
+                // this field's to show.
+                if page.web_search_pick.as_deref() != Some(id.as_str()) {
+                    return;
+                }
                 match result {
                     Ok(value) => match value
                         .get("key")
@@ -515,9 +817,8 @@ impl GeneralPage {
     /// Conceal again: put the engine's masked key back in the field.
     fn restore_masked_web_search_key(&mut self, cx: &mut Context<Self>) {
         let masked = self
-            .web_search
-            .ready()
-            .and_then(|state| state.api_key_masked.clone())
+            .picked_entry()
+            .and_then(|entry| entry.api_key_masked.clone())
             .unwrap_or_default();
         self.web_search_key.update(cx, |input, cx| {
             input.set_masked(false, cx);
@@ -528,56 +829,56 @@ impl GeneralPage {
         cx.notify();
     }
 
-    /// Save the picked backend and the key field's content. An untouched
-    /// field holds the engine's masked display, never a usable key: with the
-    /// stored backend still picked the stored key is re-read through
-    /// `RevealWebSearchKey` and re-saved (a no-op save); picking a different
-    /// backend needs its own key rather than silently rebinding another
-    /// vendor's.
+    /// Save the pick: a built-in's key, or an MCP entry's server and tool.
+    /// The engine makes the saved entry active. An
+    /// untouched key field holds the engine's masked display, never a
+    /// usable key: the picked entry's stored key is re-read through
+    /// `RevealWebSearchKey` and re-saved instead.
     fn save_web_search(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.web_search_error = Some("Engine not connected".into());
             cx.notify();
             return;
         };
-        let Some(backend) = self.web_search_backend.clone() else {
+        let Some(kind) = self.picked_kind() else {
             self.web_search_error = Some("Choose a search backend".into());
             cx.notify();
             return;
         };
-        let stored_backend = self
-            .web_search
-            .ready()
-            .and_then(|state| state.backend.clone());
-        let draft = self.web_search_key.read(cx).text().to_string();
-        let field_state = self.key_field_state(cx);
-        let untouched = field_state == KeyField::Stored;
-        // An untouched field or a revealed key both hold the *stored* key,
-        // never one entered for the pick: writing it under another backend
-        // would silently rebind the wrong vendor's credential.
-        if matches!(field_state, KeyField::Stored | KeyField::Revealed)
-            && stored_backend.as_deref() != Some(backend.as_str())
-        {
-            let name = self
-                .web_search
-                .ready()
-                .and_then(|state| {
-                    state
-                        .backends
-                        .iter()
-                        .find(|option| option.id == backend)
-                        .map(|option| option.name.clone())
-                })
-                .unwrap_or_else(|| backend.clone());
-            self.web_search_error = Some(format!("Enter an API key for {name}"));
-            cx.notify();
+        let entry_id = self.picked_entry().map(|entry| entry.id.clone());
+        if kind == MCP_KIND {
+            let server = self.web_search_server.clone().unwrap_or_default();
+            let tool = self.web_search_tool.read(cx).text().trim().to_string();
+            let missing = if server.is_empty() {
+                Some("Choose an MCP server")
+            } else if tool.is_empty() {
+                Some("Choose a tool")
+            } else {
+                None
+            };
+            if let Some(message) = missing {
+                self.web_search_error = Some(message.into());
+                cx.notify();
+                return;
+            }
+            let mut params = serde_json::json!({ "kind": kind, "server": server, "tool": tool });
+            if let Some(id) = entry_id {
+                params["id"] = id.into();
+            }
+            self.call_web_search(methods::SAVE_WEB_SEARCH_BACKEND, params, cx);
             return;
         }
+        let mut params = serde_json::json!({ "kind": kind });
+        let draft = self.web_search_key.read(cx).text().to_string();
+        let untouched = self.key_field_state(cx) == KeyField::Stored;
         self.task = Some(cx.spawn(async move |this, cx| {
             let key = if untouched {
                 match engine
                     .client()
-                    .call(methods::REVEAL_WEB_SEARCH_KEY, serde_json::json!({}))
+                    .call(
+                        methods::REVEAL_WEB_SEARCH_KEY,
+                        serde_json::json!({ "id": entry_id }),
+                    )
                     .await
                 {
                     Ok(value) => value
@@ -605,24 +906,13 @@ impl GeneralPage {
                 .ok();
                 return;
             }
+            params["apiKey"] = key.into();
             let result = engine
                 .client()
-                .call(
-                    methods::SAVE_WEB_SEARCH_SETTINGS,
-                    serde_json::json!({ "backend": backend, "apiKey": key }),
-                )
+                .call(methods::SAVE_WEB_SEARCH_BACKEND, params)
                 .await;
             this.update(cx, |page, cx| {
-                match result {
-                    Ok(value) => match serde_json::from_value::<WebSearchSettingsState>(value) {
-                        Ok(state) => {
-                            page.apply_web_search_state(state, cx);
-                            page.web_search_error = None;
-                        }
-                        Err(error) => page.web_search_error = Some(error.to_string()),
-                    },
-                    Err(error) => page.web_search_error = Some(error.to_string()),
-                }
+                page.apply_web_search_reply(result, cx);
                 cx.notify();
             })
             .ok();
@@ -834,42 +1124,17 @@ impl GeneralPage {
         }));
     }
 
-    /// Clear the record — the unconfigured state is back to "no tool".
+    /// Remove the picked entry; removing the active one leaves the agent
+    /// without a web search tool.
     fn remove_web_search(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.web_search_error = Some("Engine not connected".into());
-            cx.notify();
+        let Some(id) = self.picked_entry().map(|entry| entry.id.clone()) else {
             return;
         };
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::REMOVE_WEB_SEARCH_SETTINGS, serde_json::json!({}))
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(_) => {
-                        let backends = page
-                            .web_search
-                            .ready()
-                            .map(|state| state.backends.clone())
-                            .unwrap_or_default();
-                        page.web_search_error = None;
-                        page.apply_web_search_state(
-                            WebSearchSettingsState {
-                                backend: None,
-                                api_key_masked: None,
-                                backends,
-                            },
-                            cx,
-                        );
-                    }
-                    Err(error) => page.web_search_error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
+        self.call_web_search(
+            methods::REMOVE_WEB_SEARCH_BACKEND,
+            serde_json::json!({ "id": id }),
+            cx,
+        );
     }
 
     /// The device-local Notifications group (issue 03). Independent of the
@@ -978,6 +1243,205 @@ impl GeneralPage {
         cx.notify();
     }
 
+    fn mcp_menu(&mut self, menu: McpMenu) -> &mut Popup<()> {
+        match menu {
+            McpMenu::Server => &mut self.server_menu,
+            McpMenu::Tool => &mut self.tool_menu,
+        }
+    }
+
+    fn close_mcp_menu(&mut self, menu: McpMenu, cx: &mut Context<Self>) {
+        if self.mcp_menu(menu).begin_close() {
+            popover::reap_popup(cx, move |page: &mut Self| page.mcp_menu(menu));
+        }
+    }
+
+    /// Open a Server/Tool menu, reading its options on the way. The tool
+    /// menu waits for a server.
+    fn toggle_mcp_menu(&mut self, menu: McpMenu, cx: &mut Context<Self>) {
+        let popup = self.mcp_menu(menu);
+        if popup.take_press_was_open() || popup.is_open() {
+            self.close_mcp_menu(menu, cx);
+        } else {
+            match menu {
+                McpMenu::Server => self.load_mcp_servers(cx),
+                McpMenu::Tool if self.web_search_server.is_some() => self.load_mcp_tools(cx),
+                McpMenu::Tool => return,
+            }
+            self.mcp_menu(menu).open(());
+        }
+        cx.notify();
+    }
+
+    fn pick_mcp_option(&mut self, menu: McpMenu, value: String, cx: &mut Context<Self>) {
+        self.close_mcp_menu(menu, cx);
+        match menu {
+            McpMenu::Server => self.pick_mcp_server(value, cx),
+            McpMenu::Tool => self.pick_mcp_tool(value, cx),
+        }
+    }
+
+    /// The Server menu: `mcp.json`'s servers, plus the stored one when the
+    /// file no longer defines it.
+    fn mcp_server_dropdown(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.web_search_server.clone();
+        let (mut options, empty) = match &self.mcp_servers {
+            Loadable::Ready(servers) => (servers.clone(), "No servers in mcp.json".to_string()),
+            Loadable::Error(error) => (Vec::new(), format!("Couldn't read mcp.json: {error}")),
+            Loadable::Idle | Loadable::Loading => (Vec::new(), "Loading servers…".to_string()),
+        };
+        if let Some(current) = &current
+            && self.mcp_servers.ready().is_some()
+            && !options.contains(current)
+        {
+            options.push(current.clone());
+        }
+        let label = current.unwrap_or_else(|| "Select a server".to_string());
+        self.mcp_dropdown(theme, McpMenu::Server, label, options, empty, cx)
+    }
+
+    /// The Tool menu: the picked server's tools, plus the stored one when
+    /// the server no longer lists it.
+    fn mcp_tool_dropdown(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let tool = self.web_search_tool.read(cx).text().trim().to_string();
+        let (mut options, empty) = match &self.mcp_tools {
+            Loadable::Ready(tools) => (tools.clone(), "No tools on this server".to_string()),
+            _ => (Vec::new(), "Loading tools…".to_string()),
+        };
+        if !tool.is_empty() && self.mcp_tools.ready().is_some() && !options.contains(&tool) {
+            options.push(tool.clone());
+        }
+        let label = match (tool.is_empty(), self.web_search_server.is_some()) {
+            (false, _) => tool,
+            (true, true) => "Select a tool".to_string(),
+            (true, false) => "Select a server first".to_string(),
+        };
+        self.mcp_dropdown(theme, McpMenu::Tool, label, options, empty, cx)
+    }
+
+    /// A Server/Tool menu trigger, styled like the Backend one. With no
+    /// `options` the menu shows `empty` as its one inert row.
+    fn mcp_dropdown(
+        &self,
+        theme: &Theme,
+        menu: McpMenu,
+        label: String,
+        options: Vec<String>,
+        empty: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = menu.id();
+        let popup = match menu {
+            McpMenu::Server => &self.server_menu,
+            McpMenu::Tool => &self.tool_menu,
+        };
+        let rows: Vec<AnyElement> = if options.is_empty() {
+            vec![
+                div()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .text_size(crate::typography::ui_rems(13.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(empty))
+                    .into_any_element(),
+            ]
+        } else {
+            options
+                .into_iter()
+                .enumerate()
+                .map(|(index, option)| {
+                    let selected = option == label;
+                    let row_id = format!("{id}-option-{index}");
+                    let selector = row_id.clone();
+                    popover::menu_row(theme, selected, row_id.clone())
+                        .id(SharedString::from(row_id))
+                        .debug_selector(move || selector.clone())
+                        .on_click(cx.listener({
+                            let option = option.clone();
+                            move |page, _, _, cx| {
+                                cx.stop_propagation();
+                                page.pick_mcp_option(menu, option.clone(), cx);
+                            }
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(option)),
+                        )
+                        .when(selected, |row| {
+                            row.child(
+                                crate::icons::icon(crate::icons::CHECK)
+                                    .size(px(14.0))
+                                    .text_color(theme.accent),
+                            )
+                        })
+                        .into_any_element()
+                })
+                .collect()
+        };
+        let card = popover::popover_card(theme)
+            .id(SharedString::from(format!("{id}-scroll")))
+            .w(px(CONTROL_WIDTH))
+            .max_h(px(240.0))
+            .overflow_y_scroll()
+            .on_mouse_down_out(cx.listener(move |page, _, _, cx| page.close_mcp_menu(menu, cx)))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(rows)
+            .into_any_element();
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .relative()
+            .flex_none()
+            .w(px(CONTROL_WIDTH))
+            .h(px(CONTROL_HEIGHT))
+            .px(px(10.0))
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .bg(if popup.is_open() {
+                theme.ink(0.09)
+            } else {
+                theme.ink(0.05)
+            })
+            .when(!popup.is_open(), |el| {
+                el.hover(|style| style.bg(crate::theme::ink(0.07)))
+            })
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |page, _, _, _| page.mcp_menu(menu).note_trigger_press()),
+            )
+            .on_click(cx.listener(move |page, _, _, cx| page.toggle_mcp_menu(menu, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(label)),
+            )
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .when_some(popup.get(), |trigger, _| {
+                trigger.child(popover::anchored_menu_below(
+                    format!("{id}-menu"),
+                    card,
+                    popup.closing_since(),
+                ))
+            })
+            .into_any_element()
+    }
+
     /// The Jev connection group (ADR-0027): the TypeSafe key future
     /// Jev-powered features mount from, with the same reveal affordance
     /// and Save/Remove actions as Web search. No feature consumes it yet;
@@ -1072,12 +1536,14 @@ impl GeneralPage {
                 .debug_selector(|| "web-search-unavailable".into())
                 .into_any_element(),
             Loadable::Ready(state) => {
-                let unconfigured = state.backend.is_none();
+                let picked_kind = self.picked_kind();
+                let stored = self.picked_entry().is_some();
+                let mcp = picked_kind.as_deref() == Some(MCP_KIND);
                 let hint = zhipu_hint_visible(
-                    self.web_search_backend.as_deref(),
+                    picked_kind.as_deref(),
                     self.providers.ready().map(Vec::as_slice).unwrap_or(&[]),
                 );
-                let rows = backend_rows(&state.backends, self.web_search_backend.as_deref());
+                let rows = backend_rows(state, self.web_search_pick.as_deref());
                 // No stored pick leaves the trigger on explicit copy: the
                 // backend is the user's choice, never an app preselection.
                 let selected_label = rows
@@ -1090,7 +1556,11 @@ impl GeneralPage {
                     let id = row.id.clone();
                     let selected = row.selected;
                     let name = row.name.clone();
-                    let note = row.note.clone();
+                    let note = match (&row.note, row.active) {
+                        (Some(note), true) => Some(format!("Active · {note}")),
+                        (None, true) => Some("Active".to_string()),
+                        (note, false) => note.clone(),
+                    };
                     popover::menu_row(
                         theme,
                         selected,
@@ -1101,9 +1571,8 @@ impl GeneralPage {
                     )))
                     .on_click(cx.listener(move |page, _, _, cx| {
                         cx.stop_propagation();
-                        page.web_search_backend = Some(id.clone());
                         page.close_backend_menu(cx);
-                        cx.notify();
+                        page.pick_web_search_backend(id.clone(), cx);
                     }))
                     .child(
                         div()
@@ -1210,7 +1679,7 @@ impl GeneralPage {
                 });
 
                 let mut actions = Vec::new();
-                if !unconfigured {
+                if stored {
                     actions.push(
                         remove_button(theme, "remove-web-search")
                             .on_click(cx.listener(|page, _, _, cx| page.remove_web_search(cx)))
@@ -1224,29 +1693,65 @@ impl GeneralPage {
                         .child("Save")
                         .into_any_element(),
                 );
-                let card =
-                    group_rows()
-                        .child(
+                let card = group_rows()
+                    .child(
+                        group_row()
+                            .child(row_text(
+                                theme,
+                                "Backend",
+                                "The search service the agent queries.",
+                            ))
+                            .child(backend_trigger),
+                    )
+                    .when(mcp, |card| {
+                        card.child(
                             group_row()
                                 .child(row_text(
                                     theme,
-                                    "Backend",
-                                    "The search service the agent queries.",
+                                    "Server",
+                                    "A server defined in mcp.json; its own auth applies.",
                                 ))
-                                .child(backend_trigger),
+                                .child(self.mcp_server_dropdown(theme, cx)),
                         )
-                        .child(group_row().items_start().child(key_text).child(
-                            control_with_actions(
-                                web_search_key_field(
-                                    theme,
-                                    self.web_search_key.clone(),
-                                    self.key_field_state(cx),
-                                    self.web_search_draft_concealed,
-                                    cx,
-                                ),
-                                actions,
+                    });
+                let card = if mcp {
+                    // A server whose tools can't be listed falls back to
+                    // typing the tool name, with the reason alongside.
+                    let (tool_control, tool_description) = match &self.mcp_tools {
+                        Loadable::Error(reason) => (
+                            text_field(
+                                theme,
+                                "web-search-tool-input",
+                                self.web_search_tool.clone(),
+                            )
+                            .into_any_element(),
+                            format!("Couldn't list this server's tools ({reason}). Type the name."),
+                        ),
+                        _ => (
+                            self.mcp_tool_dropdown(theme, cx),
+                            "Called with the query; its text goes to the agent as-is.".to_string(),
+                        ),
+                    };
+                    card.child(
+                        group_row()
+                            .items_start()
+                            .child(row_text(theme, "Tool", &tool_description))
+                            .child(control_with_actions(tool_control, actions)),
+                    )
+                } else {
+                    card.child(group_row().items_start().child(key_text).child(
+                        control_with_actions(
+                            web_search_key_field(
+                                theme,
+                                self.web_search_key.clone(),
+                                self.key_field_state(cx),
+                                self.web_search_draft_concealed,
+                                cx,
                             ),
-                        ));
+                            actions,
+                        ),
+                    ))
+                };
                 let mut column = div().flex().flex_col().child(card);
                 if let Some(error) = self.web_search_error.clone() {
                     column = column.child(
@@ -1261,7 +1766,7 @@ impl GeneralPage {
         let status = self
             .web_search
             .ready()
-            .map(|state| status_pill(theme, state.backend.is_some(), "web-search-unconfigured"));
+            .map(|state| status_pill(theme, state.active.is_some(), "web-search-unconfigured"));
         div()
             .id("web-search-group")
             .mt(px(GROUP_GAP))
@@ -1269,8 +1774,9 @@ impl GeneralPage {
                 theme,
                 "Web search",
                 status,
-                "One search service, chosen by you, with its own key. Without one the agent has \
-                 no web search tool; reading a page is a separate tool.",
+                "Search services chosen by you — a vendor with its own key, or a search tool on \
+                 an MCP server; the agent uses the active one. Without one the agent has no web \
+                 search tool; reading a page is a separate tool.",
             ))
             .child(body)
             .into_any_element()
@@ -1441,6 +1947,22 @@ fn jev_key_field(
                 ),
         )
         .into_any_element()
+}
+
+/// A plain text control on the shared control column.
+fn text_field(theme: &Theme, id: &'static str, input: Entity<ComposerInput>) -> impl IntoElement {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .w(px(CONTROL_WIDTH))
+        .h(px(CONTROL_HEIGHT))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .rounded(px(Theme::CONTROL_RADIUS))
+        .bg(theme.ink(0.05))
+        .child(div().flex_1().min_w_0().child(input))
 }
 
 /// The API-key field for the Web search group: the bordered input carrying
@@ -1960,20 +2482,65 @@ mod tests {
 
     // ---- Web search group (web-tools ticket 07) ----
 
-    fn backend_option(id: &str, name: &str, note: Option<&str>) -> WebSearchBackendOption {
-        WebSearchBackendOption {
+    fn backend_option(
+        id: &str,
+        name: &str,
+        note: Option<&str>,
+    ) -> holt_proto::WebSearchBackendOption {
+        holt_proto::WebSearchBackendOption {
             id: id.into(),
             name: name.into(),
             note: note.map(str::to_string),
         }
     }
 
-    fn launch_backends() -> Vec<WebSearchBackendOption> {
+    fn launch_backends() -> Vec<holt_proto::WebSearchBackendOption> {
         vec![
             backend_option("zhipu", "Zhipu", None),
             backend_option("bocha", "Bocha", None),
             backend_option("brave", "Brave", None),
         ]
+    }
+
+    fn entry(id: &str, kind: &str, name: &str, key: &str) -> WebSearchEntryView {
+        WebSearchEntryView {
+            id: id.into(),
+            kind: kind.into(),
+            name: name.into(),
+            server: None,
+            tool: None,
+            api_key_masked: (!key.is_empty()).then(|| masked(key)),
+        }
+    }
+
+    fn mcp_entry(id: &str, server: &str, tool: &str) -> WebSearchEntryView {
+        WebSearchEntryView {
+            server: Some(server.into()),
+            tool: Some(tool.into()),
+            ..entry(id, MCP_KIND, MCP_KIND, "")
+        }
+    }
+
+    /// A settings state over the launch backends.
+    fn search_state(
+        active: Option<&str>,
+        entries: Vec<WebSearchEntryView>,
+    ) -> WebSearchSettingsState {
+        WebSearchSettingsState {
+            active: active.map(str::to_string),
+            entries,
+            backends: launch_backends(),
+        }
+    }
+
+    const ZHIPU_KEY: &str = "sk-1234567890abcdef";
+
+    /// Zhipu saved and active.
+    fn zhipu_active() -> WebSearchSettingsState {
+        search_state(
+            Some("zhipu"),
+            vec![entry("zhipu", "zhipu", "Zhipu", ZHIPU_KEY)],
+        )
     }
 
     /// A provider row whose single variant carries the same id — the
@@ -2009,17 +2576,25 @@ mod tests {
     }
 
     #[test]
-    fn backend_rows_mark_only_the_stored_selection() {
-        let rows = backend_rows(&launch_backends(), Some("bocha"));
-        assert_eq!(rows.len(), 3);
-        assert!(rows[1].selected);
-        assert_eq!(rows[1].note, None);
-        assert_eq!(rows[2].note.as_deref(), None);
-        // Unconfigured: no vendor starts selected.
+    fn backend_rows_list_builtins_then_mcp_entries_then_a_new_one() {
+        let state = search_state(
+            Some("mcp-1"),
+            vec![
+                entry("bocha", "bocha", "Bocha", "bocha-key-0000"),
+                mcp_entry("mcp-1", "tinyfish", "search"),
+            ],
+        );
+        let rows = backend_rows(&state, Some("bocha"));
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, ["zhipu", "bocha", "brave", "mcp-1", "mcp"]);
+        assert!(rows[1].selected && !rows[1].active);
+        assert!(rows[3].active && !rows[3].selected);
+        assert_eq!(rows[3].name, "tinyfish / search");
+        // No pick: no vendor starts selected.
         assert!(
-            backend_rows(&launch_backends(), None)
+            backend_rows(&search_state(None, vec![]), None)
                 .iter()
-                .all(|row| !row.selected)
+                .all(|row| !row.selected && !row.active)
         );
     }
 
@@ -2048,13 +2623,14 @@ mod tests {
         ));
     }
 
-    /// The Web search group's engine seam: the four web-search methods plus
+    /// The Web search group's engine seam: the web-search methods plus
     /// the provider/title reads the page performs on load. Everything else is
     /// version skew and parks the AppState's standing watches on the retry
     /// timer (the notifications harness' stance).
     struct FakeWebSearchEngine {
         state: std::sync::Mutex<WebSearchSettingsState>,
-        key: std::sync::Mutex<Option<String>>,
+        /// Stored keys by entry id.
+        keys: std::sync::Mutex<std::collections::HashMap<String, String>>,
         jev_state: std::sync::Mutex<JevSettingsState>,
         jev_key: std::sync::Mutex<Option<String>>,
         jev_saved: std::sync::Mutex<Vec<serde_json::Value>>,
@@ -2062,6 +2638,51 @@ mod tests {
         saved: std::sync::Mutex<Vec<serde_json::Value>>,
         /// False stands in for an engine that predates the web-search RPCs.
         available: bool,
+    }
+
+    impl FakeWebSearchEngine {
+        fn save(&self, params: serde_json::Value) -> Result<(), holt_rpc::RpcError> {
+            use holt_rpc::RpcError;
+            let field = |name: &str| {
+                params
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            };
+            let (kind, api_key) = (field("kind"), field("apiKey"));
+            let mut state = self.state.lock().unwrap();
+            let view = if kind == MCP_KIND {
+                let (server, tool) = (field("server"), field("tool"));
+                if server.is_empty() || tool.is_empty() {
+                    return Err(RpcError::BadParams("server and tool are required".into()));
+                }
+                let id = match field("id") {
+                    id if id.is_empty() => format!("mcp-{}", state.entries.len() + 1),
+                    id => id,
+                };
+                mcp_entry(&id, &server, &tool)
+            } else {
+                let Some(option) = state.backends.iter().find(|option| option.id == kind) else {
+                    return Err(RpcError::BadParams(format!(
+                        "unknown search backend {kind:?}"
+                    )));
+                };
+                if api_key.is_empty() {
+                    return Err(RpcError::BadParams("apiKey is required".into()));
+                }
+                entry(&kind, &kind, &option.name.clone(), &api_key)
+            };
+            self.saved.lock().unwrap().push(params);
+            self.keys.lock().unwrap().insert(view.id.clone(), api_key);
+            state.active = Some(view.id.clone());
+            match state.entries.iter_mut().find(|stored| stored.id == view.id) {
+                Some(stored) => *stored = view,
+                None => state.entries.push(view),
+            }
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -2076,13 +2697,19 @@ mod tests {
                 && matches!(
                     method,
                     methods::GET_WEB_SEARCH_SETTINGS
-                        | methods::SAVE_WEB_SEARCH_SETTINGS
+                        | methods::SAVE_WEB_SEARCH_BACKEND
+                        | methods::SET_ACTIVE_WEB_SEARCH_BACKEND
                         | methods::REVEAL_WEB_SEARCH_KEY
-                        | methods::REMOVE_WEB_SEARCH_SETTINGS
+                        | methods::REMOVE_WEB_SEARCH_BACKEND
                 )
             {
                 return Err(RpcError::UnknownMethod(method.to_string()));
             }
+            let id = params
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             match method {
                 methods::GET_TITLE_SETTINGS => RpcReply::value(&serde_json::json!({
                     "settings": {
@@ -2094,44 +2721,45 @@ mod tests {
                 methods::LIST_MODELS => RpcReply::value(&serde_json::json!([])),
                 methods::GET_WEB_SEARCH_SETTINGS => RpcReply::value(&*self.state.lock().unwrap()),
                 methods::REVEAL_WEB_SEARCH_KEY => RpcReply::value(&serde_json::json!({
-                    "key": self.key.lock().unwrap().clone(),
+                    "key": self.keys.lock().unwrap().get(&id).cloned(),
                 })),
-                methods::SAVE_WEB_SEARCH_SETTINGS => {
-                    let backend = params
-                        .get("backend")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let api_key = params
-                        .get("apiKey")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let known = self
-                        .state
-                        .lock()
-                        .unwrap()
-                        .backends
-                        .iter()
-                        .any(|option| option.id == backend);
-                    if !known {
-                        return Err(RpcError::BadParams(format!(
-                            "unknown search backend {backend:?}"
-                        )));
-                    }
-                    if api_key.trim().is_empty() {
-                        return Err(RpcError::BadParams("apiKey is required".into()));
-                    }
-                    self.saved.lock().unwrap().push(params);
-                    let backends = self.state.lock().unwrap().backends.clone();
-                    *self.key.lock().unwrap() = Some(api_key.clone());
-                    *self.state.lock().unwrap() = WebSearchSettingsState {
-                        backend: Some(backend),
-                        api_key_masked: Some(masked(&api_key)),
-                        backends,
-                    };
+                methods::SAVE_WEB_SEARCH_BACKEND => {
+                    self.save(params)?;
                     RpcReply::value(&*self.state.lock().unwrap())
                 }
+                methods::SET_ACTIVE_WEB_SEARCH_BACKEND => {
+                    let mut state = self.state.lock().unwrap();
+                    if !state.entries.iter().any(|entry| entry.id == id) {
+                        return Err(RpcError::BadParams(format!(
+                            "no search backend with id {id:?}"
+                        )));
+                    }
+                    state.active = Some(id);
+                    RpcReply::value(&*state)
+                }
+                methods::REMOVE_WEB_SEARCH_BACKEND => {
+                    let mut state = self.state.lock().unwrap();
+                    state.entries.retain(|entry| entry.id != id);
+                    if state.active.as_deref() == Some(id.as_str()) {
+                        state.active = None;
+                    }
+                    self.keys.lock().unwrap().remove(&id);
+                    RpcReply::value(&*state)
+                }
+                methods::GET_MCP_SETTINGS => RpcReply::value(&serde_json::json!({
+                    "servers": [
+                        { "name": "tinyfish", "enabled": true },
+                        { "name": "broken", "enabled": true },
+                    ],
+                })),
+                methods::TEST_MCP_SERVER => RpcReply::value(&match params["name"].as_str() {
+                    Some("tinyfish") => serde_json::json!({
+                        "status": "ok",
+                        "toolCount": 2,
+                        "toolNames": ["search", "web_search"],
+                    }),
+                    _ => serde_json::json!({ "status": "failed", "reason": "connection refused" }),
+                }),
                 methods::GET_JEV_SETTINGS => RpcReply::value(&*self.jev_state.lock().unwrap()),
                 methods::REVEAL_JEV_KEY => RpcReply::value(&serde_json::json!({
                     "key": self.jev_key.lock().unwrap().clone(),
@@ -2156,16 +2784,6 @@ mod tests {
                     *self.jev_key.lock().unwrap() = None;
                     *self.jev_state.lock().unwrap() = JevSettingsState {
                         api_key_masked: None,
-                    };
-                    RpcReply::value(&serde_json::json!({}))
-                }
-                methods::REMOVE_WEB_SEARCH_SETTINGS => {
-                    let backends = self.state.lock().unwrap().backends.clone();
-                    *self.key.lock().unwrap() = None;
-                    *self.state.lock().unwrap() = WebSearchSettingsState {
-                        backend: None,
-                        api_key_masked: None,
-                        backends,
                     };
                     RpcReply::value(&serde_json::json!({}))
                 }
@@ -2212,14 +2830,50 @@ mod tests {
                 .read(|cx| self.page.read(cx).web_search_key.read(cx).is_masked())
         }
 
-        fn draft(&mut self, backend: &str, key: &str) {
+        /// Pick a picker row, as its click does.
+        fn pick(&mut self, id: &str) {
             self.page.update(&mut *self.visual, |page, cx| {
-                page.web_search_backend = Some(backend.to_string());
-                page.web_search_key.update(cx, |input, cx| {
-                    input.set_text(key, cx);
-                });
+                page.pick_web_search_backend(id.to_string(), cx);
+            });
+            self.pump();
+        }
+
+        fn type_into(&mut self, field: fn(&GeneralPage) -> &Entity<ComposerInput>, text: &str) {
+            self.page.update(&mut *self.visual, |page, cx| {
+                field(page).update(cx, |input, cx| input.set_text(text, cx));
                 cx.notify();
             });
+            self.pump();
+        }
+
+        /// Pick a row and type a key for it.
+        fn draft(&mut self, pick: &str, key: &str) {
+            self.pick(pick);
+            self.type_into(|page| &page.web_search_key, key);
+        }
+
+        fn error(&self) -> Option<String> {
+            self.visual
+                .read(|cx| self.page.read(cx).web_search_error.clone())
+        }
+
+        fn active(&self) -> Option<String> {
+            self.engine.state.lock().unwrap().active.clone()
+        }
+
+        /// Click a menu option, then let the menu's exit animation finish
+        /// so it no longer covers the rows below. `finish_close` measures
+        /// the exit on the wall clock, the reap timer on the test clock.
+        fn choose(&mut self, selector: &'static str) {
+            self.click(selector);
+            std::thread::sleep(
+                crate::motion::MENU_OUT
+                    .total()
+                    .mul_f32(crate::motion::speed_scale()),
+            );
+            self.visual
+                .executor()
+                .advance_clock(std::time::Duration::from_secs(1));
             self.pump();
         }
 
@@ -2237,13 +2891,13 @@ mod tests {
     fn web_search_harness<'a>(
         cx: &'a mut gpui::TestAppContext,
         state: WebSearchSettingsState,
-        key: Option<&str>,
+        keys: &[(&str, &str)],
         providers: Vec<Provider>,
     ) -> WebSearchHarness<'a> {
         web_search_harness_with(
             cx,
             state,
-            key,
+            keys,
             providers,
             true,
             JevSettingsState {
@@ -2257,7 +2911,7 @@ mod tests {
     fn web_search_harness_with<'a>(
         cx: &'a mut gpui::TestAppContext,
         state: WebSearchSettingsState,
-        key: Option<&str>,
+        keys: &[(&str, &str)],
         providers: Vec<Provider>,
         available: bool,
         jev_state: JevSettingsState,
@@ -2265,7 +2919,11 @@ mod tests {
     ) -> WebSearchHarness<'a> {
         let engine = std::sync::Arc::new(FakeWebSearchEngine {
             state: std::sync::Mutex::new(state),
-            key: std::sync::Mutex::new(key.map(str::to_string)),
+            keys: std::sync::Mutex::new(
+                keys.iter()
+                    .map(|(id, key)| (id.to_string(), key.to_string()))
+                    .collect(),
+            ),
             jev_state: std::sync::Mutex::new(jev_state),
             jev_key: std::sync::Mutex::new(jev_key.map(str::to_string)),
             jev_saved: std::sync::Mutex::new(Vec::new()),
@@ -2305,20 +2963,16 @@ mod tests {
 
     /// The configured path: the masked key from `GetWebSearchSettings` is what
     /// the field shows, the same-vendor hint needs both conditions, and Save
-    /// rides `SaveWebSearchSettings`.
+    /// rides `SaveWebSearchBackend`.
     #[gpui::test]
     fn the_group_shows_the_masked_key_and_saves_through_the_rpc(cx: &mut gpui::TestAppContext) {
         let mut harness = web_search_harness(
             cx,
-            WebSearchSettingsState {
-                backend: Some("zhipu".into()),
-                api_key_masked: Some("sk-1…cdef".into()),
-                backends: launch_backends(),
-            },
-            Some("sk-1234567890abcdef"),
+            zhipu_active(),
+            &[("zhipu", ZHIPU_KEY)],
             vec![provider("zai", true)],
         );
-        assert_eq!(harness.key_text(), "sk-1…cdef");
+        assert_eq!(harness.key_text(), masked(ZHIPU_KEY));
         // The engine's masked display reads as plain text — it is already
         // masked; bullets would hide the first/last characters it exists to
         // show.
@@ -2330,53 +2984,45 @@ mod tests {
                 .is_none()
         );
         assert!(harness.visual.debug_bounds("web-search-hint").is_some());
+        // Built-ins have no server or tool fields.
+        assert!(harness.visual.debug_bounds("web-search-server").is_none());
 
         // Saving untouched re-reads and re-saves the stored key — the masked
         // display itself is never written as a key.
         harness.click("save-web-search");
         assert_eq!(
             harness.engine.saved.lock().unwrap().as_slice(),
-            &[serde_json::json!({
-                "backend": "zhipu",
-                "apiKey": "sk-1234567890abcdef",
-            })]
+            &[serde_json::json!({ "kind": "zhipu", "apiKey": ZHIPU_KEY })]
         );
 
         // The eye reveals the stored key through RevealWebSearchKey, then
         // conceals it back to the engine's masked display.
         harness.click("toggle-web-search-key");
-        assert_eq!(harness.key_text(), "sk-1234567890abcdef");
+        assert_eq!(harness.key_text(), ZHIPU_KEY);
         assert!(!harness.key_masked());
         harness.click("toggle-web-search-key");
-        assert_eq!(harness.key_text(), "sk-1…cdef");
+        assert_eq!(harness.key_text(), masked(ZHIPU_KEY));
         assert!(!harness.key_masked());
 
-        // A revealed key is still the *stored* key: picking another backend
-        // and saving must not rebind it to that backend.
+        // A revealed key belongs to its entry: picking an unsaved backend
+        // clears the field, so saving it asks for that backend's own key.
         harness.click("toggle-web-search-key");
-        assert_eq!(harness.key_text(), "sk-1234567890abcdef");
-        harness.page.update(&mut *harness.visual, |page, cx| {
-            page.web_search_backend = Some("brave".into());
-            cx.notify();
-        });
-        harness.pump();
+        assert_eq!(harness.key_text(), ZHIPU_KEY);
+        harness.pick("brave");
+        assert_eq!(harness.key_text(), "");
         assert!(harness.visual.debug_bounds("web-search-hint").is_none());
         harness.click("save-web-search");
         assert_eq!(harness.engine.saved.lock().unwrap().len(), 1);
-        let error = harness
-            .visual
-            .read(|cx| harness.page.read(cx).web_search_error.clone());
-        assert_eq!(error.as_deref(), Some("Enter an API key for Brave"));
+        assert_eq!(harness.error().as_deref(), Some("Enter an API key"));
+        // Picking alone never switched the active backend.
+        assert_eq!(harness.active().as_deref(), Some("zhipu"));
 
         // Editing a revealed key makes it a draft: the eye is then only a
         // projection flip, never a restore that discards what was typed.
-        harness.page.update(&mut *harness.visual, |page, cx| {
-            page.web_search_backend = Some("zhipu".into());
-            page.web_search_key
-                .update(cx, |input, cx| input.set_text("typed-after-reveal", cx));
-            cx.notify();
-        });
-        harness.pump();
+        harness.pick("zhipu");
+        assert_eq!(harness.key_text(), masked(ZHIPU_KEY));
+        harness.click("toggle-web-search-key");
+        harness.type_into(|page| &page.web_search_key, "typed-after-reveal");
         assert!(harness.key_masked(), "a draft is concealed by default");
         harness.click("toggle-web-search-key");
         assert!(!harness.key_masked());
@@ -2385,22 +3031,31 @@ mod tests {
         assert!(harness.key_masked());
         assert_eq!(harness.key_text(), "typed-after-reveal");
 
-        // A draft key saves with the picked backend.
+        // A draft key saves with the picked backend, which becomes active.
         harness.draft("bocha", "bocha-key-0000");
         harness.click("save-web-search");
         assert_eq!(
             harness.engine.saved.lock().unwrap().as_slice(),
             &[
-                serde_json::json!({ "backend": "zhipu", "apiKey": "sk-1234567890abcdef" }),
-                serde_json::json!({ "backend": "bocha", "apiKey": "bocha-key-0000" }),
+                serde_json::json!({ "kind": "zhipu", "apiKey": ZHIPU_KEY }),
+                serde_json::json!({ "kind": "bocha", "apiKey": "bocha-key-0000" }),
             ]
         );
+        assert_eq!(harness.active().as_deref(), Some("bocha"));
         // The save reply re-echoes the masked key and the draft is gone.
         assert_eq!(harness.key_text(), masked("bocha-key-0000"));
         assert!(harness.visual.debug_bounds("web-search-error").is_none());
 
-        // Remove clears the record: the group reads unconfigured again.
+        // Picking a saved entry switches to it at once.
+        harness.pick("zhipu");
+        assert_eq!(harness.active().as_deref(), Some("zhipu"));
+        assert_eq!(harness.key_text(), masked(ZHIPU_KEY));
+
+        // Removing the active entry leaves the agent without the tool; the
+        // other entry stays saved.
         harness.click("remove-web-search");
+        assert_eq!(harness.active(), None);
+        assert_eq!(harness.engine.state.lock().unwrap().entries.len(), 1);
         assert!(
             harness
                 .visual
@@ -2410,21 +3065,115 @@ mod tests {
         assert_eq!(harness.key_text(), "");
     }
 
+    /// An MCP search tool: server and tool rows replace the key field, both
+    /// are required, and a saved entry is edited in place by its id.
+    /// Server and tool are picked from menus: the servers `GetMcpSettings`
+    /// reports, then the tools `TestMcpServer` lists for the picked one.
+    #[gpui::test]
+    fn mcp_entries_need_a_server_and_tool_and_edit_in_place(cx: &mut gpui::TestAppContext) {
+        let mut harness = web_search_harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)], vec![]);
+        harness.pick(MCP_KIND);
+        assert!(harness.visual.debug_bounds("web-search-server").is_some());
+        assert!(harness.visual.debug_bounds("web-search-tool").is_some());
+        assert!(
+            harness
+                .visual
+                .debug_bounds("web-search-key-field")
+                .is_none()
+        );
+        assert!(harness.visual.debug_bounds("remove-web-search").is_none());
+
+        harness.click("save-web-search");
+        assert_eq!(harness.error().as_deref(), Some("Choose an MCP server"));
+        harness.click("web-search-server");
+        harness.choose("web-search-server-option-0");
+        harness.click("save-web-search");
+        assert_eq!(harness.error().as_deref(), Some("Choose a tool"));
+        harness.click("web-search-tool");
+        harness.choose("web-search-tool-option-0");
+        harness.click("save-web-search");
+        assert_eq!(harness.error(), None);
+        assert_eq!(
+            harness.engine.saved.lock().unwrap().as_slice(),
+            &[serde_json::json!({ "kind": "mcp", "server": "tinyfish", "tool": "search" })]
+        );
+        // The saved entry is active and picked, its fields echoed back.
+        assert_eq!(harness.active().as_deref(), Some("mcp-2"));
+        let (pick, server) = harness.visual.read(|cx| {
+            let page = harness.page.read(cx);
+            (page.web_search_pick.clone(), page.web_search_server.clone())
+        });
+        assert_eq!(pick.as_deref(), Some("mcp-2"));
+        assert_eq!(server.as_deref(), Some("tinyfish"));
+        assert!(harness.visual.debug_bounds("remove-web-search").is_some());
+
+        // Switch away and back, then retool: the save names the entry.
+        harness.pick("zhipu");
+        assert_eq!(harness.active().as_deref(), Some("zhipu"));
+        harness.pick("mcp-2");
+        assert_eq!(harness.active().as_deref(), Some("mcp-2"));
+        harness.click("web-search-tool");
+        harness.choose("web-search-tool-option-1");
+        harness.click("save-web-search");
+        assert_eq!(
+            harness.engine.saved.lock().unwrap().last(),
+            Some(&serde_json::json!({
+                "kind": "mcp",
+                "id": "mcp-2",
+                "server": "tinyfish",
+                "tool": "web_search",
+            }))
+        );
+        let entries = harness.engine.state.lock().unwrap().entries.clone();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].tool.as_deref(), Some("web_search"));
+    }
+
+    /// A reveal answered after the user picked another row is dropped:
+    /// Zhipu's key must not land in the unsaved Brave draft.
+    #[gpui::test]
+    fn a_reveal_answered_after_a_new_pick_is_dropped(cx: &mut gpui::TestAppContext) {
+        let harness = web_search_harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)], vec![]);
+        harness.page.update(&mut *harness.visual, |page, cx| {
+            page.reveal_web_search_key(cx);
+            page.pick_web_search_backend("brave".into(), cx);
+        });
+        harness.pump();
+        assert_eq!(harness.key_text(), "");
+        assert_eq!(harness.error(), None);
+    }
+
+    /// A server whose tools can't be listed swaps the Tool menu for a text
+    /// field, so the entry can still be saved by name.
+    #[gpui::test]
+    fn an_unlistable_server_falls_back_to_typing_the_tool(cx: &mut gpui::TestAppContext) {
+        let mut harness = web_search_harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)], vec![]);
+        harness.pick(MCP_KIND);
+        harness.click("web-search-server");
+        harness.choose("web-search-server-option-1");
+        harness.click("web-search-tool");
+        assert!(harness.visual.debug_bounds("web-search-tool").is_none());
+        assert!(
+            harness
+                .visual
+                .debug_bounds("web-search-tool-input")
+                .is_some()
+        );
+        harness.type_into(|page| &page.web_search_tool, "search");
+        harness.click("save-web-search");
+        assert_eq!(harness.error(), None);
+        assert_eq!(
+            harness.engine.saved.lock().unwrap().last(),
+            Some(&serde_json::json!({ "kind": "mcp", "server": "broken", "tool": "search" }))
+        );
+    }
+
     /// Layout invariant: the in-field eye toggle stays inside the key field's
     /// box. The input's `w_full` root in a fixed-width flex row pushed the
     /// `flex_none` toggle out past the field's right border (user report).
     #[gpui::test]
     fn the_eye_toggle_stays_inside_the_key_field(cx: &mut gpui::TestAppContext) {
-        let harness = web_search_harness(
-            cx,
-            WebSearchSettingsState {
-                backend: Some("zhipu".into()),
-                api_key_masked: Some("sk-1…cdef".into()),
-                backends: launch_backends(),
-            },
-            Some("sk-1234567890abcdef"),
-            vec![],
-        );
+        let harness = web_search_harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)], vec![]);
         let field = harness
             .visual
             .debug_bounds("web-search-key-field")
@@ -2446,12 +3195,8 @@ mod tests {
     fn an_unconfigured_backend_reads_as_no_tool_not_an_error(cx: &mut gpui::TestAppContext) {
         let mut harness = web_search_harness(
             cx,
-            WebSearchSettingsState {
-                backend: None,
-                api_key_masked: None,
-                backends: launch_backends(),
-            },
-            None,
+            search_state(None, vec![]),
+            &[],
             vec![provider("zai", true)],
         );
         assert!(
@@ -2482,7 +3227,7 @@ mod tests {
         harness.click("save-web-search");
         assert_eq!(
             harness.engine.saved.lock().unwrap().as_slice(),
-            &[serde_json::json!({ "backend": "zhipu", "apiKey": "zhipu-key-123456" })]
+            &[serde_json::json!({ "kind": "zhipu", "apiKey": "zhipu-key-123456" })]
         );
         assert_eq!(harness.key_text(), masked("zhipu-key-123456"));
         assert!(!harness.key_masked());
@@ -2500,16 +3245,7 @@ mod tests {
     /// group keeps its state.
     #[gpui::test]
     fn a_rejected_save_surfaces_inline(cx: &mut gpui::TestAppContext) {
-        let mut harness = web_search_harness(
-            cx,
-            WebSearchSettingsState {
-                backend: Some("zhipu".into()),
-                api_key_masked: Some("sk-1…cdef".into()),
-                backends: launch_backends(),
-            },
-            Some("sk-1234567890abcdef"),
-            vec![],
-        );
+        let mut harness = web_search_harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)], vec![]);
         // Force an id the engine does not offer — the save RPC's validation.
         harness.draft("bogus", "some-key-000000");
         harness.click("save-web-search");
@@ -2534,12 +3270,8 @@ mod tests {
     fn an_engine_without_the_web_search_rpcs_names_the_skew(cx: &mut gpui::TestAppContext) {
         let harness = web_search_harness_with(
             cx,
-            WebSearchSettingsState {
-                backend: None,
-                api_key_masked: None,
-                backends: launch_backends(),
-            },
-            None,
+            search_state(None, vec![]),
+            &[],
             vec![],
             false,
             JevSettingsState {
@@ -2577,12 +3309,8 @@ mod tests {
     fn the_jev_group_masks_saves_reveals_and_removes(cx: &mut gpui::TestAppContext) {
         let harness = web_search_harness_with(
             cx,
-            WebSearchSettingsState {
-                backend: None,
-                api_key_masked: None,
-                backends: launch_backends(),
-            },
-            None,
+            search_state(None, vec![]),
+            &[],
             vec![],
             true,
             JevSettingsState {

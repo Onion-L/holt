@@ -24,7 +24,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::{SearchBackend, SearchHit, transport};
+use super::{SearchBackend, SearchHit, SearchResults, transport};
 
 const NAME: &str = "Bocha";
 const ENDPOINT: &str = "https://api.bochaai.com/v1/web-search";
@@ -101,11 +101,12 @@ impl SearchBackend for BochaBackend {
         query: &'a str,
         max_results: usize,
         cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
-        Box::pin(transport::race_cancel(
-            self.request(query, max_results, REQUEST_TIMEOUT),
-            cancel,
-        ))
+    ) -> BoxFuture<'a, Result<SearchResults, String>> {
+        Box::pin(async move {
+            transport::race_cancel(self.request(query, max_results, REQUEST_TIMEOUT), cancel)
+                .await
+                .map(SearchResults::Hits)
+        })
     }
 }
 

@@ -70,20 +70,30 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Saving rejects unresolvable provider-qualified models and empty or
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
-- Web search settings (ADR-0023): `GetWebSearchSettings` /
-  `SaveWebSearchSettings` (`{backend, apiKey}`, both replying the masked
-  `WebSearchSettingsState` plus the picker's launch options — Zhipu,
-  Bocha, Brave), `RevealWebSearchKey`, and `RemoveWebSearchSettings` —
-  the user-chosen search-backend record in `web-search.json` under the
-  credentials pattern (0600, atomic replace, malformed fails startup
-  loudly). Saving validates the backend id against the offered list and
-  a non-empty key; the key is an independent record, never shared with a
-  same-vendor provider key. The engine resolves the configured backend
-  once per Turn admission through the built-in adapter table — Zhipu,
-  Bocha, and Brave, one adapter module each over a shared transport
-  scaffolding (whole-exchange budget, cancellation race); request and
-  response shapes and error mapping stay per adapter — a mid-Turn
-  change lands from the next Turn, and an unconfigured backend leaves
+- Web search settings (ADR-0023): `GetWebSearchSettings`,
+  `SaveWebSearchBackend` (`{kind, apiKey?, id?, server?, tool?}`),
+  `SetActiveWebSearchBackend` (`{id}`), and `RemoveWebSearchBackend`
+  (`{id}`), all replying the masked `WebSearchSettingsState` (the active
+  entry id, every configured entry, and the picker's built-in options —
+  Zhipu, Bocha, Brave), plus `RevealWebSearchKey` (`{id}`). The records
+  live in `web-search.json` under the credentials pattern (0600, atomic
+  replace, malformed fails startup loudly; the pre-multi-entry
+  `{backend, apiKey}` shape still loads as one active entry). An entry is
+  a built-in kind (id = kind, non-empty key required) or an `mcp` entry
+  (generated `mcp-…` id, no key; `server` must name an `mcp.json` server,
+  `tool` is required); saving makes the entry active, and removing the
+  active entry leaves none. Keys are independent records, never shared
+  with a same-vendor provider key. The engine resolves the active entry
+  once per Turn admission through the adapter table — Zhipu, Bocha, and
+  Brave, one adapter module each over a shared transport scaffolding
+  (whole-exchange budget, cancellation race), request and response shapes
+  and error mapping per adapter; an `mcp` entry calls the named tool
+  through the engine's shared `McpPool` (query into the tool's required
+  string parameter, the cap into a count-like one, read off its input
+  schema) and passes its text through under the result header, ignoring
+  the server's `enabled` flag and tool filters and skipping the MCP
+  approval gate — a mid-Turn change lands from the next Turn, and no
+  active entry leaves
   the `web_search` agent tool unmounted: absent, never erroring.
 - Jev connection (ADR-0027): `GetJevSettings` / `SaveJevSettings`
   (`{apiKey}`, both replying the masked `JevSettingsState`),

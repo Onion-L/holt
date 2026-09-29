@@ -77,7 +77,7 @@ use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 use store::{load_chats, load_or_create_device_id, load_spaces};
 pub use title_task::{title_system_prompt, title_user_message};
-pub use tools::{SearchBackend, SearchHit};
+pub use tools::{SearchBackend, SearchHit, SearchResults};
 
 /// Maps a configured search-backend id (the `web-search.json` record's
 /// `backend`) to its mounted adapter. The engine's built-in table fills in

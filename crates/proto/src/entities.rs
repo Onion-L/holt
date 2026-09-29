@@ -163,9 +163,10 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
-/// One selectable search backend in the Settings picker (ADR-0023):
-/// `id` is what `SaveWebSearchSettings` takes, `name` is its label, and
-/// `note` is optional Settings-group copy flagging an access requirement.
+/// One built-in search backend the Settings picker offers (ADR-0023):
+/// `id` is both the backend kind and its entry id, `name` is its label,
+/// and `note` is optional Settings-group copy flagging an access
+/// requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchBackendOption {
@@ -175,23 +176,42 @@ pub struct WebSearchBackendOption {
     pub note: Option<String>,
 }
 
-/// The web-search settings view (ADR-0023): the configured backend plus a
-/// masked key — the reply shape of the web-search read and save RPCs.
-/// Both fields are `None` when no backend is configured; the raw key
-/// never rides this view (the dedicated reveal RPC is the only surface
-/// that returns it). `backends` carries the picker's launch options
-/// (Zhipu, Bocha, Brave) so the Settings group renders from one call.
+/// One configured search backend (ADR-0023). A built-in entry's `id`
+/// equals its `kind`; an MCP entry (`kind: "mcp"`) has a generated id and
+/// names an `mcp.json` `server` and its search `tool`. The raw key never
+/// rides this view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchEntryView {
+    pub id: String,
+    pub kind: String,
+    /// The vendor's display name for a built-in; the kind for an MCP
+    /// entry (whose `server`/`tool` pair is its label).
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// The stored key, masked for display (first/last four characters;
+    /// keys of eight or fewer characters show only the ellipsis). `None`
+    /// for an MCP entry — the server's own config carries its auth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_masked: Option<String>,
+}
+
+/// The web-search settings view (ADR-0023) — the reply shape of every
+/// web-search RPC except reveal: the configured entries, which one the
+/// next Turn mounts, and the built-in backends the picker offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchSettingsState {
-    /// The configured backend id (`zhipu` | `bocha` | `brave`).
+    /// The active entry's id; `None` leaves web search off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend: Option<String>,
-    /// The stored key, masked for display (first/last four characters;
-    /// keys of eight or fewer characters show only the ellipsis).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_masked: Option<String>,
-    /// The selectable backends for the Settings picker.
+    pub active: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<WebSearchEntryView>,
+    /// The built-in backends for the Settings picker (Zhipu, Bocha,
+    /// Brave); MCP search tools are always available beside them.
     #[serde(default)]
     pub backends: Vec<WebSearchBackendOption>,
 }

@@ -811,7 +811,7 @@ pub(crate) use model_setup::create_choose_provider_tool;
 pub(crate) use model_setup::create_model_proposal_tool;
 pub(crate) use model_setup::create_request_provider_key_tool;
 pub(crate) use read_chat::create_read_chat_tool;
-pub use web_search::{SearchBackend, SearchHit};
+pub use web_search::{SearchBackend, SearchHit, SearchResults};
 
 /// Foreground commands get a bounded wait. The engine applies no timeout of
 /// its own (pi-core leaves it optional by design), so a runaway command — a

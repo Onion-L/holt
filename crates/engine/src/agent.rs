@@ -727,7 +727,7 @@ pub(crate) struct AgentRuntime {
     /// The app-scoped MCP connection pool (ADR-0034): device-level server
     /// definitions plus the live connections Turns snapshot tools from.
     /// Connections start lazily — nothing spawns until a Turn needs tools.
-    pub(crate) mcp: crate::mcp::McpPool,
+    pub(crate) mcp: Arc<crate::mcp::McpPool>,
     /// Live provider-retry notices: the run path's `on_retry` callback fans
     /// out here; `WatchTurnRetry` subscribes.
     pub(crate) retry_events: crate::retry_events::RetryEvents,
@@ -803,7 +803,7 @@ impl AgentRuntime {
             // `default_stream_fn`, so the two guards cover them all exactly
             // once.
             stream_fn: stream_fn.map(|raw| guard_stream_fn(raw, STREAM_IDLE_TIMEOUT)),
-            mcp,
+            mcp: Arc::new(mcp),
             retry_events: crate::retry_events::RetryEvents::new(),
         }
     }

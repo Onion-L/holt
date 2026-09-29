@@ -1,17 +1,20 @@
 //! The agent's `web_search` tool plus the [`SearchBackend`] contract it
-//! sits on (ADR-0023). One query in, a title/url/snippet list out — the
+//! sits on (ADR-0023). One query in, a title/url/snippet list (or an MCP
+//! search tool's own text) out — the
 //! tool finds pages and never reads them (that is `web_fetch`'s job), and
 //! it exists only when the user has configured a backend: with none, the
 //! tool is absent from the model's toolset, never registered-and-erroring.
 //!
 //! The backend is user-chosen (Zhipu, Bocha, Brave — one adapter module
-//! each, sharing the [`transport`] scaffolding); this module owns the
+//! each, sharing the [`transport`] scaffolding — or a search tool on an
+//! `mcp.json` server); this module owns the
 //! trait, the tool, the output shape, and the built-in adapter table. The
 //! tool races the run's cancellation token around the backend call,
 //! exactly like grep and web_fetch.
 
 mod bocha;
 mod brave;
+mod mcp;
 mod transport;
 mod zhipu;
 
@@ -37,9 +40,9 @@ pub(crate) struct Backend {
     pub(crate) note: Option<&'static str>,
 }
 
-/// The launch backends (ADR-0023) — the save RPC's validation set and
-/// the Settings picker's option list. Every id here mounts its adapter
-/// through [`builtin`].
+/// The built-in backends (ADR-0023) — the save RPC's validation set and
+/// the Settings picker's option list, beside the `mcp` kind. Every id
+/// here mounts its adapter through [`adapter`].
 pub(crate) const BACKENDS: [Backend; 3] = [
     Backend {
         id: "zhipu",
@@ -58,14 +61,23 @@ pub(crate) const BACKENDS: [Backend; 3] = [
     },
 ];
 
-/// The built-in adapter table behind the engine's Turn-admission
-/// resolution (the injected test resolver aside). `None` for an unknown
-/// id.
-pub(crate) fn builtin(id: &str, api_key: &str) -> Option<Arc<dyn SearchBackend>> {
-    match id {
-        "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key.to_string()))),
-        "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key.to_string()))),
-        "brave" => Some(Arc::new(brave::BraveBackend::new(api_key.to_string()))),
+/// The adapter table behind the engine's Turn-admission resolution (the
+/// injected test resolver aside). `None` for an unknown kind or an MCP
+/// entry missing its server or tool.
+pub(crate) fn adapter(
+    entry: &crate::web_search_settings::WebSearchEntry,
+    pool: &Arc<crate::mcp::McpPool>,
+) -> Option<Arc<dyn SearchBackend>> {
+    let api_key = entry.api_key.clone();
+    match entry.kind.as_str() {
+        "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key))),
+        "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key))),
+        "brave" => Some(Arc::new(brave::BraveBackend::new(api_key))),
+        crate::web_search_settings::MCP_KIND => Some(Arc::new(mcp::McpSearchBackend::new(
+            Arc::clone(pool),
+            entry.server.clone()?,
+            entry.tool.clone()?,
+        ))),
         _ => None,
     }
 }
@@ -94,6 +106,15 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+/// What one query returned: structured hits the tool renders as a
+/// numbered list, or a search tool's own text passed to the model as-is
+/// (the MCP kind — its output shape is the server's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchResults {
+    Hits(Vec<SearchHit>),
+    Text(String),
+}
+
 /// The pluggable web-search service behind the `web_search` tool: the
 /// user's Settings choice, carried as its own key (never a provider
 /// credential). Implemented by the backend adapters; mounted only when
@@ -102,15 +123,15 @@ pub trait SearchBackend: Send + Sync {
     /// The backend's display name — the tool's output header states it so
     /// the model knows where its results came from, and errors name it.
     fn name(&self) -> &str;
-    /// Run one query, returning at most `max_results` hits (already
-    /// clamped by the tool). `cancel` fires when the owning Turn ends;
+    /// Run one query asking for at most `max_results` hits (already
+    /// clamped by the tool; a text result is trusted to honor it). `cancel` fires when the owning Turn ends;
     /// adapters race their request against it.
     fn search<'a>(
         &'a self,
         query: &'a str,
         max_results: usize,
         cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>>;
+    ) -> BoxFuture<'a, Result<SearchResults, String>>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,18 +176,28 @@ fn into_result(
     backend: &str,
     query: &str,
     max_results: usize,
-    hits: &[SearchHit],
+    results: SearchResults,
 ) -> AgentToolResult {
+    let (text, count) = match results {
+        SearchResults::Hits(mut hits) => {
+            hits.truncate(max_results);
+            (render(backend, query, &hits), json!(hits.len()))
+        }
+        SearchResults::Text(text) => (
+            format!("Web search results from {backend} for \"{query}\"\n\n{text}"),
+            serde_json::Value::Null,
+        ),
+    };
     AgentToolResult {
         content: vec![BlockContent::Text(TextContent {
-            text: render(backend, query, hits),
+            text,
             ..Default::default()
         })],
         details: json!({
             "backend": backend,
             "query": query,
             "max_results": max_results,
-            "results": hits.len(),
+            "results": count,
         }),
         ..Default::default()
     }
@@ -209,16 +240,15 @@ pub(crate) fn create_web_search_tool(backend: Arc<dyn SearchBackend>) -> AgentTo
                 // cannot outlive the Turn) and is handed to the backend so
                 // well-behaved adapters drop their in-flight request.
                 let search = backend.search(&input.query, max_results, cancel.clone());
-                let mut hits = tokio::select! {
+                let results = tokio::select! {
                     _ = cancel.cancelled() => return Err("search cancelled".to_string()),
                     result = search => result?,
                 };
-                hits.truncate(max_results);
                 Ok(into_result(
                     backend.name(),
                     &input.query,
                     max_results,
-                    &hits,
+                    results,
                 ))
             }) as BoxFuture<'static, Result<AgentToolResult, String>>
         },
@@ -299,7 +329,7 @@ mod tests {
             query: &'a str,
             max_results: usize,
             _cancel: CancellationToken,
-        ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        ) -> BoxFuture<'a, Result<SearchResults, String>> {
             Box::pin(async move {
                 self.seen
                     .lock()
@@ -311,7 +341,7 @@ mod tests {
                 if self.hang {
                     std::future::pending::<()>().await;
                 }
-                Ok(self.hits[..].to_vec())
+                Ok(SearchResults::Hits(self.hits.clone()))
             })
         }
     }
@@ -330,7 +360,7 @@ mod tests {
             _query: &'a str,
             _max_results: usize,
             cancel: CancellationToken,
-        ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        ) -> BoxFuture<'a, Result<SearchResults, String>> {
             Box::pin(async move {
                 cancel.cancelled().await;
                 Err("cancelled by token".into())
@@ -587,14 +617,56 @@ mod tests {
         );
     }
 
+    fn entry(kind: &str, tool: Option<&str>) -> crate::web_search_settings::WebSearchEntry {
+        crate::web_search_settings::WebSearchEntry {
+            id: kind.into(),
+            kind: kind.into(),
+            server: Some("tinyfish".into()),
+            tool: tool.map(str::to_string),
+            api_key: "sk-key".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_text_result_passes_through_under_the_header() {
+        struct TextBackend;
+        impl SearchBackend for TextBackend {
+            fn name(&self) -> &str {
+                "tinyfish / search"
+            }
+            fn search<'a>(
+                &'a self,
+                _query: &'a str,
+                _max_results: usize,
+                _cancel: CancellationToken,
+            ) -> BoxFuture<'a, Result<SearchResults, String>> {
+                Box::pin(async { Ok(SearchResults::Text("1. Holt — https://holt.dev".into())) })
+            }
+        }
+        let result = run_tool(Arc::new(TextBackend), &json!({ "query": "holt" }), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            text_of(&result),
+            "Web search results from tinyfish / search for \"holt\"\n\n1. Holt — https://holt.dev"
+        );
+        assert_eq!(result.details["results"], serde_json::Value::Null);
+    }
+
     #[test]
-    fn the_builtin_table_mounts_exactly_the_shipped_backends() {
+    fn the_adapter_table_mounts_exactly_the_shipped_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Arc::new(crate::mcp::McpPool::load(dir.path()).unwrap());
         for backend in &BACKENDS {
-            let mounted = builtin(backend.id, "sk-key")
+            let mounted = adapter(&entry(backend.id, None), &pool)
                 .map(|adapter| adapter.name().to_string())
-                .expect("every launch backend mounts its adapter");
+                .expect("every built-in backend mounts its adapter");
             assert_eq!(mounted, backend.name);
         }
-        assert!(builtin("nope", "sk-key").is_none());
+        let mcp = adapter(&entry("mcp", Some("search")), &pool)
+            .expect("an mcp entry with a server and tool mounts");
+        assert_eq!(mcp.name(), "tinyfish / search");
+        assert!(adapter(&entry("mcp", None), &pool).is_none());
+        assert!(adapter(&entry("nope", None), &pool).is_none());
     }
 }

@@ -50,3 +50,31 @@ already expose.
   grows to `read | grep | read_chat | web_fetch | web_search`).
 - Domain allow/deny rules for fetch are the recorded fast-follow; v1
   ships none, deliberately.
+
+## Addendum: MCP search tools, several entries
+
+Built-in adapters cannot cover every search service, and the services
+worth adding (TinyFish, Exa, Tavily, …) increasingly ship as MCP
+servers rather than one shared REST shape. So the fourth kind is `mcp`:
+an entry names a server already defined in `mcp.json` and one of its
+tools. `web_search` calls that tool through the engine's MCP pool — the
+query in the tool's required string parameter, the hit cap in a
+count-like integer parameter when the schema has one — and hands the
+tool's text to the model as-is under the usual result header; no
+mapping onto title/url/snippet hits is attempted. A fixed REST protocol
+for custom endpoints was considered and rejected: it fits no real
+service without a shim.
+
+The entry carries no key; the server's own `mcp.json` config (headers,
+`bearer_token_env_var`) is its auth, and MCP OAuth is not supported yet,
+so an OAuth-only server cannot back search. The call ignores the
+server's `enabled` flag and tool filters (a server can serve search
+without exposing its tools to chat) and skips the MCP approval gate:
+the user picked this tool as their search backend, and `web_search` is
+ungated. An unreachable server makes the call fail, not the tool vanish.
+
+`web-search.json` now holds a list of entries (built-in kinds keyed by
+kind, MCP entries by a generated `mcp-…` id) with one active entry;
+saving activates the saved entry, removing the active one turns the tool
+off rather than promoting another behind the user's back. The earlier
+single-record file still loads as one active entry.

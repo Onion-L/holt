@@ -20,7 +20,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use super::{SearchBackend, SearchHit, transport};
+use super::{SearchBackend, SearchHit, SearchResults, transport};
 
 const NAME: &str = "Zhipu";
 const ENDPOINT: &str = "https://open.bigmodel.cn/api/paas/v4/web_search";
@@ -110,11 +110,12 @@ impl SearchBackend for ZhipuBackend {
         query: &'a str,
         max_results: usize,
         cancel: CancellationToken,
-    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
-        Box::pin(transport::race_cancel(
-            self.request(query, max_results, REQUEST_TIMEOUT),
-            cancel,
-        ))
+    ) -> BoxFuture<'a, Result<SearchResults, String>> {
+        Box::pin(async move {
+            transport::race_cancel(self.request(query, max_results, REQUEST_TIMEOUT), cancel)
+                .await
+                .map(SearchResults::Hits)
+        })
     }
 }
 
