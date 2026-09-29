@@ -49,6 +49,13 @@ pub(super) struct ChatRowDrag {
 pub(super) struct SidebarRowDragState {
     chat_id: String,
     slot: Option<usize>,
+    /// Last drag-move position: the edge autoscroll re-reads it each tick,
+    /// since a pointer held still at the edge sends no further moves.
+    pointer: Point<Pixels>,
+    /// (chat id, height, pinned) per row as last rendered.
+    rows: std::rc::Rc<Vec<(String, f32, bool)>>,
+    /// Pending edge-autoscroll tick; dropped (cancelled) with the drag.
+    scroll_task: Option<Task<()>>,
 }
 
 /// Ghost card following the pointer while a session row drags.
@@ -915,49 +922,29 @@ impl Shell {
                             // target so the empty space under the last row
                             // still takes a drop; y reads in content
                             // coordinates (offset.y is negative when scrolled).
-                            .on_drag_move::<ChatRowDrag>(cx.listener({
-                                let drag_rows = drag_rows.clone();
-                                let scroll = self.sidebar_scroll.clone();
+                            .on_drag_move::<ChatRowDrag>(cx.listener(
                                 move |this, event: &gpui::DragMoveEvent<ChatRowDrag>, _, cx| {
-                                    let chat_id = event.drag(cx).chat_id.clone();
-                                    let slot = event
-                                        .bounds
-                                        .contains(&event.event.position)
-                                        .then(|| {
-                                            let pinned = drag_rows
-                                                .iter()
-                                                .find(|(id, _, _)| *id == chat_id)?
-                                                .2;
-                                            let y = f32::from(event.event.position.y)
-                                                - f32::from(event.bounds.top())
-                                                - f32::from(scroll.offset().y)
-                                                - SIDEBAR_LIST_TOP_INSET;
-                                            let heights: Vec<f32> =
-                                                drag_rows.iter().map(|(_, h, _)| *h).collect();
-                                            let pinned_count =
-                                                drag_rows.iter().take_while(|row| row.2).count();
-                                            let (lo, hi) = if pinned {
-                                                (0, pinned_count)
-                                            } else {
-                                                (pinned_count, drag_rows.len())
-                                            };
-                                            Some(
-                                                row_drop_slot(&heights, SIDEBAR_LIST_GAP, y)
-                                                    .clamp(lo, hi),
-                                            )
-                                        })
-                                        .flatten();
-                                    let changed = this
-                                        .sidebar_drag
-                                        .as_ref()
-                                        .is_none_or(|d| d.chat_id != chat_id || d.slot != slot);
-                                    if changed {
-                                        this.sidebar_drag =
-                                            Some(SidebarRowDragState { chat_id, slot });
-                                        cx.notify();
+                                    let chat_id = &event.drag(cx).chat_id;
+                                    let pointer = event.event.position;
+                                    match &mut this.sidebar_drag {
+                                        Some(drag) if drag.chat_id == *chat_id => {
+                                            drag.pointer = pointer;
+                                            drag.rows = drag_rows.clone();
+                                        }
+                                        _ => {
+                                            this.sidebar_drag = Some(SidebarRowDragState {
+                                                chat_id: chat_id.clone(),
+                                                slot: None,
+                                                pointer,
+                                                rows: drag_rows.clone(),
+                                                scroll_task: None,
+                                            })
+                                        }
                                     }
-                                }
-                            }))
+                                    this.refresh_sidebar_drag_slot(cx);
+                                    this.schedule_sidebar_drag_scroll(cx);
+                                },
+                            ))
                             .on_drop(cx.listener(|this, payload: &ChatRowDrag, _, cx| {
                                 let slot = this.sidebar_drag.take().and_then(|d| d.slot);
                                 if let Some(slot) = slot {
@@ -1021,6 +1008,90 @@ impl Shell {
                     }),
             )
             .into_any_element()
+    }
+
+    /// Re-derive the drop slot from the pointer and the scroller's live
+    /// bounds/offset — after a pointer move or an autoscroll step. Content
+    /// y: offset.y is negative when scrolled.
+    fn refresh_sidebar_drag_slot(&mut self, cx: &mut Context<Self>) {
+        let bounds = self.sidebar_scroll.bounds();
+        let offset_y = f32::from(self.sidebar_scroll.offset().y);
+        let Some(drag) = self.sidebar_drag.as_mut() else {
+            return;
+        };
+        let slot = bounds
+            .contains(&drag.pointer)
+            .then(|| {
+                let pinned = drag.rows.iter().find(|(id, _, _)| *id == drag.chat_id)?.2;
+                let y = f32::from(drag.pointer.y)
+                    - f32::from(bounds.top())
+                    - offset_y
+                    - SIDEBAR_LIST_TOP_INSET;
+                let heights: Vec<f32> = drag.rows.iter().map(|(_, h, _)| *h).collect();
+                let pinned_count = drag.rows.iter().take_while(|row| row.2).count();
+                let (lo, hi) = if pinned {
+                    (0, pinned_count)
+                } else {
+                    (pinned_count, drag.rows.len())
+                };
+                Some(row_drop_slot(&heights, SIDEBAR_LIST_GAP, y).clamp(lo, hi))
+            })
+            .flatten();
+        if drag.slot != slot {
+            drag.slot = slot;
+            cx.notify();
+        }
+    }
+
+    /// Edge autoscroll while a row drags: the transcript's selection ramp
+    /// (`selection_scroll_step`), ticking until the pointer leaves the edge
+    /// band, the list hits its end, or the drag ends.
+    fn schedule_sidebar_drag_scroll(&mut self, cx: &mut Context<Self>) {
+        let bounds = self.sidebar_scroll.bounds();
+        let Some(drag) = self.sidebar_drag.as_mut() else {
+            return;
+        };
+        let pointer = drag.pointer;
+        let over_column = pointer.x >= bounds.left() && pointer.x <= bounds.right();
+        if drag.scroll_task.is_some()
+            || !over_column
+            || crate::transcript::selection_scroll_step(bounds, pointer) == 0.0
+        {
+            return;
+        }
+        drag.scroll_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    crate::transcript::SELECTION_SCROLL_TICK_MS,
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| this.step_sidebar_drag_scroll(cx));
+        }));
+    }
+
+    fn step_sidebar_drag_scroll(&mut self, cx: &mut Context<Self>) {
+        if !cx.has_active_drag() {
+            self.sidebar_drag = None;
+            cx.notify();
+            return;
+        }
+        let Some(drag) = self.sidebar_drag.as_mut() else {
+            return;
+        };
+        drag.scroll_task = None;
+        let step =
+            crate::transcript::selection_scroll_step(self.sidebar_scroll.bounds(), drag.pointer);
+        let mut offset = self.sidebar_scroll.offset();
+        let max = f32::from(self.sidebar_scroll.max_offset().y);
+        let next = (f32::from(offset.y) - step).clamp(-max, 0.0);
+        if next == f32::from(offset.y) {
+            return;
+        }
+        offset.y = px(next);
+        self.sidebar_scroll.set_offset(offset);
+        self.refresh_sidebar_drag_slot(cx);
+        cx.notify();
+        self.schedule_sidebar_drag_scroll(cx);
     }
 
     /// Commit a session-row drop: the on-screen move lands in the stored
