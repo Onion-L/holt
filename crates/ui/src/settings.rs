@@ -204,6 +204,8 @@ pub enum SidebarSort {
     #[default]
     LastUpdated,
     Created,
+    /// The user's drag order ([`UiSettings::sidebar_order`]).
+    Manual,
 }
 
 /// One persisted file tab (ADR-0020 navigation restore): WHERE it points
@@ -255,8 +257,14 @@ pub struct UiSettings {
     pub sidebar_grouped: bool,
     /// How active sessions are partitioned in the sidebar.
     pub sidebar_organization: SidebarOrganization,
-    /// Timestamp used to order active sessions (newest first).
+    /// Timestamp used to order active sessions (newest first), or the
+    /// user's drag order.
     pub sidebar_sort: SidebarSort,
+    /// Chat ids in drag order, read under [`SidebarSort::Manual`]. Rewritten
+    /// whole on each drop from the live list, so archived/deleted ids fall
+    /// out then; ids not listed yet (new sessions) lead the list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sidebar_order: Vec<String>,
     /// Optional provider branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_provider: bool,
@@ -361,6 +369,7 @@ impl Default for UiSettings {
             sidebar_grouped: false,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
+            sidebar_order: Vec::new(),
             sidebar_show_provider: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -1059,7 +1068,8 @@ mod tests {
             sidebar_collapsed: true,
             sidebar_grouped: true,
             sidebar_organization: SidebarOrganization::InOneList,
-            sidebar_sort: SidebarSort::Created,
+            sidebar_sort: SidebarSort::Manual,
+            sidebar_order: vec!["b".to_string(), "a".to_string()],
             sidebar_show_provider: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

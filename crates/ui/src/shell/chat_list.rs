@@ -38,6 +38,89 @@ pub fn resort_offsets(
     offsets
 }
 
+/// The dragged session-row payload (sidebar manual reorder).
+pub(super) struct ChatRowDrag {
+    chat_id: String,
+    title: SharedString,
+}
+
+/// Live sidebar reorder: the dragged chat and the insertion slot
+/// (`0..=rows`) under the pointer — `None` while it is off the list.
+pub(super) struct SidebarRowDragState {
+    chat_id: String,
+    slot: Option<usize>,
+}
+
+/// Ghost card following the pointer while a session row drags.
+struct ChatRowGhost {
+    title: SharedString,
+}
+
+impl Render for ChatRowGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .h(px(32.0))
+            .w(px(200.0))
+            .px(px(Theme::SPACE_SM))
+            .flex()
+            .items_center()
+            .rounded(px(8.0))
+            .bg(theme.surface_raised)
+            .border_1()
+            .border_color(theme.border_strong)
+            .text_size(crate::typography::ui_rems(13.0))
+            .text_color(theme.text)
+            .opacity(0.9)
+            .child(div().truncate().child(self.title.clone()))
+    }
+}
+
+/// Top padding above the first sidebar row; drop math measures from below it.
+const SIDEBAR_LIST_TOP_INSET: f32 = 4.0;
+
+/// Insertion slot (`0..=heights.len()`) for a pointer `y` px below the list's
+/// first row: the first row whose midpoint sits below the pointer.
+pub fn row_drop_slot(heights: &[f32], gap: f32, y: f32) -> usize {
+    let mut top = 0.0;
+    for (ix, height) in heights.iter().enumerate() {
+        if y < top + height / 2.0 {
+            return ix;
+        }
+        top += height + gap;
+    }
+    heights.len()
+}
+
+/// Move `chat_id` to insertion `slot` of the on-screen `visible` list and
+/// write the result into `order` — the every-space list the manual sort is
+/// stored against. Under a space filter `order` also holds other spaces'
+/// chats, so the move anchors on the dragged row's new on-screen neighbour.
+/// `None` when the drop leaves the row where it was.
+pub fn reorder_manual(
+    mut order: Vec<String>,
+    mut visible: Vec<String>,
+    chat_id: &str,
+    slot: usize,
+) -> Option<Vec<String>> {
+    let from = visible.iter().position(|id| id == chat_id)?;
+    if slot == from || slot == from + 1 {
+        return None;
+    }
+    let id = visible.remove(from);
+    let to = if slot > from { slot - 1 } else { slot };
+    visible.insert(to, id.clone());
+    order.retain(|other| *other != id);
+    let position = |anchor: &String| order.iter().position(|other| other == anchor);
+    let at = match to.checked_sub(1) {
+        Some(prev) => position(&visible[prev]).map(|ix| ix + 1),
+        None => visible.get(1).and_then(position),
+    }
+    .unwrap_or(0);
+    order.insert(at, id);
+    Some(order)
+}
+
 /// Height changes do not constitute a list reorder. In particular, sidebar
 /// disclosures animate their own height and must not also trigger FLIP offsets
 /// on every following keyed section.
@@ -476,6 +559,17 @@ impl Shell {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open_chat(select_id.clone(), cx);
             }))
+            .on_drag(
+                ChatRowDrag {
+                    chat_id: id.clone(),
+                    title: title.clone(),
+                },
+                |payload, _point, _, cx| {
+                    let title = payload.title.clone();
+                    cx.stop_propagation();
+                    cx.new(|_| ChatRowGhost { title })
+                },
+            )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -669,6 +763,43 @@ impl Shell {
         // promotions glide; cleared rows just go).
         let keyed: Vec<(String, f32, AnyElement)> = self.render_active_rows(theme, cx);
 
+        // A drag released off the list never reaches `on_drop`.
+        if self.sidebar_drag.is_some() && !cx.has_active_drag() {
+            self.sidebar_drag = None;
+        }
+        // (chat id, height, pinned) per row, top to bottom — the drop math's
+        // geometry, and pinned rows only reorder among themselves.
+        let drag_rows: std::rc::Rc<Vec<(String, f32, bool)>> = {
+            let state = self.state.read(cx);
+            std::rc::Rc::new(
+                keyed
+                    .iter()
+                    .filter_map(|(key, height, _)| {
+                        let id = key.strip_prefix("c:")?;
+                        let pinned = state.chat_row(id).is_some_and(|chat| chat.pinned);
+                        Some((id.to_string(), *height, pinned))
+                    })
+                    .collect(),
+            )
+        };
+        let dragging = self
+            .sidebar_drag
+            .as_ref()
+            .map(|d| format!("c:{}", d.chat_id));
+        // The insertion line's y, hidden on slots that would leave the row
+        // where it is.
+        let drop_line_y = self.sidebar_drag.as_ref().and_then(|drag| {
+            let slot = drag.slot?;
+            let from = drag_rows
+                .iter()
+                .position(|(id, _, _)| *id == drag.chat_id)?;
+            if slot == from || slot == from + 1 {
+                return None;
+            }
+            let above: f32 = drag_rows[..slot].iter().map(|(_, h, _)| h).sum();
+            Some(above + SIDEBAR_LIST_GAP * slot as f32 - SIDEBAR_LIST_GAP / 2.0)
+        });
+
         // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
         // list changes (new activity resort, grouping flip), surviving rows
         // glide from their old y to the new one — layout is already at the new
@@ -708,6 +839,7 @@ impl Shell {
             self.sidebar_prev_order = order;
         }
         let epoch = self.resort_epoch;
+        let order_keys: Vec<String> = keyed.iter().map(|(key, _, _)| key.clone()).collect();
         let list_items: Vec<AnyElement> = keyed
             .into_iter()
             .map(|(key, _, element)| {
@@ -722,6 +854,14 @@ impl Shell {
                 } else if self.sidebar_new_keys.contains(&key) {
                     let id = SharedString::from(format!("row-in-{epoch}-{key}"));
                     motion::fade_quick(id, div().child(element)).into_any_element()
+                } else {
+                    element
+                }
+            })
+            .zip(order_keys)
+            .map(|(element, key)| {
+                if dragging.as_deref() == Some(key.as_str()) {
+                    div().opacity(0.4).child(element).into_any_element()
                 } else {
                     element
                 }
@@ -770,13 +910,80 @@ impl Shell {
                             .flex_col()
                             // No "Sessions" header (user request) — the list
                             // is the whole column; a little air stands in.
-                            .pt(px(4.0))
+                            .pt(px(SIDEBAR_LIST_TOP_INSET))
+                            // The scroller (not the row column) is the drop
+                            // target so the empty space under the last row
+                            // still takes a drop; y reads in content
+                            // coordinates (offset.y is negative when scrolled).
+                            .on_drag_move::<ChatRowDrag>(cx.listener({
+                                let drag_rows = drag_rows.clone();
+                                let scroll = self.sidebar_scroll.clone();
+                                move |this, event: &gpui::DragMoveEvent<ChatRowDrag>, _, cx| {
+                                    let chat_id = event.drag(cx).chat_id.clone();
+                                    let slot = event
+                                        .bounds
+                                        .contains(&event.event.position)
+                                        .then(|| {
+                                            let pinned = drag_rows
+                                                .iter()
+                                                .find(|(id, _, _)| *id == chat_id)?
+                                                .2;
+                                            let y = f32::from(event.event.position.y)
+                                                - f32::from(event.bounds.top())
+                                                - f32::from(scroll.offset().y)
+                                                - SIDEBAR_LIST_TOP_INSET;
+                                            let heights: Vec<f32> =
+                                                drag_rows.iter().map(|(_, h, _)| *h).collect();
+                                            let pinned_count =
+                                                drag_rows.iter().take_while(|row| row.2).count();
+                                            let (lo, hi) = if pinned {
+                                                (0, pinned_count)
+                                            } else {
+                                                (pinned_count, drag_rows.len())
+                                            };
+                                            Some(
+                                                row_drop_slot(&heights, SIDEBAR_LIST_GAP, y)
+                                                    .clamp(lo, hi),
+                                            )
+                                        })
+                                        .flatten();
+                                    let changed = this
+                                        .sidebar_drag
+                                        .as_ref()
+                                        .is_none_or(|d| d.chat_id != chat_id || d.slot != slot);
+                                    if changed {
+                                        this.sidebar_drag =
+                                            Some(SidebarRowDragState { chat_id, slot });
+                                        cx.notify();
+                                    }
+                                }
+                            }))
+                            .on_drop(cx.listener(|this, payload: &ChatRowDrag, _, cx| {
+                                let slot = this.sidebar_drag.take().and_then(|d| d.slot);
+                                if let Some(slot) = slot {
+                                    this.drop_sidebar_row(&payload.chat_id, slot, cx);
+                                }
+                                cx.notify();
+                            }))
                             .child(if !list_items.is_empty() {
                                 div()
+                                    .relative()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(2.0))
+                                    .gap(px(SIDEBAR_LIST_GAP))
                                     .children(list_items)
+                                    .when_some(drop_line_y, |el, y| {
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .left(px(4.0))
+                                                .right(px(4.0))
+                                                .top(px(y - 1.0))
+                                                .h(px(2.0))
+                                                .rounded(px(1.0))
+                                                .bg(theme.accent),
+                                        )
+                                    })
                                     .into_any_element()
                             } else {
                                 div()
@@ -814,6 +1021,22 @@ impl Shell {
                     }),
             )
             .into_any_element()
+    }
+
+    /// Commit a session-row drop: the on-screen move lands in the stored
+    /// manual order, and the sidebar switches to Manual sort.
+    fn drop_sidebar_row(&mut self, chat_id: &str, slot: usize, cx: &mut Context<Self>) {
+        let Some(order) = reorder_manual(
+            self.sidebar_order_for(None, cx),
+            self.sidebar_visible_order(cx),
+            chat_id,
+            slot,
+        ) else {
+            return;
+        };
+        self.settings.sidebar_order = order;
+        self.settings.sidebar_sort = SidebarSort::Manual;
+        self.schedule_save(cx);
     }
 
     /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
@@ -1000,5 +1223,64 @@ mod tests {
         // §1.6: 260ms cubic-bezier(0.22, 1, 0.36, 1).
         assert_eq!(RESORT.duration_ms, 260);
         assert_eq!(RESORT.curve, motion::EASE_RESORT);
+    }
+
+    // ---- sidebar manual reorder ----
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn drop_slot_splits_rows_at_their_midpoints() {
+        let heights = [45.0, 61.0, 45.0];
+        assert_eq!(row_drop_slot(&heights, 2.0, -10.0), 0);
+        assert_eq!(row_drop_slot(&heights, 2.0, 22.0), 0);
+        assert_eq!(row_drop_slot(&heights, 2.0, 23.0), 1);
+        // Row 1 spans 47..108, midpoint 77.5.
+        assert_eq!(row_drop_slot(&heights, 2.0, 77.0), 1);
+        assert_eq!(row_drop_slot(&heights, 2.0, 78.0), 2);
+        assert_eq!(row_drop_slot(&heights, 2.0, 500.0), 3);
+    }
+
+    #[test]
+    fn reorder_moves_down_and_up() {
+        let list = ids(&["a", "b", "c", "d"]);
+        assert_eq!(
+            reorder_manual(list.clone(), list.clone(), "a", 3),
+            Some(ids(&["b", "c", "a", "d"]))
+        );
+        assert_eq!(
+            reorder_manual(list.clone(), list.clone(), "d", 0),
+            Some(ids(&["d", "a", "b", "c"]))
+        );
+        assert_eq!(
+            reorder_manual(list.clone(), list.clone(), "b", 4),
+            Some(ids(&["a", "c", "d", "b"]))
+        );
+    }
+
+    #[test]
+    fn reorder_on_either_edge_of_the_row_is_a_no_op() {
+        let list = ids(&["a", "b", "c"]);
+        assert_eq!(reorder_manual(list.clone(), list.clone(), "b", 1), None);
+        assert_eq!(reorder_manual(list.clone(), list.clone(), "b", 2), None);
+    }
+
+    #[test]
+    fn filtered_reorder_keeps_other_spaces_in_place() {
+        // x* belong to another space and are filtered off screen.
+        let order = ids(&["a", "x1", "b", "x2", "c"]);
+        let visible = ids(&["a", "b", "c"]);
+        // c to the top: anchors before a.
+        assert_eq!(
+            reorder_manual(order.clone(), visible.clone(), "c", 0),
+            Some(ids(&["c", "a", "x1", "b", "x2"]))
+        );
+        // a between b and c: anchors after b.
+        assert_eq!(
+            reorder_manual(order, visible, "a", 2),
+            Some(ids(&["x1", "b", "a", "x2", "c"]))
+        );
     }
 }

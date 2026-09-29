@@ -60,19 +60,40 @@ struct ActiveChatRow {
 /// Sidebar session groups: optional group key + its rows.
 type ChatGroups = Vec<(Option<(String, String)>, Vec<ActiveChatRow>)>;
 
+/// `manual` ranks chat ids by [`UiSettings::sidebar_order`]; only
+/// [`SidebarSort::Manual`] reads it. Chats it has not ranked yet (new
+/// sessions) lead, newest first.
 fn compare_sidebar_chats(
     sort: SidebarSort,
+    manual: &std::collections::HashMap<&str, usize>,
     left: &holt_proto::Chat,
     right: &holt_proto::Chat,
 ) -> std::cmp::Ordering {
+    let by_created = || right.created_at.cmp(&left.created_at);
     let primary = match sort {
-        SidebarSort::Created => right.created_at.cmp(&left.created_at),
+        SidebarSort::Created => by_created(),
         SidebarSort::LastUpdated => right
             .last_message_at
             .unwrap_or(right.created_at)
             .cmp(&left.last_message_at.unwrap_or(left.created_at)),
+        SidebarSort::Manual => {
+            match (manual.get(left.id.as_str()), manual.get(right.id.as_str())) {
+                (Some(l), Some(r)) => l.cmp(r),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => by_created(),
+            }
+        }
     };
     primary.then_with(|| left.id.cmp(&right.id))
+}
+
+fn manual_ranks(order: &[String]) -> std::collections::HashMap<&str, usize> {
+    order
+        .iter()
+        .enumerate()
+        .map(|(ix, id)| (id.as_str(), ix))
+        .collect()
 }
 
 /// The space-filter dropdown, `Some` while open. The same searchable-menu
@@ -101,16 +122,17 @@ enum SidebarViewRow {
     ShowPullRequest,
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 5] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 6] = [
     SidebarViewRow::Sort(SidebarSort::LastUpdated),
     SidebarViewRow::Sort(SidebarSort::Created),
+    SidebarViewRow::Sort(SidebarSort::Manual),
     SidebarViewRow::ShowProvider,
     SidebarViewRow::ShowBranch,
     SidebarViewRow::ShowPullRequest,
 ];
 
 /// Index into [`SIDEBAR_VIEW_ROWS`] where the Show section starts.
-const SIDEBAR_VIEW_SHOW_START: usize = 2;
+const SIDEBAR_VIEW_SHOW_START: usize = 3;
 
 /// The sidebar view-options dropdown (session sort order and which metadata a
 /// session row carries), `Some` while open.
@@ -885,6 +907,11 @@ impl Shell {
     fn activate_sidebar_view_menu_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
         match row {
             SidebarViewRow::Sort(sort) => {
+                // A first Manual pick starts from the list as it stands, so
+                // switching to it never jumps rows around.
+                if sort == SidebarSort::Manual && self.settings.sidebar_order.is_empty() {
+                    self.settings.sidebar_order = self.sidebar_order_for(None, cx);
+                }
                 self.settings.sidebar_sort = sort;
                 self.schedule_save(cx);
                 self.close_sidebar_view_menu(cx);
@@ -970,6 +997,7 @@ impl Shell {
             let label: SharedString = match row {
                 SidebarViewRow::Sort(SidebarSort::LastUpdated) => "Last updated".into(),
                 SidebarViewRow::Sort(SidebarSort::Created) => "Created".into(),
+                SidebarViewRow::Sort(SidebarSort::Manual) => "Manual".into(),
                 SidebarViewRow::ShowProvider => "Provider logo".into(),
                 SidebarViewRow::ShowBranch => "Branch".into(),
                 SidebarViewRow::ShowPullRequest => "Pull request".into(),
@@ -1016,14 +1044,22 @@ impl Shell {
     /// cycling read THIS order (not the raw recency list) so keyboard order
     /// never drifts from the screen.
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
-        let filter = self.settings.space_filter.clone();
+        self.sidebar_order_for(self.settings.space_filter.as_deref(), cx)
+    }
+
+    /// [`Self::sidebar_visible_order`] under an explicit space filter —
+    /// `None` is every space, the list a manual reorder is stored against.
+    pub(super) fn sidebar_order_for(&self, filter: Option<&str>, cx: &App) -> Vec<String> {
         let state = self.state.read(cx);
         let mut chats: Vec<holt_proto::Chat> = state
-            .sidebar_chats(Utc::now(), filter.as_deref())
+            .sidebar_chats(Utc::now(), filter)
             .into_iter()
             .map(|(_, chat)| chat.clone())
             .collect();
-        chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
+        let manual = manual_ranks(&self.settings.sidebar_order);
+        chats.sort_by(|left, right| {
+            compare_sidebar_chats(self.settings.sidebar_sort, &manual, left, right)
+        });
         // The pinned section leads the list (glossary "Pinned (a chat)") —
         // the user's sort applies inside each partition, so jump chips and
         // ⌘-cycling read the exact on-screen order.
@@ -1048,8 +1084,9 @@ impl Shell {
                 .into_iter()
                 .map(|(status, chat)| (status, chat.clone()))
                 .collect();
+            let manual = manual_ranks(&self.settings.sidebar_order);
             chats.sort_by(|left, right| {
-                compare_sidebar_chats(self.settings.sidebar_sort, &left.1, &right.1)
+                compare_sidebar_chats(self.settings.sidebar_sort, &manual, &left.1, &right.1)
             });
             chats
                 .into_iter()
@@ -2595,8 +2632,20 @@ mod tests {
     fn equal_sidebar_timestamps_sort_by_stable_chat_id() {
         let alpha = chat("alpha");
         let beta = chat("beta");
-        assert!(compare_sidebar_chats(SidebarSort::Created, &alpha, &beta).is_lt());
-        assert!(compare_sidebar_chats(SidebarSort::LastUpdated, &alpha, &beta).is_lt());
+        let manual = std::collections::HashMap::new();
+        assert!(compare_sidebar_chats(SidebarSort::Created, &manual, &alpha, &beta).is_lt());
+        assert!(compare_sidebar_chats(SidebarSort::LastUpdated, &manual, &alpha, &beta).is_lt());
+        assert!(compare_sidebar_chats(SidebarSort::Manual, &manual, &alpha, &beta).is_lt());
+    }
+
+    #[test]
+    fn manual_sort_follows_the_stored_order_with_new_chats_first() {
+        let order = vec!["b".to_string(), "a".to_string()];
+        let manual = manual_ranks(&order);
+        let mut chats = [chat("a"), chat_at("fresh", 1, 50), chat("b")];
+        chats.sort_by(|l, r| compare_sidebar_chats(SidebarSort::Manual, &manual, l, r));
+        let ids: Vec<&str> = chats.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["fresh", "b", "a"]);
     }
 
     #[test]
@@ -2743,8 +2792,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // ↓↓ from the cursor's start (the sort row) lands on "Provider logo".
-        cx.simulate_keystrokes("down down enter");
+        // ↓↓↓ from the cursor's start (the sort row) lands on "Provider logo".
+        cx.simulate_keystrokes("down down down enter");
         cx.run_until_parked();
         shell.read_with(cx, |shell, _| {
             assert!(!shell.settings.sidebar_show_provider);
@@ -2752,7 +2801,7 @@ mod tests {
         });
 
         let branch = cx
-            .debug_bounds("sidebar-view-row-3")
+            .debug_bounds("sidebar-view-row-4")
             .expect("the card is up")
             .center();
         cx.simulate_click(branch, Default::default());

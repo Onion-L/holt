@@ -758,6 +758,8 @@ pub struct Shell {
     /// Keys that just appeared in a live list (fade in, no glide).
     sidebar_new_keys: std::collections::HashSet<String>,
     resort_epoch: usize,
+    /// In-flight session-row drag (sidebar manual reorder).
+    sidebar_drag: Option<SidebarRowDragState>,
     /// Last observed `window.is_window_active()` — rising edge fires a
     /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
@@ -843,6 +845,7 @@ struct ShellSettingsFields {
     last_space_id: Option<String>,
     space_filter: Option<String>,
     sidebar_sort: SidebarSort,
+    sidebar_order: Vec<String>,
     sidebar_show_provider: bool,
     sidebar_show_branch: bool,
     sidebar_show_pull_request: bool,
@@ -868,6 +871,7 @@ impl ShellSettingsFields {
             last_space_id: settings.last_space_id.clone(),
             space_filter: settings.space_filter.clone(),
             sidebar_sort: settings.sidebar_sort,
+            sidebar_order: settings.sidebar_order.clone(),
             sidebar_show_provider: settings.sidebar_show_provider,
             sidebar_show_branch: settings.sidebar_show_branch,
             sidebar_show_pull_request: settings.sidebar_show_pull_request,
@@ -892,6 +896,7 @@ impl ShellSettingsFields {
         current.last_space_id = self.last_space_id;
         current.space_filter = self.space_filter;
         current.sidebar_sort = self.sidebar_sort;
+        current.sidebar_order = self.sidebar_order;
         current.sidebar_show_provider = self.sidebar_show_provider;
         current.sidebar_show_branch = self.sidebar_show_branch;
         current.sidebar_show_pull_request = self.sidebar_show_pull_request;
@@ -1096,6 +1101,7 @@ impl Shell {
             sidebar_resort: std::collections::HashMap::new(),
             sidebar_new_keys: std::collections::HashSet::new(),
             resort_epoch: 0,
+            sidebar_drag: None,
             was_window_active: false,
             debug_dialog,
             debug_gate,
