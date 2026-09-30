@@ -19,7 +19,13 @@ pub(crate) mod web_search;
 use crate::git::Git;
 use crate::shell_env::login_shell;
 use crate::turn_changes::Attribution;
-use std::{collections::HashMap, future::pending, path::Path, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::pending,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
 
 use futures::future::BoxFuture;
 use pi_core::agent::{
@@ -70,8 +76,18 @@ pub(crate) struct LocalExecutionEnv {
 
 impl LocalExecutionEnv {
     pub(crate) fn new(cwd: impl Into<String>) -> Self {
+        let cwd = cwd.into();
         Self {
-            cwd: cwd.into(),
+            // The env anchors every addressed path; canonicalize the anchor
+            // itself so a symlinked cwd (macOS /tmp, a user-mounted alias)
+            // doesn't make every write "traverse a symlink" under
+            // `write_to_file`'s landing check. An unresolvable cwd (empty,
+            // not yet created) keeps its spelling.
+            cwd: Path::new(&cwd)
+                .canonicalize()
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+                .unwrap_or(cwd),
             shell: login_shell(),
         }
     }
@@ -163,18 +179,97 @@ fn entry_info(path: &Path, metadata: std::fs::Metadata) -> FileInfo {
     }
 }
 
-fn write_to_file(path: &str, content: &WriteContent, append: bool) -> Result<(), FileError> {
-    if let Some(parent) = Path::new(path).parent() {
+/// Where `path` will actually land: canonicalize the deepest existing
+/// ancestor and re-attach the not-yet-existing tail. Differs from the
+/// addressed (lexical) spelling exactly when some existing component —
+/// leaf or intermediate — is a symlink.
+fn resolve_landing(path: &Path) -> std::io::Result<PathBuf> {
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cursor = path;
+    loop {
+        match cursor.canonicalize() {
+            Ok(canonical) => {
+                let mut resolved = canonical;
+                for name in missing.iter().rev() {
+                    resolved.push(name);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match (cursor.file_name(), cursor.parent()) {
+                    (Some(name), Some(parent)) => {
+                        missing.push(name);
+                        cursor = parent;
+                    }
+                    _ => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn write_to_file(
+    root: &Path,
+    path: &str,
+    content: &WriteContent,
+    append: bool,
+) -> Result<(), FileError> {
+    let addressed = Path::new(path);
+    // The approval and any always-allow grant bind to the addressed
+    // spelling, so the bytes must land on exactly that entry: a path
+    // under the workspace that traverses a symlink (leaf or
+    // intermediate) is refused rather than followed to a file the gate
+    // never named — the repo-shipped-symlink case (ADR-0014; audit
+    // run-3 finding `write-grant-symlink-landing`). The error names the
+    // resolved target — the model may address it directly, and the user
+    // then approves the real path. Paths outside the workspace are
+    // exempt: they arrive already absolute (engine temp files under
+    // macOS's symlinked /var, dotfile setups that symlink ~/.zshrc), so
+    // their spelling carries no workspace entry to impersonate.
+    let confined = addressed.starts_with(root);
+    if confined {
+        let landing = resolve_landing(addressed).map_err(|error| io_file_error(&error, path))?;
+        if landing != addressed {
+            return Err(FileError::with_path(
+                FileErrorCode::PermissionDenied,
+                format!(
+                    "{path} traverses a symlink; refusing to write through it. \
+                     Address the resolved path {} directly if that target is intended.",
+                    landing.display()
+                ),
+                path,
+            ));
+        }
+    }
+    if let Some(parent) = addressed.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| io_file_error(&error, &format!("{}/", parent.display())))?;
     }
-    let mut file = std::fs::OpenOptions::new()
+    let mut options = std::fs::OpenOptions::new();
+    options
         .write(true)
         .create(true)
         .append(append)
-        .truncate(!append)
-        .open(path)
-        .map_err(|error| io_file_error(&error, path))?;
+        .truncate(!append);
+    // TOCTOU backstop for a confined leaf: never open through a symlink
+    // swapped in after the landing check above.
+    #[cfg(unix)]
+    if confined {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|error| {
+        #[cfg(unix)]
+        if error.raw_os_error() == Some(libc::ELOOP) {
+            return FileError::with_path(
+                FileErrorCode::PermissionDenied,
+                format!("{path} is a symlink; refusing to write through it"),
+                path,
+            );
+        }
+        io_file_error(&error, path)
+    })?;
     match content {
         WriteContent::Text(text) => std::io::Write::write_all(&mut file, text.as_bytes()),
         WriteContent::Bytes(bytes) => std::io::Write::write_all(&mut file, bytes),
@@ -279,7 +374,7 @@ use the ls tool to list a directory's entries."
     ) -> BoxFuture<'a, Result<(), FileError>> {
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
-            write_to_file(&path, content, false)
+            write_to_file(Path::new(&self.cwd), &path, content, false)
         })
     }
 
@@ -291,7 +386,7 @@ use the ls tool to list a directory's entries."
     ) -> BoxFuture<'a, Result<(), FileError>> {
         Box::pin(async move {
             let path = to_absolute(&self.cwd, path);
-            write_to_file(&path, content, true)
+            write_to_file(Path::new(&self.cwd), &path, content, true)
         })
     }
 
@@ -959,6 +1054,88 @@ mod tests {
         let listing = env.list_dir("notes", None).await.unwrap();
         assert_eq!(listing.len(), 1);
         assert_eq!(listing[0].name, "a.txt");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_refuses_a_leaf_symlink_and_leaves_the_target_untouched() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let root_path = std::path::Path::new(&root);
+        let target = root_path.join("target.txt");
+        std::fs::write(&target, "original").unwrap();
+        // A tracked symlink shipped by an untrusted repo: the addressed
+        // path names the link, the bytes would land on the target.
+        std::os::unix::fs::symlink(&target, root_path.join("notes.txt")).unwrap();
+        let error = env
+            .write_file("notes.txt", &"payload".into(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, FileErrorCode::PermissionDenied);
+        assert!(
+            error.message.contains("symlink"),
+            "unexpected: {}",
+            error.message
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        assert!(
+            root_path
+                .join("notes.txt")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_refuses_a_symlinked_intermediate_directory() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), std::path::Path::new(&root).join("assets"))
+            .unwrap();
+        let error = env
+            .write_file("assets/newdir/file.txt", &"payload".into(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, FileErrorCode::PermissionDenied);
+        // create_dir_all must not have followed the link either.
+        assert!(!outside.path().join("newdir").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_lands_when_addressed_by_the_resolved_path() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let target = std::path::Path::new(&root).join("target.txt");
+        std::fs::write(&target, "original").unwrap();
+        let resolved = target.canonicalize().unwrap();
+        env.write_file(resolved.to_str().unwrap(), &"updated".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_outside_the_workspace_may_follow_a_symlink() {
+        let (root, _guard) = temp_root();
+        let env = LocalExecutionEnv::new(&root);
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("real.txt");
+        std::fs::write(&target, "original").unwrap();
+        let link = outside.path().join("alias.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        // Absolute paths outside the workspace arrive already spelled
+        // (engine temp files under macOS's symlinked /var, symlinked
+        // dotfiles) — the landing check does not confine them.
+        env.write_file(link.to_str().unwrap(), &"updated".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
     }
 
     #[tokio::test]
