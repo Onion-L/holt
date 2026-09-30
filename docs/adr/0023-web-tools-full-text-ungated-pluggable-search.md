@@ -51,30 +51,34 @@ already expose.
 - Domain allow/deny rules for fetch are the recorded fast-follow; v1
   ships none, deliberately.
 
-## Addendum: MCP search tools, several entries
+## Addendum: keyless default, several entries
 
-Built-in adapters cannot cover every search service, and the services
-worth adding (TinyFish, Exa, Tavily, …) increasingly ship as MCP
-servers rather than one shared REST shape. So the fourth kind is `mcp`:
-an entry names a server already defined in `mcp.json` and one of its
-tools. `web_search` calls that tool through the engine's MCP pool — the
-query in the tool's required string parameter, the hit cap in a
-count-like integer parameter when the schema has one — and hands the
-tool's text to the model as-is under the usual result header; no
-mapping onto title/url/snippet hits is attempted. A fixed REST protocol
-for custom endpoints was considered and rejected: it fits no real
-service without a shim.
+Every keyed vendor made search a setup chore before it did anything. So
+Exa joins as a fourth built-in kind that needs no key: its hosted MCP
+endpoint (`https://mcp.exa.ai/mcp`) answers one stateless JSON-RPC
+`tools/call` of `web_search_exa` without a key or an `initialize`
+handshake, and its text reply goes to the model as-is under the usual
+result header (the `SearchBackend` result is either hits or text). With
+no `web-search.json` at all, Exa is active — the same default opencode
+ships. The known cost: out of the box, queries go to Exa.
 
-The entry carries no key; the server's own `mcp.json` config (headers,
-`bearer_token_env_var`) is its auth, and MCP OAuth is not supported yet,
-so an OAuth-only server cannot back search. The call ignores the
-server's `enabled` flag and tool filters (a server can serve search
-without exposing its tools to chat) and skips the MCP approval gate:
-the user picked this tool as their search backend, and `web_search` is
-ungated. An unreachable server makes the call fail, not the tool vanish.
+A generic "any MCP server tool" kind was built and dropped before
+release: it leaked a transport into a settings choice users make by
+service, needed a server/tool picker, and bypassed the MCP gate and
+filters. A service worth having becomes a built-in adapter instead;
+stray `mcp` entries are dropped at load.
 
-`web-search.json` now holds a list of entries (built-in kinds keyed by
-kind, MCP entries by a generated `mcp-…` id) with one active entry;
-saving activates the saved entry, removing the active one turns the tool
-off rather than promoting another behind the user's back. The earlier
-single-record file still loads as one active entry.
+`web-search.json` holds a list of entries (id = kind) with at most one
+active; saving an entry activates it, removing the active one turns the
+tool off rather than promoting another behind the user's back, and
+`SetActiveWebSearchBackend` with a null id turns search off and keeps
+the entries. Off persists — a reload never falls back to the default.
+The earlier single-record file still loads as one active entry.
+
+In Settings the group is one "Search service" dropdown: Off, then each
+built-in in engine order. A keyless or configured service switches on
+pick; a keyed one without a key shows the key field first (Cancel backs
+out) and its save activates it. The active keyed service shows its key
+field with reveal, Save, and Remove. The same-vendor provider-key hint
+is gone: it read as "the provider key is used" while the records stay
+independent.

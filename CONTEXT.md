@@ -46,7 +46,7 @@ _Avoid_: double-Esc stop
   _Avoid_: fetch (that is git vocabulary), browse
 - **Web search**: the agent-facing query for web results — a list of titles, URLs, and snippets from the configured Search backend. It finds pages; Web fetch reads them.
   _Avoid_: search on its own (Content search is the local one)
-- **Search backend**: the external search service Web search queries — a built-in vendor carrying its own key, or a search tool on an MCP server the user already configured — chosen by the user in Settings. Several may be configured; exactly one is active. When none is active, the Web search tool is absent from the model's toolset — never an error.
+- **Search backend**: the external search service Web search queries — one of the built-in vendors, keyless Exa by default or one carrying the user's own key — chosen in Settings. Several may be configured; at most one is active. When none is active, the Web search tool is absent from the model's toolset — never an error.
   _Avoid_: search provider (a Provider is a model provider)
 - **Provider**: a source of models a chat can run, addressed by id and carrying its auth shape and transport. A Provider is either built into the compiled catalog or user-defined.
   _Avoid_: vendor (one vendor may expose several Providers — minimax and minimax-cn are two)

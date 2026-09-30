@@ -3,7 +3,7 @@
 //! the admission-time backend resolution that mounts the `web_search`
 //! tool, driven end to end through `RpcService::handle` with a scripted
 //! provider and either an injected backend resolver or the real adapter
-//! table (the MCP kind runs against the stdio fixture server).
+//! table (mounting only — no test reaches a real search API).
 
 use std::sync::Arc;
 
@@ -53,101 +53,23 @@ async fn value(engine: &LocalEngine, method: &str, params: Value) -> Value {
     handle(engine, method, params).await.expect("a value reply")
 }
 
-/// `mcp.json` with the stdio fixture as server `fixture`.
-fn write_mcp_config(data_dir: &std::path::Path, enabled: bool) {
-    let config = json!({
-        "mcpServers": {
-            "fixture": {
-                "command": env!("CARGO_BIN_EXE_mcp_stdio_fixture"),
-                "enabled": enabled,
-            }
-        }
-    });
-    std::fs::write(data_dir.join("mcp.json"), config.to_string()).unwrap();
-}
-
-/// The settled result text of `tool_call_id`, off the provider's last
-/// request.
-fn tool_result(provider: &ScriptedProvider, tool_call_id: &str) -> String {
-    let prefix = format!("toolresult:{tool_call_id}:");
-    common::summarize(&provider.requests().last().unwrap().messages)
-        .into_iter()
-        .find(|row| row.starts_with(&prefix))
-        .expect("the call settled")
-}
-
 #[tokio::test]
-async fn an_mcp_entry_searches_through_the_server_tool() {
-    let fixture = Fixture::new();
-    // Disabled for chat: its tools stay out of the toolset, yet it still
-    // serves search.
-    write_mcp_config(fixture.data_dir.path(), false);
-    let provider = ScriptedProvider::new(vec![
-        ScriptedReply::tool_call("call-1", "web_search", json!({ "query": "rust async" })),
-        ScriptedReply::text("found"),
-        ScriptedReply::tool_call("call-2", "web_search", json!({ "query": "boom" })),
-        ScriptedReply::text("failed"),
-    ]);
-    let engine = fixture.engine(&provider);
-    common::setup_chat(&engine, "chat-1").await;
-    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
-    value(
-        &engine,
-        methods::SAVE_WEB_SEARCH_BACKEND,
-        json!({ "kind": "mcp", "server": "fixture", "tool": "echo" }),
-    )
-    .await;
-
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "search").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    let tools = &provider.requests()[0].tool_names;
-    assert!(tools.contains(&"web_search".into()));
-    assert!(
-        !tools.iter().any(|name| name.starts_with("mcp__")),
-        "a disabled server mounted chat tools: {tools:?}"
-    );
-    // The query lands in the tool's required string parameter; its text
-    // reaches the model as-is under the search header.
-    let result = tool_result(&provider, "call-1");
-    assert!(
-        result.contains("Web search results from fixture / echo for \"rust async\""),
-        "{result}"
-    );
-    assert!(result.contains("echo: rust async"), "{result}");
-
-    // An `isError` result surfaces as the tool's error, naming the entry.
-    let id = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await["active"].clone();
-    value(
-        &engine,
-        methods::SAVE_WEB_SEARCH_BACKEND,
-        json!({ "kind": "mcp", "id": id, "server": "fixture", "tool": "fail" }),
-    )
-    .await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "again").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    let result = tool_result(&provider, "call-2");
-    assert!(
-        result.contains("fixture / fail search failed: fixture error: boom"),
-        "{result}"
-    );
-}
-
-#[tokio::test]
-async fn an_unconfigured_engine_reports_empty_state() {
+async fn a_fresh_engine_defaults_to_keyless_exa() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
 
     let state = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await;
-    assert_eq!(state["active"], json!(null));
-    assert_eq!(state["entries"], json!([]));
-
-    let revealed = value(
-        &engine,
-        methods::REVEAL_WEB_SEARCH_KEY,
-        json!({ "id": "zhipu" }),
-    )
-    .await;
-    assert_eq!(revealed["key"], json!(null));
+    assert_eq!(state["active"], json!("exa"));
+    assert_eq!(
+        state["entries"],
+        json!([{ "id": "exa", "kind": "exa", "name": "Exa" }])
+    );
+    for id in ["exa", "zhipu"] {
+        let revealed = value(&engine, methods::REVEAL_WEB_SEARCH_KEY, json!({ "id": id })).await;
+        assert_eq!(revealed["key"], json!(null));
+    }
+    // The default is not written until the user changes something.
+    assert!(!fixture.data_dir.path().join("web-search.json").exists());
 }
 
 #[tokio::test]
@@ -158,9 +80,10 @@ async fn the_state_lists_the_picker_options() {
     assert_eq!(
         state["backends"],
         json!([
-            { "id": "zhipu", "name": "Zhipu" },
-            { "id": "bocha", "name": "Bocha" },
-            { "id": "brave", "name": "Brave" },
+            { "id": "exa", "name": "Exa", "needsKey": false },
+            { "id": "zhipu", "name": "Zhipu", "needsKey": true },
+            { "id": "bocha", "name": "Bocha", "needsKey": true },
+            { "id": "brave", "name": "Brave", "needsKey": true },
         ])
     );
 }
@@ -168,7 +91,6 @@ async fn the_state_lists_the_picker_options() {
 #[tokio::test]
 async fn configured_records_mount_through_the_builtin_table() {
     let fixture = Fixture::new();
-    write_mcp_config(fixture.data_dir.path(), true);
     // A plain engine — no injected resolver: the adapter table resolves
     // the active entry itself.
     let provider = ScriptedProvider::new(vec![
@@ -180,6 +102,16 @@ async fn configured_records_mount_through_the_builtin_table() {
     let engine = fixture.engine(&provider);
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    let mounted = |index: usize| {
+        provider.requests()[index]
+            .tool_names
+            .contains(&"web_search".into())
+    };
+
+    // The keyless default mounts with no setup at all.
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(mounted(0));
 
     value(
         &engine,
@@ -187,59 +119,31 @@ async fn configured_records_mount_through_the_builtin_table() {
         json!({ "kind": "zhipu", "apiKey": "sk-1234567890" }),
     )
     .await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        provider.requests()[0]
-            .tool_names
-            .contains(&"web_search".into())
-    );
-
-    // An MCP search tool mounts too.
-    value(
-        &engine,
-        methods::SAVE_WEB_SEARCH_BACKEND,
-        json!({ "kind": "mcp", "server": "fixture", "tool": "echo" }),
-    )
-    .await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        provider.requests()[1]
-            .tool_names
-            .contains(&"web_search".into())
-    );
+    assert!(mounted(1));
 
-    // Switching back to a stored entry keeps the tool mounted…
+    // Off unmounts it from the next admission, entries kept…
+    value(
+        &engine,
+        methods::SET_ACTIVE_WEB_SEARCH_BACKEND,
+        json!({ "id": null }),
+    )
+    .await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "third").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(!mounted(2));
+
+    // …and switching back to a stored entry mounts it again.
     value(
         &engine,
         methods::SET_ACTIVE_WEB_SEARCH_BACKEND,
         json!({ "id": "zhipu" }),
     )
     .await;
-    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "third").await;
-    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        provider.requests()[2]
-            .tool_names
-            .contains(&"web_search".into())
-    );
-
-    // …while removing the active entry unmounts it from the next
-    // admission, even with another entry still stored.
-    value(
-        &engine,
-        methods::REMOVE_WEB_SEARCH_BACKEND,
-        json!({ "id": "zhipu" }),
-    )
-    .await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fourth").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
-    assert!(
-        !provider.requests()[3]
-            .tool_names
-            .contains(&"web_search".into())
-    );
+    assert!(mounted(3));
 }
 
 #[tokio::test]
@@ -255,8 +159,8 @@ async fn save_replies_the_masked_state_and_persists_the_record() {
     .await;
     assert_eq!(saved["active"], json!("zhipu"));
     assert_eq!(
-        saved["entries"],
-        json!([{ "id": "zhipu", "kind": "zhipu", "name": "Zhipu", "apiKeyMasked": "sk-a…1234" }])
+        saved["entries"][1],
+        json!({ "id": "zhipu", "kind": "zhipu", "name": "Zhipu", "apiKeyMasked": "sk-a…1234" })
     );
 
     let state = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await;
@@ -287,9 +191,8 @@ async fn save_replies_the_masked_state_and_persists_the_record() {
 }
 
 #[tokio::test]
-async fn mcp_entries_are_created_updated_and_listed_beside_builtins() {
+async fn keyless_saves_and_off_persist_across_restarts() {
     let fixture = Fixture::new();
-    write_mcp_config(fixture.data_dir.path(), true);
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
     value(
         &engine,
@@ -298,42 +201,38 @@ async fn mcp_entries_are_created_updated_and_listed_beside_builtins() {
     )
     .await;
 
+    // A keyless backend saves without a key; a stray one is ignored.
     let saved = value(
         &engine,
         methods::SAVE_WEB_SEARCH_BACKEND,
-        json!({ "kind": "mcp", "server": " fixture ", "tool": " echo ", "apiKey": "ignored" }),
+        json!({ "kind": "exa", "apiKey": "ignored" }),
     )
     .await;
-    let entry = &saved["entries"][1];
-    let id = entry["id"].as_str().unwrap().to_string();
-    assert!(id.starts_with("mcp-"), "unexpected id {id}");
-    assert_eq!(saved["active"], json!(id));
-    assert_eq!(entry["server"], json!("fixture"));
-    assert_eq!(entry["tool"], json!("echo"));
-    // The server's own config carries its auth: no key is stored.
-    assert_eq!(entry["apiKeyMasked"], json!(null));
-    let revealed = value(&engine, methods::REVEAL_WEB_SEARCH_KEY, json!({ "id": id })).await;
+    assert_eq!(saved["active"], json!("exa"));
+    assert_eq!(saved["entries"][0]["apiKeyMasked"], json!(null));
+    let revealed = value(
+        &engine,
+        methods::REVEAL_WEB_SEARCH_KEY,
+        json!({ "id": "exa" }),
+    )
+    .await;
     assert_eq!(revealed["key"], json!(null));
 
-    // Saving with its id updates in place.
-    let updated = value(
-        &engine,
-        methods::SAVE_WEB_SEARCH_BACKEND,
-        json!({ "kind": "mcp", "id": id, "server": "fixture", "tool": "fail" }),
-    )
-    .await;
-    assert_eq!(updated["entries"].as_array().unwrap().len(), 2);
-    assert_eq!(updated["entries"][1]["tool"], json!("fail"));
-
-    // Set-active flips between stored entries without touching them.
-    let switched = value(
+    // A null id turns web search off and keeps every entry.
+    let off = value(
         &engine,
         methods::SET_ACTIVE_WEB_SEARCH_BACKEND,
-        json!({ "id": "brave" }),
+        json!({ "id": null }),
     )
     .await;
-    assert_eq!(switched["active"], json!("brave"));
-    assert_eq!(switched["entries"], updated["entries"]);
+    assert_eq!(off["active"], json!(null));
+    assert_eq!(off["entries"], saved["entries"]);
+
+    // Off survives a restart instead of falling back to the default.
+    drop(engine);
+    let engine = fixture.engine(&ScriptedProvider::new(vec![]));
+    let state = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await;
+    assert_eq!(state, off);
 }
 
 #[tokio::test]
@@ -349,14 +248,13 @@ async fn a_short_key_masks_to_nothing() {
             json!({ "kind": "bocha", "apiKey": key }),
         )
         .await;
-        assert_eq!(saved["entries"][0]["apiKeyMasked"], json!("…"));
+        assert_eq!(saved["entries"][1]["apiKeyMasked"], json!("…"));
     }
 }
 
 #[tokio::test]
-async fn save_validates_kind_key_server_and_tool() {
+async fn save_validates_kind_and_key() {
     let fixture = Fixture::new();
-    write_mcp_config(fixture.data_dir.path(), true);
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
 
     let cases = [
@@ -364,30 +262,14 @@ async fn save_validates_kind_key_server_and_tool() {
             json!({ "kind": "google", "apiKey": "sk-1234567890" }),
             "unknown search backend",
         ),
+        (
+            json!({ "kind": "mcp", "server": "fixture", "tool": "echo" }),
+            "unknown search backend",
+        ),
         (json!({ "kind": "zhipu" }), "apiKey is required"),
         (
             json!({ "kind": "zhipu", "apiKey": "   " }),
             "apiKey is required",
-        ),
-        (
-            json!({ "kind": "mcp", "tool": "echo" }),
-            "server is required",
-        ),
-        (
-            json!({ "kind": "mcp", "server": "fixture" }),
-            "tool is required",
-        ),
-        (
-            json!({ "kind": "mcp", "server": "fixture", "tool": "  " }),
-            "tool is required",
-        ),
-        (
-            json!({ "kind": "mcp", "server": "nope", "tool": "echo" }),
-            "no mcp server",
-        ),
-        (
-            json!({ "kind": "mcp", "id": "mcp-nope", "server": "fixture", "tool": "echo" }),
-            "no mcp search backend",
         ),
     ];
     for (params, expected) in cases {
@@ -414,7 +296,7 @@ async fn save_validates_kind_key_server_and_tool() {
 }
 
 #[tokio::test]
-async fn removing_the_last_entry_clears_the_state_and_deletes_the_file() {
+async fn removing_the_active_entry_turns_search_off() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));
     value(
@@ -431,8 +313,10 @@ async fn removing_the_last_entry_clears_the_state_and_deletes_the_file() {
     )
     .await;
     assert_eq!(removed["active"], json!(null));
-    assert_eq!(removed["entries"], json!([]));
-    assert!(!fixture.data_dir.path().join("web-search.json").exists());
+    assert_eq!(
+        removed["entries"],
+        json!([{ "id": "exa", "kind": "exa", "name": "Exa" }])
+    );
 
     let revealed = value(
         &engine,
@@ -492,7 +376,8 @@ async fn the_backend_resolves_once_per_turn_admission() {
     common::setup_chat(&engine, "chat-1").await;
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
 
-    // Unconfigured: the tool is absent, never erroring.
+    // The default (Exa) resolves to nothing under this resolver: the
+    // tool is absent, never erroring.
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first").await;
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     assert!(

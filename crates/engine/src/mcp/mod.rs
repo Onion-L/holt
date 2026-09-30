@@ -127,23 +127,12 @@ impl McpPool {
                     }
                 }
             }
-            let (connection, list) = match fresh {
-                Some(hit) => hit,
-                // A server that cannot start is skipped for this Turn (log
-                // line, tools absent); the next Turn retries the same lazy
-                // way.
-                None => match connect_fresh(&mut connections, &name, &server).await {
-                    Ok(hit) => hit,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "holt::mcp",
-                            server = %name,
-                            %error,
-                            "mcp server unavailable; skipping it for this turn"
-                        );
-                        continue;
-                    }
-                },
+            let hit = match fresh {
+                Some(hit) => Some(hit),
+                None => connect_fresh(&mut connections, &name, &server).await,
+            };
+            let Some((connection, list)) = hit else {
+                continue;
             };
             tools.extend(
                 list.into_iter()
@@ -211,53 +200,6 @@ impl McpPool {
         }
     }
 
-    /// Call one server tool outside the Turn snapshot — the MCP web-search
-    /// kind (ADR-0023). Uses the server's cached connection or opens (and
-    /// caches) one; `enabled` and the tool filters are not consulted, so a
-    /// server disabled for chat can still serve search. `arguments` builds
-    /// the call from the tool's input schema. The reply is the tool's text
-    /// under the same caps as a chat call; an `isError` result is `Err`.
-    pub(crate) async fn call_tool(
-        &self,
-        name: &str,
-        tool: &str,
-        arguments: impl FnOnce(
-            &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<serde_json::Value, String>,
-    ) -> Result<String, String> {
-        let server = self
-            .servers
-            .get()
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("mcp server {name:?} is not defined in mcp.json"))?;
-        let (connection, list) = {
-            let mut connections = self.connections.lock().await;
-            let mut fresh = None;
-            if let Some(connection) = connections.get(name).cloned() {
-                match connection.list_tools().await {
-                    Ok(list) => fresh = Some((connection, list)),
-                    Err(_) => {
-                        connections.remove(name);
-                    }
-                }
-            }
-            match fresh {
-                Some(hit) => hit,
-                None => connect_fresh(&mut connections, name, &server)
-                    .await
-                    .map_err(|error| format!("mcp server {name:?} is unavailable: {error}"))?,
-            }
-        };
-        let listed = list
-            .iter()
-            .find(|listed| listed.name == tool)
-            .ok_or_else(|| format!("mcp server {name:?} lists no tool {tool:?}"))?;
-        let arguments = arguments(listed.input_schema.as_ref())?;
-        let result = connection.call(tool, &arguments).await?;
-        result_text(tool, &result)
-    }
-
     /// Drop one server's cached connection (the upsert/remove paths): the
     /// next Turn reconnects — or not — under the new definition.
     pub(crate) async fn invalidate(&self, name: &str) {
@@ -284,28 +226,55 @@ impl McpPool {
 }
 
 /// Connect (or reconnect) one server and list its tools, caching the
-/// live connection on success.
+/// live connection on success. `None` — with a log line — skips the
+/// server for this Turn.
 async fn connect_fresh(
     connections: &mut HashMap<String, Arc<LiveServer>>,
     name: &str,
     server: &McpServer,
-) -> Result<(Arc<LiveServer>, Vec<Tool>), String> {
-    let connection = Arc::new(connect(server).await?);
-    let list = connection
-        .list_tools()
-        .await
-        .map_err(|error| format!("failed to list tools: {error}"))?;
-    // A server listing an illegal or overlong tool name is rejected here —
-    // truncating would make an approval rule point at the wrong tool
-    // (ADR-0034).
-    if let Some(bad) = list.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
-        return Err(format!(
-            "lists an illegal tool name {:?}; refusing the server",
-            bad.name
-        ));
+) -> Option<(Arc<LiveServer>, Vec<Tool>)> {
+    match connect(server).await {
+        Ok(connection) => {
+            let connection = Arc::new(connection);
+            let list = match connection.list_tools().await {
+                Ok(list) => list,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "holt::mcp",
+                        server = %name,
+                        %error,
+                        "mcp server failed to list tools; skipping it for this turn"
+                    );
+                    return None;
+                }
+            };
+            // A server listing an illegal or overlong tool name is
+            // rejected here — truncating would make an approval rule
+            // point at the wrong tool (ADR-0034).
+            if let Some(bad) = list.iter().find(|tool| !tool_name_is_legal(&tool.name)) {
+                tracing::warn!(
+                    target: "holt::mcp",
+                    server = %name,
+                    tool = %bad.name,
+                    "mcp server lists an illegal tool name; refusing the server"
+                );
+                return None;
+            }
+            connections.insert(name.to_string(), Arc::clone(&connection));
+            Some((connection, list))
+        }
+        // A server that cannot start is skipped for this Turn (log line,
+        // tools absent); the next Turn retries the same lazy way.
+        Err(error) => {
+            tracing::warn!(
+                target: "holt::mcp",
+                server = %name,
+                %error,
+                "mcp server failed to connect; skipping it for this turn"
+            );
+            None
+        }
     }
-    connections.insert(name.to_string(), Arc::clone(&connection));
-    Ok((connection, list))
 }
 
 /// One live server connection: the running client service over its
@@ -562,7 +531,25 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
                 let params = params.clone();
                 Box::pin(async move {
                     let result = connection.call(&name, &params).await?;
-                    let text = result_text(&name, &result)?;
+                    // Join, cap, then append the non-text notice — the
+                    // notice must survive the cap, or a flood would hide
+                    // that content was dropped at all.
+                    let (joined, dropped_non_text) = split_text_content(&result);
+                    let mut text = truncate_result(&joined);
+                    if dropped_non_text {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str("[non-text content blocks were dropped]");
+                    }
+                    if result.is_error.unwrap_or(false) {
+                        let reason = if text.trim().is_empty() {
+                            format!("mcp tool {name:?} reported an error without detail")
+                        } else {
+                            text
+                        };
+                        return Err(reason);
+                    }
                     Ok(AgentToolResult {
                         content: vec![BlockContent::Text(TextContent {
                             text,
@@ -574,29 +561,6 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
             },
         ),
     }
-}
-
-/// A call result as the model reads it: text blocks joined and capped,
-/// then the non-text notice appended — it must survive the cap, or a
-/// flood would hide that content was dropped at all. An `isError` result
-/// is `Err` with the same text.
-fn result_text(name: &str, result: &CallToolResult) -> Result<String, String> {
-    let (joined, dropped_non_text) = split_text_content(result);
-    let mut text = truncate_result(&joined);
-    if dropped_non_text {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str("[non-text content blocks were dropped]");
-    }
-    if result.is_error.unwrap_or(false) {
-        return Err(if text.trim().is_empty() {
-            format!("mcp tool {name:?} reported an error without detail")
-        } else {
-            text
-        });
-    }
-    Ok(text)
 }
 
 /// Split a result's content: text blocks joined with newlines, plus

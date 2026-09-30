@@ -1,16 +1,19 @@
 //! Engine-owned web-search settings (ADR-0023): the device-wide list of
-//! configured search backends — built-in vendors and MCP-served search
-//! tools — plus which one is active, persisted as
-//! `web-search.json` under the credentials pattern — 0600 permissions,
-//! atomic replace + sync, and a malformed file fails startup loudly (this
-//! record holds secrets, so silent fallback is wrong; the file is left
-//! untouched for manual repair). Search keys are independent records:
-//! never shared with, or prefilled from, a same-vendor provider key.
+//! configured built-in search backends plus which one is active,
+//! persisted as `web-search.json` under the credentials pattern — 0600
+//! permissions, atomic replace + sync, and a malformed file fails startup
+//! loudly (this record holds secrets, so silent fallback is wrong; the
+//! file is left untouched for manual repair). Search keys are independent
+//! records: never shared with, or prefilled from, a same-vendor provider
+//! key.
 //!
-//! A built-in entry's id is its kind (one entry per vendor); an MCP entry
-//! gets a generated `mcp-…` id. The pre-list single-record file
-//! (`{backend, apiKey}`) still loads, as one active entry, and is
-//! rewritten in the list shape on the next change.
+//! An entry's id is its kind (one entry per vendor). With no file at all
+//! the keyless default backend is active, so search works before any
+//! setup; once the user changes anything the file records their choice,
+//! including "off". Entries of kinds the engine no longer ships are
+//! dropped at load. The pre-list single-record file (`{backend, apiKey}`)
+//! still loads, as one active entry, and is rewritten in the list shape
+//! on the next change.
 //!
 //! Mutated only through the typed RPC surface (which owns validation).
 //! Resolution into a mounted backend happens once per Turn admission in
@@ -24,38 +27,52 @@ use std::{
 };
 
 use crate::EngineError;
+use crate::tools::web_search::{BACKENDS, DEFAULT_BACKEND};
 
 const FILE_NAME: &str = "web-search.json";
-/// The kind of an entry served by a tool of an `mcp.json` server.
-pub(crate) const MCP_KIND: &str = "mcp";
 
 /// One configured backend.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WebSearchEntry {
     pub(crate) id: String,
-    /// A built-in backend id, or [`MCP_KIND`].
+    /// A built-in backend id.
     pub(crate) kind: String,
-    /// MCP entries only: the `mcp.json` server name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) server: Option<String>,
-    /// MCP entries only: the server's search tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tool: Option<String>,
-    /// Empty for an MCP entry — the server's own config carries its auth.
+    /// Empty for a keyless backend.
     #[serde(default)]
     pub(crate) api_key: String,
 }
 
-/// The persisted record. Nothing is stored while the list is empty — the
-/// file exists only while at least one entry does.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+impl WebSearchEntry {
+    pub(crate) fn new(kind: &str, api_key: String) -> Self {
+        Self {
+            id: kind.to_string(),
+            kind: kind.to_string(),
+            api_key,
+        }
+    }
+}
+
+/// The persisted record.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WebSearchSettings {
     /// The entry the next Turn mounts; `None` leaves web search off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) active: Option<String>,
+    /// Required, so a legacy `{backend, apiKey}` record never decodes as
+    /// an empty list.
     pub(crate) entries: Vec<WebSearchEntry>,
+}
+
+impl Default for WebSearchSettings {
+    /// A fresh install: the keyless default backend, active.
+    fn default() -> Self {
+        Self {
+            active: Some(DEFAULT_BACKEND.to_string()),
+            entries: vec![WebSearchEntry::new(DEFAULT_BACKEND, String::new())],
+        }
+    }
 }
 
 impl WebSearchSettings {
@@ -65,6 +82,17 @@ impl WebSearchSettings {
 
     pub(crate) fn active_entry(&self) -> Option<&WebSearchEntry> {
         self.entry(self.active.as_deref()?)
+    }
+
+    /// Drop entries of kinds this build does not ship (and an active id
+    /// left pointing at nothing).
+    fn retain_known(mut self) -> Self {
+        self.entries
+            .retain(|entry| BACKENDS.iter().any(|backend| backend.id == entry.kind));
+        if self.active_entry().is_none() {
+            self.active = None;
+        }
+        self
     }
 }
 
@@ -90,13 +118,7 @@ impl From<OnDisk> for WebSearchSettings {
             OnDisk::Current(settings) => settings,
             OnDisk::Legacy(legacy) => Self {
                 active: Some(legacy.backend.clone()),
-                entries: vec![WebSearchEntry {
-                    id: legacy.backend.clone(),
-                    kind: legacy.backend,
-                    server: None,
-                    tool: None,
-                    api_key: legacy.api_key,
-                }],
+                entries: vec![WebSearchEntry::new(&legacy.backend, legacy.api_key)],
             },
         }
     }
@@ -109,7 +131,7 @@ pub(crate) struct WebSearchStore {
 }
 
 impl WebSearchStore {
-    /// Loads the record. A missing file is the unconfigured state; a
+    /// Loads the record. A missing file is the fresh-install default; a
     /// present but malformed file is a startup error naming the path.
     pub(crate) fn load(data_dir: &Path) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
@@ -117,14 +139,14 @@ impl WebSearchStore {
             Ok(metadata) => {
                 ensure_private_permissions(&path, &metadata)?;
                 let bytes = std::fs::read(&path)?;
-                serde_json::from_slice::<OnDisk>(&bytes)
+                let on_disk = serde_json::from_slice::<OnDisk>(&bytes)
                     .map_err(|error| {
                         EngineError::Other(format!(
                             "web-search settings file {} is malformed; fix or remove it manually: {error}",
                             path.display()
                         ))
-                    })?
-                    .into()
+                    })?;
+                WebSearchSettings::from(on_disk).retain_known()
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 WebSearchSettings::default()
@@ -144,35 +166,31 @@ impl WebSearchStore {
             .clone()
     }
 
-    /// Insert or replace the entry with `entry.id` and make it active. A
-    /// entry with an empty id is new and gets a generated one; the
-    /// saved id is returned. Validation is the caller's; the key is
-    /// trimmed here.
-    pub(crate) fn save(&self, mut entry: WebSearchEntry) -> Result<String, EngineError> {
+    /// Insert or replace the entry with `entry.id` and make it active.
+    /// Validation is the caller's; the key is trimmed here.
+    pub(crate) fn save(&self, mut entry: WebSearchEntry) -> Result<(), EngineError> {
         entry.api_key = entry.api_key.trim().to_string();
-        if entry.id.is_empty() {
-            let uuid = uuid::Uuid::new_v4().simple().to_string();
-            entry.id = format!("{MCP_KIND}-{}", &uuid[..8]);
-        }
         let id = entry.id.clone();
         self.update(|settings| {
             match settings.entries.iter_mut().find(|slot| slot.id == id) {
                 Some(slot) => *slot = entry,
                 None => settings.entries.push(entry),
             }
-            settings.active = Some(id.clone());
-        })?;
-        Ok(id)
+            settings.active = Some(id);
+        })
     }
 
-    /// Point the next Turn at an existing entry. An unknown id is refused.
-    pub(crate) fn set_active(&self, id: &str) -> Result<(), EngineError> {
-        if self.get().entry(id).is_none() {
+    /// Point the next Turn at an existing entry, or at none (web search
+    /// off, entries kept). An unknown id is refused.
+    pub(crate) fn set_active(&self, id: Option<&str>) -> Result<(), EngineError> {
+        if let Some(id) = id
+            && self.get().entry(id).is_none()
+        {
             return Err(EngineError::Other(format!(
                 "no search backend with id {id:?}"
             )));
         }
-        self.update(|settings| settings.active = Some(id.to_string()))
+        self.update(|settings| settings.active = id.map(str::to_string))
     }
 
     /// Drop one entry; removing the active one leaves web search off. An
@@ -190,8 +208,7 @@ impl WebSearchStore {
     }
 
     /// Apply `change` to the in-memory record, then persist it; the
-    /// record rolls back if the file write fails. An empty list is stored
-    /// as no file at all.
+    /// record rolls back if the file write fails.
     fn update(&self, change: impl FnOnce(&mut WebSearchSettings)) -> Result<(), EngineError> {
         let mut settings = self
             .settings
@@ -199,15 +216,7 @@ impl WebSearchStore {
             .unwrap_or_else(|error| error.into_inner());
         let previous = settings.clone();
         change(&mut settings);
-        let result = if settings.entries.is_empty() {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(EngineError::Io(error)),
-            }
-        } else {
-            self.persist(&settings)
-        };
+        let result = self.persist(&settings);
         if result.is_err() {
             *settings = previous;
         }
@@ -282,41 +291,29 @@ mod tests {
     use super::*;
 
     fn builtin(kind: &str, api_key: &str) -> WebSearchEntry {
-        WebSearchEntry {
-            id: kind.into(),
-            kind: kind.into(),
-            server: None,
-            tool: None,
-            api_key: api_key.into(),
-        }
+        WebSearchEntry::new(kind, api_key.into())
     }
 
-    fn mcp(server: &str, tool: &str) -> WebSearchEntry {
-        WebSearchEntry {
-            id: String::new(),
-            kind: MCP_KIND.into(),
-            server: Some(server.into()),
-            tool: Some(tool.into()),
-            api_key: String::new(),
-        }
+    fn exa() -> WebSearchEntry {
+        builtin("exa", "")
     }
 
     #[test]
-    fn a_missing_file_loads_unconfigured() {
+    fn a_missing_file_loads_the_keyless_default_active() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            WebSearchStore::load(dir.path()).unwrap().get(),
-            WebSearchSettings::default()
-        );
+        let settings = WebSearchStore::load(dir.path()).unwrap().get();
+        assert_eq!(settings.active_entry(), Some(&exa()));
+        assert!(!dir.path().join(FILE_NAME).exists());
     }
 
     #[test]
     fn saves_round_trip_and_reload() {
         let dir = tempfile::tempdir().unwrap();
         let store = WebSearchStore::load(dir.path()).unwrap();
-        assert_eq!(store.save(builtin("zhipu", " sk-123 ")).unwrap(), "zhipu");
+        store.save(builtin("zhipu", " sk-123 ")).unwrap();
         let settings = store.get();
         assert_eq!(settings.active_entry(), Some(&builtin("zhipu", "sk-123")));
+        assert_eq!(settings.entries, vec![exa(), builtin("zhipu", "sk-123")]);
         assert_eq!(WebSearchStore::load(dir.path()).unwrap().get(), settings);
         // The file carries camelCase fields, matching the RPC layer.
         assert!(
@@ -331,71 +328,73 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = WebSearchStore::load(dir.path()).unwrap();
         store.save(builtin("zhipu", "one")).unwrap();
-        let id = store.save(mcp("tinyfish", "search")).unwrap();
-        assert!(id.starts_with("mcp-"), "unexpected id {id}");
-        assert_eq!(store.get().active.as_deref(), Some(id.as_str()));
-
-        store.save(builtin("zhipu", "two")).unwrap();
+        store.save(builtin("brave", "two")).unwrap();
+        store.save(builtin("zhipu", "three")).unwrap();
         let settings = store.get();
-        assert_eq!(settings.entries.len(), 2);
-        assert_eq!(settings.active_entry(), Some(&builtin("zhipu", "two")));
-
-        let mut retooled = mcp("tinyfish", "web_search");
-        retooled.id = id.clone();
-        assert_eq!(store.save(retooled).unwrap(), id);
-        let settings = store.get();
-        assert_eq!(settings.entries.len(), 2);
-        assert_eq!(
-            settings.entry(&id).unwrap().tool.as_deref(),
-            Some("web_search")
-        );
+        assert_eq!(settings.entries.len(), 3);
+        assert_eq!(settings.active_entry(), Some(&builtin("zhipu", "three")));
     }
 
     #[test]
-    fn set_active_switches_between_entries_and_refuses_unknown_ids() {
+    fn set_active_switches_turns_off_and_refuses_unknown_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = WebSearchStore::load(dir.path()).unwrap();
         store.save(builtin("zhipu", "one")).unwrap();
-        store.save(builtin("brave", "two")).unwrap();
-        store.set_active("zhipu").unwrap();
+        store.set_active(Some("exa")).unwrap();
         assert_eq!(
             WebSearchStore::load(dir.path())
                 .unwrap()
                 .get()
                 .active
                 .as_deref(),
-            Some("zhipu")
+            Some("exa")
         );
-        assert!(store.set_active("bocha").is_err());
-        assert_eq!(store.get().active.as_deref(), Some("zhipu"));
+        assert!(store.set_active(Some("bocha")).is_err());
+        assert_eq!(store.get().active.as_deref(), Some("exa"));
+
+        // Off persists — a reload does not fall back to the default.
+        store.set_active(None).unwrap();
+        let reloaded = WebSearchStore::load(dir.path()).unwrap().get();
+        assert_eq!(reloaded.active, None);
+        assert_eq!(reloaded.entries.len(), 2);
     }
 
     #[test]
-    fn removing_entries_clears_active_and_finally_the_file() {
+    fn removing_the_active_entry_turns_search_off_and_sticks() {
         let dir = tempfile::tempdir().unwrap();
         let store = WebSearchStore::load(dir.path()).unwrap();
-        store.save(builtin("zhipu", "one")).unwrap();
         store.save(builtin("brave", "two")).unwrap();
-
-        store.remove("zhipu").unwrap();
-        assert_eq!(store.get().active.as_deref(), Some("brave"));
         store.remove("brave").unwrap();
-        assert_eq!(store.get(), WebSearchSettings::default());
-        assert!(!dir.path().join(FILE_NAME).exists());
+        store.remove("exa").unwrap();
+        assert_eq!(
+            WebSearchStore::load(dir.path()).unwrap().get(),
+            WebSearchSettings {
+                active: None,
+                entries: Vec::new(),
+            }
+        );
         // Removing an unknown id is a no-op, never an error.
         store.remove("brave").unwrap();
     }
 
     #[test]
-    fn removing_the_active_entry_turns_search_off() {
+    fn unknown_kinds_are_dropped_at_load() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WebSearchStore::load(dir.path()).unwrap();
-        store.save(builtin("zhipu", "one")).unwrap();
-        store.save(builtin("brave", "two")).unwrap();
-        store.remove("brave").unwrap();
-        let settings = store.get();
-        assert_eq!(settings.active, None);
-        assert_eq!(settings.entries, vec![builtin("zhipu", "one")]);
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            br#"{"active": "mcp-1234", "entries": [
+                {"id": "mcp-1234", "kind": "mcp", "server": "s", "tool": "t", "apiKey": ""},
+                {"id": "brave", "kind": "brave", "apiKey": "sk"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            WebSearchStore::load(dir.path()).unwrap().get(),
+            WebSearchSettings {
+                active: None,
+                entries: vec![builtin("brave", "sk")],
+            }
+        );
     }
 
     #[test]

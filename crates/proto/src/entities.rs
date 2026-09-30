@@ -165,36 +165,29 @@ pub struct TitleSettingsState {
 
 /// One built-in search backend the Settings picker offers (ADR-0023):
 /// `id` is both the backend kind and its entry id, `name` is its label,
-/// and `note` is optional Settings-group copy flagging an access
-/// requirement.
+/// and `needs_key` says whether it runs on the user's own API key (a
+/// keyless backend is saved without one).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchBackendOption {
     pub id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    #[serde(default)]
+    pub needs_key: bool,
 }
 
-/// One configured search backend (ADR-0023). A built-in entry's `id`
-/// equals its `kind`; an MCP entry (`kind: "mcp"`) has a generated id and
-/// names an `mcp.json` `server` and its search `tool`. The raw key never
-/// rides this view.
+/// One configured search backend (ADR-0023); `id` equals `kind`. The raw
+/// key never rides this view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchEntryView {
     pub id: String,
     pub kind: String,
-    /// The vendor's display name for a built-in; the kind for an MCP
-    /// entry (whose `server`/`tool` pair is its label).
+    /// The vendor's display name.
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub server: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool: Option<String>,
     /// The stored key, masked for display (first/last four characters;
     /// keys of eight or fewer characters show only the ellipsis). `None`
-    /// for an MCP entry — the server's own config carries its auth.
+    /// for a keyless backend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_masked: Option<String>,
 }
@@ -210,8 +203,7 @@ pub struct WebSearchSettingsState {
     pub active: Option<String>,
     #[serde(default)]
     pub entries: Vec<WebSearchEntryView>,
-    /// The built-in backends for the Settings picker (Zhipu, Bocha,
-    /// Brave); MCP search tools are always available beside them.
+    /// The built-in backends for the Settings picker, in picker order.
     #[serde(default)]
     pub backends: Vec<WebSearchBackendOption>,
 }

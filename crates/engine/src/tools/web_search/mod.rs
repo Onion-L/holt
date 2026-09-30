@@ -1,20 +1,19 @@
 //! The agent's `web_search` tool plus the [`SearchBackend`] contract it
-//! sits on (ADR-0023). One query in, a title/url/snippet list (or an MCP
-//! search tool's own text) out — the
+//! sits on (ADR-0023). One query in, a result list out — the
 //! tool finds pages and never reads them (that is `web_fetch`'s job), and
-//! it exists only when the user has configured a backend: with none, the
+//! it exists only while a backend is active: with none, the
 //! tool is absent from the model's toolset, never registered-and-erroring.
 //!
-//! The backend is user-chosen (Zhipu, Bocha, Brave — one adapter module
-//! each, sharing the [`transport`] scaffolding — or a search tool on an
-//! `mcp.json` server); this module owns the
+//! The backend is user-chosen — keyless Exa (the default), or Zhipu,
+//! Bocha, Brave with the user's own key — one adapter module each,
+//! sharing the [`transport`] scaffolding; this module owns the
 //! trait, the tool, the output shape, and the built-in adapter table. The
 //! tool races the run's cancellation token around the backend call,
 //! exactly like grep and web_fetch.
 
 mod bocha;
 mod brave;
-mod mcp;
+mod exa;
 mod transport;
 mod zhipu;
 
@@ -35,49 +34,51 @@ pub(crate) struct Backend {
     pub(crate) id: &'static str,
     /// The display name.
     pub(crate) name: &'static str,
-    /// Settings-group copy flagging an access requirement; `None` for
-    /// backends with nothing to flag.
-    pub(crate) note: Option<&'static str>,
+    /// Whether the backend runs on the user's own API key.
+    pub(crate) needs_key: bool,
 }
 
 /// The built-in backends (ADR-0023) — the save RPC's validation set and
-/// the Settings picker's option list, beside the `mcp` kind. Every id
-/// here mounts its adapter through [`adapter`].
-pub(crate) const BACKENDS: [Backend; 3] = [
+/// the Settings picker's option list, in picker order. Every id here
+/// mounts its adapter through [`adapter`].
+pub(crate) const BACKENDS: [Backend; 4] = [
+    Backend {
+        id: "exa",
+        name: "Exa",
+        needs_key: false,
+    },
     Backend {
         id: "zhipu",
         name: "Zhipu",
-        note: None,
+        needs_key: true,
     },
     Backend {
         id: "bocha",
         name: "Bocha",
-        note: None,
+        needs_key: true,
     },
     Backend {
         id: "brave",
         name: "Brave",
-        note: None,
+        needs_key: true,
     },
 ];
 
+/// The backend a fresh install starts on: keyless, so search works
+/// before any setup.
+pub(crate) const DEFAULT_BACKEND: &str = "exa";
+
 /// The adapter table behind the engine's Turn-admission resolution (the
-/// injected test resolver aside). `None` for an unknown kind or an MCP
-/// entry missing its server or tool.
+/// injected test resolver aside). `None` for an unknown kind.
 pub(crate) fn adapter(
     entry: &crate::web_search_settings::WebSearchEntry,
-    pool: &Arc<crate::mcp::McpPool>,
 ) -> Option<Arc<dyn SearchBackend>> {
     let api_key = entry.api_key.clone();
     match entry.kind.as_str() {
+        "exa" => Some(Arc::new(exa::ExaBackend::new())),
         "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key))),
         "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key))),
         "brave" => Some(Arc::new(brave::BraveBackend::new(api_key))),
-        crate::web_search_settings::MCP_KIND => Some(Arc::new(mcp::McpSearchBackend::new(
-            Arc::clone(pool),
-            entry.server.clone()?,
-            entry.tool.clone()?,
-        ))),
         _ => None,
     }
 }
@@ -91,7 +92,7 @@ const MIN_MAX_RESULTS: usize = 1;
 const MAX_MAX_RESULTS: usize = 10;
 
 const DESCRIPTION: &str = "Search the web via the configured search backend and return a \
-numbered list of results, each with a title, URL, and snippet. Parameters: `query` (required) and \
+list of results, each with a title, URL, and snippet. Parameters: `query` (required) and \
 optional `max_results` (default 5, clamped to 1–10). The backend's name is stated in the output \
 header. This tool only finds pages — it never opens, crawls, or summarizes them; fetch a result's \
 content with web_fetch. Backend failures (missing key, quota, network) return as errors naming the \
@@ -107,8 +108,8 @@ pub struct SearchHit {
 }
 
 /// What one query returned: structured hits the tool renders as a
-/// numbered list, or a search tool's own text passed to the model as-is
-/// (the MCP kind — its output shape is the server's).
+/// numbered list, or a backend's own text result list passed to the model
+/// as-is (Exa).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchResults {
     Hits(Vec<SearchHit>),
@@ -617,12 +618,10 @@ mod tests {
         );
     }
 
-    fn entry(kind: &str, tool: Option<&str>) -> crate::web_search_settings::WebSearchEntry {
+    fn entry(kind: &str) -> crate::web_search_settings::WebSearchEntry {
         crate::web_search_settings::WebSearchEntry {
             id: kind.into(),
             kind: kind.into(),
-            server: Some("tinyfish".into()),
-            tool: tool.map(str::to_string),
             api_key: "sk-key".into(),
         }
     }
@@ -632,7 +631,7 @@ mod tests {
         struct TextBackend;
         impl SearchBackend for TextBackend {
             fn name(&self) -> &str {
-                "tinyfish / search"
+                "Exa"
             }
             fn search<'a>(
                 &'a self,
@@ -648,25 +647,20 @@ mod tests {
             .unwrap();
         assert_eq!(
             text_of(&result),
-            "Web search results from tinyfish / search for \"holt\"\n\n1. Holt — https://holt.dev"
+            "Web search results from Exa for \"holt\"\n\n1. Holt — https://holt.dev"
         );
         assert_eq!(result.details["results"], serde_json::Value::Null);
     }
 
     #[test]
     fn the_adapter_table_mounts_exactly_the_shipped_backends() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = Arc::new(crate::mcp::McpPool::load(dir.path()).unwrap());
         for backend in &BACKENDS {
-            let mounted = adapter(&entry(backend.id, None), &pool)
+            let mounted = adapter(&entry(backend.id))
                 .map(|adapter| adapter.name().to_string())
                 .expect("every built-in backend mounts its adapter");
             assert_eq!(mounted, backend.name);
         }
-        let mcp = adapter(&entry("mcp", Some("search")), &pool)
-            .expect("an mcp entry with a server and tool mounts");
-        assert_eq!(mcp.name(), "tinyfish / search");
-        assert!(adapter(&entry("mcp", None), &pool).is_none());
-        assert!(adapter(&entry("nope", None), &pool).is_none());
+        assert!(adapter(&entry("mcp")).is_none());
+        assert!(BACKENDS.iter().any(|backend| backend.id == DEFAULT_BACKEND));
     }
 }

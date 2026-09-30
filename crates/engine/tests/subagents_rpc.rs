@@ -99,11 +99,11 @@ async fn explorer_is_independent_and_returns_a_summary_with_durable_records() {
             .unwrap()
             .contains("Project instruction sentinel")
     );
-    // The grown Explorer whitelist (ADR-0023): both web tools are in it,
-    // but web_search stays absent here — no backend is configured.
+    // The grown Explorer whitelist (ADR-0023): both web tools are in it —
+    // web_search on the keyless default backend.
     assert_eq!(
         child.tool_names,
-        ["read", "grep", "ls", "web_fetch", "read_chat"]
+        ["read", "grep", "ls", "web_fetch", "web_search", "read_chat"]
     );
     assert_eq!(child.model, requests[1].model);
     assert_eq!(child.reasoning, requests[1].reasoning);

@@ -125,14 +125,15 @@ async fn a_mode_turn_carries_the_block_and_only_the_catalog_surface() {
     }
     let mut names = mode.tool_names.clone();
     names.sort();
-    // No search backend on the fixture: web_search is never mounted.
+    // web_search rides the keyless default backend.
     assert_eq!(
         names,
         [
             "choose_provider",
             "model_proposal",
             "request_provider_key",
-            "web_fetch"
+            "web_fetch",
+            "web_search"
         ]
     );
     let ordinary_prompt = ordinary.system_prompt.clone().unwrap();

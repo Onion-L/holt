@@ -71,30 +71,29 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
 - Web search settings (ADR-0023): `GetWebSearchSettings`,
-  `SaveWebSearchBackend` (`{kind, apiKey?, id?, server?, tool?}`),
-  `SetActiveWebSearchBackend` (`{id}`), and `RemoveWebSearchBackend`
-  (`{id}`), all replying the masked `WebSearchSettingsState` (the active
-  entry id, every configured entry, and the picker's built-in options —
-  Zhipu, Bocha, Brave), plus `RevealWebSearchKey` (`{id}`). The records
-  live in `web-search.json` under the credentials pattern (0600, atomic
-  replace, malformed fails startup loudly; the pre-multi-entry
-  `{backend, apiKey}` shape still loads as one active entry). An entry is
-  a built-in kind (id = kind, non-empty key required) or an `mcp` entry
-  (generated `mcp-…` id, no key; `server` must name an `mcp.json` server,
-  `tool` is required); saving makes the entry active, and removing the
-  active entry leaves none. Keys are independent records, never shared
-  with a same-vendor provider key. The engine resolves the active entry
-  once per Turn admission through the adapter table — Zhipu, Bocha, and
-  Brave, one adapter module each over a shared transport scaffolding
+  `SaveWebSearchBackend` (`{kind, apiKey?}`), `SetActiveWebSearchBackend`
+  (`{id}`; `null` turns web search off, entries kept), and
+  `RemoveWebSearchBackend` (`{id}`), all replying the masked
+  `WebSearchSettingsState` (the active entry id, every configured entry,
+  and the picker's built-in options with `needsKey` — Exa, Zhipu, Bocha,
+  Brave), plus `RevealWebSearchKey` (`{id}`). The records live in
+  `web-search.json` under the credentials pattern (0600, atomic replace,
+  malformed fails startup loudly; the pre-multi-entry `{backend, apiKey}`
+  shape still loads as one active entry). With no file, keyless Exa is
+  active, so search works before any setup; once the user changes
+  anything the file records their choice, including off. An entry's id is
+  its kind; a keyed kind requires a non-empty key, keyless Exa takes none.
+  Saving activates the entry, removing the active entry leaves none, and
+  entries of kinds this build does not ship are dropped at load. Keys are
+  independent records, never shared with a same-vendor provider key. The
+  engine resolves the active entry once per Turn admission through the
+  adapter table — Exa (its hosted MCP endpoint, one stateless JSON-RPC
+  `tools/call` over HTTP, text passed through), Zhipu, Bocha, and Brave,
+  one adapter module each over a shared transport scaffolding
   (whole-exchange budget, cancellation race), request and response shapes
-  and error mapping per adapter; an `mcp` entry calls the named tool
-  through the engine's shared `McpPool` (query into the tool's required
-  string parameter, the cap into a count-like one, read off its input
-  schema) and passes its text through under the result header, ignoring
-  the server's `enabled` flag and tool filters and skipping the MCP
-  approval gate — a mid-Turn change lands from the next Turn, and no
-  active entry leaves
-  the `web_search` agent tool unmounted: absent, never erroring.
+  and error mapping per adapter — a mid-Turn change lands from the next
+  Turn, and no active entry leaves the `web_search` agent tool unmounted:
+  absent, never erroring.
 - Jev connection (ADR-0027): `GetJevSettings` / `SaveJevSettings`
   (`{apiKey}`, both replying the masked `JevSettingsState`),
   `RevealJevKey`, and `RemoveJevSettings` — the user's own TypeSafe key
@@ -538,8 +537,8 @@ ADR-0004), the Workspace-aware
 `read_chat` tool for another Chat's user-visible Transcript (ADR-0018), and the
 two web tools (ADR-0023): `web_fetch` retrieves one http(s) URL and returns its
 full converted text, bounded but never summarized, while `web_search` queries
-the user-configured backend — resolved once per Turn admission, absent from
-the toolset (not erroring) when none is configured. Neither enters the
+the user-chosen backend (keyless Exa by default) — resolved once per Turn
+admission, absent from the toolset (not erroring) when search is off. Neither enters the
 ADR-0014 gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
 Main-chat runs also mount the MCP tools (ADR-0034): the engine owns an

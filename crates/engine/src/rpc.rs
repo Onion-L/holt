@@ -2020,8 +2020,6 @@ impl EngineService {
                     .iter()
                     .find(|backend| backend.id == entry.kind)
                     .map_or_else(|| entry.kind.clone(), |backend| backend.name.to_string()),
-                server: entry.server.clone(),
-                tool: entry.tool.clone(),
                 api_key_masked: (!entry.api_key.is_empty()).then(|| masked_key(&entry.api_key)),
             })
             .collect();
@@ -2033,7 +2031,7 @@ impl EngineService {
                 .map(|backend| WebSearchBackendOption {
                     id: backend.id.to_string(),
                     name: backend.name.to_string(),
-                    note: backend.note.map(str::to_string),
+                    needs_key: backend.needs_key,
                 })
                 .collect(),
         }
@@ -2168,66 +2166,34 @@ impl EngineService {
         }
     }
 
-    /// Validate and store one backend entry, making it active.
+    /// Validate and store one backend entry, making it active. A keyed
+    /// backend requires `apiKey`; a keyless one ignores it.
     fn save_web_search_backend(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        use crate::web_search_settings::{MCP_KIND, WebSearchEntry};
         let kind = required_string(&params, "kind")?;
-        let api_key = optional_string(&params, "apiKey").unwrap_or_default();
-        let entry = if kind == MCP_KIND {
-            let server = required_string(&params, "server")?.trim().to_string();
-            let tool = required_string(&params, "tool")?.trim().to_string();
-            if !self.runtime.mcp.definitions().contains_key(&server) {
-                return Err(RpcError::BadParams(format!(
-                    "no mcp server {server:?} in mcp.json"
-                )));
-            }
-            if tool.is_empty() {
-                return Err(RpcError::BadParams("tool is required".into()));
-            }
-            let id = optional_string(&params, "id").unwrap_or_default();
-            if !id.is_empty()
-                && self
-                    .web_search
-                    .get()
-                    .entry(&id)
-                    .is_none_or(|entry| entry.kind != MCP_KIND)
-            {
-                return Err(RpcError::BadParams(format!(
-                    "no mcp search backend with id {id:?}"
-                )));
-            }
-            WebSearchEntry {
-                id,
-                kind: MCP_KIND.into(),
-                server: Some(server),
-                tool: Some(tool),
-                api_key: String::new(),
-            }
-        } else {
-            let known = crate::tools::web_search::BACKENDS;
-            if !known.iter().any(|entry| entry.id == kind) {
-                return Err(RpcError::BadParams(format!(
-                    "unknown search backend {kind:?}; expected {MCP_KIND} or one of {}",
-                    known
-                        .iter()
-                        .map(|entry| entry.id)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )));
-            }
-            if api_key.is_empty() {
+        let known = crate::tools::web_search::BACKENDS;
+        let Some(backend) = known.iter().find(|backend| backend.id == kind) else {
+            return Err(RpcError::BadParams(format!(
+                "unknown search backend {kind:?}; expected one of {}",
+                known
+                    .iter()
+                    .map(|backend| backend.id)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        };
+        let api_key = if backend.needs_key {
+            let api_key = optional_string(&params, "apiKey").unwrap_or_default();
+            if api_key.trim().is_empty() {
                 return Err(RpcError::BadParams("apiKey is required".into()));
             }
-            WebSearchEntry {
-                id: kind.to_string(),
-                kind: kind.to_string(),
-                server: None,
-                tool: None,
-                api_key,
-            }
+            api_key
+        } else {
+            String::new()
         };
         self.web_search
-            .save(entry)
+            .save(crate::web_search_settings::WebSearchEntry::new(
+                kind, api_key,
+            ))
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         RpcReply::value(&self.web_search_state())
     }
@@ -2242,7 +2208,7 @@ impl EngineService {
         let entry = settings.active_entry()?;
         match &self.search_backend_resolver {
             Some(resolve) => resolve(&entry.kind),
-            None => crate::tools::web_search::adapter(entry, &self.runtime.mcp),
+            None => crate::tools::web_search::adapter(entry),
         }
     }
 
@@ -3384,15 +3350,18 @@ impl RpcService for EngineService {
             methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,
             methods::GET_WEB_SEARCH_SETTINGS => RpcReply::value(&self.web_search_state()),
             methods::SAVE_WEB_SEARCH_BACKEND => self.save_web_search_backend(params),
+            // A null (or absent) id turns web search off; saved entries stay.
             methods::SET_ACTIVE_WEB_SEARCH_BACKEND => {
-                let id = required_string(&params, "id")?;
-                if self.web_search.get().entry(id).is_none() {
+                let id = optional_string(&params, "id");
+                if let Some(id) = id.as_deref()
+                    && self.web_search.get().entry(id).is_none()
+                {
                     return Err(RpcError::BadParams(format!(
                         "no search backend with id {id:?}"
                     )));
                 }
                 self.web_search
-                    .set_active(id)
+                    .set_active(id.as_deref())
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
                 RpcReply::value(&self.web_search_state())
             }

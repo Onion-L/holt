@@ -107,21 +107,19 @@ pub mod methods {
     /// An empty model id disables automatic titles.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SAVE_TITLE_SETTINGS: &str = "SaveTitleSettings";
-    /// Engine-owned web-search settings (ADR-0023): a list of configured
-    /// search backends — built-in vendors and MCP search tools — with at
-    /// most one active. Get takes no params; get, save, set-active, and
+    /// Engine-owned web-search settings (ADR-0023): the configured
+    /// built-in search backends, with at most one active (keyless Exa on a
+    /// fresh install). Get takes no params; get, save, set-active, and
     /// remove all reply the masked state `{active, entries, backends}`
-    /// (each entry `{id, kind, name, server?, tool?, apiKeyMasked?}`;
-    /// `backends` lists the built-in kinds the picker offers). Save params
-    /// are `{kind, apiKey?, id?, server?, tool?}`: a built-in kind's entry
-    /// id is the kind and its key is required; `kind: "mcp"` needs a
-    /// `server` defined in `mcp.json` and a `tool` name, takes no key (the
-    /// server's config carries its auth), and updates the entry `id` names
-    /// or creates a new one without it. Saving activates the entry. Set-active takes `{id}` of
-    /// an existing entry; remove takes `{id}` and, when it was active,
-    /// leaves web search off; reveal takes `{id}` and returns the raw
-    /// `{key}`. The engine resolves the active entry once per Turn
-    /// admission through the adapter table; none active mounts no
+    /// (each entry `{id, kind, name, apiKeyMasked?}`; `backends` lists the
+    /// built-in kinds the picker offers, each `{id, name, needsKey}`). Save
+    /// params are `{kind, apiKey?}`: the entry id is the kind, `apiKey` is
+    /// required when the kind needs a key, and saving activates the entry.
+    /// Set-active takes `{id}` of an existing entry, or `{id: null}` to turn
+    /// web search off while keeping every entry; remove takes `{id}` and,
+    /// when it was active, leaves web search off; reveal takes `{id}` and
+    /// returns the raw `{key}`. The engine resolves the active entry once
+    /// per Turn admission through the adapter table; none active mounts no
     /// `web_search` tool.
     pub const GET_WEB_SEARCH_SETTINGS: &str = "GetWebSearchSettings";
     pub const SAVE_WEB_SEARCH_BACKEND: &str = "SaveWebSearchBackend";
