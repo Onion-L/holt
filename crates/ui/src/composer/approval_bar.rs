@@ -579,7 +579,7 @@ impl Composer {
         let input_focused = self.input.read(cx).focus_handle.is_focused(window);
         let note_selected = selection == note_row && !input_focused;
 
-        let number_chip = |ix: usize, selected: bool| {
+        let number_chip = |ix: usize, selected: bool, check: bool| {
             div()
                 .flex_none()
                 .size(px(22.0))
@@ -598,7 +598,13 @@ impl Composer {
                 } else {
                     theme.text_muted.opacity(0.6)
                 })
-                .child(SharedString::from(format!("{}", ix + 1)))
+                // An answered option's chip shows the check in place of
+                // its number — the row's answer marker.
+                .child(SharedString::from(if check {
+                    "✓".to_string()
+                } else {
+                    format!("{}", ix + 1)
+                }))
         };
 
         let row_frame = |selected: bool, key: String| {
@@ -644,7 +650,7 @@ impl Composer {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.resolve_approval_bar(verdict.clone(), None, cx)
                 }))
-                .child(number_chip(ix, selected))
+                .child(number_chip(ix, selected, chosen))
                 .child(
                     div()
                         .flex_1()
@@ -660,15 +666,6 @@ impl Composer {
                         })
                         .child(option.label.clone()),
                 )
-                .when(chosen, |row| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .text_color(theme.text)
-                            .child("✓"),
-                    )
-                })
         });
 
         // The trailing row is the free-text note: the shared composer
@@ -682,7 +679,7 @@ impl Composer {
                 let handle = this.input.read(cx).focus_handle.clone();
                 window.focus(&handle, cx);
             }))
-            .child(number_chip(note_row, note_selected))
+            .child(number_chip(note_row, note_selected, false))
             .child(div().flex_1().min_w_0().child(self.input.clone()));
 
         // The frosted wrapper (the composer pill's own chrome): the
