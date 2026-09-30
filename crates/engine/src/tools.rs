@@ -5,8 +5,10 @@
 //! for — plus holt's own content search (ADR-0004) in [`grep`], directory
 //! listing (ADR-0025's read-only surface) in [`ls`], web fetch (ADR-0023) in
 //! [`web_fetch`], and web search behind the user-configured [`SearchBackend`]
-//! (ADR-0023) in [`web_search`].
+//! (ADR-0023) in [`web_search`] — plus the question card's `ask_user` tool
+//! (ADR-0040) in [`ask_user`].
 
+pub(crate) mod ask_user;
 mod grep;
 mod ls;
 pub(crate) mod model_setup;
@@ -909,6 +911,7 @@ pub(crate) fn execution_tools_for_model(
         grep::create_grep_tool(cwd),
         ls::create_ls_tool(cwd),
         web_fetch::create_web_fetch_tool(),
+        ask_user::create_ask_user_tool(),
     ];
     if let Some(backend) = search_backend {
         tools.push(web_search::create_web_search_tool(backend));

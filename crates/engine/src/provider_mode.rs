@@ -252,8 +252,9 @@ pub(crate) fn tool_card(
 /// Apply `stamp` to every part in the transcript; each entry it changed
 /// re-appends itself to the log (ADR-0032), like `settle_plan_cards`. Card
 /// states are display state — the lifecycle already moved in the store or
-/// through the RPC.
-fn stamp_cards(chat: &ChatRuntime, mut stamp: impl FnMut(&mut MessagePart) -> bool) {
+/// through the RPC. Also the generic pass behind the question card's
+/// lifecycle stamps (ADR-0040).
+pub(crate) fn stamp_cards(chat: &ChatRuntime, mut stamp: impl FnMut(&mut MessagePart) -> bool) {
     let mut transcript = chat
         .transcript
         .write()
@@ -408,6 +409,19 @@ pub(crate) fn carry_card_states(existing: &[MessagePart], parts: &mut [MessagePa
                 id, chosen, state, ..
             } if *state == ChoiceCardState::Pending => {
                 if let Some(MessagePart::ProviderChoice {
+                    chosen: settled_choice,
+                    state: settled,
+                    ..
+                }) = existing.iter().find(|old| old.id() == id.as_str())
+                {
+                    *chosen = settled_choice.clone();
+                    *state = *settled;
+                }
+            }
+            MessagePart::QuestionCard {
+                id, chosen, state, ..
+            } if *state == ChoiceCardState::Pending => {
+                if let Some(MessagePart::QuestionCard {
                     chosen: settled_choice,
                     state: settled,
                     ..

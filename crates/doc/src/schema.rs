@@ -293,11 +293,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
         },
         MessagePart::ModelProposal { id, .. }
         | MessagePart::ProviderChoice { id, .. }
+        | MessagePart::QuestionCard { id, .. }
         | MessagePart::KeyRequest { id, .. } => DocPartJson {
             id: id.clone(),
             kind: match part {
                 MessagePart::ModelProposal { .. } => "modelProposal",
                 MessagePart::ProviderChoice { .. } => "providerChoice",
+                MessagePart::QuestionCard { .. } => "questionCard",
                 _ => "keyRequest",
             }
             .into(),
@@ -397,7 +399,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             text: p.reasoning.unwrap_or_default(),
         },
-        "modelProposal" | "providerChoice" | "keyRequest" => {
+        "modelProposal" | "providerChoice" | "questionCard" | "keyRequest" => {
             match p
                 .card
                 .and_then(|card| serde_json::from_value::<MessagePart>(card).ok())
@@ -405,6 +407,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 Some(
                     card @ (MessagePart::ModelProposal { .. }
                     | MessagePart::ProviderChoice { .. }
+                    | MessagePart::QuestionCard { .. }
                     | MessagePart::KeyRequest { .. }),
                 ) => card,
                 _ => MessagePart::Text {
@@ -1473,6 +1476,13 @@ mod tests {
                     configured: true,
                 }],
                 chosen: Some("acme-cn".into()),
+                state: crate::parts::ChoiceCardState::Chosen,
+            },
+            MessagePart::QuestionCard {
+                id: "c3".into(),
+                question: "Ship the retry as prefix or suffix?".into(),
+                options: vec!["prefix".into(), "suffix".into()],
+                chosen: Some("suffix".into()),
                 state: crate::parts::ChoiceCardState::Chosen,
             },
         ];

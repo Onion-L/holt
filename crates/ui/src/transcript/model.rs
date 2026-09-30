@@ -301,6 +301,17 @@ pub enum RowKind {
         chosen: Option<SharedString>,
         state: holt_doc::ChoiceCardState,
     },
+    /// The agent's question card (ADR-0040): a question the model asked
+    /// through `ask_user` with its enumerated options. A click or the
+    /// typed input settles it; busy/error/input state lives on the
+    /// Transcript keyed by row id.
+    QuestionCard {
+        card_id: SharedString,
+        question: SharedString,
+        options: Vec<SharedString>,
+        chosen: Option<SharedString>,
+        state: holt_doc::ChoiceCardState,
+    },
     /// A Provider Mode key request (ADR-0037): who the key unlocks and the
     /// one destination it goes to. The masked input is a Transcript-owned
     /// entity keyed by row id — the key never enters the row.
@@ -1016,6 +1027,32 @@ pub fn rows_for_entry(
                             copy_text: None,
                         });
                     }
+                    MessagePart::QuestionCard {
+                        id: part_id,
+                        question,
+                        options,
+                        chosen,
+                        state,
+                    } => {
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(
+                                format!("{state:?}\0{}", chosen.as_deref().unwrap_or_default())
+                                    .as_bytes(),
+                            ),
+                            turn_start: false,
+                            kind: RowKind::QuestionCard {
+                                card_id: part_id.clone().into(),
+                                question: question.clone().into(),
+                                options: options.iter().cloned().map(SharedString::from).collect(),
+                                chosen: chosen.clone().map(SharedString::from),
+                                state: *state,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
                     MessagePart::KeyRequest {
                         id: part_id,
                         provider_id,
@@ -1133,6 +1170,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
             | RowKind::PlanApproval { .. }
             | RowKind::ModelProposal { .. }
             | RowKind::ProviderChoice { .. }
+            | RowKind::QuestionCard { .. }
             | RowKind::KeyRequest { .. }
             | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
@@ -1142,6 +1180,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
                 | RowKind::PlanApproval { .. }
                 | RowKind::ModelProposal { .. }
                 | RowKind::ProviderChoice { .. }
+                | RowKind::QuestionCard { .. }
                 | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
         )
@@ -1294,6 +1333,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             MessagePart::PlanApproval { .. }
                 | MessagePart::ModelProposal { .. }
                 | MessagePart::ProviderChoice { .. }
+                | MessagePart::QuestionCard { .. }
                 | MessagePart::KeyRequest { .. }
         ) {
             acc.extend_from_slice(&serde_json::to_vec(part).unwrap_or_default());

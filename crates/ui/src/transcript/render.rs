@@ -1578,6 +1578,22 @@ impl Transcript {
                 &theme,
                 cx,
             ),
+            RowKind::QuestionCard {
+                card_id,
+                question,
+                options,
+                chosen,
+                state,
+            } => self.render_question_card(
+                &row.id,
+                card_id,
+                question,
+                options,
+                chosen.as_ref(),
+                *state,
+                &theme,
+                cx,
+            ),
             RowKind::KeyRequest {
                 provider_name,
                 destination,

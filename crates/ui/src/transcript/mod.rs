@@ -91,6 +91,7 @@ mod model;
 mod approval;
 mod plan_card;
 mod provider_card;
+mod question_card;
 pub use plan_card::{pending_plan_approval, resolve_plan_approval};
 
 pub use approval::{
@@ -229,6 +230,9 @@ pub struct Transcript {
     /// error flags, and a key card's masked input. Render-local like
     /// `folds`.
     provider_cards: HashMap<SharedString, provider_card::ProviderCardUi>,
+    /// Question card state (ADR-0040) keyed by row id: in-flight and error
+    /// flags, and the free-text input. Render-local like `folds`.
+    question_cards: HashMap<SharedString, question_card::QuestionCardUi>,
     /// Detail folds (output/diff) per chip, keyed `"{row_id}#d{ix}"` — full
     /// [`FoldState`]s so detail bodies tween open/closed exactly like the
     /// group fold. Render-local like `folds` — never part of the row
@@ -499,6 +503,7 @@ impl Transcript {
             folds: HashMap::new(),
             nested_scrolls: HashMap::new(),
             provider_cards: HashMap::new(),
+            question_cards: HashMap::new(),
             tool_details: HashMap::new(),
             veils: HashMap::new(),
             veil_baseline: std::collections::HashSet::new(),
@@ -1734,6 +1739,20 @@ impl Transcript {
                             state: holt_doc::KeyCardState::Pending,
                             ..
                         } | RowKind::ProviderChoice {
+                            state: holt_doc::ChoiceCardState::Pending,
+                            ..
+                        }
+                    )
+            })
+        });
+        // A question card's busy state and free-text input live only while
+        // the card is pending (ADR-0040) — the settled-card rule above.
+        self.question_cards.retain(|id, _| {
+            new_rows.iter().any(|r| {
+                &r.id == id
+                    && matches!(
+                        r.kind,
+                        RowKind::QuestionCard {
                             state: holt_doc::ChoiceCardState::Pending,
                             ..
                         }

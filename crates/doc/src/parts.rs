@@ -467,6 +467,20 @@ pub enum MessagePart {
         chosen: Option<String>,
         state: ChoiceCardState,
     },
+    /// The agent's question card (ADR-0040): a question the model asked
+    /// through the `ask_user` tool with its 2–6 enumerated options. A
+    /// click or a typed answer settles it through `SettleQuestion`, which
+    /// records `chosen` and queues the answer as an ordinary user message.
+    #[serde(rename_all = "camelCase")]
+    QuestionCard {
+        id: String,
+        question: String,
+        #[serde(default)]
+        options: Vec<String>,
+        #[serde(default)]
+        chosen: Option<String>,
+        state: ChoiceCardState,
+    },
     /// A Provider Mode API-key request (ADR-0037, amends ADR-0031): which
     /// provider the key unlocks and the one destination it is sent to.
     /// The key is entered on the card and goes straight to the credential
@@ -495,6 +509,7 @@ impl MessagePart {
             | MessagePart::PlanApproval { id, .. }
             | MessagePart::ModelProposal { id, .. }
             | MessagePart::ProviderChoice { id, .. }
+            | MessagePart::QuestionCard { id, .. }
             | MessagePart::KeyRequest { id, .. } => id,
         }
     }
@@ -549,6 +564,18 @@ impl MessagePart {
             }
             MessagePart::ProviderChoice { options, state, .. } => {
                 serde_json::to_vec(options).map_or(0, |v| v.len())
+                    + serde_json::to_vec(state).map_or(0, |v| v.len())
+            }
+            MessagePart::QuestionCard {
+                question,
+                options,
+                chosen,
+                state,
+                ..
+            } => {
+                question.len()
+                    + options.iter().map(String::len).sum::<usize>()
+                    + chosen.as_deref().map_or(0, str::len)
                     + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
             MessagePart::KeyRequest {

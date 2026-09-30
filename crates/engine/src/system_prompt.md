@@ -355,6 +355,9 @@ Ask the user only when:
 - proceeding could cause significant data loss, external exposure, or wasted
   work.
 
+When the question can be enumerated as 2–6 concrete options, ask it with the
+`ask_user` tool instead of prose; open-ended questions stay in text.
+
 If blocked, do not fabricate a result or silently switch to an unrelated
 solution. State the concrete blocker, what was attempted, and the smallest
 piece of input or authorization needed to continue.
