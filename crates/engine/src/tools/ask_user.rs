@@ -29,8 +29,10 @@ const DESCRIPTION: &str = "Ask the user 1–4 questions when the answers gate yo
 each choice can be enumerated as 2–6 concrete options. Pass the questions with their options, \
 most likely first. A question card appears in the conversation; the user answers page by page \
 (by click or in words), and the answers arrive as the next user message. Do NOT also ask in \
-text; STOP your turn after calling — do not call other tools afterwards. Open-ended questions \
-that cannot be enumerated stay in ordinary text.";
+text; STOP your turn after calling — do not call other tools afterwards. The user may \
+dismiss the card unanswered; if the next Turn shows it superseded with no answers, move on \
+or ask again in plain text — never re-call immediately. Open-ended questions that cannot \
+be enumerated stay in ordinary text.";
 
 /// The queued answers (ADR-0040): an ordinary user message carrying each
 /// question it answers, so the next Turn reads both from History.
@@ -272,6 +274,31 @@ pub(crate) fn settle_question(
     settled.ok_or_else(|| refusal.to_string())
 }
 
+/// Retire one pending question card without an answer — the user
+/// dismissed the bar. The model reads the unanswered Superseded card
+/// next Turn. Refuses already-settled cards.
+pub(crate) fn dismiss_question(chat: &ChatRuntime, card_id: &str) -> Result<(), String> {
+    let mut dismissed = false;
+    let mut refusal = "no such question on this chat";
+    crate::provider_mode::stamp_cards(chat, |part| match part {
+        MessagePart::QuestionCard { id, state, .. } if id == card_id => {
+            if *state != ChoiceCardState::Pending {
+                refusal = "this question is already settled";
+                return false;
+            }
+            *state = ChoiceCardState::Superseded;
+            dismissed = true;
+            true
+        }
+        _ => false,
+    });
+    if dismissed {
+        Ok(())
+    } else {
+        Err(refusal.to_string())
+    }
+}
+
 /// Put an answered card back to pending — the queued message did not go
 /// out.
 pub(crate) fn unsettle_question(chat: &ChatRuntime, card_id: &str) {
@@ -434,6 +461,25 @@ mod tests {
         );
         assert_eq!(state_of(&transcript(&fresh)[0]), ChoiceCardState::Pending);
         assert!(settle_question(&chat, "q1", vec!["a".into(), String::new()]).is_err());
+    }
+
+    #[test]
+    fn dismiss_retires_only_the_target_pending_card() {
+        let chat = chat_with(vec![
+            card("q1", ChoiceCardState::Pending),
+            card("q2", ChoiceCardState::Pending),
+            card("q3", ChoiceCardState::Chosen),
+        ]);
+        dismiss_question(&chat, "q2").expect("the pending card dismisses");
+        assert_eq!(state_of(&transcript(&chat)[0]), ChoiceCardState::Pending);
+        assert_eq!(state_of(&transcript(&chat)[1]), ChoiceCardState::Superseded);
+        assert_eq!(state_of(&transcript(&chat)[2]), ChoiceCardState::Chosen);
+        assert_eq!(dismiss_question(&chat, "q1").expect("still answerable"), ());
+        dismiss_question(&chat, "q1").expect_err("a settled card refuses");
+        assert_eq!(
+            dismiss_question(&chat, "missing").unwrap_err(),
+            "no such question on this chat"
+        );
     }
 
     #[test]

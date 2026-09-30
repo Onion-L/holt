@@ -64,6 +64,31 @@ pub fn resolve_question(
     .detach();
 }
 
+/// Dismiss the pending card without answering (the bar's Escape):
+/// fire-and-forget; the doc's Superseded stamp is what settles the UI.
+pub fn dismiss_question(state: &gpui::Entity<AppState>, card_id: String, cx: &mut App) {
+    let (engine, chat_id) = {
+        let state = state.read(cx);
+        (state.engine().cloned(), state.selected_chat.clone())
+    };
+    let (Some(engine), Some(chat_id)) = (engine, chat_id) else {
+        return;
+    };
+    cx.spawn(async move |_| {
+        if let Err(err) = engine
+            .client()
+            .call(
+                methods::DISMISS_QUESTION,
+                serde_json::json!({ "chatId": chat_id, "cardId": card_id }),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "DismissQuestion failed");
+        }
+    })
+    .detach();
+}
+
 fn card_frame(theme: &Theme) -> gpui::Div {
     div()
         .w_full()

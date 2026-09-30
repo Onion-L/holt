@@ -195,9 +195,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   verbatim answer per question — a clicked option or the typed text)
   stamps the card chosen under one transcript lock and enqueues each
   question restated with its answer as an ordinary user message; a
-  failed enqueue rolls the stamp back. Any new Turn retires
-  still-pending question cards, and Plan / Provider Mode mount no
-  `ask_user` (their whitelists keep their own asking conventions).
+  failed enqueue rolls the stamp back. Escape dismisses the bar, and
+  `DismissQuestion` (`{chatId, cardId}`) stamps the unanswered card
+  superseded (persistent — a restart does not resurrect it). Any new
+  Turn retires still-pending question cards, and Plan / Provider Mode
+  mount no `ask_user` (their whitelists keep their own asking
+  conventions).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

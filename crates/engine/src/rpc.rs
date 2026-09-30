@@ -3253,6 +3253,20 @@ impl RpcService for EngineService {
                 let answers: Vec<String> = pairs.into_iter().map(|(_, answer)| answer).collect();
                 RpcReply::value(&serde_json::json!({ "answers": answers }))
             }
+            methods::DISMISS_QUESTION => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let card_id = required_string(&params, "cardId")?;
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                crate::tools::ask_user::dismiss_question(&chat, card_id)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({ "dismissed": true }))
+            }
             methods::LIST_API_DIALECTS => {
                 let ids: Vec<String> = pi_core::ai::compat::get_api_providers()
                     .iter()

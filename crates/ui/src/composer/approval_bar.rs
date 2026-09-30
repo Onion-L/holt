@@ -13,10 +13,16 @@
 //!   feedback (its Enter sends the `reject` verdict with the note, which
 //!   keeps planning). No target line (the plan document is the transcript
 //!   card above); Escape is inert (no Turn is blocked on a plan).
+//! - **Question** — the agent's ask_user card (ADR-0040): the question
+//!   as the title, its options as keyboard-first rows (a multi-question
+//!   card pages with left/right and a 1/N pager), the note row as the
+//!   free-text answer. Escape dismisses the card unanswered — nothing is
+//!   blocked, so the bar closes and the card stamps superseded.
 //!
-//! The transcript builds no interactive counterpart for either (user
+//! The transcript builds no interactive counterpart for any of them (user
 //! call: a duplicated strip reads as noise); verdicts ride the shared
-//! `ResolveApproval` / `ResolvePlanApproval` channels.
+//! `ResolveApproval` / `ResolvePlanApproval` / `SettleQuestion` /
+//! `DismissQuestion` channels.
 //!
 //! Keyboard contract: the bar's own focus handle owns the keyboard by
 //! default (stamped on open — arrows/Enter/digits never reach the shared
@@ -477,6 +483,22 @@ impl Composer {
         cx.notify();
     }
 
+    /// Close the question bar without answering (Escape): the card is
+    /// stamped superseded — persistent, so a restart does not resurrect
+    /// the bar — and the suppression holds until the doc catches up.
+    pub(super) fn dismiss_approval_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(bar) = self.approval_bar.take() else {
+            return;
+        };
+        self.answered_approvals.insert(bar.id.clone());
+        self.input.update(cx, |input, cx| {
+            input.set_text("", cx);
+            input.set_placeholder("Do anything…", cx);
+        });
+        crate::transcript::question_card::dismiss_question(&self.state, bar.id, cx);
+        cx.notify();
+    }
+
     /// Enter in the bar's note row sends the note with the kind's
     /// negative verdict: the gate's denial (blank = plain deny), the
     /// plan's rejection feedback (blank = plain reject).
@@ -507,8 +529,9 @@ impl Composer {
     /// keyboard by default (stamped on open), so arrows/Enter/digits land
     /// here instead of in the shared input's caret bindings. A focused
     /// note input owns its keys instead: arrows are caret movement, Enter
-    /// is the input's Submit (the note), digits are text. Escape is
-    /// unhandled on purpose — see the module docs.
+    /// is the input's Submit (the note), digits are text. Escape
+    /// dismisses a question card and bubbles past the other kinds (see
+    /// the module docs).
     pub(super) fn on_approval_bar_key(
         &mut self,
         event: &KeyDownEvent,
@@ -519,6 +542,7 @@ impl Composer {
             return;
         }
         let key = event.keystroke.key.as_str();
+        let kind = self.approval_bar.as_ref().map(|bar| bar.kind);
         if key == "up" || key == "down" {
             let rows = self
                 .bar_prompt(cx)
@@ -532,6 +556,12 @@ impl Composer {
             // Page navigation for a multi-question card (a focused note
             // input keeps its caret bindings — the early return above).
             self.approval_bar_step_page(if key == "left" { -1 } else { 1 }, cx);
+            cx.stop_propagation();
+        } else if key == "escape" && kind == Some(BarKind::Question) {
+            // A question blocks nothing — the Turn already stopped — so
+            // Escape dismisses it instead of bubbling to the (no-op)
+            // interrupt. The gate keeps bubbling: its Escape interrupts.
+            self.dismiss_approval_bar(cx);
             cx.stop_propagation();
         } else if let Ok(digit) = key.parse::<usize>()
             && (1..=9).contains(&digit)
@@ -1308,6 +1338,44 @@ mod tests {
             cx.notify();
         });
         composer.update(cx, |this, _| {
+            assert!(!this.answered_approvals.contains("q1"));
+        });
+    }
+
+    /// Escape dismisses the unanswered card: the bar retires under
+    /// suppression, and the superseded stamp keeps it closed.
+    #[gpui::test]
+    fn escape_dismisses_a_pending_question_bar(cx: &mut gpui::TestAppContext) {
+        use crate::state::AppState;
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let (composer, cx) = cx.add_window_view(|_window, cx| Composer::new(state.clone(), cx));
+
+        state.update(cx, |s, cx| {
+            s.transcript
+                .push(question_pending(holt_doc::ChoiceCardState::Pending));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        composer.update(cx, |this, _| {
+            assert!(this.approval_bar.is_some());
+        });
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        composer.update(cx, |this, _| {
+            assert!(this.approval_bar.is_none());
+            assert!(this.answered_approvals.contains("q1"));
+        });
+
+        // The superseded stamp keeps the bar down across frames.
+        state.update(cx, |s, cx| {
+            s.transcript[0] = question_pending(holt_doc::ChoiceCardState::Superseded);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        composer.update(cx, |this, _| {
+            assert!(this.approval_bar.is_none(), "a dismissed card stays down");
             assert!(!this.answered_approvals.contains("q1"));
         });
     }

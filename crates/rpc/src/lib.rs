@@ -104,6 +104,11 @@ pub mod methods {
     /// ordinary user message (each question restated with its answer).
     /// Reply `{answers}`.
     pub const SETTLE_QUESTION: &str = "SettleQuestion";
+    /// Dismisses a pending question card without answering (ADR-0040):
+    /// params `{chatId, cardId}`. The card is stamped superseded — the
+    /// model reads the unanswered card next Turn. Reply `{dismissed:
+    /// true}`.
+    pub const DISMISS_QUESTION: &str = "DismissQuestion";
     /// The registered API dialect ids (pi-core's compat registry) →
     /// `[String]`. The record form's dialect dropdown reads it — the set
     /// is the engine's, never the UI's.

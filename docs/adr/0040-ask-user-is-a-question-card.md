@@ -38,6 +38,12 @@ stops the Turn**, with the answers arriving as an ordinary user message.
   The transcript builds no row for a pending card (the gate's rule —
   the bar is the only interactive surface); the settled card lands as a
   small marker row, one line per answered question.
+- Escape dismisses the card unanswered. A question blocks nothing — the
+  Turn already stopped — so unlike a gate (whose Escape interrupts), the
+  bar just closes and `DismissQuestion` (`{chatId, cardId}`) stamps the
+  card Superseded, persistent like every card state: a restart does not
+  resurrect a dismissed question. The model reads the unanswered card
+  next Turn.
 - Any new Turn retires still-pending question cards (`Superseded`) — a
   typed answer moved the conversation past them; the click that queued the
   Turn itself already stamped its card Chosen. Card states ride the doc,
