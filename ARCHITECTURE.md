@@ -187,12 +187,16 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
   transcript part (a question with its 2–6 enumerated options) and
   returns — the model stops its Turn; it never blocks a tool result.
-  `SettleQuestion` (`{chatId, cardId, choice}`: a clicked option or the
-  typed answer, verbatim) stamps the card chosen under one transcript
-  lock and enqueues `To your question "…": …` as an ordinary user
-  message; a failed enqueue rolls the stamp back. Any new Turn retires
-  still-pending question cards, and Plan / Provider Mode mount no
-  `ask_user` (their whitelists keep their own asking conventions).
+  The pending card renders in the composer's approval bar as its third
+  kind (options as keyboard-first rows, the note row as the free-text
+  answer) and builds no transcript row; the settled card lands as a
+  small marker row. `SettleQuestion` (`{chatId, cardId, choice}`: a
+  clicked option or the typed answer, verbatim) stamps the card chosen
+  under one transcript lock and enqueues `To your question "…": …` as
+  an ordinary user message; a failed enqueue rolls the stamp back. Any
+  new Turn retires still-pending question cards, and Plan / Provider
+  Mode mount no `ask_user` (their whitelists keep their own asking
+  conventions).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

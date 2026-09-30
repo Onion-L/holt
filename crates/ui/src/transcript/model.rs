@@ -302,13 +302,10 @@ pub enum RowKind {
         state: holt_doc::ChoiceCardState,
     },
     /// The agent's question card (ADR-0040): a question the model asked
-    /// through `ask_user` with its enumerated options. A click or the
-    /// typed input settles it; busy/error/input state lives on the
-    /// Transcript keyed by row id.
+    /// through `ask_user`. A pending card renders only in the composer's
+    /// approval bar (the gate's rule); the settled card is the marker row.
     QuestionCard {
-        card_id: SharedString,
         question: SharedString,
-        options: Vec<SharedString>,
         chosen: Option<SharedString>,
         state: holt_doc::ChoiceCardState,
     },
@@ -789,6 +786,7 @@ pub fn rows_for_entry(
                     } else {
                         group_last_part_ix
                     };
+                    eprintln!("DBG gate-skip flush tail={flush_tail_ix}");
                     flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
                     continue;
                 }
@@ -837,12 +835,23 @@ pub fn rows_for_entry(
                 group_last_part_ix = part_ix;
             }
             other => {
-                flush_group(
-                    &mut rows,
-                    &mut pending_group,
-                    &mut group_ix,
-                    group_last_part_ix,
-                );
+                // A pending question card keeps the group above it as the
+                // live tail (the gate's rule): the turn is stopped on the
+                // answer, not finished. A stale mid-entry card flushes
+                // normally.
+                let flush_tail_ix = if part_ix == last_part_ix
+                    && matches!(
+                        other,
+                        MessagePart::QuestionCard {
+                            state: holt_doc::ChoiceCardState::Pending,
+                            ..
+                        }
+                    ) {
+                    last_part_ix
+                } else {
+                    group_last_part_ix
+                };
+                flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
                 match other {
                     MessagePart::Text { id: part_id, text } => {
                         if text.trim().is_empty() {
@@ -1030,10 +1039,18 @@ pub fn rows_for_entry(
                     MessagePart::QuestionCard {
                         id: part_id,
                         question,
-                        options,
                         chosen,
                         state,
+                        ..
                     } => {
+                        // A PENDING question card builds no transcript row
+                        // (the gate's rule): the composer's approval bar
+                        // carries the question and its affordances. The
+                        // outer arm already flushed the group above with
+                        // the tail rule.
+                        if *state == holt_doc::ChoiceCardState::Pending {
+                            continue;
+                        }
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: fnv1a(
@@ -1042,9 +1059,7 @@ pub fn rows_for_entry(
                             ),
                             turn_start: false,
                             kind: RowKind::QuestionCard {
-                                card_id: part_id.clone().into(),
                                 question: question.clone().into(),
-                                options: options.iter().cloned().map(SharedString::from).collect(),
                                 chosen: chosen.clone().map(SharedString::from),
                                 state: *state,
                             },

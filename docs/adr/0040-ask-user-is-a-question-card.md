@@ -20,12 +20,19 @@ stops the Turn**, with the answer arriving as an ordinary user message.
   not the system prompt — carries the calling contract: don't also ask in
   text, STOP the Turn after calling, open-ended questions stay in text.
   The system prompt only routes: enumerable choices go to `ask_user`.
-- While pending, the card shows the options and a free-text input. A click
-  or a submitted line calls `SettleQuestion` (`{chatId, cardId, choice}`),
-  which stamps the card Chosen under one transcript lock (a second
-  concurrent click is refused), queues `To your question "…": …` as an
-  ordinary user message through the same enqueue the provider choice
-  uses, and rolls the stamp back if the enqueue fails.
+- While pending, the question renders in the composer's approval bar —
+  its third kind, beside the gate and the plan (ADR-0014/0025): the
+  question is the title, each enumerated option is a keyboard-first row
+  (arrows, digits, Enter), and the note row is the free-text answer; a
+  blank note is not an answer and keeps the bar up. The transcript builds
+  no row for a pending card (the gate's rule — the bar is the only
+  interactive surface); the settled card lands as a small marker row
+  carrying the stamped answer. A click or a submitted line calls
+  `SettleQuestion` (`{chatId, cardId, choice}`), which stamps the card
+  Chosen under one transcript lock (a second concurrent answer is
+  refused), queues `To your question "…": …` as an ordinary user message
+  through the same enqueue the provider choice uses, and rolls the stamp
+  back if the enqueue fails.
 - Any new Turn retires still-pending question cards (`Superseded`) — a
   typed answer moved the conversation past them; the click that queued the
   Turn itself already stamped its card Chosen. Card states ride the doc,

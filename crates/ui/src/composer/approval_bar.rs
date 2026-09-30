@@ -51,22 +51,27 @@ pub(crate) enum BarKind {
     Gate,
     /// ADR-0025 plan approval.
     Plan,
+    /// The agent's `ask_user` question (ADR-0040): the options are the
+    /// card's enumerated answers, the note row is the free-text answer.
+    Question,
 }
 
-/// One option row's resolve payload: a gate verdict, or the plan
+/// One option row's resolve payload: a gate verdict, the plan
 /// verdict word (`"approve" | "reject" | "remain"` — rejection feedback
-/// arrives separately through the note row).
+/// arrives separately through the note row), or the question card's
+/// answer text.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BarVerdict {
     Gate(ApprovalVerdict),
     Plan(&'static str),
+    Question(String),
 }
 
 /// One selectable option row: its label, its resolve payload, and whether
 /// it speaks in the rejection's danger tint (the surface's only hue).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApprovalOption {
-    pub label: &'static str,
+    pub label: SharedString,
     pub verdict: BarVerdict,
     pub danger: bool,
 }
@@ -76,7 +81,7 @@ pub(crate) struct ApprovalOption {
 /// has none), the option rows, and the note row's placeholder.
 pub(crate) struct ApprovalPrompt {
     pub kind: BarKind,
-    pub title: &'static str,
+    pub title: String,
     pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
     pub note_placeholder: &'static str,
@@ -100,21 +105,21 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
     };
     ApprovalPrompt {
         kind: BarKind::Gate,
-        title,
+        title: title.to_string(),
         target: Some(approval_target(call)),
         options: vec![
             ApprovalOption {
-                label: "Allow once",
+                label: "Allow once".into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::Allow),
                 danger: false,
             },
             ApprovalOption {
-                label: "Always allow · this session",
+                label: "Always allow · this session".into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::AlwaysAllow),
                 danger: false,
             },
             ApprovalOption {
-                label: "Deny",
+                label: "Deny".into(),
                 verdict: BarVerdict::Gate(ApprovalVerdict::Deny { note: None }),
                 danger: true,
             },
@@ -130,15 +135,36 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
 pub(crate) fn plan_prompt() -> ApprovalPrompt {
     ApprovalPrompt {
         kind: BarKind::Plan,
-        title: "Approve this plan?",
+        title: "Approve this plan?".to_string(),
         target: None,
         options: vec![ApprovalOption {
-            label: "Approve",
+            label: "Approve".into(),
             verdict: BarVerdict::Plan("approve"),
             danger: false,
         }],
         note: None,
         note_placeholder: "Enter feedback…",
+    }
+}
+
+/// The question's prompt (ADR-0040): the question is the title, each
+/// enumerated option is a row, and the note row is the free-text answer.
+pub(crate) fn question_prompt(question: &str, options: &[String]) -> ApprovalPrompt {
+    ApprovalPrompt {
+        kind: BarKind::Question,
+        title: question.to_string(),
+        target: None,
+        options: options
+            .iter()
+            .cloned()
+            .map(|option| ApprovalOption {
+                label: option.clone().into(),
+                verdict: BarVerdict::Question(option),
+                danger: false,
+            })
+            .collect(),
+        note: None,
+        note_placeholder: "Answer in words…",
     }
 }
 
@@ -154,6 +180,13 @@ pub(crate) enum PendingApproval {
         note: Option<String>,
     },
     Plan(String),
+    /// A pending question card (ADR-0040): the card id answers the RPC,
+    /// the rest builds the bar.
+    Question {
+        card_id: String,
+        question: String,
+        options: Vec<String>,
+    },
 }
 
 /// The model-setup apply tool (ADR-0029): the one gated call that is not
@@ -173,6 +206,15 @@ impl PendingApproval {
                     _ => None,
                 },
             })
+            .or_else(|| {
+                crate::transcript::question_card::pending_question(transcript).map(
+                    |(card_id, question, options)| PendingApproval::Question {
+                        card_id,
+                        question,
+                        options,
+                    },
+                )
+            })
             .or_else(|| pending_plan_approval(transcript).map(PendingApproval::Plan))
     }
 
@@ -180,6 +222,7 @@ impl PendingApproval {
         match self {
             PendingApproval::Gate { id, .. } => id,
             PendingApproval::Plan(key) => key,
+            PendingApproval::Question { card_id, .. } => card_id,
         }
     }
 
@@ -197,7 +240,7 @@ impl PendingApproval {
                             BarVerdict::Gate(ApprovalVerdict::AlwaysAllow)
                         )
                     });
-                    prompt.title = "Apply these catalog changes?";
+                    prompt.title = "Apply these catalog changes?".to_string();
                     if let Some(summary) = note {
                         prompt.target = Some(summary.clone());
                     }
@@ -205,6 +248,9 @@ impl PendingApproval {
                 prompt
             }
             PendingApproval::Plan(_) => plan_prompt(),
+            PendingApproval::Question {
+                question, options, ..
+            } => question_prompt(question, options),
         }
     }
 }
@@ -275,6 +321,12 @@ impl Composer {
                 Some(prompt)
             }
             BarKind::Plan => Some(plan_prompt()),
+            BarKind::Question => {
+                let (_, question, options) = crate::transcript::question_card::pending_question(
+                    &self.state.read(cx).transcript,
+                )?;
+                Some(question_prompt(&question, &options))
+            }
         }
     }
 
@@ -319,6 +371,9 @@ impl Composer {
         match verdict {
             BarVerdict::Gate(verdict) => resolve_approval(&self.state, bar.id, verdict, cx),
             BarVerdict::Plan(word) => resolve_plan_approval(&self.state, word, plan_feedback, cx),
+            BarVerdict::Question(answer) => {
+                crate::transcript::question_card::resolve_question(&self.state, bar.id, answer, cx);
+            }
         }
         cx.notify();
     }
@@ -339,6 +394,13 @@ impl Composer {
                 cx,
             ),
             BarKind::Plan => self.resolve_approval_bar(BarVerdict::Plan("reject"), note, cx),
+            BarKind::Question => {
+                // A question has no blank answer: an empty note keeps the
+                // bar up. The non-empty note IS the answer.
+                if let Some(answer) = note {
+                    self.resolve_approval_bar(BarVerdict::Question(answer), None, cx);
+                }
+            }
         }
     }
 
@@ -399,7 +461,7 @@ impl Composer {
                 .selected_chat_row()
                 .and_then(|chat| chat.cwd.clone())
                 .map(|cwd| approval_cwd_line(&cwd)),
-            BarKind::Plan => None,
+            BarKind::Plan | BarKind::Question => None,
         };
         let selection = bar.selection.min(bar.note_row());
         let note_row = bar.note_row();
@@ -474,7 +536,7 @@ impl Composer {
                         } else {
                             theme.text.opacity(0.9)
                         })
-                        .child(option.label),
+                        .child(option.label.clone()),
                 )
         });
 
@@ -696,7 +758,7 @@ mod tests {
             .map(|option| option.verdict.clone())
             .collect();
         assert_eq!(verdicts, vec![BarVerdict::Plan("approve")]);
-        assert_eq!(prompt.options[0].label, "Approve");
+        assert_eq!(prompt.options[0].label.as_ref(), "Approve");
         assert!(!prompt.options[0].danger);
     }
 
@@ -771,33 +833,88 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_scan_prefers_the_gate_then_the_plan() {
+    fn the_pending_scan_prefers_gate_then_question_then_plan() {
         use holt_doc::{GateVerdict, PlanApprovalVerdict, ToolGateState};
-        // Gate and plan both pending: the gate wins the tie.
-        let both = vec![
-            plan_pending(holt_doc::PlanApprovalState::Pending),
+        let question = |state: holt_doc::ChoiceCardState| SessionMessageEntry {
+            id: "q-entry".into(),
+            role: holt_doc::MessageRole::Assistant,
+            parts: vec![holt_doc::MessagePart::QuestionCard {
+                id: "q1".into(),
+                question: "Prefix or suffix?".into(),
+                options: vec!["prefix".into(), "suffix".into()],
+                chosen: None,
+                state,
+            }],
+            created_at: 2,
+            device_id: "dev".into(),
+            status: None,
+            continuation_of: None,
+        };
+        // Gate and question both pending: the gate wins the tie.
+        let gate_and_question = vec![
+            question(holt_doc::ChoiceCardState::Pending),
             gated(ToolGateState::Pending { note: None }),
         ];
-        let Some(PendingApproval::Gate { id, .. }) = PendingApproval::from_transcript(&both) else {
+        let Some(PendingApproval::Gate { id, .. }) =
+            PendingApproval::from_transcript(&gate_and_question)
+        else {
             panic!("expected the gate to win")
         };
         assert_eq!(id, "g1");
-        // Plan only.
-        let plan_only = vec![plan_pending(holt_doc::PlanApprovalState::Pending)];
-        let Some(PendingApproval::Plan(key)) = PendingApproval::from_transcript(&plan_only) else {
-            panic!("expected the plan")
+        // Question only.
+        let question_only = vec![question(holt_doc::ChoiceCardState::Pending)];
+        let Some(PendingApproval::Question {
+            card_id, options, ..
+        }) = PendingApproval::from_transcript(&question_only)
+        else {
+            panic!("expected the question")
         };
-        assert_eq!(key, "s1#p1");
+        assert_eq!(card_id, "q1");
+        assert_eq!(options, vec!["prefix".to_string(), "suffix".to_string()]);
+        // Question over plan.
+        let question_and_plan = vec![
+            plan_pending(holt_doc::PlanApprovalState::Pending),
+            question(holt_doc::ChoiceCardState::Pending),
+        ];
+        assert!(matches!(
+            PendingApproval::from_transcript(&question_and_plan),
+            Some(PendingApproval::Question { .. })
+        ));
         // Nothing pending.
         let settled = vec![
             plan_pending(holt_doc::PlanApprovalState::Settled {
                 verdict: PlanApprovalVerdict::Approved,
             }),
+            question(holt_doc::ChoiceCardState::Chosen),
             gated(ToolGateState::Settled {
                 verdict: GateVerdict::Allowed,
             }),
         ];
         assert!(PendingApproval::from_transcript(&settled).is_none());
+    }
+
+    #[test]
+    fn the_question_prompt_titles_with_the_question_and_maps_options() {
+        let prompt = question_prompt("Prefix or suffix?", &["prefix".into(), "suffix".into()]);
+        assert_eq!(prompt.kind, BarKind::Question);
+        assert_eq!(prompt.title, "Prefix or suffix?");
+        assert_eq!(prompt.target, None);
+        assert_eq!(prompt.note_placeholder, "Answer in words…");
+        assert_eq!(
+            prompt.options,
+            vec![
+                ApprovalOption {
+                    label: "prefix".into(),
+                    verdict: BarVerdict::Question("prefix".into()),
+                    danger: false,
+                },
+                ApprovalOption {
+                    label: "suffix".into(),
+                    verdict: BarVerdict::Question("suffix".into()),
+                    danger: false,
+                },
+            ]
+        );
     }
 
     #[gpui::test]
@@ -875,6 +992,82 @@ mod tests {
                 this.approval_bar.as_ref().map(|bar| bar.id.as_str()),
                 Some("g2")
             );
+        });
+    }
+
+    /// The question producer: a pending question card opens the bar in
+    /// Question kind; the empty note keeps it up, the typed note answers.
+    fn question_pending(state: holt_doc::ChoiceCardState) -> holt_doc::SessionMessageEntry {
+        holt_doc::SessionMessageEntry {
+            id: "q-entry".into(),
+            role: holt_doc::MessageRole::Assistant,
+            parts: vec![holt_doc::MessagePart::QuestionCard {
+                id: "q1".into(),
+                question: "Prefix or suffix?".into(),
+                options: vec!["prefix".into(), "suffix".into()],
+                chosen: None,
+                state,
+            }],
+            created_at: 2,
+            device_id: "dev".into(),
+            status: None,
+            continuation_of: None,
+        }
+    }
+
+    #[gpui::test]
+    fn the_bar_opens_on_a_pending_question_and_answers_from_the_note(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::state::AppState;
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+
+        state.update(cx, |s, cx| {
+            s.transcript
+                .push(question_pending(holt_doc::ChoiceCardState::Pending));
+            cx.notify();
+        });
+        composer.update(cx, |this, cx| {
+            let bar = this.approval_bar.as_ref().expect("the bar opened");
+            assert_eq!(bar.id, "q1");
+            assert_eq!(bar.kind, BarKind::Question);
+            // The prompt carries the question and its options.
+            let prompt = this.bar_prompt(cx).unwrap();
+            assert_eq!(prompt.title, "Prefix or suffix?");
+            assert_eq!(prompt.options.len(), 2);
+        });
+        // Draw the question bar (options + note row) without panicking.
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(800.0), gpui::px(600.0)),
+            |_, _| composer.clone().into_any_element(),
+        );
+
+        // An empty note is not an answer: the bar stays up.
+        composer.update(cx, |this, cx| {
+            this.on_submit(cx);
+            assert!(this.approval_bar.is_some());
+        });
+
+        // A typed note IS the answer: the bar retires under suppression
+        // until the doc stamps the card.
+        composer.update(cx, |this, cx| {
+            this.input
+                .update(cx, |input, cx| input.set_text("suffix", cx));
+            this.on_submit(cx);
+            assert!(this.approval_bar.is_none());
+            assert!(this.answered_approvals.contains("q1"));
+        });
+        // The settle re-arms the surface.
+        state.update(cx, |s, cx| {
+            s.transcript[0] = question_pending(holt_doc::ChoiceCardState::Chosen);
+            cx.notify();
+        });
+        composer.update(cx, |this, _| {
+            assert!(!this.answered_approvals.contains("q1"));
         });
     }
 
