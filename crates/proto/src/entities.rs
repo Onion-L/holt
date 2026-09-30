@@ -163,7 +163,8 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
-/// One built-in search backend the Settings picker offers (ADR-0023):
+/// One search backend the Settings picker offers (ADR-0023), built-in or
+/// user-defined:
 /// `id` is both the backend kind and its entry id, `name` is its label,
 /// and `needs_key` says whether it runs on the user's own API key (a
 /// keyless backend is saved without one).
@@ -194,7 +195,8 @@ pub struct WebSearchEntryView {
 
 /// The web-search settings view (ADR-0023) — the reply shape of every
 /// web-search RPC except reveal: the configured entries, which one the
-/// next Turn mounts, and the built-in backends the picker offers.
+/// next Turn mounts, the backends the picker offers, and where the user
+/// defines their own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSearchSettingsState {
@@ -203,9 +205,18 @@ pub struct WebSearchSettingsState {
     pub active: Option<String>,
     #[serde(default)]
     pub entries: Vec<WebSearchEntryView>,
-    /// The built-in backends for the Settings picker, in picker order.
+    /// The Settings picker's options, in picker order: the built-ins,
+    /// then the user's own from `custom_file`.
     #[serde(default)]
     pub backends: Vec<WebSearchBackendOption>,
+    /// The full path of `search-backends.json`, where the user defines
+    /// their own backends; it need not exist.
+    #[serde(default)]
+    pub custom_file: String,
+    /// Why that file could not be used; its backends are left out until
+    /// it is fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_error: Option<String>,
 }
 
 /// The Jev settings view (ADR-0027): the user's own TypeSafe key for the

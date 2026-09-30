@@ -1,5 +1,5 @@
 //! Engine-owned web-search settings (ADR-0023): the device-wide list of
-//! configured built-in search backends plus which one is active,
+//! configured search backends plus which one is active,
 //! persisted as `web-search.json` under the credentials pattern — 0600
 //! permissions, atomic replace + sync, and a malformed file fails startup
 //! loudly (this record holds secrets, so silent fallback is wrong; the
@@ -10,8 +10,10 @@
 //! An entry's id is its kind (one entry per vendor). With no file at all
 //! the keyless default backend is active, so search works before any
 //! setup; once the user changes anything the file records their choice,
-//! including "off". Entries of kinds the engine no longer ships are
-//! dropped at load. The pre-list single-record file (`{backend, apiKey}`)
+//! including "off". An entry of a kind nothing offers — a custom
+//! definition removed from, or broken in, `search-backends.json` — stays
+//! (key included, so fixing the definition brings it back) and mounts
+//! nothing. The pre-list single-record file (`{backend, apiKey}`)
 //! still loads, as one active entry, and is rewritten in the list shape
 //! on the next change.
 //!
@@ -27,7 +29,7 @@ use std::{
 };
 
 use crate::EngineError;
-use crate::tools::web_search::{BACKENDS, DEFAULT_BACKEND};
+use crate::tools::web_search::DEFAULT_BACKEND;
 
 const FILE_NAME: &str = "web-search.json";
 
@@ -36,7 +38,7 @@ const FILE_NAME: &str = "web-search.json";
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WebSearchEntry {
     pub(crate) id: String,
-    /// A built-in backend id.
+    /// A built-in backend id or a custom definition's.
     pub(crate) kind: String,
     /// Empty for a keyless backend.
     #[serde(default)]
@@ -82,17 +84,6 @@ impl WebSearchSettings {
 
     pub(crate) fn active_entry(&self) -> Option<&WebSearchEntry> {
         self.entry(self.active.as_deref()?)
-    }
-
-    /// Drop entries of kinds this build does not ship (and an active id
-    /// left pointing at nothing).
-    fn retain_known(mut self) -> Self {
-        self.entries
-            .retain(|entry| BACKENDS.iter().any(|backend| backend.id == entry.kind));
-        if self.active_entry().is_none() {
-            self.active = None;
-        }
-        self
     }
 }
 
@@ -146,7 +137,7 @@ impl WebSearchStore {
                             path.display()
                         ))
                     })?;
-                WebSearchSettings::from(on_disk).retain_known()
+                WebSearchSettings::from(on_disk)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 WebSearchSettings::default()
@@ -378,12 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_kinds_are_dropped_at_load() {
+    fn entries_of_unknown_kinds_survive_load() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(FILE_NAME),
-            br#"{"active": "mcp-1234", "entries": [
-                {"id": "mcp-1234", "kind": "mcp", "server": "s", "tool": "t", "apiKey": ""},
+            br#"{"active": "tavily", "entries": [
+                {"id": "tavily", "kind": "tavily", "apiKey": "sk-t"},
                 {"id": "brave", "kind": "brave", "apiKey": "sk"}
             ]}"#,
         )
@@ -391,8 +382,8 @@ mod tests {
         assert_eq!(
             WebSearchStore::load(dir.path()).unwrap().get(),
             WebSearchSettings {
-                active: None,
-                entries: vec![builtin("brave", "sk")],
+                active: Some("tavily".into()),
+                entries: vec![builtin("tavily", "sk-t"), builtin("brave", "sk")],
             }
         );
     }

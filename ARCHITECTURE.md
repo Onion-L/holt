@@ -75,23 +75,33 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`{id}`; `null` turns web search off, entries kept), and
   `RemoveWebSearchBackend` (`{id}`), all replying the masked
   `WebSearchSettingsState` (the active entry id, every configured entry,
-  and the picker's built-in options with `needsKey` — Exa, Zhipu, Bocha,
-  Brave), plus `RevealWebSearchKey` (`{id}`). The records live in
+  the picker's options with `needsKey` — the built-ins Exa, Zhipu, Bocha,
+  Brave, then the user's custom definitions — `customFile`, the
+  definitions file's path, and `customError` when it is unusable), plus
+  `RevealWebSearchKey` (`{id}`). The records live in
   `web-search.json` under the credentials pattern (0600, atomic replace,
   malformed fails startup loudly; the pre-multi-entry `{backend, apiKey}`
   shape still loads as one active entry). With no file, keyless Exa is
   active, so search works before any setup; once the user changes
   anything the file records their choice, including off. An entry's id is
   its kind; a keyed kind requires a non-empty key, keyless Exa takes none.
-  Saving activates the entry, removing the active entry leaves none, and
-  entries of kinds this build does not ship are dropped at load. Keys are
+  Saving activates the entry and removing the active entry leaves none.
+  An entry whose kind nothing offers stays on disk (key included) but is
+  left out of the view and mounts nothing. Keys are
   independent records, never shared with a same-vendor provider key. The
   engine resolves the active entry once per Turn admission through the
   adapter table — Exa (its hosted MCP endpoint, one stateless JSON-RPC
   `tools/call` over HTTP, text passed through), Zhipu, Bocha, and Brave,
   one adapter module each over a shared transport scaffolding
   (whole-exchange budget, cancellation race), request and response shapes
-  and error mapping per adapter — a mid-Turn change lands from the next
+  and error mapping per adapter — or a custom definition from the
+  user-written `search-backends.json` (no secrets; `type: "http"` is a
+  request template plus JSON Pointers into the reply, `type: "mcp"` one
+  tool on an `mcp.json`-style server, connected per Turn and independent
+  of the MCP pool). That file is read fresh on each settings read and
+  Turn admission and never fails startup: a mistake anywhere leaves every
+  custom backend out and reaches Settings as `customError`. A mid-Turn
+  change lands from the next
   Turn, and no active entry leaves the `web_search` agent tool unmounted:
   absent, never erroring.
 - Jev connection (ADR-0027): `GetJevSettings` / `SaveJevSettings`
@@ -639,7 +649,9 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   definition.
 - Per-feature settings records: `provider-credentials.json`,
   `provider-store.json`, `provider-settings.json`, `title-settings.json`,
-  `web-search.json`, `permission-mode-default.json`, `mcp.json` (the MCP
+  `web-search.json`, `search-backends.json` (user-written custom search
+  backends, read-only to the engine), `permission-mode-default.json`,
+  `mcp.json` (the MCP
   server definitions, ADR-0034: strict `mcpServers` map, credentials
   pattern — 0600, atomic replace, malformed or unknown-key files fail
   startup loudly) — each with its own atomic-write and failure policy as

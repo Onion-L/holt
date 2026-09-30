@@ -2006,35 +2006,50 @@ impl EngineService {
     }
 
     /// The web-search settings view (ADR-0023) — the reply shape of every
-    /// web-search RPC but reveal. Raw keys never ride this view.
+    /// web-search RPC but reveal. Raw keys never ride this view. Entries
+    /// whose kind is no longer offered (a custom definition since removed
+    /// or broken) stay on disk, key included, but are left out here — and
+    /// an active one shows as off, which is what it mounts.
     fn web_search_state(&self) -> WebSearchSettingsState {
-        let builtins = crate::tools::web_search::BACKENDS;
+        let (custom, custom_error) = match self.custom_search_backends() {
+            Ok(custom) => (custom, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        let backends = web_search_options(&custom);
         let settings = self.web_search.get();
         let entries = settings
             .entries
             .iter()
-            .map(|entry| WebSearchEntryView {
-                id: entry.id.clone(),
-                kind: entry.kind.clone(),
-                name: builtins
-                    .iter()
-                    .find(|backend| backend.id == entry.kind)
-                    .map_or_else(|| entry.kind.clone(), |backend| backend.name.to_string()),
-                api_key_masked: (!entry.api_key.is_empty()).then(|| masked_key(&entry.api_key)),
-            })
-            .collect();
-        WebSearchSettingsState {
-            active: settings.active,
-            entries,
-            backends: builtins
-                .iter()
-                .map(|backend| WebSearchBackendOption {
-                    id: backend.id.to_string(),
-                    name: backend.name.to_string(),
-                    needs_key: backend.needs_key,
+            .filter_map(|entry| {
+                let backend = backends.iter().find(|backend| backend.id == entry.kind)?;
+                Some(WebSearchEntryView {
+                    id: entry.id.clone(),
+                    kind: entry.kind.clone(),
+                    name: backend.name.clone(),
+                    api_key_masked: (!entry.api_key.is_empty()).then(|| masked_key(&entry.api_key)),
                 })
-                .collect(),
+            })
+            .collect::<Vec<_>>();
+        WebSearchSettingsState {
+            active: settings
+                .active
+                .filter(|id| entries.iter().any(|entry| entry.id == *id)),
+            entries,
+            backends,
+            custom_file: self
+                .data_dir
+                .join(crate::tools::web_search::custom::FILE_NAME)
+                .display()
+                .to_string(),
+            custom_error,
         }
+    }
+
+    /// The user's `search-backends.json` definitions, read fresh.
+    fn custom_search_backends(
+        &self,
+    ) -> Result<Vec<crate::tools::web_search::custom::CustomBackend>, String> {
+        crate::tools::web_search::custom::load(&self.data_dir)
     }
 
     /// The Jev settings view (ADR-0027) — the reply shape of the read and
@@ -2166,17 +2181,18 @@ impl EngineService {
         }
     }
 
-    /// Validate and store one backend entry, making it active. A keyed
-    /// backend requires `apiKey`; a keyless one ignores it.
+    /// Validate and store one backend entry, making it active. The kind is
+    /// a built-in or a current custom definition; a keyed backend requires
+    /// `apiKey`, a keyless one ignores it.
     fn save_web_search_backend(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let kind = required_string(&params, "kind")?;
-        let known = crate::tools::web_search::BACKENDS;
+        let known = web_search_options(&self.custom_search_backends().unwrap_or_default());
         let Some(backend) = known.iter().find(|backend| backend.id == kind) else {
             return Err(RpcError::BadParams(format!(
                 "unknown search backend {kind:?}; expected one of {}",
                 known
                     .iter()
-                    .map(|backend| backend.id)
+                    .map(|backend| backend.id.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
             )));
@@ -2208,7 +2224,13 @@ impl EngineService {
         let entry = settings.active_entry()?;
         match &self.search_backend_resolver {
             Some(resolve) => resolve(&entry.kind),
-            None => crate::tools::web_search::adapter(entry),
+            None => {
+                let custom = self.custom_search_backends().unwrap_or_else(|error| {
+                    tracing::warn!(%error, "custom search backends left out");
+                    Vec::new()
+                });
+                crate::tools::web_search::adapter(entry, &custom)
+            }
         }
     }
 
@@ -2563,6 +2585,26 @@ fn optional_string(params: &serde_json::Value, field: &str) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
+}
+
+/// The Settings picker's options (ADR-0023): the built-ins in picker
+/// order, then the user's definitions in file order.
+fn web_search_options(
+    custom: &[crate::tools::web_search::custom::CustomBackend],
+) -> Vec<WebSearchBackendOption> {
+    crate::tools::web_search::BACKENDS
+        .iter()
+        .map(|backend| WebSearchBackendOption {
+            id: backend.id.to_string(),
+            name: backend.name.to_string(),
+            needs_key: backend.needs_key,
+        })
+        .chain(custom.iter().map(|backend| WebSearchBackendOption {
+            id: backend.id.clone(),
+            name: backend.name.clone(),
+            needs_key: backend.needs_key,
+        }))
+        .collect()
 }
 
 /// Mask a stored settings key (search or Jev) for display: the first and

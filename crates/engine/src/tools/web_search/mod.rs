@@ -6,13 +6,15 @@
 //!
 //! The backend is user-chosen — keyless Exa (the default), or Zhipu,
 //! Bocha, Brave with the user's own key — one adapter module each,
-//! sharing the [`transport`] scaffolding; this module owns the
-//! trait, the tool, the output shape, and the built-in adapter table. The
+//! sharing the [`transport`] scaffolding — or one the user defines in
+//! `search-backends.json` ([`custom`]); this module owns the trait, the
+//! tool, the output shape, and the adapter table. The
 //! tool races the run's cancellation token around the backend call,
 //! exactly like grep and web_fetch.
 
 mod bocha;
 mod brave;
+pub(crate) mod custom;
 mod exa;
 mod transport;
 mod zhipu;
@@ -69,9 +71,11 @@ pub(crate) const BACKENDS: [Backend; 4] = [
 pub(crate) const DEFAULT_BACKEND: &str = "exa";
 
 /// The adapter table behind the engine's Turn-admission resolution (the
-/// injected test resolver aside). `None` for an unknown kind.
+/// injected test resolver aside): a built-in kind, else a definition from
+/// `search-backends.json`. `None` for a kind neither knows.
 pub(crate) fn adapter(
     entry: &crate::web_search_settings::WebSearchEntry,
+    custom: &[custom::CustomBackend],
 ) -> Option<Arc<dyn SearchBackend>> {
     let api_key = entry.api_key.clone();
     match entry.kind.as_str() {
@@ -79,7 +83,10 @@ pub(crate) fn adapter(
         "zhipu" => Some(Arc::new(zhipu::ZhipuBackend::new(api_key))),
         "bocha" => Some(Arc::new(bocha::BochaBackend::new(api_key))),
         "brave" => Some(Arc::new(brave::BraveBackend::new(api_key))),
-        _ => None,
+        kind => custom
+            .iter()
+            .find(|backend| backend.id == kind)
+            .map(|backend| backend.adapter(api_key)),
     }
 }
 
@@ -655,12 +662,12 @@ mod tests {
     #[test]
     fn the_adapter_table_mounts_exactly_the_shipped_backends() {
         for backend in &BACKENDS {
-            let mounted = adapter(&entry(backend.id))
+            let mounted = adapter(&entry(backend.id), &[])
                 .map(|adapter| adapter.name().to_string())
                 .expect("every built-in backend mounts its adapter");
             assert_eq!(mounted, backend.name);
         }
-        assert!(adapter(&entry("mcp")).is_none());
+        assert!(adapter(&entry("mcp"), &[]).is_none());
         assert!(BACKENDS.iter().any(|backend| backend.id == DEFAULT_BACKEND));
     }
 }

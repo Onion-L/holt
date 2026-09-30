@@ -282,7 +282,7 @@ async fn connect_fresh(
 /// the last reference shuts it down. The per-call timeout (the server's
 /// `toolTimeoutMs`, default 60 s) is every `tools/call`'s hard wall — a
 /// hung server cannot wedge the chat.
-struct LiveServer {
+pub(crate) struct LiveServer {
     service: RunningService<RoleClient, ()>,
     tool_timeout: Duration,
 }
@@ -341,6 +341,36 @@ impl LiveServer {
         }
     }
 
+    /// One `tools/call` as the model reads it: text content blocks join
+    /// with newlines, cap at 100k characters, and drop non-text blocks
+    /// with an in-band notice; an `isError` result is the error.
+    pub(crate) async fn call_text(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, String> {
+        let result = self.call(name, arguments).await?;
+        // Join, cap, then append the non-text notice — the notice must
+        // survive the cap, or a flood would hide that content was dropped
+        // at all.
+        let (joined, dropped_non_text) = split_text_content(&result);
+        let mut text = truncate_result(&joined);
+        if dropped_non_text {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str("[non-text content blocks were dropped]");
+        }
+        if result.is_error.unwrap_or(false) {
+            return Err(if text.trim().is_empty() {
+                format!("mcp tool {name:?} reported an error without detail")
+            } else {
+                text
+            });
+        }
+        Ok(text)
+    }
+
     /// Cancel the service and wait for its transport to wind down — the
     /// probe path's clean disconnect.
     async fn shutdown(self) {
@@ -359,7 +389,7 @@ fn service_error(error: &ServiceError) -> String {
 /// environment (credential-shaped variables stripped unless the server's
 /// own `env` sets them, ADR-0034). The startup timeout bounds the
 /// initialize handshake.
-async fn connect(server: &McpServer) -> Result<LiveServer, String> {
+pub(crate) async fn connect(server: &McpServer) -> Result<LiveServer, String> {
     let timeout = Duration::from_millis(server.startup_timeout_ms);
     let tool_timeout = Duration::from_millis(server.tool_timeout_ms);
     match &server.transport {
@@ -500,10 +530,7 @@ fn truncate_result(text: &str) -> String {
 
 /// Wrap one listed server tool as a standard agent tool (ADR-0034): the
 /// two-level name, the description (capped at 2 KB) and input schema as
-/// received, execute forwarding to `tools/call` under the server's call
-/// timeout. Text content blocks join with newlines, cap at 100k
-/// characters, and drop non-text blocks with an in-band notice;
-/// `isError` results settle as error results the model reads.
+/// received, execute forwarding to [`LiveServer::call_text`].
 fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> AgentTool {
     let tool_name = tool.name.to_string();
     let label = tool
@@ -530,26 +557,7 @@ fn wrap_server_tool(server: &str, tool: Tool, connection: &Arc<LiveServer>) -> A
                 let name = tool_name.clone();
                 let params = params.clone();
                 Box::pin(async move {
-                    let result = connection.call(&name, &params).await?;
-                    // Join, cap, then append the non-text notice — the
-                    // notice must survive the cap, or a flood would hide
-                    // that content was dropped at all.
-                    let (joined, dropped_non_text) = split_text_content(&result);
-                    let mut text = truncate_result(&joined);
-                    if dropped_non_text {
-                        if !text.is_empty() {
-                            text.push('\n');
-                        }
-                        text.push_str("[non-text content blocks were dropped]");
-                    }
-                    if result.is_error.unwrap_or(false) {
-                        let reason = if text.trim().is_empty() {
-                            format!("mcp tool {name:?} reported an error without detail")
-                        } else {
-                            text
-                        };
-                        return Err(reason);
-                    }
+                    let text = connection.call_text(&name, &params).await?;
                     Ok(AgentToolResult {
                         content: vec![BlockContent::Text(TextContent {
                             text,

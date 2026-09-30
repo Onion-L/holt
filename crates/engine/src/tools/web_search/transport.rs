@@ -16,7 +16,7 @@ use crate::tools::USER_AGENT;
 /// request, so GET-with-params and POST-with-JSON adapters share the
 /// same bounds. `backend` names the service in every error.
 pub(super) async fn send_bounded(
-    backend: &'static str,
+    backend: &str,
     timeout: Duration,
     build: impl FnOnce(reqwest::Client) -> reqwest::RequestBuilder,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {

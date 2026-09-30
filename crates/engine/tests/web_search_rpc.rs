@@ -147,6 +147,93 @@ async fn configured_records_mount_through_the_builtin_table() {
 }
 
 #[tokio::test]
+async fn custom_definitions_join_the_picker_and_mount() {
+    let fixture = Fixture::new();
+    let file = fixture.data_dir.path().join("search-backends.json");
+    std::fs::write(
+        &file,
+        json!({ "backends": [{
+            "id": "tavily", "name": "Tavily", "needsKey": true, "type": "http",
+            "request": { "method": "POST", "url": "http://127.0.0.1:9/search",
+                         "body": { "query": "{query}" } },
+            "response": { "results": "/results", "title": "/title", "url": "/url" }
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let provider =
+        ScriptedProvider::new(vec![ScriptedReply::text("one"), ScriptedReply::text("two")]);
+    let engine = fixture.engine(&provider);
+
+    let state = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await;
+    assert_eq!(
+        state["backends"][4],
+        json!({ "id": "tavily", "name": "Tavily", "needsKey": true })
+    );
+    assert_eq!(state["customFile"], json!(file.display().to_string()));
+    assert_eq!(state["customError"], json!(null));
+
+    let error = handle(
+        &engine,
+        methods::SAVE_WEB_SEARCH_BACKEND,
+        json!({ "kind": "tavily" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("apiKey is required"), "unexpected: {error}");
+    let state = value(
+        &engine,
+        methods::SAVE_WEB_SEARCH_BACKEND,
+        json!({ "kind": "tavily", "apiKey": "tvly-1234567890" }),
+    )
+    .await;
+    assert_eq!(state["active"], json!("tavily"));
+    assert_eq!(state["entries"][1]["name"], json!("Tavily"));
+
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "first").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(
+        provider.requests()[0]
+            .tool_names
+            .contains(&"web_search".into())
+    );
+
+    // A broken file surfaces in the state and unmounts its backend; the
+    // entry and its key survive for when the file is fixed.
+    std::fs::write(&file, b"{ \"backends\": [").unwrap();
+    let state = value(&engine, methods::GET_WEB_SEARCH_SETTINGS, json!({})).await;
+    assert_eq!(state["backends"].as_array().unwrap().len(), 4);
+    assert_eq!(state["active"], json!(null));
+    assert_eq!(
+        state["entries"],
+        json!([{ "id": "exa", "kind": "exa", "name": "Exa" }])
+    );
+    assert!(
+        state["customError"]
+            .as_str()
+            .unwrap()
+            .contains("search-backends.json"),
+        "unexpected: {state}"
+    );
+    let revealed = value(
+        &engine,
+        methods::REVEAL_WEB_SEARCH_KEY,
+        json!({ "id": "tavily" }),
+    )
+    .await;
+    assert_eq!(revealed["key"], json!("tvly-1234567890"));
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    assert!(
+        !provider.requests()[1]
+            .tool_names
+            .contains(&"web_search".into())
+    );
+}
+
+#[tokio::test]
 async fn save_replies_the_masked_state_and_persists_the_record() {
     let fixture = Fixture::new();
     let engine = fixture.engine(&ScriptedProvider::new(vec![]));

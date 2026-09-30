@@ -26,6 +26,9 @@ use crate::{
     theme::Theme,
 };
 
+/// The `search-backends.json` format reference.
+const CUSTOM_FORMAT_URL: &str = "https://github.com/Onion-L/holt/blob/main/docs/search-backends.md";
+
 pub struct WebSearchGroup {
     state: Entity<AppState>,
     web_search: Loadable<WebSearchSettingsState>,
@@ -558,6 +561,40 @@ impl WebSearchGroup {
             .into_any_element()
     }
 
+    /// "Your own services": where the definitions file lives, and a link
+    /// to its format.
+    fn render_custom_hint(&self, theme: &Theme, file: &str) -> AnyElement {
+        let accent = theme.accent;
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .child(widgets::row_title(theme, "Your own services"))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(4.0))
+                    .child(widgets::row_description(
+                        theme,
+                        format!("Add them to {file}, then pick them above."),
+                    ))
+                    .child(
+                        widgets::row_description(theme, "Format")
+                            .id("web-search-custom-format")
+                            .debug_selector(|| "web-search-custom-format".into())
+                            .text_color(accent)
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(|_, _, cx| cx.open_url(CUSTOM_FORMAT_URL)),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_body(
         &self,
         theme: &Theme,
@@ -621,7 +658,22 @@ impl WebSearchGroup {
                     )),
             );
         }
+        if !state.custom_file.is_empty() {
+            rows = rows.child(
+                group_row()
+                    .id("web-search-custom")
+                    .debug_selector(|| "web-search-custom".into())
+                    .child(self.render_custom_hint(theme, &state.custom_file)),
+            );
+        }
         let mut column = div().flex().flex_col().child(rows);
+        if let Some(error) = state.custom_error.clone() {
+            column = column.child(
+                widgets::warning_strip(theme, error)
+                    .id("web-search-custom-error")
+                    .debug_selector(|| "web-search-custom-error".into()),
+            );
+        }
         if let Some(error) = self.error.clone() {
             column = column.child(
                 widgets::error_strip(theme, error)
@@ -705,6 +757,8 @@ mod tests {
             active: active.map(str::to_string),
             entries,
             backends: backends(),
+            custom_file: "/data/search-backends.json".into(),
+            custom_error: None,
         }
     }
 
@@ -972,6 +1026,22 @@ mod tests {
         harness.click("web-search-option-off");
         assert_eq!(harness.active(), None);
         assert!(!harness.renders("web-search-key-field"));
+    }
+
+    #[gpui::test]
+    fn the_custom_file_hint_shows_without_an_error(cx: &mut gpui::TestAppContext) {
+        let mut harness = harness(cx, zhipu_active(), &[("zhipu", ZHIPU_KEY)]);
+        assert!(harness.renders("web-search-custom"));
+        assert!(harness.renders("web-search-custom-format"));
+        assert!(!harness.renders("web-search-custom-error"));
+    }
+
+    #[gpui::test]
+    fn a_broken_custom_file_shows_its_reason(cx: &mut gpui::TestAppContext) {
+        let mut state = zhipu_active();
+        state.custom_error = Some("search-backends.json: expected value".into());
+        let mut harness = harness(cx, state, &[("zhipu", ZHIPU_KEY)]);
+        assert!(harness.renders("web-search-custom-error"));
     }
 
     /// A saved service switches at once, Off keeps the entries, and a

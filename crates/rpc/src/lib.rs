@@ -107,14 +107,17 @@ pub mod methods {
     /// An empty model id disables automatic titles.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SAVE_TITLE_SETTINGS: &str = "SaveTitleSettings";
-    /// Engine-owned web-search settings (ADR-0023): the configured
-    /// built-in search backends, with at most one active (keyless Exa on a
-    /// fresh install). Get takes no params; get, save, set-active, and
-    /// remove all reply the masked state `{active, entries, backends}`
-    /// (each entry `{id, kind, name, apiKeyMasked?}`; `backends` lists the
-    /// built-in kinds the picker offers, each `{id, name, needsKey}`). Save
-    /// params are `{kind, apiKey?}`: the entry id is the kind, `apiKey` is
-    /// required when the kind needs a key, and saving activates the entry.
+    /// Engine-owned web-search settings (ADR-0023): the configured search
+    /// backends, with at most one active (keyless Exa on a fresh install).
+    /// Get takes no params; get, save, set-active, and remove all reply
+    /// the masked state `{active, entries, backends, customFile,
+    /// customError?}` (each entry `{id, kind, name, apiKeyMasked?}`;
+    /// `backends` lists the kinds the picker offers — built-ins, then the
+    /// user's `search-backends.json` definitions — each `{id, name,
+    /// needsKey}`; `customFile` is that file's path and `customError` why it
+    /// is unusable). Save params are `{kind, apiKey?}`: the entry id is the
+    /// kind, `apiKey` is required when the kind needs a key, and saving
+    /// activates the entry.
     /// Set-active takes `{id}` of an existing entry, or `{id: null}` to turn
     /// web search off while keeping every entry; remove takes `{id}` and,
     /// when it was active, leaves web search off; reveal takes `{id}` and

@@ -65,8 +65,8 @@ ships. The known cost: out of the box, queries go to Exa.
 A generic "any MCP server tool" kind was built and dropped before
 release: it leaked a transport into a settings choice users make by
 service, needed a server/tool picker, and bypassed the MCP gate and
-filters. A service worth having becomes a built-in adapter instead;
-stray `mcp` entries are dropped at load.
+filters. A service worth having becomes a built-in adapter or a custom
+definition (below).
 
 `web-search.json` holds a list of entries (id = kind) with at most one
 active; saving an entry activates it, removing the active one turns the
@@ -82,3 +82,26 @@ out) and its save activates it. The active keyed service shows its key
 field with reveal, Save, and Remove. The same-vendor provider-key hint
 is gone: it read as "the provider key is used" while the records stay
 independent.
+
+## Addendum: user-defined backends
+
+Users who want a service Holt does not ship define it in
+`search-backends.json` next to `web-search.json` (format in
+`docs/search-backends.md`). The earlier objection to a fixed REST protocol
+was that no real service fits one; a definition instead describes the
+service's own shape — a request template with `{query}`, `{count}`,
+`{apiKey}` and JSON Pointers into the reply (`type: "http"`), or one tool
+on an MCP server with the `mcp.json` connection fields (`type: "mcp"`).
+Every definition becomes a `SearchBackend`, so the picker, key flow, and
+tool are unchanged; the transport never reaches Settings, only the name.
+
+The definitions are a separate file because `web-search.json` is
+engine-written (a hand edit would be lost on the next save), holds keys
+(0600, fails startup when malformed), and should not be shared. The
+definitions hold none, so the file is read fresh on each settings read and
+Turn admission and a mistake never fails startup: the whole file is
+refused, the reason reaches Settings, and the built-ins keep working.
+Entries of a kind nothing offers are therefore kept, key included, and just
+left out of the view — so fixing a definition brings its entry back. A
+custom `mcp` backend connects per Turn, outside the MCP pool: it exposes
+only its one search tool, never the server's others.
