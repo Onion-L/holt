@@ -623,9 +623,20 @@ impl Composer {
                 })
         };
 
+        // A question card's answered page marks its stashed option with
+        // a check — the persistent answer, distinct from the keyboard
+        // cursor's highlight.
+        let stashed = match prompt.kind {
+            BarKind::Question => bar.answers.get(bar.page).cloned().flatten(),
+            BarKind::Gate | BarKind::Plan => None,
+        };
         let options = prompt.options.iter().enumerate().map(|(ix, option)| {
             let selected = ix == selection;
             let verdict = option.verdict.clone();
+            let chosen = matches!(
+                (&option.verdict, &stashed),
+                (BarVerdict::Question(text), Some(answer)) if text == answer
+            );
             row_frame(selected, format!("approval-bar-option-{ix}"))
                 .id(("approval-bar-option", ix))
                 .on_hover(motion::hover_listener(format!("approval-bar-option-{ix}")))
@@ -649,6 +660,15 @@ impl Composer {
                         })
                         .child(option.label.clone()),
                 )
+                .when(chosen, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text)
+                            .child("✓"),
+                    )
+                })
         });
 
         // The trailing row is the free-text note: the shared composer
