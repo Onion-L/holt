@@ -141,23 +141,15 @@ fn sidebar_key_order_changed(old: &[(String, f32)], new: &[(String, f32)]) -> bo
 
 /// Exact active-session row height. Provider identity lives on the title line
 /// and the Working glyph lives in the status corner, so neither adds a third
-/// line. Compact rows omit the metadata line and its preceding gap entirely;
-/// branch / pull-request rows add the exact height of their tallest child.
+/// line. Once either metadata view option is on, line 3 is RESERVED on every
+/// row — a chat without a branch or PR leaves its strip empty rather than
+/// collapsing, so all rows share one fixed height. The 16px strip fits the
+/// tallest child (the PR badge); the branch text is 14px inside it. Only with
+/// both options hidden do rows go compact and omit the line entirely.
 /// Keeping this calculation beside the renderer's metrics prevents disclosure
 /// clips when view options alter the row structure.
-pub(super) fn chat_row_height(shows_branch: bool, shows_pull_request: bool) -> f32 {
-    let mut metadata_height: f32 = 0.0;
-    if shows_branch {
-        metadata_height = metadata_height.max(14.0);
-    }
-    if shows_pull_request {
-        metadata_height = metadata_height.max(16.0);
-    }
-    if metadata_height == 0.0 {
-        45.0
-    } else {
-        47.0 + metadata_height
-    }
+pub(super) fn chat_row_height(metadata_line: bool) -> f32 {
+    if metadata_line { 63.0 } else { 45.0 }
 }
 /// Flex gap between sidebar list items.
 pub(super) const SIDEBAR_LIST_GAP: f32 = 2.0;
@@ -369,7 +361,12 @@ impl Shell {
                 holt_proto::ChatIndicator::Idle => None,
             }
         };
-        let shows_metadata = branch.is_some() || change_request.is_some();
+        // Line 3's strip is reserved whenever EITHER metadata view option is
+        // on — the caller blanks `branch`/`change_request` per the same
+        // settings, so a row without data here simply leaves its strip empty
+        // and every row keeps one fixed height.
+        let reserve_metadata =
+            self.settings.sidebar_show_branch || self.settings.sidebar_show_pull_request;
         let queued = queued && !undelivered;
         let working = status == holt_proto::ChatIndicator::Working && !queued && !undelivered;
         let corner_body: AnyElement = if let Some(label) = jump_label {
@@ -655,12 +652,14 @@ impl Shell {
                             .child(title),
                     ),
             )
-            // Line 3 is structural, not reserved whitespace: compact states
-            // omit it completely when both Branch and Pull request are hidden.
-            .when(shows_metadata, |row| {
+            // Line 3 is reserved whitespace once either metadata view option
+            // is on (fixed-height rows), pinned to the PR badge's 16px; it is
+            // omitted only when both options are hidden.
+            .when(reserve_metadata, |row| {
                 row.child(
                     div()
                         .w_full()
+                        .h(px(16.0))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -1222,11 +1221,12 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_chat_height_tracks_visible_metadata() {
-        assert_eq!(chat_row_height(false, false), 45.0);
-        assert_eq!(chat_row_height(true, false), 61.0);
-        assert_eq!(chat_row_height(false, true), 63.0);
-        assert_eq!(chat_row_height(true, true), 63.0);
+    fn sidebar_chat_height_reserves_the_metadata_line() {
+        // Fixed height while either metadata view option is on: a branch
+        // (14px) or a PR badge (16px) lands in the reserved strip instead of
+        // growing its own row.
+        assert_eq!(chat_row_height(false), 45.0);
+        assert_eq!(chat_row_height(true), 63.0);
     }
 
     #[test]

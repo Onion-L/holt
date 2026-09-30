@@ -1170,7 +1170,9 @@ impl Shell {
                     .sidebar_show_provider
                     .then(|| chat.config.as_ref().map(|c| c.provider.clone()))
                     .flatten();
-                let height = super::chat_row_height(branch.is_some(), change_request.is_some());
+                let height = super::chat_row_height(
+                    self.settings.sidebar_show_branch || self.settings.sidebar_show_pull_request,
+                );
                 // Only rows a jump slot can reach wear a chip; row 10 onward
                 // keeps its time-ago.
                 let jump_label: Option<SharedString> = if jump_hints {
