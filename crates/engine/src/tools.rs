@@ -62,6 +62,20 @@ const EXEC_OUTPUT_CAP: u64 = 2 * 1024 * 1024;
 /// across fetch and the search adapters.
 pub(crate) const USER_AGENT: &str = concat!("holt/", env!("CARGO_PKG_VERSION"));
 
+/// Trim `text` to at most `max_bytes`, never splitting a character:
+/// the byte-envelope helper both web tools clamp their model-facing
+/// output through. Returns the trimmed text and whether it was cut.
+pub(crate) fn clamp_utf8(text: &str, max_bytes: usize) -> (&str, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
+}
+
 /// The host filesystem and shell, rooted at the chat's working directory.
 /// Blocking std filesystem calls run inline — the pi-core tools only issue
 /// small reads/writes, and `exec` (the long-running case) is fully async.

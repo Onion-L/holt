@@ -548,7 +548,11 @@ ADR-0004), the Workspace-aware
 two web tools (ADR-0023): `web_fetch` retrieves one http(s) URL and returns its
 full converted text, bounded but never summarized, while `web_search` queries
 the user-chosen backend (keyless Exa by default) — resolved once per Turn
-admission, absent from the toolset (not erroring) when search is off. Neither enters the
+admission, absent from the toolset (not erroring) when search is off. Both
+bound what a remote endpoint can push into the run the same way: a download
+caps at 5 MB (declared or streamed), the text handed to the model at 50 KB
+with an in-band truncation notice, and backend-authored error text is
+clamped. Neither enters the
 ADR-0014 gate: fetching reads a page the way `read` reads a file. The
 transcript folds their calls and results into `MessagePart::Tool` chips.
 Main-chat runs also mount the MCP tools (ADR-0034): the engine owns an

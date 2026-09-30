@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use super::USER_AGENT;
+use super::{USER_AGENT, clamp_utf8};
 
 /// Byte envelope for the text handed back to the model.
 const OUTPUT_BYTE_CAP: usize = 50 * 1024;
@@ -213,18 +213,6 @@ impl FetchOutcome {
             ..Default::default()
         }
     }
-}
-
-/// Trim `text` to at most `max_bytes`, never splitting a character.
-fn clamp_utf8(text: &str, max_bytes: usize) -> (&str, bool) {
-    if text.len() <= max_bytes {
-        return (text, false);
-    }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (&text[..end], true)
 }
 
 fn build_client() -> Result<reqwest::Client, FetchError> {

@@ -78,7 +78,10 @@ impl ExaBackend {
         let reply = rpc_response(&body)
             .ok_or_else(|| "could not decode the Exa search response".to_string())?;
         if let Some(error) = reply.error {
-            return Err(format!("{NAME} search failed: {}", error.message));
+            return Err(format!(
+                "{NAME} search failed: {}",
+                transport::clamp_error_text(&error.message)
+            ));
         }
         let result = reply
             .result
@@ -91,7 +94,10 @@ impl ExaBackend {
             .collect::<Vec<_>>()
             .join("\n\n");
         if result.is_error {
-            return Err(format!("{NAME} search failed: {text}"));
+            return Err(format!(
+                "{NAME} search failed: {}",
+                transport::clamp_error_text(&text)
+            ));
         }
         Ok(if text.trim().is_empty() {
             "No results.".to_string()
@@ -286,6 +292,40 @@ mod tests {
                 .unwrap_err(),
             "Exa search failed: HTTP 502 Bad Gateway"
         );
+    }
+
+    #[tokio::test]
+    async fn a_flooded_error_body_is_clamped_not_embedded_whole() {
+        let flood = "e".repeat(100_000);
+        let server = serve(move |_, _| {
+            response(
+                "200 OK",
+                "text/event-stream",
+                &sse(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [{ "type": "text", "text": flood }],
+                        "isError": true
+                    }
+                })),
+            )
+        })
+        .await;
+        let error = stub(&server)
+            .request("q", 5, REQUEST_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(
+            error.starts_with("Exa search failed: eeee"),
+            "unexpected: {error}"
+        );
+        assert!(
+            error.chars().count() < 500,
+            "error text not clamped: {} chars",
+            error.chars().count()
+        );
+        assert!(error.ends_with('…'), "missing truncation marker");
     }
 
     #[tokio::test]
