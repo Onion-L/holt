@@ -749,14 +749,52 @@ impl Composer {
                                     .child(prompt.title),
                             )
                             // The question card's pager: which of the agent's
-                            // questions this page answers.
+                            // questions this page answers, flanked by click
+                            // affordances for the ←/→ keys.
                             .when_some(prompt.pager, |el, (page, total)| {
+                                let page_arrow =
+                                    |glyph: &'static str,
+                                     enabled: bool,
+                                     delta: isize,
+                                     key: &'static str| {
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "approval-bar-page-{key}"
+                                            )))
+                                            .when(enabled, |el| {
+                                                el.cursor_pointer().on_click(cx.listener(
+                                                    move |this, _, _, cx| {
+                                                        this.approval_bar_step_page(delta, cx);
+                                                    },
+                                                ))
+                                            })
+                                            .flex_none()
+                                            .px(px(4.0))
+                                            .text_size(crate::typography::ui_rems(13.0))
+                                            .line_height(px(14.0))
+                                            .text_color(if enabled {
+                                                theme.text_muted.opacity(0.9)
+                                            } else {
+                                                theme.text_muted.opacity(0.3)
+                                            })
+                                            .child(glyph)
+                                    };
                                 el.child(
                                     div()
                                         .mt(px(2.0))
-                                        .text_size(crate::typography::ui_rems(11.0))
-                                        .text_color(theme.text_muted.opacity(0.7))
-                                        .child(SharedString::from(format!("{page}/{total}"))),
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(2.0))
+                                        .child(page_arrow("‹", page > 1, -1, "left"))
+                                        .child(
+                                            div()
+                                                .text_size(crate::typography::ui_rems(11.0))
+                                                .text_color(theme.text_muted.opacity(0.7))
+                                                .child(SharedString::from(format!(
+                                                    "{page}/{total}"
+                                                ))),
+                                        )
+                                        .child(page_arrow("›", page < total, 1, "right")),
                                 )
                             })
                             // The gatekeeper's reason this came to the user —
