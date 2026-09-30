@@ -853,7 +853,9 @@ impl Render for Composer {
             }
             return container.child(motion::fade_quick(
                 "composer-approval-bar",
-                div().child(bar),
+                // The tall option list reads as glued to the window edge
+                // with only the container's padding — lift it a step.
+                div().mb(px(Theme::SPACE_MD)).child(bar),
             ));
         }
 

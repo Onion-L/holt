@@ -601,95 +601,103 @@ impl Composer {
             .child(number_chip(note_row, note_selected))
             .child(div().flex_1().min_w_0().child(self.input.clone()));
 
+        // The frosted wrapper (the composer pill's own chrome): the
+        // translucent fill needs the backdrop blur — without it the
+        // transcript rows scrolling behind the tall panel bleed through
+        // the text.
         Some(
-            div()
-                .id("approval-bar")
-                .track_focus(&self.approval_bar_focus)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    this.on_approval_bar_key(event, window, cx)
-                }))
-                .rounded(px(26.0))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.input_glass_bg())
-                .when(!theme.is_frost(), |el| el.shadow_lg())
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .px(px(16.0))
-                        .pt(px(16.0))
-                        .pb(px(12.0))
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(crate::typography::ui_rems(15.0))
-                                .line_height(px(20.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .child(prompt.title),
-                        )
-                        // The question card's pager: which of the agent's
-                        // questions this page answers.
-                        .when_some(prompt.pager, |el, (page, total)| {
-                            el.child(
+            crate::frost::frosted(
+                26.0,
+                16.0,
+                div()
+                    .id("approval-bar")
+                    .track_focus(&self.approval_bar_focus)
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        this.on_approval_bar_key(event, window, cx)
+                    }))
+                    .rounded(px(26.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.input_glass_bg())
+                    .when(!theme.is_frost(), |el| el.shadow_lg())
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px(px(16.0))
+                            .pt(px(16.0))
+                            .pb(px(12.0))
+                            .flex()
+                            .flex_col()
+                            .child(
                                 div()
-                                    .mt(px(2.0))
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .text_color(theme.text_muted.opacity(0.7))
-                                    .child(SharedString::from(format!("{page}/{total}"))),
-                            )
-                        })
-                        // The gatekeeper's reason this came to the user —
-                        // a retired Jev escalation's note, directly under
-                        // the title.
-                        .when_some(prompt.note.clone(), |el, note| {
-                            el.child(
-                                div()
-                                    .mt(px(6.0))
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .line_height(px(17.0))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(note)),
-                            )
-                        })
-                        // The target leads when the producer has one: a
-                        // bare mono line — the strip's idiom, no framing
-                        // box. The plan's document is the transcript card.
-                        .when_some(prompt.target.clone(), |el, target| {
-                            el.child(
-                                div()
-                                    .mt(px(8.0))
-                                    .w_full()
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .line_height(px(18.0))
+                                    .text_size(crate::typography::ui_rems(15.0))
+                                    .line_height(px(20.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(theme.text)
-                                    .child(SharedString::from(target)),
+                                    .child(prompt.title),
                             )
-                        })
-                        .when_some(cwd_line, |el, line| {
-                            el.child(
+                            // The question card's pager: which of the agent's
+                            // questions this page answers.
+                            .when_some(prompt.pager, |el, (page, total)| {
+                                el.child(
+                                    div()
+                                        .mt(px(2.0))
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted.opacity(0.7))
+                                        .child(SharedString::from(format!("{page}/{total}"))),
+                                )
+                            })
+                            // The gatekeeper's reason this came to the user —
+                            // a retired Jev escalation's note, directly under
+                            // the title.
+                            .when_some(prompt.note.clone(), |el, note| {
+                                el.child(
+                                    div()
+                                        .mt(px(6.0))
+                                        .text_size(crate::typography::ui_rems(12.5))
+                                        .line_height(px(17.0))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(note)),
+                                )
+                            })
+                            // The target leads when the producer has one: a
+                            // bare mono line — the strip's idiom, no framing
+                            // box. The plan's document is the transcript card.
+                            .when_some(prompt.target.clone(), |el, target| {
+                                el.child(
+                                    div()
+                                        .mt(px(8.0))
+                                        .w_full()
+                                        .font_family(theme.font_mono.clone())
+                                        .text_size(crate::typography::ui_rems(12.5))
+                                        .line_height(px(18.0))
+                                        .text_color(theme.text)
+                                        .child(SharedString::from(target)),
+                                )
+                            })
+                            .when_some(cwd_line, |el, line| {
+                                el.child(
+                                    div()
+                                        .mt(px(4.0))
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .line_height(px(15.0))
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from(line)),
+                                )
+                            })
+                            .child(
                                 div()
-                                    .mt(px(4.0))
-                                    .text_size(crate::typography::ui_rems(11.0))
-                                    .line_height(px(15.0))
-                                    .text_color(theme.text_faint)
-                                    .child(SharedString::from(line)),
-                            )
-                        })
-                        .child(
-                            div()
-                                .mt(px(12.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.0))
-                                .children(options)
-                                .child(note),
-                        ),
-                )
-                .into_any_element(),
+                                    .mt(px(12.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .children(options)
+                                    .child(note),
+                            ),
+                    ),
+            )
+            .into_any_element(),
         )
     }
 }
