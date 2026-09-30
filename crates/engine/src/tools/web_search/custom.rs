@@ -42,8 +42,6 @@ use crate::mcp::{self, LiveServer, config::McpServer};
 pub(crate) const FILE_NAME: &str = "search-backends.json";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// How much of a failing reply body an HTTP error quotes.
-const ERROR_BODY_CHARS: usize = 300;
 
 /// One parsed definition.
 #[derive(Debug, Clone)]
@@ -345,10 +343,7 @@ impl HttpBackend {
             let detail = if text.is_empty() {
                 String::new()
             } else {
-                format!(
-                    ": {}",
-                    text.chars().take(ERROR_BODY_CHARS).collect::<String>()
-                )
+                format!(": {}", transport::clamp_error_text(text))
             };
             return Err(format!("{name} search failed: HTTP {status}{detail}"));
         }
@@ -486,7 +481,10 @@ impl McpBackend {
             Ok(text) => Ok(text),
             Err(error) => {
                 self.connection.lock().await.take();
-                Err(format!("{name} search failed: {error}"))
+                Err(format!(
+                    "{name} search failed: {}",
+                    transport::clamp_error_text(&error)
+                ))
             }
         }
     }

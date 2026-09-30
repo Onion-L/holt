@@ -8,7 +8,9 @@
 //! Bocha, Brave with the user's own key — one adapter module each,
 //! sharing the [`transport`] scaffolding — or one the user defines in
 //! `search-backends.json` ([`custom`]); this module owns the trait, the
-//! tool, the output shape, and the adapter table. The
+//! tool, the output shape, and the adapter table. Whatever the backend
+//! returns, the model sees at most [`OUTPUT_BYTE_CAP`] of it — the
+//! web_fetch envelope, with an in-band notice when it was cut. The
 //! tool races the run's cancellation token around the backend call,
 //! exactly like grep and web_fetch.
 
@@ -98,10 +100,19 @@ const MIN_MAX_RESULTS: usize = 1;
 /// Upper clamp for `max_results`.
 const MAX_MAX_RESULTS: usize = 10;
 
+/// Byte envelope for the text handed back to the model (the web_fetch
+/// contract): a backend's result — hit list or raw text — is untrusted
+/// remote content, replayed into the model's prompt and persisted to
+/// the chat History, so it never arrives unbounded.
+const OUTPUT_BYTE_CAP: usize = 50 * 1024;
+/// The in-band notice appended when the envelope cut the output.
+const TRUNCATION_NOTICE: &str = "\n\n[truncated: output capped at 50 KB]";
+
 const DESCRIPTION: &str = "Search the web via the configured search backend and return a \
 list of results, each with a title, URL, and snippet. Parameters: `query` (required) and \
 optional `max_results` (default 5, clamped to 1–10). The backend's name is stated in the output \
-header. This tool only finds pages — it never opens, crawls, or summarizes them; fetch a result's \
+header. Backend responses are capped at 5 MB and the returned text at 50 KB (a truncation \
+notice is included). This tool only finds pages — it never opens, crawls, or summarizes them; fetch a result's \
 content with web_fetch. Backend failures (missing key, quota, network) return as errors naming the \
 backend. Results are not cached.";
 
@@ -186,7 +197,7 @@ fn into_result(
     max_results: usize,
     results: SearchResults,
 ) -> AgentToolResult {
-    let (text, count) = match results {
+    let (rendered, count) = match results {
         SearchResults::Hits(mut hits) => {
             hits.truncate(max_results);
             (render(backend, query, &hits), json!(hits.len()))
@@ -196,6 +207,14 @@ fn into_result(
             serde_json::Value::Null,
         ),
     };
+    // The output envelope bounds every backend-authored byte — the
+    // model's prompt and the persisted History both stop here, with an
+    // in-band notice when the cap bit.
+    let (body, truncated) = crate::tools::clamp_utf8(&rendered, OUTPUT_BYTE_CAP);
+    let mut text = body.to_owned();
+    if truncated {
+        text.push_str(TRUNCATION_NOTICE);
+    }
     AgentToolResult {
         content: vec![BlockContent::Text(TextContent {
             text,
@@ -206,6 +225,7 @@ fn into_result(
             "query": query,
             "max_results": max_results,
             "results": count,
+            "truncated": truncated,
         }),
         ..Default::default()
     }
@@ -459,6 +479,7 @@ mod tests {
                 "query": "holt",
                 "max_results": 2,
                 "results": 2,
+                "truncated": false,
             })
         );
         assert_eq!(backend.seen(), vec![("holt".into(), 2)]);
@@ -589,6 +610,9 @@ mod tests {
             "default 5",
             "1–10",
             "backend's name",
+            "capped at 5 MB",
+            "50 KB",
+            "truncation",
             "not cached",
             "never opens",
         ] {
@@ -657,6 +681,67 @@ mod tests {
             "Web search results from Exa for \"holt\"\n\n1. Holt — https://holt.dev"
         );
         assert_eq!(result.details["results"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_text_result_over_the_envelope_is_truncated_with_a_notice() {
+        struct FloodBackend;
+        impl SearchBackend for FloodBackend {
+            fn name(&self) -> &str {
+                "Exa"
+            }
+            fn search<'a>(
+                &'a self,
+                _query: &'a str,
+                _max_results: usize,
+                _cancel: CancellationToken,
+            ) -> BoxFuture<'a, Result<SearchResults, String>> {
+                Box::pin(async { Ok(SearchResults::Text("x".repeat(OUTPUT_BYTE_CAP + 4096))) })
+            }
+        }
+        let result = run_tool(Arc::new(FloodBackend), &json!({ "query": "holt" }), None)
+            .await
+            .unwrap();
+        let text = text_of(&result);
+        assert_eq!(result.details["truncated"], json!(true));
+        assert!(
+            text.ends_with("[truncated: output capped at 50 KB]"),
+            "unexpected tail"
+        );
+        assert!(
+            text.len() <= OUTPUT_BYTE_CAP + TRUNCATION_NOTICE.len(),
+            "text exceeds the envelope: {} bytes",
+            text.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn hit_fields_over_the_envelope_are_truncated_too() {
+        // One hit whose snippet alone dwarfs the envelope — the count
+        // clamp bounds hits, never their field sizes.
+        let backend = Arc::new(StubBackend::new(
+            "Stub",
+            vec![hit(
+                "Flood",
+                "https://flood",
+                &"s".repeat(OUTPUT_BYTE_CAP + 4096),
+            )],
+        ));
+        let result = run_tool(backend, &json!({ "query": "q" }), None)
+            .await
+            .unwrap();
+        let text = text_of(&result);
+        assert_eq!(result.details["truncated"], json!(true));
+        assert_eq!(result.details["results"], json!(1));
+        assert!(
+            text.ends_with("[truncated: output capped at 50 KB]"),
+            "unexpected tail"
+        );
+        assert!(
+            text.len() <= OUTPUT_BYTE_CAP + TRUNCATION_NOTICE.len(),
+            "text exceeds the envelope: {} bytes",
+            text.len()
+        );
     }
 
     #[test]
