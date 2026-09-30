@@ -805,7 +805,34 @@ impl Composer {
                                     .gap(px(4.0))
                                     .children(options)
                                     .child(note),
-                            ),
+                            )
+                            // The dismiss affordance: nothing is blocked,
+                            // so Escape closes the card unanswered — the
+                            // running strip's keycap idiom. The gate's Esc
+                            // interrupts instead and gets no hint here.
+                            .when(prompt.kind == BarKind::Question, |el| {
+                                el.child(
+                                    div()
+                                        .mt(px(6.0))
+                                        .flex()
+                                        .justify_end()
+                                        .items_center()
+                                        .gap(px(3.0))
+                                        .text_color(theme.text_faint)
+                                        .child(
+                                            div()
+                                                .px(px(3.0))
+                                                .rounded(px(4.0))
+                                                .border_1()
+                                                .border_color(theme.hairline(0.14))
+                                                .font_family(theme.font_mono.clone())
+                                                .text_size(px(10.0))
+                                                .line_height(px(14.0))
+                                                .child("Esc"),
+                                        )
+                                        .child(" to dismiss"),
+                                )
+                            }),
                     ),
             )
             .into_any_element(),
