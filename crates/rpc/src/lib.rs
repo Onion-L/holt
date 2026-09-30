@@ -98,10 +98,11 @@ pub mod methods {
     /// as an ordinary user message. Reply `{providerId}`.
     pub const SETTLE_PROVIDER_CHOICE: &str = "SettleProviderChoice";
     /// Settles a question card (ADR-0040): params `{chatId, cardId,
-    /// choice}` — a clicked option or the typed answer, taken verbatim.
-    /// The card must be pending; it is stamped chosen and the answer is
-    /// queued as an ordinary user message (the question restated with it).
-    /// Reply `{answer}`.
+    /// choices}` — one verbatim answer per question, a clicked option or
+    /// the typed text. The card must be pending and the count must match;
+    /// the card is stamped chosen and the answers are queued as an
+    /// ordinary user message (each question restated with its answer).
+    /// Reply `{answers}`.
     pub const SETTLE_QUESTION: &str = "SettleQuestion";
     /// The registered API dialect ids (pi-core's compat registry) →
     /// `[String]`. The record form's dialect dropdown reads it — the set

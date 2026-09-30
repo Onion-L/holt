@@ -1,23 +1,22 @@
-//! The question card (ADR-0040): a question the agent asked through
+//! The question card (ADR-0040): 1–4 questions the agent asked through
 //! `ask_user`, answered in the composer's approval bar (its third kind —
 //! the transcript builds no interactive counterpart, the gate's rule).
-//! While pending the card scans out of the transcript into the bar; once
-//! settled it renders as a small marker row carrying the stamped answer.
-//! `resolve_question` is the bar's verdict channel.
+//! While pending the card scans out of the transcript into the bar, one
+//! page per question; once settled it renders as a small marker row
+//! carrying the stamped answers. `resolve_question` is the bar's verdict
+//! channel.
 
 use gpui::{AnyElement, App, SharedString, div, prelude::*, px};
 
-use holt_doc::{ChoiceCardState, MessagePart, SessionMessageEntry};
+use holt_doc::{CardQuestion, ChoiceCardState, MessagePart, SessionMessageEntry};
 use holt_rpc::methods;
 
 use crate::state::AppState;
 use crate::theme::Theme;
 
 /// The latest still-pending question card: the composer approval bar's
-/// data source — `(card id, question, options)` in card order.
-pub fn pending_question(
-    transcript: &[SessionMessageEntry],
-) -> Option<(String, String, Vec<String>)> {
+/// data source — the card id and its questions, in card order.
+pub fn pending_question(transcript: &[SessionMessageEntry]) -> Option<(String, Vec<CardQuestion>)> {
     transcript
         .iter()
         .rev()
@@ -25,22 +24,22 @@ pub fn pending_question(
         .find_map(|part| match part {
             MessagePart::QuestionCard {
                 id,
-                question,
-                options,
+                questions,
                 state: ChoiceCardState::Pending,
                 ..
-            } => Some((id.clone(), question.clone(), options.clone())),
+            } => Some((id.clone(), questions.clone())),
             _ => None,
         })
 }
 
-/// Send the answer (fire-and-forget: failures are no-ops engine-side,
+/// Send the answers (fire-and-forget: failures are no-ops engine-side,
 /// and the doc's stamped card is what settles the UI — the gate's
-/// channel contract). The approval bar's question channel.
+/// channel contract). One call per card, every question answered. The
+/// approval bar's question channel.
 pub fn resolve_question(
     state: &gpui::Entity<AppState>,
     card_id: String,
-    answer: String,
+    answers: Vec<String>,
     cx: &mut App,
 ) {
     let (engine, chat_id) = {
@@ -55,7 +54,7 @@ pub fn resolve_question(
             .client()
             .call(
                 methods::SETTLE_QUESTION,
-                serde_json::json!({ "chatId": chat_id, "cardId": card_id, "choice": answer }),
+                serde_json::json!({ "chatId": chat_id, "cardId": card_id, "choices": answers }),
             )
             .await
         {
@@ -86,44 +85,64 @@ fn state_line(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
         .child(text.into())
 }
 
-/// The settled card's compact marker row. A pending card builds no row —
-/// the bar carries it — so this renders only settled states; a pending
-/// card that still reaches render (a stale frame) shows its bare
-/// question without affordances.
+/// The settled card's compact marker row: one line per question. A
+/// pending card builds no row — the bar carries it — so this renders
+/// only settled states; a pending card that still reaches render (a
+/// stale frame) shows its bare questions without affordances.
 pub(super) fn render_question_card(
-    question: &SharedString,
-    chosen: Option<&SharedString>,
+    questions: &[SharedString],
+    answers: &[SharedString],
     state: ChoiceCardState,
     theme: &Theme,
 ) -> AnyElement {
-    let line = match state {
-        ChoiceCardState::Chosen => state_line(
-            format!(
-                "✓ Answered · {}",
-                chosen.map(SharedString::as_ref).unwrap_or_default()
-            ),
-            theme,
-        ),
-        ChoiceCardState::Superseded => state_line("No longer active — answered in chat", theme),
-        ChoiceCardState::Pending => state_line("Waiting for your answer…", theme),
-    };
-    div()
-        .py(px(4.0))
-        .w_full()
-        .child(card_frame(theme).child(question.clone()).child(line))
-        .into_any_element()
+    let mut card = card_frame(theme);
+    match state {
+        ChoiceCardState::Chosen => {
+            for (question, answer) in questions.iter().zip(answers) {
+                card = card.child(state_line(
+                    format!("✓ Answered · {question} → {answer}"),
+                    theme,
+                ));
+            }
+        }
+        ChoiceCardState::Superseded => {
+            for question in questions {
+                card = card.child(state_line(question.clone(), theme));
+            }
+            card = card.child(state_line("No longer active — answered in chat", theme));
+        }
+        ChoiceCardState::Pending => {
+            for question in questions {
+                card = card.child(state_line(question.clone(), theme));
+            }
+            card = card.child(state_line("Waiting for your answer…", theme));
+        }
+    }
+    div().py(px(4.0)).w_full().child(card).into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn question_part(state: ChoiceCardState) -> MessagePart {
+    fn two_questions() -> Vec<CardQuestion> {
+        vec![
+            CardQuestion {
+                question: "Prefix or suffix?".into(),
+                options: vec!["prefix".into(), "suffix".into()],
+            },
+            CardQuestion {
+                question: "Which store?".into(),
+                options: vec!["memory".into(), "sqlite".into()],
+            },
+        ]
+    }
+
+    fn question_part(state: ChoiceCardState, answers: Vec<String>) -> MessagePart {
         MessagePart::QuestionCard {
             id: "q1".into(),
-            question: "Prefix or suffix?".into(),
-            options: vec!["prefix".into(), "suffix".into()],
-            chosen: None,
+            questions: two_questions(),
+            answers,
             state,
         }
     }
@@ -142,14 +161,18 @@ mod tests {
 
     #[test]
     fn the_scan_finds_only_the_latest_pending_card() {
-        let (id, question, options) =
-            pending_question(&[entry(vec![question_part(ChoiceCardState::Pending)])]).unwrap();
+        let (id, questions) =
+            pending_question(&[entry(vec![question_part(ChoiceCardState::Pending, vec![])])])
+                .unwrap();
         assert_eq!(id, "q1");
-        assert_eq!(question, "Prefix or suffix?");
-        assert_eq!(options, vec!["prefix".to_string(), "suffix".to_string()]);
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].question, "Prefix or suffix?");
 
         // Settled cards never report.
-        assert!(pending_question(&[entry(vec![question_part(ChoiceCardState::Chosen)])]).is_none());
+        assert!(
+            pending_question(&[entry(vec![question_part(ChoiceCardState::Chosen, vec![])])])
+                .is_none()
+        );
         assert!(pending_question(&[]).is_none());
     }
 
@@ -195,16 +218,9 @@ mod tests {
 
         let rows = rows_for(vec![
             ask_user_tool(),
-            question_part(ChoiceCardState::Pending),
+            question_part(ChoiceCardState::Pending, vec![]),
         ]);
         assert_eq!(rows.len(), 1);
-        assert!(matches!(
-            rows[0].kind,
-            RowKind::ToolGroup {
-                auto_open: true,
-                ..
-            }
-        ));
         assert!(matches!(
             rows[0].kind,
             RowKind::ToolGroup {
@@ -215,25 +231,23 @@ mod tests {
 
         let rows = rows_for(vec![
             ask_user_tool(),
-            MessagePart::QuestionCard {
-                id: "q1".into(),
-                question: "Prefix or suffix?".into(),
-                options: vec!["prefix".into(), "suffix".into()],
-                chosen: Some("suffix".into()),
-                state: ChoiceCardState::Chosen,
-            },
+            question_part(
+                ChoiceCardState::Chosen,
+                vec!["suffix".into(), "sqlite".into()],
+            ),
         ]);
         assert_eq!(rows.len(), 2);
         let RowKind::QuestionCard {
-            question,
-            chosen,
+            questions,
+            answers,
             state,
         } = &rows[1].kind
         else {
             panic!("expected the marker row");
         };
-        assert_eq!(question.as_ref(), "Prefix or suffix?");
-        assert_eq!(chosen.as_deref(), Some("suffix"));
+        assert_eq!(questions.len(), 2);
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[1].as_ref(), "sqlite");
         assert_eq!(*state, ChoiceCardState::Chosen);
     }
 
@@ -242,12 +256,15 @@ mod tests {
         let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(Theme::default()));
         let theme = Theme::default();
-        for (state, chosen) in [
-            (ChoiceCardState::Chosen, Some(SharedString::from("suffix"))),
-            (ChoiceCardState::Superseded, None),
+        let questions: Vec<SharedString> = two_questions()
+            .iter()
+            .map(|q| SharedString::from(q.question.clone()))
+            .collect();
+        for (state, answers) in [
+            (ChoiceCardState::Chosen, vec![SharedString::from("suffix")]),
+            (ChoiceCardState::Superseded, vec![]),
         ] {
-            let element =
-                render_question_card(&"Prefix or suffix?".into(), chosen.as_ref(), state, &theme);
+            let element = render_question_card(&questions, &answers, state, &theme);
             cx.draw(
                 gpui::point(gpui::px(0.0), gpui::px(0.0)),
                 gpui::size(gpui::px(800.0), gpui::px(600.0)),

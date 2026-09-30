@@ -1480,9 +1480,17 @@ mod tests {
             },
             MessagePart::QuestionCard {
                 id: "c3".into(),
-                question: "Ship the retry as prefix or suffix?".into(),
-                options: vec!["prefix".into(), "suffix".into()],
-                chosen: Some("suffix".into()),
+                questions: vec![
+                    crate::parts::CardQuestion {
+                        question: "Ship the retry as prefix or suffix?".into(),
+                        options: vec!["prefix".into(), "suffix".into()],
+                    },
+                    crate::parts::CardQuestion {
+                        question: "Which store?".into(),
+                        options: vec!["memory".into(), "sqlite".into()],
+                    },
+                ],
+                answers: vec!["suffix".into(), "sqlite".into()],
                 state: crate::parts::ChoiceCardState::Chosen,
             },
         ];

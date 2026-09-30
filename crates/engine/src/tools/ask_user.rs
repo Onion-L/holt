@@ -1,18 +1,20 @@
-//! The agent's question card (ADR-0040): `ask_user` asks the user one
-//! question with 2–6 enumerated options. The call never waits — it lands a
-//! `MessagePart::QuestionCard` in the transcript (via its result details,
-//! the `choose_provider` pattern) and returns; the model stops its Turn.
-//! The user clicks an option or types an answer, `SettleQuestion` stamps
-//! the card and queues the answer as an ordinary user message, so the
-//! next Turn reads it from the conversation — no blocking tool result, no
-//! pending-RPC machinery, restart-safe by construction.
+//! The agent's question card (ADR-0040): `ask_user` asks the user 1–4
+//! questions, each with 2–6 enumerated options. The call never waits — it
+//! lands a `MessagePart::QuestionCard` in the transcript (via its result
+//! details, the `choose_provider` pattern) and returns; the model stops
+//! its Turn. The user answers on the composer's approval bar, page by
+//! page; `SettleQuestion` stamps the card and queues the answers as an
+//! ordinary user message, so the next Turn reads them from the
+//! conversation — no blocking tool result, no pending-RPC machinery,
+//! restart-safe by construction.
 
 use futures::future::BoxFuture;
-use holt_doc::parts::{ChoiceCardState, MessagePart};
+use holt_doc::parts::{CardQuestion, ChoiceCardState, MessagePart};
 use pi_core::{
     agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback},
     ai::types::{BlockContent, TextContent},
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -21,18 +23,28 @@ use crate::agent::ChatRuntime;
 
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 6;
+const MAX_QUESTIONS: usize = 4;
 
-const DESCRIPTION: &str = "Ask the user ONE question when the answer gates your next step and \
-the choices can be enumerated as 2–6 concrete options. Pass the question and the options, \
-most likely first. A question card appears in the conversation; the user clicks an option or \
-types an answer, and it arrives as the next user message. Do NOT also ask in text; STOP your \
-turn after calling — do not call other tools afterwards. Open-ended questions that cannot be \
-enumerated stay in ordinary text.";
+const DESCRIPTION: &str = "Ask the user 1–4 questions when the answers gate your next step and \
+each choice can be enumerated as 2–6 concrete options. Pass the questions with their options, \
+most likely first. A question card appears in the conversation; the user answers page by page \
+(by click or in words), and the answers arrive as the next user message. Do NOT also ask in \
+text; STOP your turn after calling — do not call other tools afterwards. Open-ended questions \
+that cannot be enumerated stay in ordinary text.";
 
-/// The queued answer (ADR-0040): an ordinary user message carrying the
+/// The queued answers (ADR-0040): an ordinary user message carrying each
 /// question it answers, so the next Turn reads both from History.
-pub(crate) fn question_answer_notice(question: &str, answer: &str) -> String {
-    format!("To your question \"{question}\": {answer}")
+pub(crate) fn question_answer_notice(pairs: &[(String, String)]) -> String {
+    match pairs {
+        [(question, answer)] => format!("To your question \"{question}\": {answer}"),
+        pairs => {
+            let mut notice = String::from("To your questions:");
+            for (question, answer) in pairs {
+                notice.push_str(&format!("\n- \"{question}\": {answer}"));
+            }
+            notice
+        }
+    }
 }
 
 fn text_result(text: String, details: serde_json::Value) -> Result<AgentToolResult, String> {
@@ -46,47 +58,74 @@ fn text_result(text: String, details: serde_json::Value) -> Result<AgentToolResu
     })
 }
 
-fn ask_user(params: &serde_json::Value) -> Result<AgentToolResult, String> {
-    let question = params
-        .get("question")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|question| !question.is_empty())
-        .ok_or("pass a non-empty \"question\"")?
-        .to_string();
-    let options: Vec<String> = params
-        .get("options")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("pass \"options\" as an array of 2–6 strings")?
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuestionInput {
+    question: String,
+    options: Vec<String>,
+}
+
+fn validate_question(input: &QuestionInput) -> Result<CardQuestion, String> {
+    let question = input.question.trim();
+    if question.is_empty() {
+        return Err("every question must be a non-empty string".into());
+    }
+    let mut options: Vec<String> = input
+        .options
         .iter()
-        .filter_map(|option| option.as_str())
-        .map(str::trim)
+        .map(|option| option.trim().to_string())
         .filter(|option| !option.is_empty())
-        .map(str::to_owned)
         .collect();
     if options.len() < MIN_OPTIONS {
         return Err(format!(
-            "pass {MIN_OPTIONS}–{MAX_OPTIONS} non-empty options — an open-ended \
-             question belongs in ordinary text"
+            "\"{question}\" needs {MIN_OPTIONS}–{MAX_OPTIONS} non-empty options — an \
+             open-ended question belongs in ordinary text"
         ));
     }
     if options.len() > MAX_OPTIONS {
         return Err(format!(
-            "pass at most {MAX_OPTIONS} options — drop the least likely and put \
-             the rest in order"
+            "\"{question}\" takes at most {MAX_OPTIONS} options — drop the least \
+             likely and put the rest in order"
         ));
     }
-    if options
-        .iter()
-        .any(|option| options.iter().filter(|o| o == &option).count() > 1)
-    {
-        return Err("pass distinct options".into());
+    options.sort();
+    let unique = options.len();
+    options.dedup();
+    if options.len() != unique {
+        return Err(format!("\"{question}\" has duplicate options"));
     }
+    Ok(CardQuestion {
+        question: question.to_string(),
+        options,
+    })
+}
+
+fn ask_user(params: &serde_json::Value) -> Result<AgentToolResult, String> {
+    let inputs: Vec<QuestionInput> = serde_json::from_value::<Vec<QuestionInput>>(
+        params
+            .get("questions")
+            .cloned()
+            .ok_or("pass \"questions\" — a list of 1–4 {question, options} objects")?,
+    )
+    .map_err(|error| format!("invalid question shape: {error}"))?;
+    if inputs.is_empty() {
+        return Err("pass at least one question".into());
+    }
+    if inputs.len() > MAX_QUESTIONS {
+        return Err(format!(
+            "ask at most {MAX_QUESTIONS} questions per call — split the rest across \
+             the conversation"
+        ));
+    }
+    let questions: Vec<CardQuestion> = inputs
+        .iter()
+        .map(validate_question)
+        .collect::<Result<_, _>>()?;
     text_result(
         "Question card shown. STOP this turn — the user answers on the card or \
-         in chat, and the answer arrives as the next message."
+         in chat, and the answers arrive as the next message."
             .into(),
-        json!({ "question": question, "options": options }),
+        json!({ "questions": questions }),
     )
 }
 
@@ -98,20 +137,33 @@ pub(crate) fn create_ask_user_tool() -> AgentTool {
         parameters: json!({
             "type": "object",
             "properties": {
-                "question": {
-                    "type": "string",
-                    "maxLength": 500,
-                    "description": "The one question, asked verbatim on the card"
-                },
-                "options": {
+                "questions": {
                     "type": "array",
-                    "items": { "type": "string" },
-                    "minItems": MIN_OPTIONS,
-                    "maxItems": MAX_OPTIONS,
-                    "description": "The 2–6 concrete answers, most likely first"
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "The question, asked verbatim on the card"
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "minItems": MIN_OPTIONS,
+                                "maxItems": MAX_OPTIONS,
+                                "description": "The 2–6 concrete answers, most likely first"
+                            }
+                        },
+                        "required": ["question", "options"],
+                        "additionalProperties": false
+                    },
+                    "minItems": 1,
+                    "maxItems": MAX_QUESTIONS,
+                    "description": "The questions to answer, most important first"
                 }
             },
-            "required": ["question", "options"],
+            "required": ["questions"],
             "additionalProperties": false
         }),
         constrained_sampling: None,
@@ -144,18 +196,16 @@ pub(crate) fn tool_card(
     if tool_name != "ask_user" {
         return None;
     }
-    let question = details.get("question")?.as_str()?.to_string();
-    let options = details
-        .get("options")?
+    let questions: Vec<CardQuestion> = details
+        .get("questions")?
         .as_array()?
         .iter()
-        .filter_map(|option| option.as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    (!question.is_empty() && !options.is_empty()).then(|| MessagePart::QuestionCard {
+        .filter_map(|question| serde_json::from_value(question.clone()).ok())
+        .collect();
+    (!questions.is_empty()).then(|| MessagePart::QuestionCard {
         id: format!("{tool_call_id}-card"),
-        question,
-        options,
-        chosen: None,
+        questions,
+        answers: Vec::new(),
         state: ChoiceCardState::Pending,
     })
 }
@@ -172,37 +222,49 @@ pub(crate) fn supersede_question_cards(chat: &ChatRuntime) {
     });
 }
 
-/// Settle one pending question card on the user's answer — the click or
-/// the typed text — and return (question, answer) for the queued message.
-/// Free text is the point of the card, so the answer is taken verbatim;
-/// only the card's identity is checked, under one transcript lock, so two
-/// clicks cannot both settle it.
+/// Settle one pending question card on the user's answers — the pages of
+/// the approval bar — and return the (question, answer) pairs for the
+/// queued message. The answer count must match the questions; free text
+/// is the point of the card, so answers are taken verbatim. Checked and
+/// stamped under one transcript lock, so two answers cannot both settle
+/// it.
 pub(crate) fn settle_question(
     chat: &ChatRuntime,
     card_id: &str,
-    answer: &str,
-) -> Result<(String, String), String> {
-    let answer = answer.trim();
-    if answer.is_empty() {
-        return Err("the answer is empty".into());
+    answers: Vec<String>,
+) -> Result<Vec<(String, String)>, String> {
+    let answers: Vec<String> = answers
+        .iter()
+        .map(|answer| answer.trim().to_string())
+        .collect();
+    if answers.iter().any(|answer| answer.is_empty()) {
+        return Err("every answer must be non-empty".into());
     }
     let mut settled = None;
     let mut refusal = "no such question on this chat";
     crate::provider_mode::stamp_cards(chat, |part| match part {
         MessagePart::QuestionCard {
             id,
-            question,
-            chosen,
+            questions,
+            answers: card_answers,
             state,
-            ..
         } if id == card_id => {
             if *state != ChoiceCardState::Pending {
                 refusal = "this question is already settled";
                 return false;
             }
-            *chosen = Some(answer.to_string());
+            if answers.len() != questions.len() {
+                refusal = "the answers do not match the questions";
+                return false;
+            }
+            let pairs = questions
+                .iter()
+                .zip(&answers)
+                .map(|(question, answer)| (question.question.clone(), answer.clone()))
+                .collect::<Vec<_>>();
+            *card_answers = answers.clone();
             *state = ChoiceCardState::Chosen;
-            settled = Some((question.clone(), answer.to_string()));
+            settled = Some(pairs);
             true
         }
         _ => false,
@@ -215,9 +277,9 @@ pub(crate) fn settle_question(
 pub(crate) fn unsettle_question(chat: &ChatRuntime, card_id: &str) {
     crate::provider_mode::stamp_cards(chat, |part| match part {
         MessagePart::QuestionCard {
-            id, chosen, state, ..
+            id, answers, state, ..
         } if id == card_id && *state == ChoiceCardState::Chosen => {
-            *chosen = None;
+            *answers = Vec::new();
             *state = ChoiceCardState::Pending;
             true
         }
@@ -233,9 +295,17 @@ mod tests {
     fn card(id: &str, state: ChoiceCardState) -> MessagePart {
         MessagePart::QuestionCard {
             id: id.into(),
-            question: "Ship the retry as prefix or suffix?".into(),
-            options: vec!["prefix".into(), "suffix".into()],
-            chosen: None,
+            questions: vec![
+                CardQuestion {
+                    question: "Ship the retry as prefix or suffix?".into(),
+                    options: vec!["prefix".into(), "suffix".into()],
+                },
+                CardQuestion {
+                    question: "Which store?".into(),
+                    options: vec!["memory".into(), "sqlite".into()],
+                },
+            ],
+            answers: Vec::new(),
             state,
         }
     }
@@ -263,42 +333,56 @@ mod tests {
             .collect()
     }
 
-    fn state_of(part: &MessagePart) -> ChoiceCardState {
-        match part {
-            MessagePart::QuestionCard { state, .. } => *state,
-            other => panic!("expected a question card, got {other:?}"),
-        }
-    }
-
-    fn result_details(result: &AgentToolResult) -> &serde_json::Value {
-        &result.details
-    }
-
     #[test]
-    fn a_valid_call_reports_options_for_the_card() {
-        let result = ask_user(
-            &json!({ "question": "  Prefix or suffix?  ", "options": ["prefix", "suffix"] }),
-        )
+    fn a_valid_call_reports_questions_for_the_card() {
+        let result = ask_user(&json!({
+            "questions": [
+                { "question": "  Prefix or suffix?  ", "options": ["prefix", "suffix"] },
+                { "question": "Store?", "options": [" memory ", "sqlite"] }
+            ]
+        }))
         .unwrap();
         assert_eq!(
-            result_details(&result),
-            &json!({ "question": "Prefix or suffix?", "options": ["prefix", "suffix"] })
+            result.details,
+            json!({
+                "questions": [
+                    { "question": "Prefix or suffix?", "options": ["prefix", "suffix"] },
+                    { "question": "Store?", "options": ["memory", "sqlite"] }
+                ]
+            })
         );
     }
 
     #[test]
-    fn rejects_empty_questions_and_thin_or_fat_option_lists() {
-        assert!(ask_user(&json!({ "question": "", "options": ["a", "b"] })).is_err());
-        assert!(ask_user(&json!({ "options": ["a", "b"] })).is_err());
-        assert!(ask_user(&json!({ "question": "q", "options": ["only"] })).is_err());
+    fn rejects_empty_thin_fat_and_duplicate_shapes() {
+        assert!(ask_user(&json!({ "questions": [] })).is_err());
+        let five = (0..5)
+            .map(|i| json!({ "question": format!("q{i}"), "options": ["a", "b"] }))
+            .collect::<Vec<_>>();
+        assert!(ask_user(&json!({ "questions": five })).is_err());
+        assert!(
+            ask_user(&json!({ "questions": [{ "question": "", "options": ["a", "b"] }] })).is_err()
+        );
+        assert!(
+            ask_user(&json!({ "questions": [{ "question": "q", "options": ["only"] }] })).is_err()
+        );
         let seven = (0..7).map(|i| i.to_string()).collect::<Vec<_>>();
-        assert!(ask_user(&json!({ "question": "q", "options": seven })).is_err());
-        assert!(ask_user(&json!({ "question": "q", "options": ["a", "a"] })).is_err());
+        assert!(
+            ask_user(&json!({ "questions": [{ "question": "q", "options": seven }] })).is_err()
+        );
+        assert!(
+            ask_user(&json!({ "questions": [{ "question": "q", "options": ["a", "a"] }] }))
+                .is_err()
+        );
     }
 
     #[test]
     fn tool_card_builds_only_from_an_ask_user_result() {
-        let details = json!({ "question": "q?", "options": ["a", "b"] });
+        let details = json!({
+            "questions": [
+                { "question": "q?", "options": ["a", "b"] }
+            ]
+        });
         let Some(MessagePart::QuestionCard { id, state, .. }) =
             tool_card("t1", "ask_user", &details)
         else {
@@ -311,43 +395,59 @@ mod tests {
     }
 
     #[test]
-    fn settle_stamps_under_a_lock_and_refuses_second_settles() {
+    fn settle_stamps_under_a_lock_and_refuses_bad_answer_sets() {
         let chat = chat_with(vec![card("q1", ChoiceCardState::Pending)]);
-        let (question, answer) =
-            settle_question(&chat, "q1", "  suffix  ").expect("the pending card settles");
-        assert_eq!(question, "Ship the retry as prefix or suffix?");
-        assert_eq!(answer, "suffix");
+        let pairs = settle_question(&chat, "q1", vec!["  suffix  ".into(), "sqlite".into()])
+            .expect("the pending card settles");
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    "Ship the retry as prefix or suffix?".to_string(),
+                    "suffix".to_string()
+                ),
+                ("Which store?".to_string(), "sqlite".to_string()),
+            ]
+        );
         assert!(matches!(
             &transcript(&chat)[0],
             MessagePart::QuestionCard {
-                chosen: Some(answer),
+                answers,
                 state: ChoiceCardState::Chosen,
                 ..
-            } if answer == "suffix"
+            } if answers.len() == 2
         ));
         assert_eq!(
-            settle_question(&chat, "q1", "prefix").unwrap_err(),
+            settle_question(&chat, "q1", vec!["prefix".into(), "memory".into()]).unwrap_err(),
             "this question is already settled"
         );
         assert_eq!(
-            settle_question(&chat, "missing", "x").unwrap_err(),
+            settle_question(&chat, "missing", vec!["x".into()]).unwrap_err(),
             "no such question on this chat"
         );
-        assert!(settle_question(&chat, "q1", "   ").is_err());
+        // The count check runs before the stamp: a mismatched answer list
+        // leaves the card answerable.
+        let fresh = chat_with(vec![card("q1", ChoiceCardState::Pending)]);
+        assert_eq!(
+            settle_question(&fresh, "q1", vec!["only-one".into()]).unwrap_err(),
+            "the answers do not match the questions"
+        );
+        assert_eq!(state_of(&transcript(&fresh)[0]), ChoiceCardState::Pending);
+        assert!(settle_question(&chat, "q1", vec!["a".into(), String::new()]).is_err());
     }
 
     #[test]
     fn unsettle_restores_pending_for_the_retry() {
         let chat = chat_with(vec![card("q1", ChoiceCardState::Pending)]);
-        settle_question(&chat, "q1", "suffix").unwrap();
+        settle_question(&chat, "q1", vec!["suffix".into(), "sqlite".into()]).unwrap();
         unsettle_question(&chat, "q1");
         assert!(matches!(
             &transcript(&chat)[0],
             MessagePart::QuestionCard {
-                chosen: None,
+                answers,
                 state: ChoiceCardState::Pending,
                 ..
-            }
+            } if answers.is_empty()
         ));
     }
 
@@ -363,11 +463,25 @@ mod tests {
         assert_eq!(state_of(&parts[1]), ChoiceCardState::Chosen);
     }
 
+    fn state_of(part: &MessagePart) -> ChoiceCardState {
+        match part {
+            MessagePart::QuestionCard { state, .. } => *state,
+            other => panic!("expected a question card, got {other:?}"),
+        }
+    }
+
     #[test]
     fn the_notice_reads_as_the_user_answering() {
         assert_eq!(
-            question_answer_notice("Prefix or suffix?", "suffix"),
+            question_answer_notice(&[("Prefix or suffix?".into(), "suffix".into())]),
             "To your question \"Prefix or suffix?\": suffix"
+        );
+        assert_eq!(
+            question_answer_notice(&[
+                ("Prefix or suffix?".into(), "suffix".into()),
+                ("Which store?".into(), "sqlite".into()),
+            ]),
+            "To your questions:\n- \"Prefix or suffix?\": suffix\n- \"Which store?\": sqlite"
         );
     }
 }

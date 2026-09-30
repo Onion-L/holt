@@ -419,15 +419,15 @@ pub(crate) fn carry_card_states(existing: &[MessagePart], parts: &mut [MessagePa
                 }
             }
             MessagePart::QuestionCard {
-                id, chosen, state, ..
+                id, answers, state, ..
             } if *state == ChoiceCardState::Pending => {
                 if let Some(MessagePart::QuestionCard {
-                    chosen: settled_choice,
+                    answers: settled_answers,
                     state: settled,
                     ..
                 }) = existing.iter().find(|old| old.id() == id.as_str())
                 {
-                    *chosen = settled_choice.clone();
+                    *answers = settled_answers.clone();
                     *state = *settled;
                 }
             }

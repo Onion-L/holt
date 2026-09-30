@@ -90,6 +90,9 @@ pub(crate) struct ApprovalPrompt {
     /// (historical records; no producer today); `None` on every ordinary
     /// approval.
     pub note: Option<String>,
+    /// The question card's pager: the 1-based page and the question count.
+    /// `None` on the single-surface kinds.
+    pub pager: Option<(usize, usize)>,
 }
 
 /// The gate's prompt (ADR-0014): the kind-specific title, the mono target
@@ -126,6 +129,7 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
         ],
         note: None,
         note_placeholder: "Deny with a note…",
+        pager: None,
     }
 }
 
@@ -144,17 +148,22 @@ pub(crate) fn plan_prompt() -> ApprovalPrompt {
         }],
         note: None,
         note_placeholder: "Enter feedback…",
+        pager: None,
     }
 }
 
-/// The question's prompt (ADR-0040): the question is the title, each
-/// enumerated option is a row, and the note row is the free-text answer.
-pub(crate) fn question_prompt(question: &str, options: &[String]) -> ApprovalPrompt {
+/// The question's prompt for one page (ADR-0040): that question is the
+/// title, its enumerated options are the rows, and the note row is the
+/// free-text answer. Multi-question cards carry a pager.
+pub(crate) fn question_prompt(questions: &[holt_doc::CardQuestion], page: usize) -> ApprovalPrompt {
+    let page = page.min(questions.len().saturating_sub(1));
+    let current = &questions[page];
     ApprovalPrompt {
         kind: BarKind::Question,
-        title: question.to_string(),
+        title: current.question.clone(),
         target: None,
-        options: options
+        options: current
+            .options
             .iter()
             .cloned()
             .map(|option| ApprovalOption {
@@ -165,6 +174,7 @@ pub(crate) fn question_prompt(question: &str, options: &[String]) -> ApprovalPro
             .collect(),
         note: None,
         note_placeholder: "Answer in words…",
+        pager: (questions.len() > 1).then_some((page + 1, questions.len())),
     }
 }
 
@@ -181,11 +191,10 @@ pub(crate) enum PendingApproval {
     },
     Plan(String),
     /// A pending question card (ADR-0040): the card id answers the RPC,
-    /// the rest builds the bar.
+    /// the questions build the bar one page per question.
     Question {
         card_id: String,
-        question: String,
-        options: Vec<String>,
+        questions: Vec<holt_doc::CardQuestion>,
     },
 }
 
@@ -207,13 +216,8 @@ impl PendingApproval {
                 },
             })
             .or_else(|| {
-                crate::transcript::question_card::pending_question(transcript).map(
-                    |(card_id, question, options)| PendingApproval::Question {
-                        card_id,
-                        question,
-                        options,
-                    },
-                )
+                crate::transcript::question_card::pending_question(transcript)
+                    .map(|(card_id, questions)| PendingApproval::Question { card_id, questions })
             })
             .or_else(|| pending_plan_approval(transcript).map(PendingApproval::Plan))
     }
@@ -248,47 +252,53 @@ impl PendingApproval {
                 prompt
             }
             PendingApproval::Plan(_) => plan_prompt(),
-            PendingApproval::Question {
-                question, options, ..
-            } => question_prompt(question, options),
+            // At open the bar starts on the first question.
+            PendingApproval::Question { questions, .. } => question_prompt(questions, 0),
         }
     }
 }
 
 /// The bar's cursor: rows `0..options.len()` are the verdict options; row
-/// `options.len()` is the trailing note input.
+/// `options.len()` is the trailing note input. The row count rides the
+/// prompt (rebuilt per frame), not this struct — a question card's page
+/// changes it mid-life.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApprovalBar {
     pub id: String,
     pub kind: BarKind,
     pub selection: usize,
-    /// Total cursor rows (options + the note row), stamped at open.
-    rows: usize,
+    /// The question card's current page (0-based); 0 on other kinds.
+    pub page: usize,
+    /// The answers stashed from completed question pages; the last
+    /// page's answer rides the verdict into `SettleQuestion`.
+    pub answers: Vec<String>,
 }
 
 impl ApprovalBar {
-    pub(crate) fn new(id: String, kind: BarKind, options: usize) -> Self {
+    pub(crate) fn new(id: String, kind: BarKind) -> Self {
         Self {
             id,
             kind,
             selection: 0,
-            rows: options + 1,
+            page: 0,
+            answers: Vec::new(),
         }
     }
 
-    /// The note row's cursor position.
-    pub(crate) fn note_row(&self) -> usize {
-        self.rows - 1
+    /// The note row's cursor position: `rows` is the prompt's option
+    /// count plus the note row.
+    pub(crate) fn note_row(&self, rows: usize) -> usize {
+        rows - 1
     }
 
-    pub(crate) fn move_by(&mut self, delta: isize) {
+    pub(crate) fn move_by(&mut self, delta: isize, rows: usize) {
         let next = self.selection as isize + delta;
-        self.selection = next.clamp(0, self.rows as isize - 1) as usize;
+        self.selection = next.clamp(0, rows as isize - 1) as usize;
     }
 
     /// A bare digit jumps 1..=rows; out of range is ignored.
-    pub(crate) fn press_number(&mut self, number: usize) -> bool {
-        if number == 0 || number > self.rows {
+    pub(crate) fn press_number(&mut self, number: usize, rows: usize) -> bool {
+        if number == 0 || number > rows {
             return false;
         }
         self.selection = number - 1;
@@ -322,10 +332,11 @@ impl Composer {
             }
             BarKind::Plan => Some(plan_prompt()),
             BarKind::Question => {
-                let (_, question, options) = crate::transcript::question_card::pending_question(
+                let (_, questions) = crate::transcript::question_card::pending_question(
                     &self.state.read(cx).transcript,
                 )?;
-                Some(question_prompt(&question, &options))
+                let page = self.approval_bar.as_ref().map_or(0, |bar| bar.page);
+                Some(question_prompt(&questions, page))
             }
         }
     }
@@ -336,14 +347,15 @@ impl Composer {
         let Some(bar) = self.approval_bar.clone() else {
             return;
         };
-        if bar.selection == bar.note_row() {
+        let Some(prompt) = self.bar_prompt(cx) else {
+            return;
+        };
+        let rows = prompt.options.len() + 1;
+        if bar.selection == bar.note_row(rows) {
             let handle = self.input.read(cx).focus_handle.clone();
             window.focus(&handle, cx);
             return;
         }
-        let Some(prompt) = self.bar_prompt(cx) else {
-            return;
-        };
         let Some(option) = prompt.options.get(bar.selection) else {
             return;
         };
@@ -360,6 +372,27 @@ impl Composer {
         plan_feedback: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        // A multi-question card advances before it submits: the verdict
+        // stashes this page's answer and opens the next question; the
+        // last page's verdict carries every stashed answer into one
+        // `SettleQuestion`.
+        if let BarVerdict::Question(answer) = &verdict {
+            let total = self
+                .bar_prompt(cx)
+                .and_then(|prompt| prompt.pager)
+                .map_or(1, |(_, total)| total);
+            let Some(bar) = self.approval_bar.as_mut() else {
+                return;
+            };
+            if bar.page + 1 < total {
+                bar.answers.push(answer.clone());
+                bar.page += 1;
+                bar.selection = 0;
+                self.input.update(cx, |input, cx| input.set_text("", cx));
+                cx.notify();
+                return;
+            }
+        }
         let Some(bar) = self.approval_bar.take() else {
             return;
         };
@@ -372,7 +405,14 @@ impl Composer {
             BarVerdict::Gate(verdict) => resolve_approval(&self.state, bar.id, verdict, cx),
             BarVerdict::Plan(word) => resolve_plan_approval(&self.state, word, plan_feedback, cx),
             BarVerdict::Question(answer) => {
-                crate::transcript::question_card::resolve_question(&self.state, bar.id, answer, cx);
+                let mut answers = bar.answers;
+                answers.push(answer);
+                crate::transcript::question_card::resolve_question(
+                    &self.state,
+                    bar.id,
+                    answers,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -421,8 +461,11 @@ impl Composer {
         }
         let key = event.keystroke.key.as_str();
         if key == "up" || key == "down" {
+            let rows = self
+                .bar_prompt(cx)
+                .map_or(1, |prompt| prompt.options.len() + 1);
             if let Some(bar) = self.approval_bar.as_mut() {
-                bar.move_by(if key == "up" { -1 } else { 1 });
+                bar.move_by(if key == "up" { -1 } else { 1 }, rows);
             }
             cx.stop_propagation();
             cx.notify();
@@ -430,10 +473,13 @@ impl Composer {
             && (1..=9).contains(&digit)
             && !event.keystroke.modifiers.modified()
         {
+            let rows = self
+                .bar_prompt(cx)
+                .map_or(1, |prompt| prompt.options.len() + 1);
             let Some(bar) = self.approval_bar.as_mut() else {
                 return;
             };
-            if bar.press_number(digit) {
+            if bar.press_number(digit, rows) {
                 cx.stop_propagation();
                 self.approval_bar_confirm(window, cx);
             }
@@ -463,8 +509,9 @@ impl Composer {
                 .map(|cwd| approval_cwd_line(&cwd)),
             BarKind::Plan | BarKind::Question => None,
         };
-        let selection = bar.selection.min(bar.note_row());
-        let note_row = bar.note_row();
+        let rows = prompt.options.len() + 1;
+        let selection = bar.selection.min(bar.note_row(rows));
+        let note_row = bar.note_row(rows);
         let input_focused = self.input.read(cx).focus_handle.is_focused(window);
         let note_selected = selection == note_row && !input_focused;
 
@@ -583,6 +630,17 @@ impl Composer {
                                 .text_color(theme.text)
                                 .child(prompt.title),
                         )
+                        // The question card's pager: which of the agent's
+                        // questions this page answers.
+                        .when_some(prompt.pager, |el, (page, total)| {
+                            el.child(
+                                div()
+                                    .mt(px(2.0))
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(theme.text_muted.opacity(0.7))
+                                    .child(SharedString::from(format!("{page}/{total}"))),
+                            )
+                        })
                         // The gatekeeper's reason this came to the user —
                         // a retired Jev escalation's note, directly under
                         // the title.
@@ -764,19 +822,20 @@ mod tests {
 
     #[test]
     fn the_cursor_clamps_jumps_and_finds_the_note_row() {
-        let mut bar = ApprovalBar::new("g1".into(), BarKind::Gate, 3);
-        assert_eq!(bar.note_row(), 3);
+        let mut bar = ApprovalBar::new("g1".into(), BarKind::Gate);
+        let rows = 4; // three options + the note row
+        assert_eq!(bar.note_row(rows), 3);
         assert_eq!(bar.selection, 0);
-        bar.move_by(-1);
+        bar.move_by(-1, rows);
         assert_eq!(bar.selection, 0, "clamped at the top");
-        bar.move_by(10);
+        bar.move_by(10, rows);
         assert_eq!(bar.selection, 3, "clamped at the note row");
-        assert!(bar.press_number(2));
+        assert!(bar.press_number(2, rows));
         assert_eq!(bar.selection, 1);
-        assert!(bar.press_number(4));
+        assert!(bar.press_number(4, rows));
         assert_eq!(bar.selection, 3);
-        assert!(!bar.press_number(5), "out of range ignored");
-        assert!(!bar.press_number(0));
+        assert!(!bar.press_number(5, rows), "out of range ignored");
+        assert!(!bar.press_number(0, rows));
         assert_eq!(bar.selection, 3);
     }
 
@@ -840,9 +899,17 @@ mod tests {
             role: holt_doc::MessageRole::Assistant,
             parts: vec![holt_doc::MessagePart::QuestionCard {
                 id: "q1".into(),
-                question: "Prefix or suffix?".into(),
-                options: vec!["prefix".into(), "suffix".into()],
-                chosen: None,
+                questions: vec![
+                    holt_doc::CardQuestion {
+                        question: "Prefix or suffix?".into(),
+                        options: vec!["prefix".into(), "suffix".into()],
+                    },
+                    holt_doc::CardQuestion {
+                        question: "Which store?".into(),
+                        options: vec!["memory".into(), "sqlite".into()],
+                    },
+                ],
+                answers: Vec::new(),
                 state,
             }],
             created_at: 2,
@@ -864,13 +931,17 @@ mod tests {
         // Question only.
         let question_only = vec![question(holt_doc::ChoiceCardState::Pending)];
         let Some(PendingApproval::Question {
-            card_id, options, ..
+            card_id, questions, ..
         }) = PendingApproval::from_transcript(&question_only)
         else {
             panic!("expected the question")
         };
         assert_eq!(card_id, "q1");
-        assert_eq!(options, vec!["prefix".to_string(), "suffix".to_string()]);
+        assert_eq!(questions.len(), 2);
+        assert_eq!(
+            questions[0].options,
+            vec!["prefix".to_string(), "suffix".to_string()]
+        );
         // Question over plan.
         let question_and_plan = vec![
             plan_pending(holt_doc::PlanApprovalState::Pending),
@@ -894,12 +965,24 @@ mod tests {
     }
 
     #[test]
-    fn the_question_prompt_titles_with_the_question_and_maps_options() {
-        let prompt = question_prompt("Prefix or suffix?", &["prefix".into(), "suffix".into()]);
+    fn the_question_prompt_serves_one_page_of_the_card() {
+        let questions = vec![
+            holt_doc::CardQuestion {
+                question: "Prefix or suffix?".into(),
+                options: vec!["prefix".into(), "suffix".into()],
+            },
+            holt_doc::CardQuestion {
+                question: "Which store?".into(),
+                options: vec!["memory".into(), "sqlite".into()],
+            },
+        ];
+        // The first page carries the first question and the pager.
+        let prompt = question_prompt(&questions, 0);
         assert_eq!(prompt.kind, BarKind::Question);
         assert_eq!(prompt.title, "Prefix or suffix?");
         assert_eq!(prompt.target, None);
         assert_eq!(prompt.note_placeholder, "Answer in words…");
+        assert_eq!(prompt.pager, Some((1, 2)));
         assert_eq!(
             prompt.options,
             vec![
@@ -915,6 +998,17 @@ mod tests {
                 },
             ]
         );
+        // The second page swaps the title, options, and pager.
+        let prompt = question_prompt(&questions, 1);
+        assert_eq!(prompt.title, "Which store?");
+        assert_eq!(prompt.pager, Some((2, 2)));
+        assert_eq!(prompt.options.len(), 2);
+        assert_eq!(prompt.options[0].label.as_ref(), "memory");
+        // A single question carries no pager.
+        let single = &questions[..1];
+        assert_eq!(question_prompt(single, 0).pager, None);
+        // An out-of-range page clamps to the last question.
+        assert_eq!(question_prompt(&questions, 9).title, "Which store?");
     }
 
     #[gpui::test]
@@ -995,17 +1089,26 @@ mod tests {
         });
     }
 
-    /// The question producer: a pending question card opens the bar in
-    /// Question kind; the empty note keeps it up, the typed note answers.
+    /// The question producer: a two-question card, so the bar's paging
+    /// shows. The empty note keeps a page up; an answer advances or, on
+    /// the last page, submits everything.
     fn question_pending(state: holt_doc::ChoiceCardState) -> holt_doc::SessionMessageEntry {
         holt_doc::SessionMessageEntry {
             id: "q-entry".into(),
             role: holt_doc::MessageRole::Assistant,
             parts: vec![holt_doc::MessagePart::QuestionCard {
                 id: "q1".into(),
-                question: "Prefix or suffix?".into(),
-                options: vec!["prefix".into(), "suffix".into()],
-                chosen: None,
+                questions: vec![
+                    holt_doc::CardQuestion {
+                        question: "Prefix or suffix?".into(),
+                        options: vec!["prefix".into(), "suffix".into()],
+                    },
+                    holt_doc::CardQuestion {
+                        question: "Which store?".into(),
+                        options: vec!["memory".into(), "sqlite".into()],
+                    },
+                ],
+                answers: Vec::new(),
                 state,
             }],
             created_at: 2,
@@ -1016,9 +1119,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_bar_opens_on_a_pending_question_and_answers_from_the_note(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn the_bar_pages_through_a_multi_question_card(cx: &mut gpui::TestAppContext) {
         use crate::state::AppState;
         let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(Theme::default()));
@@ -1034,29 +1135,46 @@ mod tests {
             let bar = this.approval_bar.as_ref().expect("the bar opened");
             assert_eq!(bar.id, "q1");
             assert_eq!(bar.kind, BarKind::Question);
-            // The prompt carries the question and its options.
+            // Page one carries the first question.
             let prompt = this.bar_prompt(cx).unwrap();
             assert_eq!(prompt.title, "Prefix or suffix?");
+            assert_eq!(prompt.pager, Some((1, 2)));
             assert_eq!(prompt.options.len(), 2);
         });
-        // Draw the question bar (options + note row) without panicking.
+        // Draw the question bar (pager, options, note row) without
+        // panicking.
         cx.draw(
             gpui::point(gpui::px(0.0), gpui::px(0.0)),
             gpui::size(gpui::px(800.0), gpui::px(600.0)),
             |_, _| composer.clone().into_any_element(),
         );
 
-        // An empty note is not an answer: the bar stays up.
+        // An empty note is not an answer: the page stays up.
         composer.update(cx, |this, cx| {
             this.on_submit(cx);
             assert!(this.approval_bar.is_some());
         });
 
-        // A typed note IS the answer: the bar retires under suppression
-        // until the doc stamps the card.
+        // The first answer advances the page instead of retiring the bar.
+        composer.update(cx, |this, cx| {
+            this.resolve_approval_bar(
+                crate::composer::approval_bar::BarVerdict::Question("suffix".into()),
+                None,
+                cx,
+            );
+            let bar = this.approval_bar.as_ref().expect("the bar advanced");
+            assert_eq!(bar.page, 1);
+            assert_eq!(bar.answers, vec!["suffix".to_string()]);
+            let prompt = this.bar_prompt(cx).unwrap();
+            assert_eq!(prompt.title, "Which store?");
+            assert_eq!(prompt.pager, Some((2, 2)));
+        });
+
+        // The last page's typed answer submits everything: the bar
+        // retires under suppression until the doc stamps the card.
         composer.update(cx, |this, cx| {
             this.input
-                .update(cx, |input, cx| input.set_text("suffix", cx));
+                .update(cx, |input, cx| input.set_text("sqlite", cx));
             this.on_submit(cx);
             assert!(this.approval_bar.is_none());
             assert!(this.answered_approvals.contains("q1"));

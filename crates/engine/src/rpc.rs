@@ -3230,18 +3230,17 @@ impl RpcService for EngineService {
                     return Err(RpcError::BadParams("invalid chatId".into()));
                 }
                 let card_id = required_string(&params, "cardId")?;
-                let answer = required_string(&params, "choice")?;
+                let answers = required_string_list(&params, "choices")?;
                 let chat = self.runtime.chat(chat_id);
                 if chat.is_removed() {
                     return Err(RpcError::Failed("chat was deleted".into()));
                 }
                 let (config, cwd) = self.chat_run_target(chat_id)?;
-                // The stamp is the claim: a second concurrent click finds
+                // The stamp is the claim: a second concurrent answer finds
                 // the card already Chosen and is refused.
-                let (question, answer) =
-                    crate::tools::ask_user::settle_question(&chat, card_id, answer)
-                        .map_err(RpcError::Failed)?;
-                let notice = crate::tools::ask_user::question_answer_notice(&question, &answer);
+                let pairs = crate::tools::ask_user::settle_question(&chat, card_id, answers)
+                    .map_err(RpcError::Failed)?;
+                let notice = crate::tools::ask_user::question_answer_notice(&pairs);
                 let message_id = format!("question-answer-{}", uuid::Uuid::new_v4());
                 if let Err(error) = self.enqueue_run(
                     chat.clone(),
@@ -3251,7 +3250,8 @@ impl RpcService for EngineService {
                     crate::tools::ask_user::unsettle_question(&chat, card_id);
                     return Err(error);
                 }
-                RpcReply::value(&serde_json::json!({ "answer": answer }))
+                let answers: Vec<String> = pairs.into_iter().map(|(_, answer)| answer).collect();
+                RpcReply::value(&serde_json::json!({ "answers": answers }))
             }
             methods::LIST_API_DIALECTS => {
                 let ids: Vec<String> = pi_core::ai::compat::get_api_providers()

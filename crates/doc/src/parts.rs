@@ -247,6 +247,16 @@ pub enum ProposalCardState {
     Superseded,
 }
 
+/// One question inside a question card (ADR-0040): the asked text and
+/// its 2–6 enumerated options. One card carries 1–4 of these, answered
+/// in one settle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardQuestion {
+    pub question: String,
+    pub options: Vec<String>,
+}
+
 /// Where a Provider Mode provider-choice card stands (ADR-0037). A click
 /// moves it to `Chosen`; any later Turn retires a still-pending one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,18 +477,17 @@ pub enum MessagePart {
         chosen: Option<String>,
         state: ChoiceCardState,
     },
-    /// The agent's question card (ADR-0040): a question the model asked
-    /// through the `ask_user` tool with its 2–6 enumerated options. A
-    /// click or a typed answer settles it through `SettleQuestion`, which
-    /// records `chosen` and queues the answer as an ordinary user message.
+    /// The agent's question card (ADR-0040): 1–4 questions the model
+    /// asked through the `ask_user` tool, each with its enumerated
+    /// options. The answers settle in one `SettleQuestion` call —
+    /// `answers` aligns with `questions` once chosen, and stays empty
+    /// while pending.
     #[serde(rename_all = "camelCase")]
     QuestionCard {
         id: String,
-        question: String,
+        questions: Vec<CardQuestion>,
         #[serde(default)]
-        options: Vec<String>,
-        #[serde(default)]
-        chosen: Option<String>,
+        answers: Vec<String>,
         state: ChoiceCardState,
     },
     /// A Provider Mode API-key request (ADR-0037, amends ADR-0031): which
@@ -567,15 +576,16 @@ impl MessagePart {
                     + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
             MessagePart::QuestionCard {
-                question,
-                options,
-                chosen,
+                questions,
+                answers,
                 state,
                 ..
             } => {
-                question.len()
-                    + options.iter().map(String::len).sum::<usize>()
-                    + chosen.as_deref().map_or(0, str::len)
+                questions
+                    .iter()
+                    .map(|q| q.question.len() + q.options.iter().map(String::len).sum::<usize>())
+                    .sum::<usize>()
+                    + answers.iter().map(String::len).sum::<usize>()
                     + serde_json::to_vec(state).map_or(0, |v| v.len())
             }
             MessagePart::KeyRequest {

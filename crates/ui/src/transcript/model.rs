@@ -301,12 +301,13 @@ pub enum RowKind {
         chosen: Option<SharedString>,
         state: holt_doc::ChoiceCardState,
     },
-    /// The agent's question card (ADR-0040): a question the model asked
-    /// through `ask_user`. A pending card renders only in the composer's
-    /// approval bar (the gate's rule); the settled card is the marker row.
+    /// The agent's question card (ADR-0040): 1–4 questions the model
+    /// asked through `ask_user`. A pending card renders only in the
+    /// composer's approval bar (the gate's rule); the settled card is
+    /// the marker row, one line per answered question.
     QuestionCard {
-        question: SharedString,
-        chosen: Option<SharedString>,
+        questions: Arc<Vec<SharedString>>,
+        answers: Arc<Vec<SharedString>>,
         state: holt_doc::ChoiceCardState,
     },
     /// A Provider Mode key request (ADR-0037): who the key unlocks and the
@@ -1038,14 +1039,13 @@ pub fn rows_for_entry(
                     }
                     MessagePart::QuestionCard {
                         id: part_id,
-                        question,
-                        chosen,
+                        questions,
+                        answers,
                         state,
-                        ..
                     } => {
                         // A PENDING question card builds no transcript row
                         // (the gate's rule): the composer's approval bar
-                        // carries the question and its affordances. The
+                        // carries the questions and their affordances. The
                         // outer arm already flushed the group above with
                         // the tail rule.
                         if *state == holt_doc::ChoiceCardState::Pending {
@@ -1054,13 +1054,27 @@ pub fn rows_for_entry(
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: fnv1a(
-                                format!("{state:?}\0{}", chosen.as_deref().unwrap_or_default())
-                                    .as_bytes(),
+                                format!(
+                                    "{state:?}\0{}",
+                                    answers
+                                        .iter()
+                                        .map(String::as_str)
+                                        .collect::<Vec<_>>()
+                                        .join("\0")
+                                )
+                                .as_bytes(),
                             ),
                             turn_start: false,
                             kind: RowKind::QuestionCard {
-                                question: question.clone().into(),
-                                chosen: chosen.clone().map(SharedString::from),
+                                questions: Arc::new(
+                                    questions
+                                        .iter()
+                                        .map(|q| SharedString::from(q.question.clone()))
+                                        .collect(),
+                                ),
+                                answers: Arc::new(
+                                    answers.iter().cloned().map(SharedString::from).collect(),
+                                ),
                                 state: *state,
                             },
                             entry_id: entry_id.clone(),

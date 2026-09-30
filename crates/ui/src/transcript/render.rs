@@ -1580,10 +1580,10 @@ impl Transcript {
                 cx,
             ),
             RowKind::QuestionCard {
-                question,
-                chosen,
+                questions,
+                answers,
                 state,
-            } => question_card::render_question_card(question, chosen.as_ref(), *state, &theme),
+            } => question_card::render_question_card(questions, answers, *state, &theme),
             RowKind::KeyRequest {
                 provider_name,
                 destination,
