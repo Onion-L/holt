@@ -269,19 +269,20 @@ pub(crate) struct ApprovalBar {
     pub selection: usize,
     /// The question card's current page (0-based); 0 on other kinds.
     pub page: usize,
-    /// The answers stashed from completed question pages; the last
-    /// page's answer rides the verdict into `SettleQuestion`.
-    pub answers: Vec<String>,
+    /// The stashed answer per question page — `None` until that page is
+    /// answered. Pages may be answered in any order (←/→ navigate); the
+    /// card submits once every slot is filled.
+    pub answers: Vec<Option<String>>,
 }
 
 impl ApprovalBar {
-    pub(crate) fn new(id: String, kind: BarKind) -> Self {
+    pub(crate) fn new(id: String, kind: BarKind, pages: usize) -> Self {
         Self {
             id,
             kind,
             selection: 0,
             page: 0,
-            answers: Vec::new(),
+            answers: vec![None; pages],
         }
     }
 
@@ -372,26 +373,31 @@ impl Composer {
         plan_feedback: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        // A multi-question card advances before it submits: the verdict
-        // stashes this page's answer and opens the next question; the
-        // last page's verdict carries every stashed answer into one
-        // `SettleQuestion`.
+        // A multi-question card stashes the page's answer into its slot
+        // and opens the next UNANSWERED question; the card submits only
+        // once every slot is filled — ←/→ may revisit pages freely until
+        // then. The submitting verdict carries nothing itself.
         if let BarVerdict::Question(answer) = &verdict {
-            let total = self
-                .bar_prompt(cx)
-                .and_then(|prompt| prompt.pager)
-                .map_or(1, |(_, total)| total);
             let Some(bar) = self.approval_bar.as_mut() else {
                 return;
             };
-            if bar.page + 1 < total {
-                bar.answers.push(answer.clone());
-                bar.page += 1;
-                bar.selection = 0;
-                self.input.update(cx, |input, cx| input.set_text("", cx));
-                cx.notify();
-                return;
+            if let Some(slot) = bar.answers.get_mut(bar.page) {
+                *slot = Some(answer.clone());
             }
+            if !bar.answers.iter().all(Option::is_some) {
+                let page = bar.page;
+                let next = (page + 1..bar.answers.len())
+                    .find(|&i| bar.answers[i].is_none())
+                    .or((0..page).find(|&i| bar.answers[i].is_none()));
+                if let Some(target) = next {
+                    bar.page = target;
+                    bar.selection = 0;
+                    self.input.update(cx, |input, cx| input.set_text("", cx));
+                    cx.notify();
+                    return;
+                }
+            }
+            // Every slot filled — fall through and submit everything.
         }
         let Some(bar) = self.approval_bar.take() else {
             return;
@@ -404,9 +410,12 @@ impl Composer {
         match verdict {
             BarVerdict::Gate(verdict) => resolve_approval(&self.state, bar.id, verdict, cx),
             BarVerdict::Plan(word) => resolve_plan_approval(&self.state, word, plan_feedback, cx),
-            BarVerdict::Question(answer) => {
-                let mut answers = bar.answers;
-                answers.push(answer);
+            BarVerdict::Question(_) => {
+                let answers = bar
+                    .answers
+                    .into_iter()
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap_or_default();
                 crate::transcript::question_card::resolve_question(
                     &self.state,
                     bar.id,
@@ -414,6 +423,56 @@ impl Composer {
                     cx,
                 );
             }
+        }
+        cx.notify();
+    }
+
+    /// ←/→ steps between the question card's pages while any question is
+    /// unanswered (the card submits the moment all are). Re-entering an
+    /// answered page restores its answer as the cursor: the matching
+    /// option row, or the text back into the note input.
+    pub(super) fn approval_bar_step_page(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let total = self
+            .bar_prompt(cx)
+            .and_then(|prompt| prompt.pager)
+            .map_or(1, |(_, total)| total);
+        let target = {
+            let Some(bar) = self.approval_bar.as_ref() else {
+                return;
+            };
+            let next = bar.page as isize + delta;
+            if next < 0 || next as usize >= total {
+                return;
+            }
+            next as usize
+        };
+        let stashed = self
+            .approval_bar
+            .as_ref()
+            .and_then(|bar| bar.answers.get(target))
+            .cloned()
+            .flatten();
+        if let Some(bar) = self.approval_bar.as_mut() {
+            bar.page = target;
+            bar.selection = 0;
+        }
+        let prompt = self.bar_prompt(cx);
+        let restored = stashed.as_ref().and_then(|answer| {
+            prompt.as_ref().and_then(|prompt| {
+                prompt.options.iter().position(|option| {
+                    matches!(&option.verdict, BarVerdict::Question(text) if text == answer)
+                })
+            })
+        });
+        if let Some(bar) = self.approval_bar.as_mut() {
+            bar.selection = restored.unwrap_or(0);
+        }
+        match stashed {
+            Some(text) if restored.is_none() => {
+                let text = text.clone();
+                self.input.update(cx, |input, cx| input.set_text(&text, cx));
+            }
+            _ => self.input.update(cx, |input, cx| input.set_text("", cx)),
         }
         cx.notify();
     }
@@ -469,6 +528,11 @@ impl Composer {
             }
             cx.stop_propagation();
             cx.notify();
+        } else if key == "left" || key == "right" {
+            // Page navigation for a multi-question card (a focused note
+            // input keeps its caret bindings — the early return above).
+            self.approval_bar_step_page(if key == "left" { -1 } else { 1 }, cx);
+            cx.stop_propagation();
         } else if let Ok(digit) = key.parse::<usize>()
             && (1..=9).contains(&digit)
             && !event.keystroke.modifiers.modified()
@@ -830,7 +894,7 @@ mod tests {
 
     #[test]
     fn the_cursor_clamps_jumps_and_finds_the_note_row() {
-        let mut bar = ApprovalBar::new("g1".into(), BarKind::Gate);
+        let mut bar = ApprovalBar::new("g1".into(), BarKind::Gate, 1);
         let rows = 4; // three options + the note row
         assert_eq!(bar.note_row(rows), 3);
         assert_eq!(bar.selection, 0);
@@ -1172,14 +1236,48 @@ mod tests {
             );
             let bar = this.approval_bar.as_ref().expect("the bar advanced");
             assert_eq!(bar.page, 1);
-            assert_eq!(bar.answers, vec!["suffix".to_string()]);
+            assert_eq!(bar.answers, vec![Some("suffix".to_string()), None]);
             let prompt = this.bar_prompt(cx).unwrap();
             assert_eq!(prompt.title, "Which store?");
             assert_eq!(prompt.pager, Some((2, 2)));
         });
 
-        // The last page's typed answer submits everything: the bar
-        // retires under suppression until the doc stamps the card.
+        // ← returns to the answered page and restores its option as the
+        // cursor; → returns forward with the stash intact. ← again is a
+        // no-op at the first page.
+        composer.update(cx, |this, cx| {
+            this.approval_bar_step_page(-1, cx);
+            let bar = this.approval_bar.as_ref().unwrap();
+            assert_eq!(bar.page, 0);
+            assert_eq!(bar.selection, 1, "the stashed option becomes the cursor");
+            this.approval_bar_step_page(1, cx);
+            assert_eq!(this.approval_bar.as_ref().unwrap().page, 1);
+            this.approval_bar_step_page(1, cx);
+            assert_eq!(this.approval_bar.as_ref().unwrap().page, 1);
+        });
+
+        // Re-answering page one restashes; the card stays open while a
+        // slot is empty, and the LAST answer submits everything.
+        composer.update(cx, |this, cx| {
+            this.approval_bar_step_page(-1, cx);
+            assert_eq!(this.approval_bar.as_ref().unwrap().page, 0);
+            this.resolve_approval_bar(
+                crate::composer::approval_bar::BarVerdict::Question("prefix".into()),
+                None,
+                cx,
+            );
+            // The only unanswered slot is page one — answering lands there.
+            assert_eq!(this.approval_bar.as_ref().unwrap().page, 1);
+            let bar = this.approval_bar.as_ref().unwrap();
+            assert_eq!(
+                bar.answers,
+                vec![Some("prefix".to_string()), None],
+                "the restash replaced the page-one answer"
+            );
+        });
+
+        // The final typed answer fills the card: the bar retires under
+        // suppression until the doc stamps the card.
         composer.update(cx, |this, cx| {
             this.input
                 .update(cx, |input, cx| input.set_text("sqlite", cx));
