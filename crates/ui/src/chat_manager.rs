@@ -33,7 +33,7 @@ pub enum ChatManagerEvent {
 
 /// Which chats the list shows (glossary: status filter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusFilter {
+enum StatusFilter {
     All,
     Active,
     Archived,
@@ -54,7 +54,7 @@ impl StatusFilter {
 /// What the delete confirmation reports (glossary: the confirmation's
 /// breakdown). `spaces` counts DISTINCT spaces the selection touches.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DeleteBreakdown {
+struct DeleteBreakdown {
     pub total: usize,
     pub spaces: usize,
     pub worktrees: usize,
@@ -64,7 +64,7 @@ pub struct DeleteBreakdown {
 /// Filter + sort the manager's rows. Pure. Recency desc (last message, else
 /// creation), ties on id. The query matches the title or the space's display
 /// name, case-insensitive; an empty query passes everything.
-pub fn filter_chats<'a>(
+fn filter_chats<'a>(
     chats: &'a [Chat],
     query: &str,
     status: StatusFilter,
@@ -102,7 +102,7 @@ pub fn filter_chats<'a>(
 }
 
 /// The delete confirmation's breakdown. Pure.
-pub fn delete_breakdown(chats: &[&Chat], live: impl Fn(&Chat) -> bool) -> DeleteBreakdown {
+fn delete_breakdown(chats: &[&Chat], live: impl Fn(&Chat) -> bool) -> DeleteBreakdown {
     let mut spaces = HashSet::new();
     let mut breakdown = DeleteBreakdown::default();
     for chat in chats {
@@ -285,9 +285,10 @@ impl ChatManagerPage {
     }
 
     /// Run one batch: one Mutate per applicable chat, sequentially, stopping
-    /// at the first failure — the Archived page's clear-all precedent. The
-    /// selection clears when the pass settles, success or failure (spec:
-    /// the page stays, the set empties).
+    /// at the first failure — the Archived page's clear-all precedent. On
+    /// success the selection empties; on failure it survives so the pass
+    /// can be retried — rows already applied drop out on their own
+    /// (`params` skips no-ops, render prunes deleted chats).
     fn run_batch(&mut self, kind: BatchKind, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -312,15 +313,23 @@ impl ChatManagerPage {
                 }
             }
             this.update(cx, |page, cx| {
-                page.working = None;
-                page.selection.clear();
-                if let Some(err) = failure {
-                    page.error = Some(format!("{} failed: {err}", kind.verb()).into());
-                }
-                cx.notify();
+                page.batch_settled(kind, failure, cx);
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    /// A pass settled: the busy flag always clears, the selection empties
+    /// only on success, a failure surfaces its error.
+    fn batch_settled(&mut self, kind: BatchKind, failure: Option<String>, cx: &mut Context<Self>) {
+        self.working = None;
+        if failure.is_none() {
+            self.selection.clear();
+        }
+        if let Some(err) = failure {
+            self.error = Some(format!("{} failed: {err}", kind.verb()).into());
+        }
         cx.notify();
     }
 
@@ -571,7 +580,6 @@ impl ChatManagerPage {
                     this.toggle(chat_id.clone(), cx);
                 } else {
                     cx.emit(ChatManagerEvent::OpenChat(chat_id.clone()));
-                    this.space_menu_open = false;
                     cx.notify();
                 }
             }))
@@ -698,6 +706,15 @@ impl Render for ChatManagerPage {
             let state = self.state.read(cx);
             let existing: HashSet<&str> = state.chats.iter().map(|chat| chat.id.as_str()).collect();
             self.selection.retain(|id| existing.contains(id.as_str()));
+            // A filter scoped to a space the engine no longer has would
+            // show an empty list under an "All spaces" label — fall back.
+            if self
+                .space
+                .as_deref()
+                .is_some_and(|id| state.space_row(id).is_none())
+            {
+                self.space = None;
+            }
         }
 
         let rows = self.filtered_rows(cx);
@@ -1001,6 +1018,15 @@ impl Render for ChatManagerPage {
         div()
             .id("chat-manager-page")
             .debug_selector(|| "chat-manager-page".into())
+            // Escape cancels the delete confirmation; stop_propagation
+            // keeps outer Esc surfaces out of the key.
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                if this.confirm_delete && ev.keystroke.key == "escape" {
+                    this.confirm_delete = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -1258,6 +1284,45 @@ mod tests {
         visual.run_until_parked();
         page.read_with(&*visual, |page, _| {
             assert_eq!(page.selection.len(), 2);
+        });
+
+        // A space filter whose space no longer resolves falls back to all
+        // spaces instead of an empty list labelled "All spaces".
+        page.update(&mut *visual, |page, cx| {
+            page.space = Some("gone".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        page.read_with(&*visual, |page, _| {
+            assert_eq!(page.space, None);
+        });
+    }
+
+    /// A settled batch empties the selection only on success — a failure
+    /// keeps it so the pass can be retried.
+    #[gpui::test]
+    fn failed_batch_keeps_selection(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![chat("a"), chat("b")];
+            state
+        });
+        let (page, visual) =
+            cx.add_window_view(|_window, cx| ChatManagerPage::new(state.clone(), cx));
+        page.update(&mut *visual, |page, cx| {
+            page.selection.insert("a".into());
+            page.selection.insert("b".into());
+            page.batch_settled(BatchKind::Archive, Some("engine gone".into()), cx);
+            assert_eq!(page.selection.len(), 2);
+            assert!(page.error.is_some());
+            assert_eq!(page.working, None);
+            page.batch_settled(BatchKind::Archive, None, cx);
+            assert!(page.selection.is_empty());
         });
     }
 }

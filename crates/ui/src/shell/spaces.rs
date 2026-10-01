@@ -143,9 +143,11 @@ pub(super) struct SidebarViewMenu {
     focus: FocusHandle,
 }
 
-struct SidebarViewOptionsTooltip;
+/// One line of hover help on a square sidebar trigger — the view-options
+/// and chat-manager buttons share this form.
+struct SidebarTooltip(SharedString);
 
-impl Render for SidebarViewOptionsTooltip {
+impl Render for SidebarTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
         div()
@@ -158,26 +160,7 @@ impl Render for SidebarViewOptionsTooltip {
             .shadow_md()
             .text_size(crate::typography::ui_rems(11.0))
             .text_color(theme.text)
-            .child("Sidebar view options")
-    }
-}
-
-struct ChatManagerTooltip;
-
-impl Render for ChatManagerTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
-        div()
-            .px(px(8.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.surface_raised)
-            .shadow_md()
-            .text_size(crate::typography::ui_rems(11.0))
-            .text_color(theme.text)
-            .child("Chat manager")
+            .child(self.0.clone())
     }
 }
 
@@ -704,7 +687,10 @@ impl Shell {
                     }
                 }
             }))
-            .tooltip(|_, cx| cx.new(|_| SidebarViewOptionsTooltip).into())
+            .tooltip(|_, cx| {
+                cx.new(|_| SidebarTooltip("Sidebar view options".into()))
+                    .into()
+            })
             .tooltip_show_delay(std::time::Duration::from_millis(350))
             .child(
                 icon(icons::SORT)
@@ -741,7 +727,7 @@ impl Shell {
             .text_color(theme.text_muted)
             .hover(|el| el.bg(theme.glass_hover()))
             .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
-            .tooltip(|_, cx| cx.new(|_| ChatManagerTooltip).into())
+            .tooltip(|_, cx| cx.new(|_| SidebarTooltip("Chat manager".into())).into())
             .tooltip_show_delay(std::time::Duration::from_millis(350))
             .child(
                 icon(icons::CHECKLIST)
