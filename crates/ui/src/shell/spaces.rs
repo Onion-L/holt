@@ -162,6 +162,25 @@ impl Render for SidebarViewOptionsTooltip {
     }
 }
 
+struct ChatManagerTooltip;
+
+impl Render for ChatManagerTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .shadow_md()
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text)
+            .child("Chat manager")
+    }
+}
+
 // With the search field and card insets, this gives the project picker a
 // bounded maximum footprint while retaining an internal scroll region for
 // larger project lists.
@@ -706,6 +725,30 @@ impl Shell {
             view_trigger
         };
 
+        // Chat manager entry (glossary "Chat manager"): the global batch
+        // session page. Same square ghost form as the view-options button.
+        let manage_trigger = div()
+            .id("sidebar-chat-manager")
+            .role(gpui::Role::Button)
+            .aria_label("Chat manager")
+            .size(px(29.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .text_color(theme.text_muted)
+            .hover(|el| el.bg(theme.glass_hover()))
+            .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
+            .tooltip(|_, cx| cx.new(|_| ChatManagerTooltip).into())
+            .tooltip_show_delay(std::time::Duration::from_millis(350))
+            .child(
+                icon(icons::CHECKLIST)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            );
+
         div()
             .flex_none()
             .flex()
@@ -716,6 +759,7 @@ impl Shell {
             .pt(px(8.0))
             .pb(px(4.0))
             .child(trigger)
+            .child(manage_trigger)
             .child(view_trigger)
             .into_any_element()
     }

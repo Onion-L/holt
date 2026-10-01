@@ -39,8 +39,6 @@ _Avoid_: double-Esc stop
   _Avoid_: calling the status list "Changes" (Changes is the Diff scope viewer)
 - **Staging**: git's index as operated from the Git panel. Staging marks a path's current changes for the next commit; unstaging removes them from the index. Neither touches file contents. A path can carry staged and unstaged changes at once, and then appears in both sections. A conflicted path can be neither staged nor unstaged from the panel. Ignored paths never appear.
   _Avoid_: tracked (the middle section is Unstaged), checkbox state as a source of truth (the index is)
-- **Chat search**: the palette that finds Chats across every Space by title and Space display name. It is global by design — never scoped to the sidebar's Space filter. Archived chats are included; chats whose Space no longer resolves are not. A chat without a title matches by its Space name alone. Opened on an empty query, it lists the most recent chats — a quick switcher.
-  _Avoid_: search on its own (Content search is the local one), project search (the Usage page's project is a cwd path)
 - **Content search**: regex search over file contents, rooted at the chat's working directory by default and scoped by a path prefix and a filename filter. Relative paths resolve against that directory; absolute paths may select another search root. The agent-facing tool is named `grep`; the transcript renders it as a Search chip. Hidden files are searched; ignored files are not.
 - **Web fetch**: the agent-facing retrieval of one web URL over http(s), returned as readable content within the tool's size limits. It reads pages; finding them is Web search's job.
   _Avoid_: fetch (that is git vocabulary), browse
@@ -82,6 +80,8 @@ _Avoid_: double-Esc stop
 - **Pinned** (a chat): a chat held in the sidebar's pinned section above the sorted Sessions list. The mark belongs to the chat itself — it travels with the chat's record, not with a device — and Unpin is its only inverse. Pinning changes placement only; it gates nothing.
   _Avoid_: star, favorite
 - **Saved viewport**: a chat's remembered scroll position, restored when the chat is reopened. A chat with no saved viewport opens at its latest content.
+- **Chat manager**: the global page listing every Chat on the device — active and archived, across all Spaces — with text search, status and Space filters, and multi-selection for batch operations. Batch delete is irreversible and confirmed once with a breakdown (Spaces involved, session-worktree chats, chats with a live Turn); batch archive and unarchive are reversible and unconfirmed. The selection is a persistent set that survives filter changes; Select all covers the currently filtered list.
+  _Avoid_: thread manager, session manager (the managed entity is the Chat)
 - **Title source**: whether a chat title was supplied by the user or produced automatically; a user-supplied title is authoritative over later automatic suggestions.
 - **Automatic title**: a short, model-generated name derived from a chat's first user prompt, used only when the chat has no user-supplied title.
 - **Title settings**: the device-wide choice of model and instruction used for automatic titles; an empty model means automatic titles are disabled.

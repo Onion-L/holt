@@ -170,7 +170,9 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let inner: AnyElement = match self.route {
             Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
-            Route::Chat => self.render_chat_sidebar(&theme, cx),
+            // The Chat manager keeps the session sidebar — it manages what
+            // that sidebar lists.
+            Route::Chat | Route::ChatManager => self.render_chat_sidebar(&theme, cx),
         };
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main

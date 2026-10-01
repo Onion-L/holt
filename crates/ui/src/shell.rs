@@ -26,6 +26,7 @@ use gpui::{
 use holt_rpc::methods;
 
 use crate::changes::{Changes, ChangesEvent};
+use crate::chat_manager::{ChatManagerEvent, ChatManagerPage};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::files::FileStateMap;
 use crate::files::tree::{FileMenuTarget, FileTreeEvent, FileTreePanel};
@@ -78,7 +79,8 @@ actions!(
         OpenSettings,
         NextSession,
         PrevSession,
-        ArchiveSession
+        ArchiveSession,
+        OpenChatManager
     ]
 );
 
@@ -298,6 +300,9 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // Fixed: ⌘P opens the find-file palette (ticket 09) — the tree
         // column's search row carries the same shortcut.
         KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
+        // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
+        // sidebar's checklist button carries the same action.
+        KeyBinding::new(&platform_combo("mod-shift-m"), OpenChatManager, None),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
@@ -362,6 +367,8 @@ impl SettingsSection {
 pub enum Route {
     Chat,
     Settings(SettingsSection),
+    /// The Chat manager page (glossary) — global batch session operations.
+    ChatManager,
 }
 
 /// One route-history entry (holt parity: the renderer's TanStack memory
@@ -371,6 +378,7 @@ pub enum NavEntry {
     /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
     Settings(SettingsSection),
+    ChatManager,
 }
 
 /// Browser-style navigation history for the titlebar back/forward buttons
@@ -701,6 +709,8 @@ pub struct Shell {
     mcp_page: Option<Entity<crate::settings::mcp::McpPage>>,
     general_page: Option<Entity<crate::settings::general::GeneralPage>>,
     usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
+    chat_manager_page: Option<Entity<ChatManagerPage>>,
+    chat_manager_sub: Option<Subscription>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -988,6 +998,8 @@ impl Shell {
             Some("settings/skills") => Route::Settings(SettingsSection::Skills),
             Some("settings/usage") => Route::Settings(SettingsSection::Usage),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
+            // `chats` boots straight into the Chat manager page.
+            Some("chats") => Route::ChatManager,
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
@@ -1012,6 +1024,7 @@ impl Shell {
         let nav = NavHistory::new(match route {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
+            Route::ChatManager => NavEntry::ChatManager,
         });
         Self {
             state,
@@ -1073,6 +1086,8 @@ impl Shell {
             skills_page: None,
             general_page: None,
             usage_page: None,
+            chat_manager_page: None,
+            chat_manager_sub: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1707,6 +1722,38 @@ impl Shell {
         cx.notify();
     }
 
+    /// Open the Chat manager page (⌘⇧M / the sidebar's checklist button).
+    /// Pressing the shortcut again on the page walks back to wherever the
+    /// user came from.
+    fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.route, Route::ChatManager) {
+            self.navigate_back(cx);
+            return;
+        }
+        self.route = Route::ChatManager;
+        self.nav.push(NavEntry::ChatManager);
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
+    /// The Chat manager page, created on first use. Row clicks navigate via
+    /// the page's OpenChat event.
+    fn chat_manager_page(&mut self, cx: &mut Context<Self>) -> Entity<ChatManagerPage> {
+        if let Some(page) = &self.chat_manager_page {
+            return page.clone();
+        }
+        let state = self.state.clone();
+        let page = cx.new(|cx| ChatManagerPage::new(state, cx));
+        self.chat_manager_sub = Some(cx.subscribe(
+            &page,
+            |this: &mut Shell, _, event: &ChatManagerEvent, cx| match event {
+                ChatManagerEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
+            },
+        ));
+        self.chat_manager_page = Some(page.clone());
+        page
+    }
+
     fn close_settings(&mut self, cx: &mut Context<Self>) {
         if let Some(page) = self.providers_page.as_ref() {
             page.update(cx, |page, cx| page.clear_revealed(cx));
@@ -1754,6 +1801,9 @@ impl Shell {
                     page.update(cx, |page, cx| page.clear_revealed(cx));
                 }
                 self.route = Route::Settings(section);
+            }
+            NavEntry::ChatManager => {
+                self.route = Route::ChatManager;
             }
         }
         self.close_chat_menu(cx);
@@ -2550,11 +2600,15 @@ impl Shell {
         let theme = &theme_owned;
         let (border, text) = (theme.border, theme.text);
 
-        // Settings route: just the section outlet — the section label lives in
-        // the unified window titlebar now (render_title_bar). Settings never
-        // underlaps: pad below the overlaid titlebar.
-        if let Route::Settings(section) = self.route {
-            let outlet = self.settings_outlet(section, cx);
+        // Settings and Chat manager routes: just the page outlet — the
+        // label lives in the unified window titlebar (render_title_bar).
+        // Pages never underlap: pad below the overlaid titlebar.
+        let page_outlet: Option<AnyElement> = match self.route {
+            Route::Settings(section) => Some(self.settings_outlet(section, cx)),
+            Route::ChatManager => Some(self.chat_manager_page(cx).into_any_element()),
+            Route::Chat => None,
+        };
+        if let Some(outlet) = page_outlet {
             return div()
                 .flex_1()
                 .min_w_0()
@@ -3208,7 +3262,7 @@ impl Render for Shell {
                     // reads None (the render hook below re-lands focus when the
                     // route returns to Chat; a lingering unmounted handle would
                     // otherwise dead-end keyboard dispatch for good).
-                    Route::Settings(_) => window.blur(),
+                    Route::Settings(_) | Route::ChatManager => window.blur(),
                 }
             }));
         }
@@ -3327,6 +3381,9 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &OpenFileLookup, _, cx| {
                 this.toggle_file_lookup(cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenChatManager, _, cx| {
+                this.open_chat_manager(cx);
             }));
 
         let root = match &gate {
