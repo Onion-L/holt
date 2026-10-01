@@ -2267,13 +2267,21 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         tool_usage_total(&result),
                     );
                     // Provider Mode cards (ADR-0037): a stored proposal or a
-                    // shown Key request lands as a card after its tool part.
+                    // shown Key request lands as a card after its tool part;
+                    // the question card (ADR-0040) lands the same way.
                     if !is_error
                         && let Some(card) = crate::provider_mode::tool_card(
                             &tool_call_id,
                             &tool_name,
                             &result.details,
                         )
+                        .or_else(|| {
+                            crate::tools::ask_user::tool_card(
+                                &tool_call_id,
+                                &tool_name,
+                                &result.details,
+                            )
+                        })
                     {
                         let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
                         match card {
@@ -2285,6 +2293,9 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                             }
                             MessagePart::ProviderChoice { .. } => {
                                 crate::provider_mode::supersede_choice_cards(&chat);
+                            }
+                            MessagePart::QuestionCard { .. } => {
+                                crate::tools::ask_user::supersede_question_cards(&chat);
                             }
                             _ => {}
                         }
@@ -2558,7 +2569,15 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         runtime.clone(),
         current_chat_id,
     ));
+    // A new Turn moved past any still-open question (ADR-0040) — a typed
+    // answer, or the card click that queued this very Turn (already
+    // stamped chosen). Every mode runs questions; no branch here.
+    crate::tools::ask_user::supersede_question_cards(&chat);
     if let Some(child) = &chat.child {
+        // A subagent never asks the user (ADR-0040): its questions are its
+        // findings, reported through the parent. Workers keep the rest of
+        // the default toolset; explorers keep only the read-only surface.
+        tools.retain(|tool| tool.name != "ask_user");
         if child.role == "explorer" {
             tools.retain(|tool| explorer_tool_allowed(&tool.name));
         }

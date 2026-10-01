@@ -301,6 +301,15 @@ pub enum RowKind {
         chosen: Option<SharedString>,
         state: holt_doc::ChoiceCardState,
     },
+    /// The agent's question card (ADR-0040): 1–4 questions the model
+    /// asked through `ask_user`. A pending card renders only in the
+    /// composer's approval bar (the gate's rule); the settled card is
+    /// the marker row, one line per answered question.
+    QuestionCard {
+        questions: Arc<Vec<SharedString>>,
+        answers: Arc<Vec<SharedString>>,
+        state: holt_doc::ChoiceCardState,
+    },
     /// A Provider Mode key request (ADR-0037): who the key unlocks and the
     /// one destination it goes to. The masked input is a Transcript-owned
     /// entity keyed by row id — the key never enters the row.
@@ -826,12 +835,23 @@ pub fn rows_for_entry(
                 group_last_part_ix = part_ix;
             }
             other => {
-                flush_group(
-                    &mut rows,
-                    &mut pending_group,
-                    &mut group_ix,
-                    group_last_part_ix,
-                );
+                // A pending question card keeps the group above it as the
+                // live tail (the gate's rule): the turn is stopped on the
+                // answer, not finished. A stale mid-entry card flushes
+                // normally.
+                let flush_tail_ix = if part_ix == last_part_ix
+                    && matches!(
+                        other,
+                        MessagePart::QuestionCard {
+                            state: holt_doc::ChoiceCardState::Pending,
+                            ..
+                        }
+                    ) {
+                    last_part_ix
+                } else {
+                    group_last_part_ix
+                };
+                flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
                 match other {
                     MessagePart::Text { id: part_id, text } => {
                         if text.trim().is_empty() {
@@ -1016,6 +1036,51 @@ pub fn rows_for_entry(
                             copy_text: None,
                         });
                     }
+                    MessagePart::QuestionCard {
+                        id: part_id,
+                        questions,
+                        answers,
+                        state,
+                    } => {
+                        // A PENDING question card builds no transcript row
+                        // (the gate's rule): the composer's approval bar
+                        // carries the questions and their affordances. The
+                        // outer arm already flushed the group above with
+                        // the tail rule.
+                        if *state == holt_doc::ChoiceCardState::Pending {
+                            continue;
+                        }
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(
+                                format!(
+                                    "{state:?}\0{}",
+                                    answers
+                                        .iter()
+                                        .map(String::as_str)
+                                        .collect::<Vec<_>>()
+                                        .join("\0")
+                                )
+                                .as_bytes(),
+                            ),
+                            turn_start: false,
+                            kind: RowKind::QuestionCard {
+                                questions: Arc::new(
+                                    questions
+                                        .iter()
+                                        .map(|q| SharedString::from(q.question.clone()))
+                                        .collect(),
+                                ),
+                                answers: Arc::new(
+                                    answers.iter().cloned().map(SharedString::from).collect(),
+                                ),
+                                state: *state,
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                        });
+                    }
                     MessagePart::KeyRequest {
                         id: part_id,
                         provider_id,
@@ -1133,6 +1198,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
             | RowKind::PlanApproval { .. }
             | RowKind::ModelProposal { .. }
             | RowKind::ProviderChoice { .. }
+            | RowKind::QuestionCard { .. }
             | RowKind::KeyRequest { .. }
             | RowKind::TurnChangeCard { .. }
     ) || prev.is_some_and(|row| {
@@ -1142,6 +1208,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
                 | RowKind::PlanApproval { .. }
                 | RowKind::ModelProposal { .. }
                 | RowKind::ProviderChoice { .. }
+                | RowKind::QuestionCard { .. }
                 | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
         )
@@ -1294,6 +1361,7 @@ pub(super) fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u
             MessagePart::PlanApproval { .. }
                 | MessagePart::ModelProposal { .. }
                 | MessagePart::ProviderChoice { .. }
+                | MessagePart::QuestionCard { .. }
                 | MessagePart::KeyRequest { .. }
         ) {
             acc.extend_from_slice(&serde_json::to_vec(part).unwrap_or_default());

@@ -389,7 +389,9 @@ struct MetricTile {
     detail: String,
 }
 
-/// The six range metrics. Token tiles print [`compact_tokens`], echoed one
+/// The range metrics — six, minus Cache write when no usage in range
+/// reported one (OpenAI-compatible providers never do). Token tiles print
+/// [`compact_tokens`], echoed one
 /// decimal finer on hover; Cache hit prints the engine's own rate — the
 /// one computed with cache writes out of the denominator — and names the
 /// compact fraction on hover; Active days names its range.
@@ -404,8 +406,10 @@ fn metric_tiles(reply: &UsageStatsReply) -> Vec<MetricTile> {
         token_tile("Input", totals.input),
         token_tile("Output", totals.output),
         token_tile("Cache read", totals.cache_read),
-        token_tile("Cache write", totals.cache_write),
     ];
+    if totals.cache_write > 0 {
+        tiles.push(token_tile("Cache write", totals.cache_write));
+    }
     tiles.push(MetricTile {
         label: "Cache hit",
         value: totals.cache_hit.map_or_else(|| "—".to_string(), percent),
@@ -2855,6 +2859,17 @@ mod tests {
                 .unwrap()
                 .value,
             "—"
+        );
+
+        // OpenAI-compatible providers never report a cache write, so the
+        // tile only exists when some usage in range reported one.
+        let mut no_write = decode_reply(summary_reply_json());
+        no_write.totals.cache_write = 0;
+        assert_eq!(metric_tiles(&no_write).len(), 5);
+        assert!(
+            !metric_tiles(&no_write)
+                .iter()
+                .any(|t| t.label == "Cache write")
         );
     }
 

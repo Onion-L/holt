@@ -184,6 +184,23 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   write/submit tools + injection to the conversational `<proposed_plan>`
   convention after reviewing Codex's plan mode; the enforced read-only
   toolset and the approval cards stay.)
+- Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
+  transcript part — 1–4 questions, each with 2–6 enumerated options —
+  and returns: the model stops its Turn; it never blocks a tool result.
+  The pending card renders in the composer's approval bar as its third
+  kind, one page per question with a `1/N` pager (options as
+  keyboard-first rows, the note row as the free-text answer) and builds
+  no transcript row; the settled card lands as a small marker row, one
+  line per answer. `SettleQuestion` (`{chatId, cardId, choices}`: one
+  verbatim answer per question — a clicked option or the typed text)
+  stamps the card chosen under one transcript lock and enqueues each
+  question restated with its answer as an ordinary user message; a
+  failed enqueue rolls the stamp back. Escape dismisses the bar, and
+  `DismissQuestion` (`{chatId, cardId}`) stamps the unanswered card
+  superseded (persistent — a restart does not resurrect it). Any new
+  Turn retires still-pending question cards, and Plan / Provider Mode
+  mount no `ask_user` (their whitelists keep their own asking
+  conventions).
 - Catalog: provider-scoped `ListModels`, plus `ListCommands` and `ListSkills`
   (the skills catalog, ADR-0005/0006: one fresh scan of the chat's three
   skill roots — project `.agents/skills` at the cwd, personal

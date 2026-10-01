@@ -518,11 +518,12 @@ impl Composer {
                 if !same && self.wizard.is_none() {
                     self.reset_mention(None, cx);
                     let prompt = p.prompt();
-                    self.approval_bar = Some(ApprovalBar::new(
-                        p.id().to_string(),
-                        prompt.kind,
-                        prompt.options.len(),
-                    ));
+                    let pages = match &p {
+                        PendingApproval::Question { questions, .. } => questions.len(),
+                        _ => 1,
+                    };
+                    self.approval_bar =
+                        Some(ApprovalBar::new(p.id().to_string(), prompt.kind, pages));
                     self.approval_bar_focus_pending = true;
                     // The shared input becomes the bar's note row.
                     self.input.update(cx, |input, cx| {
@@ -857,7 +858,9 @@ impl Render for Composer {
             }
             return container.child(motion::fade_quick(
                 "composer-approval-bar",
-                div().child(bar),
+                // The tall option list reads as glued to the window edge
+                // with only the container's padding — lift it a step.
+                div().mb(px(Theme::SPACE_MD)).child(bar),
             ));
         }
 

@@ -26,6 +26,7 @@ use super::model::{
     Row, RowKind, ToolItem, UserSkill, fnv1a, format_skill_title, format_timestamp, is_agent_call,
     is_spawn_link, skill_file_display, tool_group_collapses, top_gap_for,
 };
+use super::question_card;
 use super::tool::{
     BLOB_AFFORDANCE_HEIGHT, CHIP_GAP, CHIP_HEIGHT, CHIPS_TOP_PAD, ChipAffordance,
     OUTPUT_LINE_HEIGHT, ToolDetail, chips_height, detail_height, format_kb, tool_group_summary,
@@ -1578,6 +1579,11 @@ impl Transcript {
                 &theme,
                 cx,
             ),
+            RowKind::QuestionCard {
+                questions,
+                answers,
+                state,
+            } => question_card::render_question_card(questions, answers, *state, &theme),
             RowKind::KeyRequest {
                 provider_name,
                 destination,

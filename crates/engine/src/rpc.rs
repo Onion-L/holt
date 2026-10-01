@@ -3224,6 +3224,49 @@ impl RpcService for EngineService {
                 }
                 RpcReply::value(&serde_json::json!({ "providerId": chosen.id }))
             }
+            methods::SETTLE_QUESTION => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let card_id = required_string(&params, "cardId")?;
+                let answers = required_string_list(&params, "choices")?;
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                let (config, cwd) = self.chat_run_target(chat_id)?;
+                // The stamp is the claim: a second concurrent answer finds
+                // the card already Chosen and is refused.
+                let pairs = crate::tools::ask_user::settle_question(&chat, card_id, answers)
+                    .map_err(RpcError::Failed)?;
+                let notice = crate::tools::ask_user::question_answer_notice(&pairs);
+                let message_id = format!("question-answer-{}", uuid::Uuid::new_v4());
+                if let Err(error) = self.enqueue_run(
+                    chat.clone(),
+                    Self::queued_run_request(&config, &notice, cwd),
+                    message_id,
+                ) {
+                    crate::tools::ask_user::unsettle_question(&chat, card_id);
+                    return Err(error);
+                }
+                let answers: Vec<String> = pairs.into_iter().map(|(_, answer)| answer).collect();
+                RpcReply::value(&serde_json::json!({ "answers": answers }))
+            }
+            methods::DISMISS_QUESTION => {
+                let chat_id = required_string(&params, "chatId")?;
+                if !crate::store::id_is_path_safe(chat_id) {
+                    return Err(RpcError::BadParams("invalid chatId".into()));
+                }
+                let card_id = required_string(&params, "cardId")?;
+                let chat = self.runtime.chat(chat_id);
+                if chat.is_removed() {
+                    return Err(RpcError::Failed("chat was deleted".into()));
+                }
+                crate::tools::ask_user::dismiss_question(&chat, card_id)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&serde_json::json!({ "dismissed": true }))
+            }
             methods::LIST_API_DIALECTS => {
                 let ids: Vec<String> = pi_core::ai::compat::get_api_providers()
                     .iter()

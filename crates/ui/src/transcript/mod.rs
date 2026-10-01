@@ -91,6 +91,7 @@ mod model;
 mod approval;
 mod plan_card;
 mod provider_card;
+pub(crate) mod question_card;
 pub use plan_card::{pending_plan_approval, resolve_plan_approval};
 
 pub use approval::{
