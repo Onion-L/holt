@@ -16,6 +16,7 @@ use pi_core::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -72,7 +73,7 @@ fn validate_question(input: &QuestionInput) -> Result<CardQuestion, String> {
     if question.is_empty() {
         return Err("every question must be a non-empty string".into());
     }
-    let mut options: Vec<String> = input
+    let options: Vec<String> = input
         .options
         .iter()
         .map(|option| option.trim().to_string())
@@ -90,10 +91,10 @@ fn validate_question(input: &QuestionInput) -> Result<CardQuestion, String> {
              likely and put the rest in order"
         ));
     }
-    options.sort();
-    let unique = options.len();
-    options.dedup();
-    if options.len() != unique {
+    // "most likely first" is the contract: keep the caller's order and
+    // check duplicates without sorting the stored options.
+    let unique: HashSet<&str> = options.iter().map(String::as_str).collect();
+    if unique.len() != options.len() {
         return Err(format!("\"{question}\" has duplicate options"));
     }
     Ok(CardQuestion {
@@ -375,6 +376,24 @@ mod tests {
                 "questions": [
                     { "question": "Prefix or suffix?", "options": ["prefix", "suffix"] },
                     { "question": "Store?", "options": ["memory", "sqlite"] }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn options_keep_their_most_likely_first_order() {
+        let result = ask_user(&json!({
+            "questions": [
+                { "question": "Store?", "options": ["sqlite", "memory", "disk"] }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            result.details,
+            json!({
+                "questions": [
+                    { "question": "Store?", "options": ["sqlite", "memory", "disk"] }
                 ]
             })
         );

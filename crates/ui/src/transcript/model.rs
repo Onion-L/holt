@@ -787,7 +787,6 @@ pub fn rows_for_entry(
                     } else {
                         group_last_part_ix
                     };
-                    eprintln!("DBG gate-skip flush tail={flush_tail_ix}");
                     flush_group(&mut rows, &mut pending_group, &mut group_ix, flush_tail_ix);
                     continue;
                 }
