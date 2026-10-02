@@ -450,7 +450,14 @@ impl Transcript {
                     .map_or(chosen, |option| option.name.as_str());
                 card.child(state_line(format!("✓ Using {name} · {chosen}"), theme))
             }
-            ChoiceCardState::Superseded => card.child(state_line("No longer active", theme)),
+            ChoiceCardState::Superseded => {
+                // Dead history: one muted line, no frame.
+                return div()
+                    .py(px(4.0))
+                    .w_full()
+                    .child(state_line("Which provider? — no longer active", theme))
+                    .into_any_element();
+            }
         };
         div()
             .py(px(4.0))
@@ -582,7 +589,15 @@ impl Transcript {
             KeyCardState::Saved => card.child(state_line("✓ Key saved", theme)),
             KeyCardState::Dismissed => card.child(state_line("Dismissed", theme)),
             KeyCardState::Superseded => {
-                card.child(state_line("Superseded by a newer request", theme))
+                // Dead history: one muted line, no frame.
+                return div()
+                    .py(px(4.0))
+                    .w_full()
+                    .child(state_line(
+                        format!("API key for {provider_name} — superseded by a newer request"),
+                        theme,
+                    ))
+                    .into_any_element();
             }
         };
         div()

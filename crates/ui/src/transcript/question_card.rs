@@ -113,7 +113,8 @@ fn state_line(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
 /// The settled card's compact marker row: one line per question. A
 /// pending card builds no row — the bar carries it — so this renders
 /// only settled states; a pending card that still reaches render (a
-/// stale frame) shows its bare questions without affordances.
+/// stale frame) shows its bare questions without affordances. A
+/// superseded card is dead history: one truncated muted line, no frame.
 pub(super) fn render_question_card(
     questions: &[SharedString],
     answers: &[SharedString],
@@ -131,10 +132,16 @@ pub(super) fn render_question_card(
             }
         }
         ChoiceCardState::Superseded => {
-            for question in questions {
-                card = card.child(state_line(question.clone(), theme));
-            }
-            card = card.child(state_line("No longer active — answered in chat", theme));
+            let summary = questions
+                .iter()
+                .map(SharedString::as_ref)
+                .collect::<Vec<_>>()
+                .join(" · ");
+            return div()
+                .py(px(4.0))
+                .w_full()
+                .child(state_line(format!("{summary} — no longer active"), theme).truncate())
+                .into_any_element();
         }
         ChoiceCardState::Pending => {
             for question in questions {
