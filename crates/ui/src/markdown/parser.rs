@@ -15,6 +15,8 @@ use std::ops::Range;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 
+use super::cjk;
+
 // ---------------------------------------------------------------------------
 // Tree model
 // ---------------------------------------------------------------------------
@@ -122,10 +124,20 @@ fn fence_closed(slice: &str) -> bool {
     })
 }
 
-/// Parse a whole source into a [`BlockTree`].
+/// Parse a whole source into a [`BlockTree`]. Text with CJK-adjacent `**`
+/// goes through the [`cjk`] pre-pass first: only the parse sees the rewritten
+/// text — events (and therefore every range below) come back in canonical
+/// source coordinates, and the inserted characters are stripped on the way
+/// out.
 pub fn parse_full(source: &str) -> BlockTree {
-    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
+    let cjk_fix = cjk::rewrite(source);
+    let (parse_source, insertions) = match &cjk_fix {
+        Some((rewritten, offsets)) => (rewritten.as_str(), Some(offsets.as_slice())),
+        None => (source, None),
+    };
+    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(parse_source, options())
         .into_offset_iter()
+        .map(|(event, range)| (cjk::strip(event), cjk::to_original(range, insertions)))
         .collect();
     let mut cur = Cursor {
         events: &events,
@@ -785,6 +797,7 @@ mod tests {
 
     const CORPORA: &[&str] = &[
         "# Title\n\nHello **bold** and *italic* and `code` and ~~gone~~.\n",
+        "中文**授权（v1）**问题，然后**继续**。\n\n- 列表项**加粗（x）**结尾\n",
         "Paragraph one\nlazy continuation\n\nParagraph two with a [link](https://x.dev).\n",
         "- item one\n- item two\n  - nested a\n  - nested b\n- item three\n\ntail\n",
         "1. first\n2. second\n\n   loose paragraph in item\n\n3. third\n",
@@ -1195,6 +1208,146 @@ mod tests {
         let mut p = IncrementalParser::new();
         p.append("");
         assert!(p.tree().is_empty());
+    }
+
+    /// Paragraph runs as (text, bold, italic, code) tuples.
+    fn para_runs(source: &str) -> Vec<(String, bool, bool, bool)> {
+        match &parse_full(source).blocks[0].block {
+            Block::Paragraph { runs } => runs
+                .iter()
+                .map(|r| (r.text.clone(), r.style.bold, r.style.italic, r.style.code))
+                .collect(),
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    /// The reported bug: `**` around a fullwidth paren must render bold
+    /// instead of staying literal, with no marker or ZWSP left in the text.
+    #[test]
+    fn cjk_bold_around_fullwidth_paren() {
+        let source = "本质是一个**授权范围放大（privilege scope expansion）**问题：";
+        assert_eq!(
+            para_runs(source),
+            vec![
+                ("本质是一个".into(), false, false, false),
+                (
+                    "授权范围放大（privilege scope expansion）".into(),
+                    true,
+                    false,
+                    false
+                ),
+                ("问题：".into(), false, false, false),
+            ]
+        );
+    }
+
+    /// Before the fix this sentence rendered as two overlapping garbage
+    /// spans (`）**问` cannot close, so it opened and cascaded); it must
+    /// now pair exactly as written.
+    #[test]
+    fn cjk_intent_pairing() {
+        assert_eq!(
+            para_runs("他说**中文（English）**问题，然后**继续**。"),
+            vec![
+                ("他说".into(), false, false, false),
+                ("中文（English）".into(), true, false, false),
+                ("问题，然后".into(), false, false, false),
+                ("继续".into(), true, false, false),
+                ("。".into(), false, false, false),
+            ]
+        );
+    }
+
+    /// Shapes that already rendered correctly before the fix must be
+    /// byte-identical after it.
+    #[test]
+    fn cjk_fix_leaves_plain_emphasis_unchanged() {
+        assert_eq!(
+            para_runs("**粗体**，**另一个**"),
+            vec![
+                ("粗体".into(), true, false, false),
+                ("，".into(), false, false, false),
+                ("另一个".into(), true, false, false),
+            ]
+        );
+        assert_eq!(
+            para_runs("（**粗**）和（*斜*）与***都***"),
+            vec![
+                ("（".into(), false, false, false),
+                ("粗".into(), true, false, false),
+                ("）和（".into(), false, false, false),
+                ("斜".into(), false, true, false),
+                ("）与".into(), false, false, false),
+                ("都".into(), true, true, false),
+            ]
+        );
+        assert_eq!(
+            para_runs("**bold**（注）然后**again**（完）"),
+            vec![
+                ("bold".into(), true, false, false),
+                ("（注）然后".into(), false, false, false),
+                ("again".into(), true, false, false),
+                ("（完）".into(), false, false, false),
+            ]
+        );
+    }
+
+    /// The pre-pass runs before parsing and cannot know code spans; whatever
+    /// lands inside code must be stripped back out, leaving code verbatim.
+    #[test]
+    fn cjk_code_content_unpolluted() {
+        let tree = parse_full("```\n中文**中文\n```\n\n`a**（b）`**加**\n");
+        let Block::CodeBlock { code, .. } = &tree.blocks[0].block else {
+            panic!("expected code block");
+        };
+        assert_eq!(code, "中文**中文");
+        assert_eq!(
+            para_runs("`a**（b）`**加**"),
+            vec![
+                ("a**（b）".into(), false, false, true),
+                ("加".into(), true, false, false),
+            ]
+        );
+    }
+
+    /// TopBlock ranges stay canonical: they must slice the original source
+    /// (streaming boundaries and mend depend on it), never the rewritten
+    /// text.
+    #[test]
+    fn cjk_top_level_ranges_slice_canonical_source() {
+        let source = "前**授权（v1）**问题\n\n```fence\nx**y\n```\n";
+        let tree = parse_full(source);
+        for block in &tree.blocks {
+            let slice = &source[block.range.clone()];
+            assert!(!slice.contains('\u{200b}'), "range into rewritten text");
+        }
+        assert_eq!(&source[tree.blocks[1].range.clone()], "```fence\nx**y\n```");
+    }
+
+    /// Streaming through the reported sentence: the display tree (mend's
+    /// synthetic closers included) never shows literal `**` or a ZWSP once a
+    /// marker has content after it (markers still hanging bare — `…一个**`
+    /// with nothing following — stay literal by mend's content-must-follow
+    /// contract), and the canonical tree converges to the full parse.
+    #[test]
+    fn cjk_streaming_display_stays_clean_and_converges() {
+        let full = "本质是一个**授权范围放大（v1）**问题，然后**继续**。";
+        let mut p = IncrementalParser::new();
+        for i in 1..=full.len() {
+            if !full.is_char_boundary(i) {
+                continue;
+            }
+            p.set_text(&full[..i]);
+            if full[..i].ends_with(['*', '_', '~', '`', '[']) {
+                continue;
+            }
+            for block in p.display_tree().blocks {
+                let text = flat(&block.block);
+                assert!(!text.contains("**"), "literal ** at {i}: {text:?}");
+                assert!(!text.contains('\u{200b}'), "ZWSP leak at {i}: {text:?}");
+            }
+        }
+        assert_eq!(p.tree(), &parse_full(full));
     }
 }
 
