@@ -104,17 +104,44 @@
 
 <main class="sheet">
   <i class="tape l"></i><i class="tape r"></i>
-  <div class="meta mono"><span>Holt</span><span>Release notes</span><span>Vol. <span data-version>0.1.10</span></span></div>
+  <div class="meta mono"><span>Holt</span><span>Release notes</span><span>Vol. <span data-version>0.2.0</span></span></div>
   <h1 class="title">WHAT&rsquo;S<br /><span>NEW</span></h1>
   <div class="note">every version, every fix</div>
 
   <ol class="vers">
 
+    <li class="ver" id="v0.2.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.2.0">0.2.0</a>
+        <span class="vdate mono">Oct 02, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Chat manager page for batch session operations: every chat, search and filters, persistent multi-select, batch archive/unarchive and delete</li>
+            <li>Redesigned chat manager rows: compact recency groups, shift-range select, tri-state select-all, floating selection bar, keyboard shortcuts</li>
+            <li>Chat manager opens from the titlebar cluster</li>
+            <li>Git panel becomes a read-only view: staging and commit actions removed</li>
+            <li>Syntax highlight queries compile once per language and are cached</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>Failed batch operations keep their selection so the pass can be retried</li>
+            <li>Space filter falls back to All spaces when a space no longer resolves</li>
+            <li>Escape cancels the delete confirmation</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.1.10">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.1.10">0.1.10</a>
         <span class="vdate mono">Oct 01, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
@@ -370,7 +397,7 @@
 
   </ol>
 </main>
-<div class="foot mono">v<span data-version>0.1.10</span> · signed &amp; notarized · GPL-3.0 · <a href="index.html">back to the poster ↖</a></div>
+<div class="foot mono">v<span data-version>0.2.0</span> · signed &amp; notarized · GPL-3.0 · <a href="index.html">back to the poster ↖</a></div>
 
 <script>
   // Keep the Vol. line in sync with the latest GitHub release, like the poster does.
