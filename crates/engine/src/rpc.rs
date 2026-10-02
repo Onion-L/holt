@@ -4164,40 +4164,6 @@ impl RpcService for EngineService {
                 .map_err(RpcError::Failed)?;
                 RpcReply::value(&serde_json::json!({}))
             }
-            // The Git panel's write trio (ADR-0022): the engine's first
-            // content-mutating git operations, served for the UI only —
-            // the agent tool surface stays read-only. The safety gates
-            // (path validation, conflict and in-progress-operation
-            // refusals) live engine-side in `git.rs`.
-            methods::STAGE_PATHS => {
-                let repo_path = required_string(&params, "repoPath")?;
-                let paths = required_string_list(&params, "paths")?;
-                self.git
-                    .stage_paths(repo_path, paths)
-                    .await
-                    .map_err(git_fault)?;
-                RpcReply::value(&serde_json::json!({}))
-            }
-            methods::UNSTAGE_PATHS => {
-                let repo_path = required_string(&params, "repoPath")?;
-                let paths = required_string_list(&params, "paths")?;
-                self.git
-                    .unstage_paths(repo_path, paths)
-                    .await
-                    .map_err(git_fault)?;
-                RpcReply::value(&serde_json::json!({}))
-            }
-            methods::COMMIT_STAGED => {
-                let repo_path = required_string(&params, "repoPath")?;
-                let message = required_string(&params, "message")?;
-                let sha = self
-                    .git
-                    .commit_staged(repo_path, message)
-                    .await
-                    .map_err(git_fault)?;
-                RpcReply::value(&serde_json::json!({ "sha": sha }))
-            }
-
             // No-op liveness pokes the UI fires defensively.
             methods::PROBE_SYNC => RpcReply::value(&serde_json::json!({})),
 

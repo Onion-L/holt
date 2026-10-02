@@ -35,10 +35,10 @@ _Avoid_: double-Esc stop
 - **File change**: one added, modified, deleted, or rename-detected path within a Turn change set, with Git-derived line counts where applicable.
 - **Review**: a read-only view of a Turn change set's per-file diff in the right sidebar.
 - **Open**: opening the current post-Turn file in the right sidebar; deleted files remain reviewable through their diff.
-- **Git panel**: the right-pane panel for a working directory's uncommitted git state. It lists changed files in three sections — Staged, Unstaged, Untracked — and lets the user stage, unstage, and commit files; its History tab shows the commit graph. The Changes diff viewer stays a separate surface.
+- **Git panel**: the right-pane panel for a working directory's uncommitted git state. It lists changed files in three read-only sections — Staged, Unstaged, Untracked — and its History tab shows the commit graph. The Changes diff viewer stays a separate surface.
   _Avoid_: calling the status list "Changes" (Changes is the Diff scope viewer)
-- **Staging**: git's index as operated from the Git panel. Staging marks a path's current changes for the next commit; unstaging removes them from the index. Neither touches file contents. A path can carry staged and unstaged changes at once, and then appears in both sections. A conflicted path can be neither staged nor unstaged from the panel. Ignored paths never appear.
-  _Avoid_: tracked (the middle section is Unstaged), checkbox state as a source of truth (the index is)
+- **Staging**: git's index, as the Git panel displays it. Staged holds the index's current contents; Unstaged holds what the worktree still owes it. A path can carry both at once and appears in both sections. Holt only displays this state — staging, unstaging, and committing happen outside the panel. Ignored paths never appear.
+  _Avoid_: tracked (the middle section is Unstaged)
 - **Content search**: regex search over file contents, rooted at the chat's working directory by default and scoped by a path prefix and a filename filter. Relative paths resolve against that directory; absolute paths may select another search root. The agent-facing tool is named `grep`; the transcript renders it as a Search chip. Hidden files are searched; ignored files are not.
 - **Web fetch**: the agent-facing retrieval of one web URL over http(s), returned as readable content within the tool's size limits. It reads pages; finding them is Web search's job.
   _Avoid_: fetch (that is git vocabulary), browse

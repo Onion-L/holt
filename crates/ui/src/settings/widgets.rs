@@ -283,7 +283,7 @@ pub enum CheckboxState {
     Disabled,
 }
 
-/// Display-only checkbox (the Git panel's staging rows): a 14px rounded box,
+/// Display-only checkbox: a 14px rounded box,
 /// accent-filled with a check glyph when on, dimmed when disabled. State is
 /// owned by the parent row — the caller adds `.id(..)` and `.on_click(..)`.
 pub fn checkbox(theme: &Theme, state: CheckboxState) -> gpui::Div {

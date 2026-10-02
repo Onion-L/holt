@@ -1,5 +1,10 @@
 # UI-driven git writes enter the engine; the agent surface stays read-only
 
+**Status:** partially superseded — the write trio `StagePaths` /
+`UnstagePaths` / `CommitStaged` and the Git panel's staging/commit UI were
+removed; the status-payload growth and the read-only agent-tool boundary
+stand.
+
 The Git panel (working-tree status, staging, commit) requires the engine's
 first content-mutating git operations. We added exactly three RPC methods —
 `StagePaths` / `UnstagePaths` / `CommitStaged` — implemented in

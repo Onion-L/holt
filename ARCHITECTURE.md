@@ -411,12 +411,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `sha256(deviceId ‖ NUL ‖ git_dir)`), `GetCheckoutDiff` /
   `GetCheckoutFileDiffText` in working-tree / branch (merge-base) / commit
   / turn (net-change baseline, ADR-0003) modes — plus `ListGitHistory`
-  (paged topo-ordered graph), `FetchAll` (prune, system credentials,
-  30 s timeout), and the Git panel's write trio `StagePaths` /
-  `UnstagePaths` / `CommitStaged` (ADR-0022: path validation, conflicted
-  paths, and mid-merge/rebase/revert/cherry-pick states all refuse
-  engine-side; commit identity is the repo's git config, author ==
-  committer; the agent tool surface stays read-only).
+  (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
+  30 s timeout). Beyond the safe checkouts above and `FetchAll`'s
+  remote-tracking ref updates, the surface is read-only: the write trio
+  `StagePaths` / `UnstagePaths` / `CommitStaged` and the Git panel's
+  staging/commit UI are gone (ADR-0022, partially superseded), and the
+  agent tool surface stays read-only.
 - Turn change sets (ADR-0024): `GetTurnChangeSet` (`{chatId}`, plus
   `messageId` to address one specific Turn) and the `WatchTurnChangeSet`
   stream (`{chatId}`) serve the current main-chat Turn's net Git change from
