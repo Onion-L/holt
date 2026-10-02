@@ -28,8 +28,11 @@ never gated; there is no read-only tier (nothing is denied without a
 gatekeeper looking at it), no command risk-classification, and no
 path-based confinement — every mutating call meets the gatekeeper
 regardless of target path. Always-allow grants are chat-scoped, in-memory
-only (cleared on restart), matched by bash command prefix or exact file
-path, and checked before the gatekeeper so they hold across mode switches.
+only (cleared on restart), matched by bash command word-prefix
+(quoting-aware, extension by plain arguments only — never a suffix the
+shell would read as more commands, redirections, or substitution;
+operator-bearing or ambiguous lines fail closed) or exact file path, and
+checked before the gatekeeper so they hold across mode switches.
 The dormant enum is reshaped into `PermissionMode`; stored values remap
 `workspace-write`/`read-only` → confirm-changes, `danger-full-access` →
 full-access. New chats inherit the last used mode (first launch:
