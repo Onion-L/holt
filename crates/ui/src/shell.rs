@@ -301,7 +301,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // column's search row carries the same shortcut.
         KeyBinding::new(&platform_combo("mod-p"), OpenFileLookup, None),
         // Fixed: ⌘⇧M opens the Chat manager (batch archive/delete); the
-        // sidebar's checklist button carries the same action.
+        // titlebar's chat-bubbles button carries the same action.
         KeyBinding::new(&platform_combo("mod-shift-m"), OpenChatManager, None),
     ]);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
@@ -1722,9 +1722,9 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open the Chat manager page (⌘⇧M / the sidebar's checklist button).
-    /// Pressing the shortcut again on the page walks back to wherever the
-    /// user came from.
+    /// Open the Chat manager page (⌘⇧M / the titlebar's chat-bubbles
+    /// button). Pressing the shortcut again on the page walks back to
+    /// wherever the user came from.
     fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
         if matches!(self.route, Route::ChatManager) {
             self.navigate_back(cx);

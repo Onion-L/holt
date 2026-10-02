@@ -143,8 +143,7 @@ pub(super) struct SidebarViewMenu {
     focus: FocusHandle,
 }
 
-/// One line of hover help on a square sidebar trigger — the view-options
-/// and chat-manager buttons share this form.
+/// One line of hover help on the square sidebar view-options trigger.
 struct SidebarTooltip(SharedString);
 
 impl Render for SidebarTooltip {
@@ -711,30 +710,6 @@ impl Shell {
             view_trigger
         };
 
-        // Chat manager entry (glossary "Chat manager"): the global batch
-        // session page. Same square ghost form as the view-options button.
-        let manage_trigger = div()
-            .id("sidebar-chat-manager")
-            .role(gpui::Role::Button)
-            .aria_label("Chat manager")
-            .size(px(29.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(8.0))
-            .cursor_pointer()
-            .text_color(theme.text_muted)
-            .hover(|el| el.bg(theme.glass_hover()))
-            .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
-            .tooltip(|_, cx| cx.new(|_| SidebarTooltip("Chat manager".into())).into())
-            .tooltip_show_delay(std::time::Duration::from_millis(350))
-            .child(
-                icon(icons::DIALOG)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            );
-
         div()
             .flex_none()
             .flex()
@@ -745,7 +720,6 @@ impl Shell {
             .pt(px(8.0))
             .pb(px(4.0))
             .child(trigger)
-            .child(manage_trigger)
             .child(view_trigger)
             .into_any_element()
     }
