@@ -3,7 +3,13 @@
 //! This crate intentionally has no UI, RPC, or engine dependencies. Public
 //! ranges are byte offsets relative to one UTF-8 source line.
 
-use std::{collections::BTreeSet, ops::Range, path::Path, sync::atomic::AtomicUsize};
+use std::{
+    collections::{BTreeSet, HashMap},
+    ops::Range,
+    path::Path,
+    sync::atomic::AtomicUsize,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
@@ -310,14 +316,12 @@ pub fn highlight_with_limits(
         return Err(HighlightError::GrammarUnavailable(language));
     }
 
-    let mut primary_configuration = configuration(language)?;
-    primary_configuration.configure(CAPTURE_NAMES);
+    let primary_configuration = configured(language)?;
     let injected = if matches!(language, LanguageId::Html | LanguageId::Markdown) {
         injected_languages(language)
             .into_iter()
             .filter_map(|language| {
-                let mut config = configuration(language).ok()?;
-                config.configure(CAPTURE_NAMES);
+                let config = configured(language).ok()?;
                 Some((language, config))
             })
             .collect::<Vec<_>>()
@@ -335,7 +339,7 @@ pub fn highlight_with_limits(
                 injected
                     .iter()
                     .find(|(candidate, _)| *candidate == language)
-                    .map(|(_, config)| config)
+                    .map(|(_, config)| config.as_ref())
             },
         )
         .map_err(|error| HighlightError::Parser(error.to_string()))?;
@@ -411,6 +415,28 @@ fn make_configuration(
 ) -> Result<HighlightConfiguration, HighlightError> {
     HighlightConfiguration::new(language, name, highlights, injections, locals)
         .map_err(|error| HighlightError::Parser(error.to_string()))
+}
+
+/// Compiled (and capture-configured) highlight queries, shared across calls.
+/// `HighlightConfiguration::new` compiles queries — the expensive part — so
+/// each language is built once and reused; markdown otherwise recompiles the
+/// queries of every injected language on every highlight.
+static CONFIGURATIONS: OnceLock<Mutex<HashMap<LanguageId, Arc<HighlightConfiguration>>>> =
+    OnceLock::new();
+
+fn configured(language: LanguageId) -> Result<Arc<HighlightConfiguration>, HighlightError> {
+    let cache = CONFIGURATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(config) = guard.get(&language) {
+        return Ok(config.clone());
+    }
+    let mut config = configuration(language)?;
+    config.configure(CAPTURE_NAMES);
+    let config = Arc::new(config);
+    guard.insert(language, config.clone());
+    Ok(config)
 }
 
 fn configuration(language: LanguageId) -> Result<HighlightConfiguration, HighlightError> {
