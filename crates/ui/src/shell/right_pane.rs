@@ -363,9 +363,8 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
-            // Same for the Git panel's status watch; its History tab,
-            // though, refreshes on visibility (ticket 07), so activation
-            // pokes the panel when History is the showing tab.
+            // The Git panel's History view refreshes on visibility
+            // (ticket 07), so activation pokes the panel.
             RightSurface::Git(id) => {
                 if let Some(panel) = self.git_panels.get(&id).cloned() {
                     panel.update(cx, |panel, cx| panel.ensure_visible(cx));
@@ -432,19 +431,15 @@ impl Shell {
     }
 
     /// The picker's Git card / the `+` menu's Git row (ticket 03): every
-    /// click opens a fresh Git panel tab watching the current chat's working
-    /// directory.
+    /// click opens a fresh Git panel tab — the checkout's commit graph.
     pub(super) fn add_git_surface(&mut self, cx: &mut Context<Self>) {
         let panel = cx.new(|cx| GitPanel::new(self.state.clone(), cx));
         self.git_seq += 1;
         let id = self.git_seq;
         let sub = cx.subscribe(&panel, move |this: &mut Self, _, event, cx| match event {
-            GitPanelEvent::ViewDiff { path } => {
-                this.open_git_companion_diff(id, path.clone(), cx);
-            }
             GitPanelEvent::OpenCommit(commit) => {
-                // The History tab's row click: the same pinned-commit diff
-                // tab the Changes pane's History scope opens.
+                // The graph's row click: the same pinned-commit diff tab
+                // the Changes pane's History scope opens.
                 this.add_commit_diff_surface(commit.clone(), cx);
             }
         });
@@ -456,36 +451,6 @@ impl Shell {
             .or_default()
             .push(RightSurface::Git(id));
         self.set_right_active(RightSurface::Git(id), cx);
-    }
-
-    /// A Git panel's View Diff / click-to-diff (ticket 06): open (or focus)
-    /// that panel's ONE companion Changes surface — never the user's other
-    /// diff tabs — aimed at the working-tree scope and scrolled to the file
-    /// when one was named. A closed companion is simply recreated.
-    fn open_git_companion_diff(
-        &mut self,
-        git_id: u64,
-        path: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let companion = self
-            .git_diff_companions
-            .get(&git_id)
-            .copied()
-            .filter(|id| self.diffs.contains_key(id));
-        let diff_id = match companion {
-            Some(id) => id,
-            None => {
-                let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
-                let id = self.register_diff_surface(changes, cx);
-                self.git_diff_companions.insert(git_id, id);
-                id
-            }
-        };
-        self.set_right_active(RightSurface::Diff(diff_id), cx);
-        if let Some(changes) = self.diffs.get(&diff_id).cloned() {
-            changes.update(cx, |changes, cx| changes.view_working_tree(path, cx));
-        }
     }
 
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
@@ -751,15 +716,10 @@ impl Shell {
                 // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
                 self.diff_subs.remove(&id);
-                // Any Git panel companioned to it recreates on its next
-                // click-to-diff.
-                self.git_diff_companions.retain(|_, diff| *diff != id);
             }
             RightSurface::Git(id) => {
-                // Dropping the entity cancels its status watch.
                 self.git_panels.remove(&id);
                 self.git_subs.remove(&id);
-                self.git_diff_companions.remove(&id);
             }
             RightSurface::TurnReview(id) => {
                 self.turn_reviews.remove(&id);
@@ -1161,8 +1121,8 @@ impl Shell {
                     )
                     // Git only where there IS git — the pane itself no
                     // longer gates on it (terminals work anywhere). The card
-                    // opens the Git panel's Status tab (ticket 03); the diff
-                    // viewer keeps its own Diff row in the `+` menu.
+                    // opens the Git panel's commit graph (ticket 03); the
+                    // diff viewer keeps its own Diff row in the `+` menu.
                     .when(self.space_git_detected(cx), |el| {
                         el.child(row("surface-card-git", icons::GIT_BRANCH, "Git").on_click(
                             cx.listener(|this, _, _, cx| {

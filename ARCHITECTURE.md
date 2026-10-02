@@ -414,8 +414,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (paged topo-ordered graph) and `FetchAll` (prune, system credentials,
   30 s timeout). Beyond the safe checkouts above and `FetchAll`'s
   remote-tracking ref updates, the surface is read-only: the write trio
-  `StagePaths` / `UnstagePaths` / `CommitStaged` and the Git panel's
-  staging/commit UI are gone (ADR-0022, partially superseded), and the
+  `StagePaths` / `UnstagePaths` / `CommitStaged`, the Git panel's
+  staging/commit UI, and its status view are gone (ADR-0022, partially
+  superseded; the panel hosts only the commit graph), and the
   agent tool surface stays read-only.
 - Turn change sets (ADR-0024): `GetTurnChangeSet` (`{chatId}`, plus
   `messageId` to address one specific Turn) and the `WatchTurnChangeSet`
