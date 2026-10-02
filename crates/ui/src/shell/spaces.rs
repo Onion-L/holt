@@ -730,7 +730,7 @@ impl Shell {
             .tooltip(|_, cx| cx.new(|_| SidebarTooltip("Chat manager".into())).into())
             .tooltip_show_delay(std::time::Duration::from_millis(350))
             .child(
-                icon(icons::CHECKLIST)
+                icon(icons::DIALOG)
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             );

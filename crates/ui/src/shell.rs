@@ -1732,8 +1732,16 @@ impl Shell {
         }
         self.route = Route::ChatManager;
         self.nav.push(NavEntry::ChatManager);
+        self.reveal_chat_manager(cx);
         self.close_chat_menu(cx);
         cx.notify();
+    }
+
+    /// Re-land keyboard focus on a cached Chat manager page.
+    fn reveal_chat_manager(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &self.chat_manager_page {
+            page.update(cx, |page, cx| page.reveal(cx));
+        }
     }
 
     /// The Chat manager page, created on first use. Row clicks navigate via
@@ -1804,6 +1812,7 @@ impl Shell {
             }
             NavEntry::ChatManager => {
                 self.route = Route::ChatManager;
+                self.reveal_chat_manager(cx);
             }
         }
         self.close_chat_menu(cx);

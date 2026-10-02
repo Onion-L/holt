@@ -276,6 +276,8 @@ pub fn animated_toggle_switch(
 pub enum CheckboxState {
     Unchecked,
     Checked,
+    /// Some but not all of a group is checked (a select-all header).
+    Mixed,
     /// Visible but never clickable (a conflicted status row, a control over
     /// a non-git root).
     Disabled,
@@ -294,7 +296,9 @@ pub fn checkbox(theme: &Theme, state: CheckboxState) -> gpui::Div {
         .items_center()
         .justify_center();
     box_el = match state {
-        CheckboxState::Checked => box_el.bg(theme.accent).border_color(theme.accent),
+        CheckboxState::Checked | CheckboxState::Mixed => {
+            box_el.bg(theme.accent).border_color(theme.accent)
+        }
         _ => box_el.border_color(theme.border_strong).bg(ink(0.02)),
     };
     if state == CheckboxState::Checked {
@@ -302,6 +306,15 @@ pub fn checkbox(theme: &Theme, state: CheckboxState) -> gpui::Div {
             crate::icons::icon(crate::icons::CHECK)
                 .size(px(10.0))
                 .text_color(theme.on_solid),
+        );
+    }
+    if state == CheckboxState::Mixed {
+        box_el = box_el.child(
+            div()
+                .w(px(8.0))
+                .h(px(1.5))
+                .rounded_full()
+                .bg(theme.on_solid),
         );
     }
     if state == CheckboxState::Disabled {
