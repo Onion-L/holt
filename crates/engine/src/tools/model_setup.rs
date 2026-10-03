@@ -865,7 +865,7 @@ pub(crate) async fn probe_models(
             request = request.bearer_auth(key);
         }
     }
-    let response = if let Some(cancellation) = cancellation.as_ref() {
+    let mut response = if let Some(cancellation) = cancellation.as_ref() {
         tokio::select! {
             _ = cancellation.cancelled() => return Err("cancelled".into()),
             response = request.send() => response.map_err(|error| error.to_string())?,
@@ -884,16 +884,25 @@ pub(crate) async fn probe_models(
     {
         return Err("response body is too large".into());
     }
-    let body_bytes = if let Some(cancellation) = cancellation.as_ref() {
-        tokio::select! {
-            _ = cancellation.cancelled() => return Err("cancelled".into()),
-            bytes = response.bytes() => bytes.map_err(|error| error.to_string())?,
+    // Stream and stop at the cap: a body without a Content-Length must be
+    // abandoned mid-read, never buffered whole before the size check.
+    let mut body_bytes = Vec::new();
+    loop {
+        let chunk = if let Some(cancellation) = cancellation.as_ref() {
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err("cancelled".into()),
+                chunk = response.chunk() => chunk,
+            }
+        } else {
+            response.chunk().await
+        };
+        let Some(chunk) = chunk.map_err(|error| error.to_string())? else {
+            break;
+        };
+        if body_bytes.len() + chunk.len() > PROBE_BODY_CAP {
+            return Err("response body is too large".into());
         }
-    } else {
-        response.bytes().await.map_err(|error| error.to_string())?
-    };
-    if body_bytes.len() > PROBE_BODY_CAP {
-        return Err("response body is too large".into());
+        body_bytes.extend_from_slice(&chunk);
     }
     let body: serde_json::Value = serde_json::from_slice(&body_bytes)
         .map_err(|error| format!("body is not JSON: {error}"))?;
@@ -1929,6 +1938,62 @@ pub(crate) fn create_choose_provider_tool(providers: Arc<ProviderAdapter>) -> Ag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn probe_aborts_an_oversized_body_at_the_cap() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sent_server = Arc::clone(&sent);
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut head = Vec::new();
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                head.extend_from_slice(&buf[..n]);
+                if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            // 4 MiB, paced 32 KiB at a time so an early client close
+            // surfaces as a write error instead of a full drain.
+            let chunk = vec![b'a'; 32 * 1024];
+            for _ in 0..(4 * 1024 * 1024 / chunk.len()) {
+                match socket.write_all(&chunk).await {
+                    Ok(()) => {
+                        sent_server.fetch_add(chunk.len(), Ordering::SeqCst);
+                    }
+                    Err(_) => return,
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        });
+
+        let error = probe_models(&base, "openai-completions", None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "response body is too large");
+        // The read died at the 1 MiB cap, not after the drain: the slack
+        // covers the bytes both kernels had already accepted when the
+        // client dropped the body.
+        let accepted = sent.load(Ordering::SeqCst);
+        assert!(
+            accepted <= 1_048_576 + 256 * 1024,
+            "server accepted {accepted} bytes — the client buffered past the cap"
+        );
+    }
 
     #[test]
     fn redaction_hides_credentials_but_not_token_limits() {
