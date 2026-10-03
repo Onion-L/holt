@@ -142,6 +142,7 @@ pub fn parse_full(source: &str) -> BlockTree {
     let mut cur = Cursor {
         events: &events,
         ix: 0,
+        depth: 0,
     };
     let mut blocks = Vec::new();
     while let Some((event, range)) = cur.peek() {
@@ -184,7 +185,17 @@ pub fn parse_full(source: &str) -> BlockTree {
 struct Cursor<'a, 'e> {
     events: &'a [(Event<'e>, Range<usize>)],
     ix: usize,
+    /// Current container descent depth (blocks + inline). Over-limit
+    /// containers degrade to literal text instead of recursing: the descent
+    /// is one stack frame pair per nesting level, so an unbounded walk over
+    /// untrusted markdown overflows the thread stack — an abort, not a
+    /// panic, no `catch_unwind` can intercept it.
+    depth: usize,
 }
+
+/// Maximum container nesting rendered with structure; deeper levels
+/// flatten to text.
+const MAX_NESTING_DEPTH: usize = 256;
 
 impl<'a, 'e> Cursor<'a, 'e> {
     fn peek(&self) -> Option<&(Event<'e>, Range<usize>)> {
@@ -208,6 +219,40 @@ impl<'a, 'e> Cursor<'a, 'e> {
     }
 }
 
+/// Consume events through the `End` matching an already-consumed `Start`,
+/// flattening everything inside to literal text — the fail-soft path for
+/// containers nested past [`MAX_NESTING_DEPTH`]. Iterative, so the drained
+/// subtree's own depth costs no stack.
+fn drain_container_text(cur: &mut Cursor) -> String {
+    let mut text = String::new();
+    let mut depth = 0usize;
+    while let Some(event) = cur.next_event() {
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            Event::Text(t) | Event::Code(t) => text.push_str(&t),
+            Event::Html(t) | Event::InlineHtml(t) => text.push_str(&t),
+            Event::SoftBreak => text.push(' '),
+            Event::HardBreak => text.push('\n'),
+            Event::TaskListMarker(done) => {
+                text.push_str(if done { "[x] " } else { "[ ] " });
+            }
+            Event::FootnoteReference(t) => {
+                text.push('[');
+                text.push_str(&t);
+                text.push(']');
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 fn is_block_tag(tag: &Tag) -> bool {
     matches!(
         tag,
@@ -229,7 +274,8 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
     let Some(Event::Start(tag)) = cur.next_event() else {
         return Vec::new();
     };
-    match tag {
+    cur.depth += 1;
+    let blocks = match tag {
         Tag::Paragraph => {
             vec![Block::Paragraph {
                 runs: parse_inline_container(cur, &InlineStyle::default()),
@@ -330,7 +376,9 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
         }
         // Transparent containers (footnote definitions when enabled, etc.).
         _ => parse_block_sequence(cur),
-    }
+    };
+    cur.depth -= 1;
+    blocks
 }
 
 /// Parse a block sequence until the container's `End` (consumed). Bare inline
@@ -346,7 +394,20 @@ fn parse_block_sequence(cur: &mut Cursor) -> Vec<Block> {
             }
             Event::Start(tag) if is_block_tag(tag) => {
                 flush_paragraph(&mut out, &mut inline_acc);
-                out.extend(parse_started_block(cur));
+                if cur.depth >= MAX_NESTING_DEPTH {
+                    // Over-limit nesting degrades to literal text (the
+                    // descent is one frame pair per level — see `Cursor`).
+                    cur.bump();
+                    let text = drain_container_text(cur);
+                    if !text.is_empty() {
+                        inline_acc.push(InlineRun {
+                            text,
+                            style: InlineStyle::default(),
+                        });
+                    }
+                } else {
+                    out.extend(parse_started_block(cur));
+                }
             }
             Event::Rule => {
                 flush_paragraph(&mut out, &mut inline_acc);
@@ -455,6 +516,10 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
         ),
         Event::FootnoteReference(t) => push(runs, format!("[{t}]"), style.clone()),
         Event::Start(tag) => {
+            if cur.depth >= MAX_NESTING_DEPTH {
+                push(runs, drain_container_text(cur), style.clone());
+                return;
+            }
             let mut inner = style.clone();
             match tag {
                 Tag::Emphasis => inner.italic = true,
@@ -465,7 +530,9 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
                 }
                 _ => {}
             }
+            cur.depth += 1;
             runs.extend(parse_inline_container(cur, &inner));
+            cur.depth -= 1;
         }
         // `End` is consumed by the container loop; anything else is ignored.
         _ => {}
@@ -1208,6 +1275,101 @@ mod tests {
         let mut p = IncrementalParser::new();
         p.append("");
         assert!(p.tree().is_empty());
+    }
+
+    /// Deepest Block::BlockQuote/List nesting in a tree.
+    fn block_depth(block: &Block) -> usize {
+        fn depth(b: &Block) -> usize {
+            let inner = |blocks: &[Block]| blocks.iter().map(depth).max().unwrap_or(0);
+            match b {
+                Block::BlockQuote { children } => 1 + inner(children),
+                Block::List { items, .. } => {
+                    1 + items.iter().flatten().map(depth).max().unwrap_or(0)
+                }
+                _ => 0,
+            }
+        }
+        depth(block)
+    }
+
+    /// Deeply nested containers must degrade to literal text instead of
+    /// recursing: the descent costs one stack frame pair per nesting level,
+    /// so a multi-thousand-deep ladder used to overflow the thread stack and
+    /// abort the process (uncatchable — not a panic).
+    #[test]
+    fn deep_blockquote_ladder_degrades_instead_of_recursing() {
+        let src = format!("{}x", "> ".repeat(20_000));
+        let tree = parse_full(&src);
+        assert!(
+            tree.blocks
+                .iter()
+                .all(|b| block_depth(&b.block) <= MAX_NESTING_DEPTH)
+        );
+        assert!(tree.blocks.iter().any(|b| flat(&b.block).contains('x')));
+        // Compact form (`>>>>…`), deeper still: same cap, same survival.
+        let src = format!("{}x", ">".repeat(100_000));
+        let tree = parse_full(&src);
+        assert!(
+            tree.blocks
+                .iter()
+                .all(|b| block_depth(&b.block) <= MAX_NESTING_DEPTH)
+        );
+        assert!(tree.blocks.iter().any(|b| flat(&b.block).contains('x')));
+    }
+
+    /// The third payload class from the report: progressively indented list
+    /// items nest one list level per line — same guarded edge.
+    #[test]
+    fn deep_list_ladder_degrades_instead_of_recursing() {
+        let mut src = String::new();
+        for i in 0..600 {
+            for _ in 0..i {
+                src.push_str("  ");
+            }
+            src.push_str("- x\n");
+        }
+        src.push_str("tail");
+        let tree = parse_full(&src);
+        assert!(
+            tree.blocks
+                .iter()
+                .all(|b| block_depth(&b.block) <= MAX_NESTING_DEPTH)
+        );
+        let text: String = tree.blocks.iter().map(|b| flat(&b.block)).collect();
+        assert!(text.contains('x') && text.contains("tail"), "content lost");
+    }
+
+    #[test]
+    fn deep_emphasis_ladder_degrades_instead_of_recursing() {
+        let stars = "*".repeat(20_000);
+        let src = format!("{stars}payload{stars}");
+        let tree = parse_full(&src);
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("expected paragraph");
+        };
+        // No abort; the payload survives (styles from the levels below the
+        // cap are legitimately kept — only the descent is bounded).
+        assert!(runs.iter().any(|r| r.text.contains("payload")));
+    }
+
+    /// Streaming the same ladder stays parity-exact with the full parse —
+    /// the degrade is a pure function of the event stream, so both paths
+    /// flatten identically.
+    #[test]
+    fn deep_ladder_streams_at_parity() {
+        let src = format!("{}x\n\nafter", "> ".repeat(600));
+        let full = parse_full(&src);
+        assert_eq!(stream(64, &src).tree(), &full);
+    }
+
+    /// Structure below the cap is untouched: a 200-deep ladder keeps every
+    /// level (only the degrade path trims, and it never fires here).
+    #[test]
+    fn nesting_below_the_cap_is_untouched() {
+        let src = format!("{}x", "> ".repeat(200));
+        let tree = parse_full(&src);
+        assert_eq!(tree.blocks.len(), 1);
+        assert_eq!(block_depth(&tree.blocks[0].block), 200);
     }
 
     /// Paragraph runs as (text, bold, italic, code) tuples.
