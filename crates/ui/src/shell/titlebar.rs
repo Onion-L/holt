@@ -293,7 +293,7 @@ impl Shell {
                     .child(
                         window_control_button(
                             "titlebar-chat-manager",
-                            icons::DIALOG,
+                            icons::INBOX,
                             &theme,
                             cx.listener(|this, _, _, cx| this.open_chat_manager(cx)),
                         )
