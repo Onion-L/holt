@@ -1425,3 +1425,247 @@ async fn deleting_the_chat_removes_its_persisted_change_sets() {
         "chat deletion reclaims the chat's change-set history"
     );
 }
+
+#[tokio::test]
+async fn editing_a_settled_turn_retracts_its_change_set() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        // Turn one writes a file and completes. The replacement Turn parks
+        // on the gate so its admission is observable before it can settle.
+        tool_write("created.txt", "turn one\n"),
+        ScriptedReply::text("done"),
+        ScriptedReply::gated(gate.clone(), "fresh answer"),
+    ]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    let mut events = subscribe_events(&engine).await;
+
+    let RpcReply::Stream(mut stream) = engine
+        .handle(
+            methods::WATCH_TURN_CHANGE_SET,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchTurnChangeSet did not return a stream");
+    };
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "first draft",
+    )
+    .await;
+    await_settled(&engine, &mut events).await;
+
+    // The settled Turn's change set is captured and durable.
+    let settled = match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => change_set,
+        reply => panic!("expected the settled change set, got {reply:?}"),
+    };
+    assert_eq!(settled.phase, TurnChangeSetPhase::Final);
+    assert!(settled.files.iter().any(|file| file.path == "created.txt"));
+    let record = fixture.data_dir.path().join("turn-changes/chat-1/m-1.json");
+    assert!(record.exists(), "the settled Turn persisted its record");
+
+    // The watch replayed the settled final before the edit.
+    tokio::time::timeout(WATCH_FRAME_WAIT, async {
+        loop {
+            let frame: TurnChangeSetReply =
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
+            if let TurnChangeSetReply::Captured(change_set) = &frame
+                && change_set.phase == TurnChangeSetPhase::Final
+                && change_set
+                    .files
+                    .iter()
+                    .any(|file| file.path == "created.txt")
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the settled final frame arrives");
+
+    // The edit prunes the Turn and reruns under the same message id.
+    engine
+        .handle(
+            methods::EDIT_LAST_MESSAGE,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "messageId": "m-1",
+                "prompt": "edited prompt",
+            }),
+        )
+        .await
+        .expect("edit accepted");
+
+    // The retraction frame closes the pruned Turn's history: same id, no
+    // files — what the UI retires the card on.
+    tokio::time::timeout(WATCH_FRAME_WAIT, async {
+        loop {
+            let frame: TurnChangeSetReply =
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
+            if let TurnChangeSetReply::Captured(change_set) = &frame
+                && change_set.message_id == "m-1"
+                && change_set.phase == TurnChangeSetPhase::Final
+                && change_set.files.is_empty()
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the retraction frame arrives");
+    assert!(
+        !record.exists(),
+        "the pruned Turn's persisted record is retracted"
+    );
+
+    // The replacement Turn admitted under the same id reports its own live
+    // set — empty (its baseline includes created.txt), never the pruned
+    // Turn's stale files.
+    wait_for_requests(&provider, 3).await;
+    match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => {
+            assert_eq!(change_set.phase, TurnChangeSetPhase::Live);
+            assert!(
+                change_set.files.is_empty(),
+                "the replacement Turn starts from a fresh baseline: {change_set:?}"
+            );
+        }
+        reply => panic!("expected the replacement Turn's live set, got {reply:?}"),
+    }
+
+    // The replacement settles net-zero: no stale card can come back.
+    gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => {
+            assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+            assert!(change_set.files.is_empty());
+        }
+        reply => panic!("expected the replacement Turn's final set, got {reply:?}"),
+    }
+}
+
+#[tokio::test]
+async fn editing_a_live_turn_retracts_its_change_set() {
+    let fixture = Fixture::new();
+    // Turn one executes its write, then parks on round two — live, with
+    // changes on disk. The replacement parks too, so the record checks
+    // below cannot race its settlement.
+    let turn_one_gate = Arc::new(Notify::new());
+    let replacement_gate = Arc::new(Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        tool_write("live.txt", "turn one\n"),
+        ScriptedReply::gated(turn_one_gate, "done"),
+        ScriptedReply::gated(replacement_gate.clone(), "fresh answer"),
+    ]);
+    let engine = fixture.engine(&provider);
+    setup(&fixture, &engine).await;
+    grant_full_access(&engine, "chat-1").await;
+    let mut events = subscribe_events(&engine).await;
+
+    let RpcReply::Stream(mut stream) = engine
+        .handle(
+            methods::WATCH_TURN_CHANGE_SET,
+            serde_json::json!({ "chatId": "chat-1" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("WatchTurnChangeSet did not return a stream");
+    };
+
+    queue_run(
+        &engine,
+        "chat-1",
+        &fixture.repo_path(),
+        "m-1",
+        "first draft",
+    )
+    .await;
+    wait_for_requests(&provider, 2).await;
+
+    // The Turn is live mid-run: its card shows the write it already made.
+    tokio::time::timeout(WATCH_FRAME_WAIT, async {
+        loop {
+            let frame: TurnChangeSetReply =
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
+            if let TurnChangeSetReply::Captured(change_set) = &frame
+                && change_set.phase == TurnChangeSetPhase::Live
+                && change_set.files.iter().any(|file| file.path == "live.txt")
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the live frame arrives");
+
+    // Editing cancels the Turn mid-run. Its cleanup freezes and persists
+    // the interrupted Turn's record (ADR-0024 retains partial work) before
+    // the edit path retracts it — the wait on the execution lock orders
+    // that cleanup ahead of the delete, so no record may survive the edit.
+    engine
+        .handle(
+            methods::EDIT_LAST_MESSAGE,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "messageId": "m-1",
+                "prompt": "edited prompt",
+            }),
+        )
+        .await
+        .expect("edit accepted");
+
+    tokio::time::timeout(WATCH_FRAME_WAIT, async {
+        loop {
+            let frame: TurnChangeSetReply =
+                serde_json::from_value(watch_frame(&mut stream).await).unwrap();
+            if let TurnChangeSetReply::Captured(change_set) = &frame
+                && change_set.message_id == "m-1"
+                && change_set.phase == TurnChangeSetPhase::Final
+                && change_set.files.is_empty()
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the retraction frame arrives");
+    let record = fixture.data_dir.path().join("turn-changes/chat-1/m-1.json");
+    assert!(
+        !record.exists(),
+        "the interrupted Turn's cleanup-persisted record is retracted with it"
+    );
+
+    // The replacement runs under the same id from a fresh baseline that
+    // already contains the retained write, so it reports nothing.
+    wait_for_requests(&provider, 3).await;
+    match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => {
+            assert_eq!(change_set.phase, TurnChangeSetPhase::Live);
+            assert!(
+                change_set.files.is_empty(),
+                "the replacement starts from a fresh baseline: {change_set:?}"
+            );
+        }
+        reply => panic!("expected the replacement Turn's live set, got {reply:?}"),
+    }
+    replacement_gate.notify_one();
+    await_settled(&engine, &mut events).await;
+    match captured_message(&engine, "chat-1", "m-1").await.unwrap() {
+        TurnChangeSetReply::Captured(change_set) => {
+            assert_eq!(change_set.phase, TurnChangeSetPhase::Final);
+            assert!(change_set.files.is_empty());
+        }
+        reply => panic!("expected the replacement Turn's final set, got {reply:?}"),
+    }
+}

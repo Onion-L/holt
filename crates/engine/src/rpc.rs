@@ -1535,6 +1535,13 @@ impl EngineService {
         // The log was rewritten whole: the incremental writers' anchors are
         // gone, so every entry's next persist is a full line again.
         chat.clear_persisted_parts();
+        // The pruned Turn's change set dies with it: the card attaches to a
+        // Turn the transcript no longer holds (ADR-0024), so retract the
+        // persisted record and the in-memory baselines BEFORE the publish —
+        // a consumer restoring cards off the reset frame must never revive
+        // the stale set. The working tree keeps its edits regardless.
+        crate::turn_change_store::delete(&self.data_dir, chat_id, message_id);
+        self.turn_changes.retract(chat_id, message_id);
         chat.publish();
 
         // Requeue outside the queue lock: the failure path re-locks the

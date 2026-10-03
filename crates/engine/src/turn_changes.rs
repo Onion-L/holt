@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use holt_proto::{TurnChangeSet, TurnChangeSetPhase};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, broadcast};
 
 use crate::git::{Git, GitFault, TurnBaseline, TurnChangeCapture};
 
@@ -82,7 +82,6 @@ pub(crate) struct TurnSnapshot {
 }
 
 /// Every chat's current Turn change set.
-#[derive(Default)]
 pub(crate) struct TurnChanges {
     inner: Mutex<Registry>,
     /// Per settled Turn, keyed `(chat_id, message_id)`: the one-shot signal
@@ -95,11 +94,22 @@ pub(crate) struct TurnChanges {
     final_emitted: Mutex<HashMap<(String, String), Arc<Notify>>>,
     /// Per chat, how many WatchTurnChangeSet subscriptions are live.
     watchers: Mutex<HashMap<String, usize>>,
+    /// Retraction fan-out (ADR-0033): an edit prunes its Turn from the
+    /// transcript, and the Turn's change set dies with it — live watchers
+    /// learn the (chat, message) id here so a stale card cannot outlive
+    /// the Turn. Live-only, like the terminal events.
+    retractions: broadcast::Sender<(String, String)>,
 }
 
 impl TurnChanges {
     pub(crate) fn new() -> Self {
-        Self::default()
+        let (retractions, _) = broadcast::channel(64);
+        Self {
+            inner: Mutex::new(Registry::default()),
+            final_emitted: Mutex::new(HashMap::new()),
+            watchers: Mutex::new(HashMap::new()),
+            retractions,
+        }
     }
 
     /// Record the Turn baseline at admission (ADR-0024), before execution
@@ -160,6 +170,40 @@ impl TurnChanges {
             .current
             .get(chat_id)
             .map(|record| record.message_id.clone())
+    }
+
+    /// Retract a pruned Turn's change set: its in-memory records die here
+    /// (its persisted record separately in `turn_change_store`), and live
+    /// watchers get the retraction. The replacement Turn re-begins the same
+    /// message id afterwards, so this must not touch any record admitted
+    /// later — only records the registry still holds for the id now.
+    pub(crate) fn retract(&self, chat_id: &str, message_id: &str) {
+        {
+            let mut registry = self.registry();
+            if registry
+                .current
+                .get(chat_id)
+                .is_some_and(|record| record.message_id == message_id)
+            {
+                registry.current.remove(chat_id);
+            }
+            if registry
+                .settled
+                .get(chat_id)
+                .is_some_and(|record| record.message_id == message_id)
+            {
+                registry.settled.remove(chat_id);
+            }
+        }
+        // A send only fails when nobody is listening, which changes
+        // nothing about the retraction.
+        let _ = self
+            .retractions
+            .send((chat_id.to_string(), message_id.to_string()));
+    }
+
+    pub(crate) fn subscribe_retractions(&self) -> broadcast::Receiver<(String, String)> {
+        self.retractions.subscribe()
     }
 
     /// The named Turn's attribution recorder. Subagents resolve this against

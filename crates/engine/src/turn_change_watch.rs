@@ -55,6 +55,7 @@ pub(crate) fn subscribe(
 ) -> Result<mpsc::Receiver<serde_json::Value>, String> {
     let (mut out_tx, out_rx) = mpsc::channel::<serde_json::Value>(16);
     let mut events = turn_events.subscribe();
+    let mut retractions = changes.subscribe_retractions();
     tokio::spawn(async move {
         // While this task lives the queue driver may arm its final-frame
         // signal on the chat; the claim drops on every exit below.
@@ -92,7 +93,7 @@ pub(crate) fn subscribe(
         let mut debounce = Debounce::new();
         let mut pending_finals = PendingFinals::default();
         let mut last: Option<FrameKey> = None;
-        let mut last_message = None;
+        let mut last_message: Option<String> = None;
 
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -151,6 +152,30 @@ pub(crate) fn subscribe(
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {
+                        debounce.event(Instant::now());
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {}
+                },
+                retracted = retractions.recv() => match retracted {
+                    Ok((chat, message_id)) if chat == chat_id => {
+                        // The Turn was pruned by an edit: its card must drop
+                        // even though the working tree kept the edits. An
+                        // empty set is the retraction the UI retires cards
+                        // on; `final` closes the id's recorded history.
+                        if emit(&mut out_tx, &mut last, retraction(&chat_id, &message_id)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // A missed retraction self-corrects when the id the
+                        // stream last showed is gone from the registry.
+                        if let Some(message_id) = last_message.clone()
+                            && changes.snapshot_message(&chat_id, &message_id).is_none()
+                            && emit(&mut out_tx, &mut last, retraction(&chat_id, &message_id)).is_err()
+                        {
+                            break;
+                        }
                         debounce.event(Instant::now());
                     }
                     Err(broadcast::error::RecvError::Closed) => {}
@@ -220,4 +245,19 @@ fn emit(
     *last = Some(key);
     let value = serde_json::to_value(TurnChangeSetReply::Captured(change_set)).map_err(|_| ())?;
     out.try_send(value).map_err(|_| ())
+}
+
+/// The frame one pruned Turn retracts with: no files, no counts — the UI
+/// retires the Turn's card on it.
+fn retraction(chat_id: &str, message_id: &str) -> TurnChangeSet {
+    TurnChangeSet {
+        chat_id: chat_id.to_string(),
+        message_id: message_id.to_string(),
+        phase: TurnChangeSetPhase::Final,
+        files: Vec::new(),
+        additions: 0,
+        deletions: 0,
+        truncated: false,
+        updated_at: chrono::Utc::now(),
+    }
 }

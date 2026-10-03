@@ -2224,7 +2224,20 @@ impl Transcript {
                     .is_some_and(|edit| edit.message_id == message_id);
                 if current {
                     match result {
-                        Ok(_) => this.message_edit = None,
+                        Ok(_) => {
+                            this.message_edit = None;
+                            // The pruned Turn's card dies with the edit:
+                            // drop the stale set now instead of waiting for
+                            // the engine's retraction frame, so the
+                            // replacement Turn's frames land on an empty
+                            // slot (the final-freeze guard would otherwise
+                            // keep the pruned Turn's card forever).
+                            this.state.update(cx, |state, cx| {
+                                if state.turn_change_sets.remove(&message_id).is_some() {
+                                    cx.notify();
+                                }
+                            });
+                        }
                         Err(error) => {
                             if let Some(edit) = this.message_edit.as_mut() {
                                 edit.pending = false;

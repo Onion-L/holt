@@ -144,6 +144,15 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str, message_id: &str) -> Option<T
     }
 }
 
+/// Drop one Turn's persisted record — the edit path's retraction (an edit
+/// prunes its Turn from the transcript; the frozen change set dies with
+/// it). A missing file is fine: the Turn may never have settled.
+pub(crate) fn delete(data_dir: &Path, chat_id: &str, message_id: &str) {
+    if let Some(path) = record_path(data_dir, chat_id, message_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Drop a chat's whole persisted change-set history. Missing directories
 /// are fine — chats whose Turns never captured have nothing on disk.
 pub(crate) fn delete_chat(data_dir: &Path, chat_id: &str) {
@@ -211,6 +220,23 @@ mod tests {
         delete_chat(&dir, "chat-1");
         assert!(!dir.join("turn-changes/chat-1").exists());
         delete_chat(&dir, "chat-1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_drops_one_record_and_ignores_the_rest() {
+        let dir = std::env::temp_dir().join(format!("holt-turn-changes-{}", uuid::Uuid::new_v4()));
+        save(&dir, "chat-1", &record("m-1")).expect("save");
+        save(&dir, "chat-1", &record("m-2")).expect("save");
+
+        delete(&dir, "chat-1", "m-1");
+        assert!(load(&dir, "chat-1", "m-1").is_none());
+        assert!(load(&dir, "chat-1", "m-2").is_some(), "other records stay");
+
+        // Missing records and path-hostile ids are no-ops.
+        delete(&dir, "chat-1", "m-1");
+        delete(&dir, "../escape", "m-2");
+        assert!(load(&dir, "chat-1", "m-2").is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

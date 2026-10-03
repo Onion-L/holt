@@ -574,17 +574,20 @@ impl AppState {
     /// set is immutable: later frames for the same Turn never move it. An
     /// empty set renders no card — a live one that was never shown stores
     /// nothing, and a final one that emptied out (net zero at settle)
-    /// retires the live card it replaces.
+    /// retires the live card it replaces. Empty retires even a frozen
+    /// final: the engine emits one only when the Turn's set is void — a
+    /// net-zero settle, or an edit retracting its pruned Turn (ADR-0033),
+    /// whose replacement reruns under the same message id.
     pub fn apply_turn_change_set(&mut self, change_set: holt_proto::TurnChangeSet) {
+        if change_set.files.is_empty() {
+            self.turn_change_sets.remove(&change_set.message_id);
+            return;
+        }
         if self
             .turn_change_sets
             .get(&change_set.message_id)
             .is_some_and(|existing| existing.phase == holt_proto::TurnChangeSetPhase::Final)
         {
-            return;
-        }
-        if change_set.files.is_empty() {
-            self.turn_change_sets.remove(&change_set.message_id);
             return;
         }
         self.turn_change_sets
@@ -2137,6 +2140,17 @@ mod tests {
         assert!(!s.turn_change_sets.contains_key("m-2"));
         s.apply_turn_change_set(turn_change_set("m-3", Final, Vec::new()));
         assert!(!s.turn_change_sets.contains_key("m-3"));
+
+        // An edit retracts its pruned Turn (ADR-0033): the engine's empty
+        // retraction retires even a frozen final, and the replacement
+        // Turn's frames — live or final — land under the same message id.
+        s.apply_turn_change_set(turn_change_set("m-4", Final, vec![turn_file("c.rs", 5)]));
+        s.apply_turn_change_set(turn_change_set("m-4", Final, Vec::new()));
+        assert!(!s.turn_change_sets.contains_key("m-4"));
+        s.apply_turn_change_set(turn_change_set("m-4", Live, vec![turn_file("d.rs", 2)]));
+        assert_eq!(s.turn_change_sets["m-4"].files, vec![turn_file("d.rs", 2)]);
+        s.apply_turn_change_set(turn_change_set("m-4", Final, vec![turn_file("d.rs", 3)]));
+        assert_eq!(s.turn_change_sets["m-4"].files, vec![turn_file("d.rs", 3)]);
     }
 
     #[test]
