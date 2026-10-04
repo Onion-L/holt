@@ -29,6 +29,14 @@ pub(super) fn queue_resume_visible(queue: &holt_proto::MessageQueue) -> bool {
 /// rows that do not fit in this viewport.
 const QUEUE_LIST_MAX_HEIGHT: f32 = 240.0;
 
+/// How long a pending-only queue stays invisible on an otherwise healthy,
+/// unpaused, idle queue. A just-sent message parks in `pending` for one
+/// driver task hop plus a credentials resolve before `queue.start` admits
+/// it; rendering that window immediately flashes "Queued (1)" on every
+/// ordinary send. Real states — a pause, an error, a Turn holding the
+/// execution channel, a parked refusal — render with no grace.
+const QUEUE_PENDING_GRACE: Duration = Duration::from_millis(300);
+
 /// Interruptible height tween for the queue's expand/collapse body — the same
 /// recipe as the shell sidebar disclosure (shell/spaces.rs). `epoch` bumps on
 /// every toggle so the element-id-keyed `with_animation` clock remounts; a
@@ -380,6 +388,8 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some(queue) = self.state.read(cx).message_queue.clone() else {
+            self.queue_pending_since = None;
+            self.queue_pending_grace_task = None;
             return div().into_any_element();
         };
         // A stale editor (its message started or was removed elsewhere) is
@@ -397,7 +407,38 @@ impl Composer {
             }
         }
         if queue.pending.is_empty() && queue.error.is_none() {
+            self.queue_pending_since = None;
+            self.queue_pending_grace_task = None;
             return div().into_any_element();
+        }
+        // The transient window: nothing is wrong and nothing is running —
+        // the only content is work the driver is seconds away from
+        // admitting. Hold the panel back for the grace period so an
+        // ordinary send never flashes "Queued (1)"; anything that genuinely
+        // needs attention (pause, error, an executing Turn, a parked
+        // refusal) renders immediately.
+        let settled = queue.paused
+            || queue.error.is_some()
+            || queue.active_message_id.is_some()
+            || queue.pending.iter().any(|item| item.error.is_some());
+        if settled {
+            self.queue_pending_since = None;
+            self.queue_pending_grace_task = None;
+        } else {
+            match self.queue_pending_since {
+                None => {
+                    self.queue_pending_since = Some(Instant::now());
+                    self.queue_pending_grace_task = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(QUEUE_PENDING_GRACE).await;
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    }));
+                    return div().into_any_element();
+                }
+                Some(since) if since.elapsed() < QUEUE_PENDING_GRACE => {
+                    return div().into_any_element();
+                }
+                Some(_) => {}
+            }
         }
         if let Some(edit) = self.queue_edit.as_mut()
             && std::mem::take(&mut edit.focus_pending)

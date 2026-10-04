@@ -145,6 +145,12 @@ pub struct Composer {
     queue_task: Option<Task<()>>,
     queue_busy: bool,
     queue_expanded: bool,
+    /// Transient-pending grace (see `composer/queue.rs`): when the queue's
+    /// only content is a just-sent item the driver is about to admit, the
+    /// panel waits out `QUEUE_PENDING_GRACE` instead of flashing "Queued
+    /// (1)" for the milliseconds admission takes.
+    queue_pending_since: Option<Instant>,
+    queue_pending_grace_task: Option<Task<()>>,
     /// In-flight height tween for the queue body's expand/collapse (queue.rs).
     /// `None` when settled — `begin_queue_disclosure_motion` stamps it on
     /// every toggle and the renderer reads `animating()` to decide whether
@@ -308,6 +314,8 @@ impl Composer {
             queue_task: None,
             queue_busy: false,
             queue_expanded: true,
+            queue_pending_since: None,
+            queue_pending_grace_task: None,
             queue_motion: None,
             answered_requests: HashSet::new(),
             failure_key: None,
