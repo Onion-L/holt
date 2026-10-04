@@ -395,8 +395,17 @@ pub(crate) fn repair_history(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     for message in messages {
         match message {
             AgentMessage::ToolResult(result) => {
-                open.retain(|(id, _)| *id != result.tool_call_id);
-                repaired.push(message.clone());
+                // A result for a call that is not awaiting one is a stray:
+                // the stale tail copy an earlier load-time repair appended
+                // after a damaged mid-file result line (issue #7), or any
+                // duplicate. Exactly one result per call survives — the
+                // stray drops, the synthetic placed beside its call at the
+                // next flush stays — so the record never reaches the model
+                // with two results for one tool_call_id.
+                if let Some(position) = open.iter().position(|(id, _)| *id == result.tool_call_id) {
+                    open.remove(position);
+                    repaired.push(message.clone());
+                }
             }
             AgentMessage::Assistant(assistant) => {
                 flush(&mut open, &mut repaired);
@@ -701,6 +710,95 @@ mod tests {
         assert_eq!(reloaded.len(), 5);
         assert!(matches!(&reloaded[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"));
         assert_eq!(reloaded[3], user("later"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_mid_file_damaged_result_line_yields_one_result_on_every_load() {
+        // Issue #7's shape: the damaged line sits mid-file — the result
+        // that answered an earlier call, with later messages behind it.
+        // The first repair appends its synthetic at the tail; without the
+        // stray drop every later load re-derived a SECOND result beside
+        // the call, permanently invalidating the chat's model payload.
+        let dir = temp_dir();
+        append_message(&dir, "chat-1", &user("go")).unwrap();
+        append_message(
+            &dir,
+            "chat-1",
+            &AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![tool_call_block("call-1", "bash")],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+        append_message(&dir, "chat-1", &tool_result("call-1")).unwrap();
+        append_message(&dir, "chat-1", &user("later")).unwrap();
+        append_message(&dir, "chat-1", &assistant("sure")).unwrap();
+        // Damage only the result line ("ran" is its body text).
+        let path = history_path(&dir, "chat-1").unwrap();
+        let damaged = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                if line.contains("\"ran\"") {
+                    "{\"broken".to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, format!("{damaged}\n")).unwrap();
+
+        for load in 1..=3 {
+            let history = load_repaired(&dir, "chat-1").unwrap();
+            assert_eq!(
+                result_ids(&history),
+                ["call-1"],
+                "load {load} must carry exactly one result for the call"
+            );
+            // The survivor sits beside its call, not at the tail behind
+            // the later messages.
+            assert!(
+                matches!(&history[2], AgentMessage::ToolResult(r) if r.tool_call_id == "call-1"),
+                "load {load}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_crash_tail_shape_stays_valid_across_reloads() {
+        // The control for the mid-file case above: the documented
+        // crash-truncated tail keeps exactly one result per call no
+        // matter how many times the record reloads.
+        let dir = temp_dir();
+        append_message(&dir, "chat-1", &user("go")).unwrap();
+        append_message(
+            &dir,
+            "chat-1",
+            &AgentMessage::Assistant(Box::new(AssistantMessage {
+                content: vec![tool_call_block("call-1", "bash")],
+                stop_reason: StopReason::ToolUse,
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(history_path(&dir, "chat-1").unwrap())
+            .unwrap()
+            .write_all(b"{\"kind\":\"message\",\"entry\":")
+            .unwrap();
+        for load in 1..=3 {
+            let history = load_repaired(&dir, "chat-1").unwrap();
+            assert_eq!(
+                result_ids(&history),
+                ["call-1"],
+                "load {load} must carry exactly one result for the call"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
