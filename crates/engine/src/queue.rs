@@ -556,6 +556,34 @@ impl Queue {
         result.map(|()| started)
     }
 
+    /// Undo one admission whose Turn never launched (its first durable
+    /// write failed, issue #16): the item returns to the head of
+    /// `pending` carrying the refusal as its parked error, and the queue
+    /// pauses — the pre-admission failure shape, so the retry after
+    /// storage recovers re-admits the same item instead of losing it.
+    pub(crate) fn retract(&mut self, message_id: &str, error: String) -> Result<(), RpcError> {
+        let mut next = self.record.clone();
+        let Some(started) = next.started.take() else {
+            return Ok(());
+        };
+        if started.message.message_id != message_id {
+            next.started = Some(started);
+            return Ok(());
+        }
+        let mut message = started.message;
+        message.error = Some(error);
+        next.pending.insert(0, message);
+        next.paused = true;
+        let result = self.commit(next);
+        if result.is_err() && self.record.started.is_some() {
+            self.unreadable = true;
+            self.record.paused = true;
+            self.error = Some("Turn admission could not be confirmed. Restore storage and reopen Holt to recover the checkpoint.".into());
+            self.publish();
+        }
+        result
+    }
+
     /// Settle the active work. The returned Result reports whether the
     /// completion was durably recorded: the queue/session error behavior on
     /// a persistence failure is unchanged, but callers publishing downstream
@@ -808,6 +836,15 @@ impl EngineService {
                     let picked_id = message.message_id.clone();
                     (message, cancel, picked_id)
                 };
+                // One persist failure fences only the Turn that hit it:
+                // every attempt starts clean, and its own admission write
+                // re-establishes the fence if storage is still untrusted.
+                // A chat-lifetime flag wedged the chat behind a stale
+                // error long after storage recovered (issue #16).
+                *worker_chat
+                    .persistence_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 let kind = message.kind;
                 let heartbeat_stop = CancellationToken::new();
                 let mut heartbeat = tokio::spawn(crate::agent::heartbeat_session(
@@ -917,7 +954,10 @@ impl EngineService {
                             // Continue must survive the canceled Turn's cleanup.
                             Some(queue.finish(
                                 (success || cancel.is_cancelled()) && persistence_error.is_none(),
-                                persistence_error.clone().or(error),
+                                // This attempt's own failure is the settle's
+                                // cause; a persist error from this same Turn
+                                // is the fallback, never a stale stand-in.
+                                error.or(persistence_error.clone()),
                             ))
                         } else {
                             None
@@ -1041,15 +1081,10 @@ impl EngineService {
                     let vanished =
                         !started && queue.record.pending.iter().all(|m| m.message_id != picked);
                     if !vanished && !worker_chat.is_removed() && !queue.unreadable {
-                        let persistence_error = worker_chat
-                            .persistence_error
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clone();
-                        let _ = queue.finish(
-                            false,
-                            persistence_error.or(Some(format!("internal error: {detail}"))),
-                        );
+                        // The panic detail is this attempt's cause — a
+                        // persist error from the same Turn must not
+                        // stand in for it (issue #16).
+                        let _ = queue.finish(false, Some(format!("internal error: {detail}")));
                     }
                     drop(queue);
                     if started {

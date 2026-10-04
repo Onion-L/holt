@@ -982,16 +982,6 @@ impl EngineService {
         cancel: CancellationToken,
         queued: bool,
     ) -> Result<AgentRun, RpcError> {
-        if let Some(error) = chat
-            .persistence_error
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            return Err(RpcError::Failed(format!(
-                "Conversation could not be saved ({error}). Restore storage and reopen Holt before continuing."
-            )));
-        }
         let Some(api_key) = self
             .providers
             .credentials
@@ -1286,6 +1276,27 @@ impl EngineService {
         // The admitted user entry lands in the log now, complete at
         // creation (ADR-0032) — not on the next run event.
         chat.persist_entry(&message_id);
+        // That write is the storage fence (issue #16): if the user entry
+        // could not be saved, the Turn never launches — no model call on
+        // storage the run cannot durably record. The item returns to the
+        // queue parked with the refusal, so the actionable text reaches
+        // the queue panel and survives a restart.
+        if let Some(error) = chat
+            .persistence_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            let reason = format!(
+                "Conversation could not be saved ({error}). Restore storage and reopen Holt before continuing."
+            );
+            let retracted = {
+                let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                queue.retract(&message_id, reason.clone())
+            };
+            retracted?;
+            return Err(RpcError::Failed(reason));
+        }
 
         let runtime = self.runtime.clone();
         let chat_id = chat_id.to_string();
