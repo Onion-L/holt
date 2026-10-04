@@ -553,7 +553,7 @@ impl Transcript {
     /// Binary files show status only —
     /// no invented line counts — and files render in the engine's
     /// path-sorted order. The header toggles the file list's fold (default
-    /// expanded, the skill-invocation fold pattern). Clicking a row (or the
+    /// collapsed, the skill-invocation fold pattern). Clicking a row (or the
     /// header's Review) opens the read-only review; a live file's Open
     /// affordance opens the post-Turn file — deleted files offer Review
     /// only, never Open.
@@ -567,7 +567,7 @@ impl Transcript {
         let chat_id = self.chat_id.clone().unwrap_or_default();
         let message_id = change_set.message_id.clone();
         let fold = self.folds.get(row_id).copied().unwrap_or_default();
-        let open = fold.open.unwrap_or(true);
+        let open = fold.open.unwrap_or(false);
         // A toggle keeps the body mounted for one tween in EITHER direction:
         // the wrapper animates between the painted height at the click and
         // the direction's end (zero on collapse, the captured open height on

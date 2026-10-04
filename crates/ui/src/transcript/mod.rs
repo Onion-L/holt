@@ -2055,8 +2055,10 @@ impl Transcript {
         cx.notify();
     }
 
-    /// Toggle the Turn change card's file list (user request). Unlike the
-    /// skill chip the card defaults EXPANDED, and BOTH directions tween.
+    /// Toggle the Turn change card's file list (user request). Like the
+    /// skill chip the card defaults COLLAPSED; both directions tween once
+    /// a collapse has captured the open height — the first expand snaps,
+    /// nothing has been painted open to target yet.
     /// Each click captures two things: the painted height RIGHT NOW as the
     /// tween's start — so a click into a running tween reverses from where
     /// it visibly is — and the structural bases for its direction (open at
@@ -2075,7 +2077,7 @@ impl Transcript {
             Some(CHANGE_CARD_CLOSED_H + top_gap + bottom_pad)
         });
         let previous = self.folds.get(&row_id).copied();
-        let collapsing = previous.and_then(|fold| fold.open).unwrap_or(true);
+        let collapsing = previous.and_then(|fold| fold.open).unwrap_or(false);
         let tweening = previous.is_some_and(|fold| {
             fold.epoch > 0
                 && fold
@@ -2504,6 +2506,10 @@ mod tests {
         });
         cx.run_until_parked();
 
+        // The card ships collapsed; expand it so the file rows mount.
+        let toggle = cx.debug_bounds("turn-card-toggle").expect("toggle drawn");
+        cx.simulate_click(toggle.center(), Default::default());
+
         // The deleted file row reviews like any other…
         let row = cx
             .debug_bounds("turn-card-file-gone.txt")
@@ -2611,11 +2617,11 @@ mod tests {
     }
 
     /// The header toggles the card's file list (user request): default
-    /// expanded, a click pins the fold closed, a second click re-expands —
+    /// collapsed, a click pins the fold open, a second click re-collapses —
     /// and a Review click inside the header does NOT toggle the fold
-    /// (stop-propagation). Both directions tween now: the body's DOM
-    /// stays mounted through the tween window either way, so the
-    /// assertions read the fold state and the captured painted heights.
+    /// (stop-propagation). The body's DOM stays mounted through the tween
+    /// window either way, so the assertions read the fold state and the
+    /// captured painted heights.
     #[gpui::test]
     fn change_card_header_toggles_the_file_list(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
@@ -2662,8 +2668,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Default: expanded, the file row draws, no pin recorded.
-        assert!(cx.debug_bounds("turn-card-file-a.rs").is_some());
+        // Default: collapsed — the file row is not mounted, no pin recorded.
+        assert!(cx.debug_bounds("turn-card-file-a.rs").is_none());
         transcript.update(cx, |this, _| {
             assert_eq!(this.folds.get("m-1#tcs").and_then(|fold| fold.open), None);
         });
@@ -2673,20 +2679,21 @@ mod tests {
         transcript.update(cx, |this, _| {
             assert_eq!(
                 this.folds.get("m-1#tcs").and_then(|fold| fold.open),
-                Some(false),
-                "a header click pins the fold closed"
+                Some(true),
+                "a header click pins the fold open"
             );
-            // The collapse captured this row's painted OPEN height as the
-            // tween's start and the next expand's target, over the
-            // render-captured closed base (card chrome + outer pads).
+            // The first expand has no painted-open height to target (the
+            // card was born collapsed, so it snaps): the tween start is
+            // this row's painted collapsed height, over the structural
+            // closed base (card chrome + outer pads).
             let fold = this.folds.get("m-1#tcs").copied().unwrap();
             assert!(
-                fold.open_h > fold.closed_h && fold.closed_h >= CHANGE_CARD_CLOSED_H,
+                fold.open_h == 0.0 && fold.closed_h >= CHANGE_CARD_CLOSED_H,
                 "open {} closed {}",
                 fold.open_h,
                 fold.closed_h
             );
-            assert_eq!(fold.from, fold.open_h, "settled paint starts the tween");
+            assert_eq!(fold.from, fold.closed_h, "settled paint starts the tween");
         });
 
         // Review lives INSIDE the toggle: its click must not re-open the
@@ -2696,7 +2703,7 @@ mod tests {
         transcript.update(cx, |this, _| {
             assert_eq!(
                 this.folds.get("m-1#tcs").and_then(|fold| fold.open),
-                Some(false)
+                Some(true)
             );
         });
 
@@ -2705,15 +2712,15 @@ mod tests {
         transcript.update(cx, |this, _| {
             assert_eq!(
                 this.folds.get("m-1#tcs").and_then(|fold| fold.open),
-                Some(true)
+                Some(false)
             );
-            // The re-expand click lands INSIDE the collapse tween window
+            // The re-collapse click lands INSIDE the expand tween window
             // (test time never advances), so its painted capture is a
-            // mid-flight height: the tween start takes it, the structural
-            // bases keep the values the collapse captured.
+            // mid-flight height: the tween start takes it, and the open
+            // target stays uncaptured — nothing has settled open yet.
             let fold = this.folds.get("m-1#tcs").copied().unwrap();
             assert_eq!(fold.closed_h, 92.0, "closed base re-derived, not painted");
-            assert_eq!(fold.open_h, 118.0, "open target survives");
+            assert_eq!(fold.open_h, 0.0, "no collapse captured an open height");
             assert!(
                 fold.from >= fold.closed_h,
                 "from {} vs closed {}",
