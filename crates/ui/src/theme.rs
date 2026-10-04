@@ -760,8 +760,11 @@ impl Theme {
     /// scrim is 0.76 over `hsl(0 0% 3%)`, but it sits on Electron's
     /// `under-window` vibrancy MATERIAL, which pre-darkens the blur; our bare
     /// backdrop blur has no material layer, so the scrim runs heavier to land
-    /// on the same perceived tone (see [`Theme::glass`]).
-    pub const GLASS_ALPHA: f32 = if cfg!(target_os = "macos") { 0.80 } else { 1.0 };
+    /// on the same perceived tone (see [`Theme::glass`]). With the backdrop's
+    /// `colorSaturate` filter kept (see `BlurredView` in gpui_macos), 0.70
+    /// lets the desktop's colour through without losing text contrast — the
+    /// contrast floor is enforced by [`Self::contrast_checked_glass_alpha`].
+    pub const GLASS_ALPHA: f32 = if cfg!(target_os = "macos") { 0.70 } else { 1.0 };
     /// Light-mode frost alpha — glass-forward, like dark mode.
     ///
     /// A light tint controls the blur less than a dark one: the desktop's
