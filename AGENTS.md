@@ -49,7 +49,12 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in use:
   engine, ui, or `engine,ui` when a change spans both.
 - Releases: a pushed `v*` tag must match `workspace.version` in the root
-  `Cargo.toml`; the Release workflow fails closed on a mismatch.
+  `Cargo.toml`; the Release workflow fails closed on a mismatch. A release
+  touches three things — bump `workspace.version` (any cargo command refreshes
+  `Cargo.lock`), add the `site/changelog.html` entry and move its `current`
+  stamp (entries track `git log v<prev>..v<next> --oneline`), then commit
+  `chore: bump workspace version to X.Y.Z`, tag `vX.Y.Z`, and push both;
+  the site redeploys from `main`.
 
 ## Agent skills
 
