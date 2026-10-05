@@ -590,9 +590,11 @@ impl Transcript {
                     .text_color(theme.text_muted),
             );
 
+        // A clean restore leaves the card as history: counts and paths fade.
+        let undone = restore_mark == Some(TurnRestoreMark::Restored);
         let mark = restore_mark.map(|mark| match mark {
             TurnRestoreMark::Running => ("Restoring…", theme.text_faint),
-            TurnRestoreMark::Restored => ("Restored", theme.success),
+            TurnRestoreMark::Restored => ("Undone", theme.text_muted),
             TurnRestoreMark::Partial => ("Partially restored", theme.warning),
             TurnRestoreMark::Failed => ("Restore failed", theme.danger),
         });
@@ -602,10 +604,15 @@ impl Transcript {
             .items_center()
             .gap(px(6.0))
             .when(change_set.additions > 0, |el| {
-                el.child(turn_change_count(change_set.additions, true, theme))
+                el.child(turn_change_count(change_set.additions, true, undone, theme))
             })
             .when(change_set.deletions > 0, |el| {
-                el.child(turn_change_count(change_set.deletions, false, theme))
+                el.child(turn_change_count(
+                    change_set.deletions,
+                    false,
+                    undone,
+                    theme,
+                ))
             })
             .when(change_set.truncated, |el| {
                 el.child(
@@ -806,9 +813,9 @@ impl Transcript {
                         path: Some(review_path.clone()),
                     });
                 }))
-                .child(turn_change_file_path(file, theme))
+                .child(turn_change_file_path(file, undone, theme))
                 .children(open)
-                .child(turn_change_file_counts(file, theme))
+                .child(turn_change_file_counts(file, undone, theme))
         });
         let hidden = count - visible;
         let more = (open && count > TURN_CARD_VISIBLE_FILES).then(|| {
@@ -3014,7 +3021,7 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
 /// A Turn card row's path: a faint directory and the brighter file name
 /// (a rename leads with `old → `). The directory gives way first, so a
 /// long path keeps its file name readable.
-fn turn_change_file_path(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
+fn turn_change_file_path(file: &TurnFileChange, undone: bool, theme: &Theme) -> gpui::Div {
     let (dir, name) = split_turn_path(&file.path);
     let lead = match &file.old_path {
         Some(old) => format!("{old} → {dir}"),
@@ -3043,14 +3050,18 @@ fn turn_change_file_path(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
                 .min_w_0()
                 .flex_shrink(0.01)
                 .truncate()
-                .text_color(theme.text_dim)
+                .text_color(if undone {
+                    theme.text_faint
+                } else {
+                    theme.text_dim
+                })
                 .child(SharedString::from(name.to_string())),
         )
 }
 
 /// A row's `+n −n`, right-aligned together. A binary entry shows `BIN` —
 /// never invented line counts.
-fn turn_change_file_counts(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
+fn turn_change_file_counts(file: &TurnFileChange, undone: bool, theme: &Theme) -> gpui::Div {
     let counts = div()
         .flex_none()
         .flex()
@@ -3067,10 +3078,10 @@ fn turn_change_file_counts(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
     }
     counts
         .when(file.additions > 0, |el| {
-            el.child(turn_change_count(file.additions, true, theme))
+            el.child(turn_change_count(file.additions, true, undone, theme))
         })
         .when(file.deletions > 0, |el| {
-            el.child(turn_change_count(file.deletions, false, theme))
+            el.child(turn_change_count(file.deletions, false, undone, theme))
         })
 }
 
@@ -3082,13 +3093,16 @@ fn split_turn_path(path: &str) -> (&str, &str) {
     }
 }
 
-/// A `+n`/`−n` count in the diff palette — the Changes pane's header idiom.
-fn turn_change_count(count: u32, added: bool, theme: &Theme) -> gpui::Div {
+/// A `+n`/`−n` count in the diff palette — the Changes pane's header idiom;
+/// faint once the Turn is undone.
+fn turn_change_count(count: u32, added: bool, undone: bool, theme: &Theme) -> gpui::Div {
     div()
         .flex_none()
         .font_family(theme.font_mono.clone())
         .text_size(crate::typography::ui_rems(12.0))
-        .text_color(if added {
+        .text_color(if undone {
+            theme.text_faint
+        } else if added {
             theme.diff_add
         } else {
             theme.diff_del
