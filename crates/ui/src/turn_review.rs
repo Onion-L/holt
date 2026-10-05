@@ -13,7 +13,7 @@ use crate::changes::{
     ACCENT_BAR_WIDTH, DIFF_TEXT_SIZE, FileDiff, FileStatus, LineKind, MARKER_WIDTH, gutter_width,
     render_file_body_with_syntax,
 };
-use crate::state::AppState;
+use crate::state::{AppState, TurnRestoreMark};
 use crate::theme::Theme;
 
 /// What one aimed file's read produced. The variant's `path` plus the
@@ -299,13 +299,13 @@ impl TurnReview {
 }
 
 /// Run `RestoreTurnChanges` for one file (`Some`) or the whole set and
-/// phrase the outcome; the flag is true when nothing was refused or failed.
+/// phrase the outcome, with its mark for the card.
 pub(crate) async fn restore_call(
     engine: crate::state::EngineHandle,
     chat_id: String,
     message_id: String,
     path: Option<String>,
-) -> (String, bool) {
+) -> (String, TurnRestoreMark) {
     let params = serde_json::json!({
         "chatId": chat_id,
         "messageId": message_id,
@@ -316,16 +316,30 @@ pub(crate) async fn restore_call(
         .call(holt_rpc::methods::RESTORE_TURN_CHANGES, params)
         .await;
     match reply {
-        Err(error) => (format!("Restore failed: {error}"), false),
+        Err(error) => (format!("Restore failed: {error}"), TurnRestoreMark::Failed),
         Ok(value) => match serde_json::from_value::<holt_proto::TurnRestoreReply>(value) {
-            Ok(reply) => {
-                let clean = reply.files.iter().all(|file| {
-                    !matches!(file.outcome, holt_proto::TurnRestoreOutcome::Refused { .. })
-                });
-                (restore_summary(&reply), clean)
-            }
-            Err(_) => ("Restore failed: malformed reply".to_string(), false),
+            Ok(reply) => (restore_summary(&reply), restore_mark(&reply)),
+            Err(_) => (
+                "Restore failed: malformed reply".to_string(),
+                TurnRestoreMark::Failed,
+            ),
         },
+    }
+}
+
+fn restore_mark(reply: &holt_proto::TurnRestoreReply) -> TurnRestoreMark {
+    use holt_proto::TurnRestoreOutcome::Refused;
+    let refused = reply
+        .files
+        .iter()
+        .filter(|file| matches!(file.outcome, Refused { .. }))
+        .count();
+    if refused == 0 {
+        TurnRestoreMark::Restored
+    } else if refused < reply.files.len() {
+        TurnRestoreMark::Partial
+    } else {
+        TurnRestoreMark::Failed
     }
 }
 

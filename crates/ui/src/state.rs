@@ -199,6 +199,17 @@ impl SearchSelector {
     }
 }
 
+/// Where a whole-Turn restore from the change card stands. Session-only: a
+/// restart forgets it, and a repeat restore answers "already restored".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnRestoreMark {
+    Running,
+    Restored,
+    /// Some files were refused (changed since, later Turn, …).
+    Partial,
+    Failed,
+}
+
 /// Root application state. Reducer methods (`apply_*`, [`Self::session_for`], …)
 /// are plain `&mut self` functions so tests construct the struct directly; gpui
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
@@ -260,6 +271,8 @@ pub struct AppState {
     /// by id after a restart. Empty sets never enter — an empty card is not a
     /// result.
     pub turn_change_sets: HashMap<String, holt_proto::TurnChangeSet>,
+    /// Whole-Turn restores started from the card, keyed like the sets.
+    pub turn_restores: HashMap<String, TurnRestoreMark>,
     turn_change_set_task: Option<Task<()>>,
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
     /// the same message id arrives (client-minted ids make dedup exact).
@@ -326,6 +339,7 @@ impl AppState {
             chat_usage: None,
             chat_usage_task: None,
             turn_change_sets: HashMap::new(),
+            turn_restores: HashMap::new(),
             turn_change_set_task: None,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
@@ -422,6 +436,7 @@ impl AppState {
             self.message_queue = None;
             self.message_queue_task = None;
             self.turn_change_sets.clear();
+            self.turn_restores.clear();
             self.turn_change_set_task = None;
         } else if let Some(chat) = self
             .selected_chat
@@ -581,6 +596,7 @@ impl AppState {
     pub fn apply_turn_change_set(&mut self, change_set: holt_proto::TurnChangeSet) {
         if change_set.files.is_empty() {
             self.turn_change_sets.remove(&change_set.message_id);
+            self.turn_restores.remove(&change_set.message_id);
             return;
         }
         if self
@@ -590,6 +606,7 @@ impl AppState {
         {
             return;
         }
+        self.turn_restores.remove(&change_set.message_id);
         self.turn_change_sets
             .insert(change_set.message_id.clone(), change_set);
     }
@@ -1056,6 +1073,7 @@ impl AppState {
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();
+        self.turn_restores.clear();
         self.turn_change_set_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
@@ -1320,6 +1338,7 @@ impl AppState {
         self.message_queue = None;
         self.message_queue_task = None;
         self.turn_change_sets.clear();
+        self.turn_restores.clear();
         self.turn_change_set_task = None;
         if let Some(id) = chat_id.as_deref() {
             // A chat implies its space; `select_chat(None)` (the new-session
