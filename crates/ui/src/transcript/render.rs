@@ -774,35 +774,43 @@ impl Transcript {
                 // Open: the post-Turn file in the workspace tab. A
                 // deleted file has nothing on disk to open — Review
                 // keeps its diff available instead.
+                // The lane stays on a deleted row too, so its counts line up.
+                let lane = div()
+                    .flex_none()
+                    .w(crate::typography::ui_rems(44.0))
+                    .flex()
+                    .justify_end();
                 if file.status == TurnFileChangeStatus::Deleted {
-                    row
+                    row.child(lane)
                 } else {
                     let open_path = file.path.clone();
                     let open_selector = file.path.clone();
                     row.child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "turn-change-open-{}",
-                                file.path
-                            )))
-                            .debug_selector(move || format!("turn-card-open-{open_selector}"))
-                            .flex_none()
-                            .h(px(20.0))
-                            .flex()
-                            .items_center()
-                            .px(px(8.0))
-                            .rounded(px(4.0))
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text_faint)
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::wash(0.08)))
-                            .child("Open")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.stop_propagation();
-                                cx.emit(super::TranscriptEvent::OpenTurnFile {
-                                    path: open_path.clone(),
-                                });
-                            })),
+                        lane.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "turn-change-open-{}",
+                                    file.path
+                                )))
+                                .debug_selector(move || format!("turn-card-open-{open_selector}"))
+                                .flex_none()
+                                .h(px(20.0))
+                                .flex()
+                                .items_center()
+                                .px(px(8.0))
+                                .rounded(px(4.0))
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_faint)
+                                .cursor_pointer()
+                                .hover(|el| el.bg(crate::theme::wash(0.08)))
+                                .child("Open")
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(super::TranscriptEvent::OpenTurnFile {
+                                        path: open_path.clone(),
+                                    });
+                                })),
+                        ),
                     )
                 }
             }))
@@ -3081,21 +3089,34 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
                         .child(SharedString::from(name.to_string())),
                 ),
         )
-        .when(file.binary, |el| {
-            el.child(
+        // Fixed, right-aligned lanes so counts line up down the list; an
+        // absent count (or a binary's) still holds its lane.
+        .child(if file.binary {
+            turn_count_lane().child(
                 div()
-                    .flex_none()
                     .text_size(crate::typography::ui_rems(11.0))
                     .text_color(theme.text_faint)
                     .child("BIN"),
             )
+        } else {
+            turn_count_lane().when(file.additions > 0, |el| {
+                el.child(turn_change_count(file.additions, true, theme))
+            })
         })
-        .when(!file.binary && file.additions > 0, |el| {
-            el.child(turn_change_count(file.additions, true, theme))
-        })
-        .when(!file.binary && file.deletions > 0, |el| {
-            el.child(turn_change_count(file.deletions, false, theme))
-        })
+        .child(
+            turn_count_lane().when(!file.binary && file.deletions > 0, |el| {
+                el.child(turn_change_count(file.deletions, false, theme))
+            }),
+        )
+}
+
+/// One right-aligned count lane of a Turn card row, wide enough for `+9999`.
+fn turn_count_lane() -> gpui::Div {
+    div()
+        .flex_none()
+        .w(crate::typography::ui_rems(40.0))
+        .flex()
+        .justify_end()
 }
 
 /// `src/ui/app.rs` → (`src/ui/`, `app.rs`); a root file has no directory.
