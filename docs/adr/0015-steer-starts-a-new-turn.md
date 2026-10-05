@@ -19,5 +19,4 @@ executes the selected message without resuming unrelated pending work.
 
 The feature design was confirmed on 2026-09-06. Ordinary-message Steer and
 Run now shipped in ticket 03; ticket 04 extended the same promotion to
-queued skill invocations. See
-[the spec](../../.scratch/message-queue-and-steer/spec.md).
+queued skill invocations.

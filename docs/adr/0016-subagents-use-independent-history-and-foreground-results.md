@@ -8,7 +8,7 @@ intermediate investigation out of the parent's History, at the cost of
 requiring the parent to supply sufficient background and acceptance criteria.
 Background execution, completion notifications, and follow-up instructions
 are outside this implementation's scope. These decisions were confirmed on
-2026-09-07; see the [design](../../.scratch/subagents/spec.md).
+2026-09-07.
 
 The parent Turn owns child execution: Stop or Steer cancels all children and
 waits for cleanup before the next Turn. Child records survive restart for
