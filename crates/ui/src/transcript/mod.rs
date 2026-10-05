@@ -349,6 +349,12 @@ pub struct Transcript {
 struct InlineMessageEdit {
     message_id: String,
     input: Entity<ComposerInput>,
+    /// The appended path list lifted out of the raw text at open
+    /// (`split_sent_references`): it never enters the editor's text — it
+    /// renders as the removable chip strip above the bubble, and Send
+    /// re-appends what remains so the edit cannot silently drop the
+    /// message's attachments.
+    references: Vec<crate::path_refs::SentReference>,
     focus_pending: bool,
     /// The edit RPC is in flight — Send/Enter stay inert until it settles.
     pending: bool,
@@ -400,8 +406,9 @@ pub enum TranscriptEvent {
     /// with the provider's organization expanded on that variant.
     OpenProviderSettings { provider_id: String },
     /// Edit the latest user message in the primary chat. The payload keeps
-    /// the raw text so path references and image trailers survive the round
-    /// trip; the engine validates that the id is still the latest message.
+    /// the raw text so the editor can split path references and image
+    /// trailers into its chip strip and re-append them on Send; the engine
+    /// validates that the id is still the latest message.
     EditLastMessage {
         chat_id: String,
         message_id: String,
@@ -2163,8 +2170,13 @@ impl Transcript {
         text: String,
         cx: &mut Context<Self>,
     ) {
+        // The payload arrives raw; the editor gets the body only. The
+        // lifted path list becomes the chip strip above the bubble and
+        // re-appends on Send — the `Referenced paths:` transport never
+        // enters the editing text.
+        let (body, references) = crate::path_refs::split_sent_references(&text);
         let input = cx.new(|cx| ComposerInput::new("Edit message", cx));
-        input.update(cx, |input, cx| input.set_text(text, cx));
+        input.update(cx, |input, cx| input.set_text(body, cx));
         let events = cx.subscribe(&input, |this, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.submit_message_edit(cx),
             // The bubble heights itself from the input's measured content
@@ -2175,12 +2187,26 @@ impl Transcript {
         self.message_edit = Some(InlineMessageEdit {
             message_id,
             input,
+            references,
             focus_pending: true,
             pending: false,
             error: None,
             _events: events,
         });
         cx.notify();
+    }
+
+    /// Remove one attachment from the message edit's chip strip. The change
+    /// is session-local until Send re-appends what remains; Cancel discards
+    /// it. The doc keeps the path referenced until the engine accepts the
+    /// edit, so managed-file reclaim cannot race the session.
+    pub(super) fn remove_message_edit_reference(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(edit) = self.message_edit.as_mut() else {
+            return;
+        };
+        if crate::path_refs::remove_lifted_reference(&mut edit.references, path) {
+            cx.notify();
+        }
     }
 
     fn submit_message_edit(&mut self, cx: &mut Context<Self>) {
@@ -2196,8 +2222,13 @@ impl Transcript {
         if edit.pending {
             return;
         }
-        let prompt = edit.input.read(cx).text().trim().to_string();
-        if prompt.is_empty() {
+        let body = edit.input.read(cx).text().trim().to_string();
+        let prompt = crate::path_refs::append_lifted_references(&body, &edit.references);
+        if prompt.trim().is_empty() {
+            // Body cleared and every attachment removed — nothing left to
+            // send. Surface the reason instead of swallowing the Send.
+            edit.error = Some(crate::path_refs::EMPTY_EDIT_MESSAGE.into());
+            cx.notify();
             return;
         }
         let message_id = edit.message_id.clone();
@@ -2737,6 +2768,93 @@ mod tests {
         assert_eq!(single_line("plain"), "plain");
         assert_eq!(single_line(""), "");
         assert_eq!(single_line("\n\n"), "");
+    }
+
+    /// The inline edit splits the path trailer into its chip strip: the
+    /// editor carries the body only, removals shrink the session list, and
+    /// the submit re-appends what remains.
+    #[gpui::test]
+    fn message_edit_lifts_and_reappends_the_path_trailer(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use holt_rpc::{RpcError, RpcReply, RpcService, memory_client};
+
+        #[derive(Default)]
+        struct EditEngine {
+            calls: std::sync::Mutex<Vec<serde_json::Value>>,
+        }
+        #[async_trait::async_trait]
+        impl RpcService for EditEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                params: serde_json::Value,
+            ) -> Result<RpcReply, RpcError> {
+                if method == holt_rpc::methods::EDIT_LAST_MESSAGE {
+                    self.calls.lock().unwrap().push(params);
+                    return RpcReply::value(&serde_json::json!({}));
+                }
+                Err(RpcError::UnknownMethod(method.into()))
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = std::sync::Arc::new(EditEngine::default());
+        let client = {
+            let _enter = runtime.enter();
+            memory_client(engine.clone())
+        };
+        let pump = |cx: &gpui::VisualTestContext| {
+            for _ in 0..20 {
+                runtime.block_on(async { tokio::task::yield_now().await });
+                cx.run_until_parked();
+            }
+        };
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(crate::theme::Theme::default()));
+        let state = cx.new(|_| {
+            let mut s = AppState::new();
+            s.selected_chat = Some("chat-1".into());
+            s.transcript = vec![SessionMessageEntry {
+                id: "m-1".into(),
+                role: holt_doc::MessageRole::User,
+                parts: vec![holt_doc::MessagePart::Text {
+                    id: "t0".into(),
+                    text: "original".into(),
+                }],
+                created_at: 0,
+                device_id: "dev".into(),
+                status: None,
+                continuation_of: None,
+            }];
+            s.transcript_replayed = true;
+            s
+        });
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+
+        transcript.update(cx, |this, cx| {
+            this.begin_message_edit(
+                "m-1".into(),
+                "look at this\n\nReferenced paths:\n- \"/abs/a.png\"\n- \"/abs/b.rs\"".into(),
+                cx,
+            );
+            let edit = this.message_edit.as_ref().expect("editor opens");
+            assert_eq!(edit.input.read(cx).text(), "look at this");
+            assert_eq!(edit.references.len(), 2);
+            this.remove_message_edit_reference("/abs/a.png", cx);
+            assert_eq!(this.message_edit.as_ref().unwrap().references.len(), 1);
+            this.submit_message_edit(cx);
+        });
+        pump(cx);
+        let calls = engine.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]["prompt"], "look at this\n\nReferenced paths:\n- \"/abs/b.rs\"",
+            "Send recombines the body with the remaining attachments"
+        );
     }
 
     /// The inline edit's Send/Enter stay inert while its RPC is in flight;

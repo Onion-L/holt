@@ -1180,7 +1180,7 @@ impl Shell {
                         .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx)))
                 })
                 .tooltip(move |_, cx| {
-                    cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
+                    cx.new(|_| crate::popover::TextTooltip(tooltip.clone()))
                         .into()
                 })
                 .child(glyph)

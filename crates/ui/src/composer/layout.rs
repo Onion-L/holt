@@ -215,8 +215,9 @@ pub fn comment_strip_height(count: usize) -> f32 {
 }
 
 /// Path-reference chip metrics: badge-height pills with a capped label, so the
-/// wrap arithmetic can size the strip without measuring text.
-pub const REF_CHIP_LABEL_MAX: f32 = 160.0;
+/// wrap arithmetic can size the strip without measuring text. The cap itself
+/// is [`crate::badges::CHIP_LABEL_MAX`] — the pills' single source.
+pub const REF_CHIP_LABEL_MAX: f32 = crate::badges::CHIP_LABEL_MAX;
 /// Widest a chip can grow (icon + capped label + remove button + padding/gaps).
 pub const REF_CHIP_WIDTH: f32 = 240.0;
 

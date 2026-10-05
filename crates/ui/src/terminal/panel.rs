@@ -692,10 +692,7 @@ pub(super) fn tool(
         .justify_center()
         .rounded_sm()
         .hover(|s| s.bg(theme.element_hover))
-        .tooltip(move |_, cx| {
-            cx.new(|_| crate::image_viewer::ViewerTooltip(title.into()))
-                .into()
-        })
+        .tooltip(move |_, cx| cx.new(|_| crate::popover::TextTooltip(title.into())).into())
         .child(
             crate::icons::icon(icon)
                 .size_4()
@@ -789,7 +786,7 @@ impl Render for TerminalPanel {
                                         .hover(|s| s.text_color(theme.text))
                                         .tooltip(move |_, cx| {
                                             cx.new(|_| {
-                                                crate::image_viewer::ViewerTooltip(
+                                                crate::popover::TextTooltip(
                                                     "Close terminal group".into(),
                                                 )
                                             })

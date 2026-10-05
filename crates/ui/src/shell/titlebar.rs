@@ -301,7 +301,7 @@ impl Shell {
                             el.bg(theme.glass_hover())
                         })
                         .tooltip(|_, cx| {
-                            cx.new(|_| crate::image_viewer::ViewerTooltip("Chat manager".into()))
+                            cx.new(|_| crate::popover::TextTooltip("Chat manager".into()))
                                 .into()
                         }),
                     ),
@@ -411,7 +411,7 @@ impl Shell {
                     }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| {
-                            crate::image_viewer::ViewerTooltip(
+                            crate::popover::TextTooltip(
                                 format!("Open workspace in {}", selected.label()).into(),
                             )
                         })

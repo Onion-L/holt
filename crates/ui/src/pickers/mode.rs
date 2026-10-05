@@ -312,7 +312,7 @@ impl Pickers {
                     .group_hover(group, |state| state.opacity(1.0))
                     .hover(|state| state.bg(crate::theme::wash(0.10)))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.into()))
+                        cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
                             .into()
                     })
                     .on_click(cx.listener(move |this, _, _, cx| exit(this, cx)))

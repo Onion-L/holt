@@ -434,7 +434,7 @@ impl Shell {
                             this.accept_file_lookup(cx);
                         }))
                         .tooltip(move |_, cx| {
-                            cx.new(|_| crate::image_viewer::ViewerTooltip(absolute.clone().into()))
+                            cx.new(|_| crate::popover::TextTooltip(absolute.clone().into()))
                                 .into()
                         })
                         .child(

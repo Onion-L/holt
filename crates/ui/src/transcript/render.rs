@@ -919,7 +919,7 @@ impl Transcript {
                     .items_center()
                     .justify_center()
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip(cause.clone()))
+                        cx.new(|_| crate::popover::TextTooltip(cause.clone()))
                             .into()
                     })
                     .child(crate::icons::icon(crate::icons::DANGER_TRIANGLE).size(px(18.0)))
@@ -1230,17 +1230,18 @@ impl Transcript {
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
                 // HStack); image-only sends show no bubble at all.
                 let mut column = div().w_full().flex().flex_col();
-                if !attachments.is_empty() {
-                    column = column.child(self.render_user_attachments(
-                        &row.id,
-                        &attachments,
-                        targets,
-                        cx,
-                    ));
-                }
-                if !badges.is_empty() {
-                    column = column.child(
-                        div()
+                // While this entry is being edited the static attachment
+                // presentation (thumbnails, badges) swaps for the edit
+                // session's removable chip strip: the editor owns the body,
+                // the chips own the lifted path list, and Send recombines.
+                let edit_refs = self
+                    .message_edit
+                    .as_ref()
+                    .filter(|edit| edit.message_id == row.entry_id.as_ref())
+                    .map(|edit| edit.references.clone());
+                if let Some(refs) = edit_refs.as_ref() {
+                    if !refs.is_empty() {
+                        let mut strip = div()
                             .w_full()
                             .flex()
                             .flex_row()
@@ -1248,15 +1249,50 @@ impl Transcript {
                             .justify_end()
                             .items_center()
                             .gap(px(6.0))
-                            .pb(px(6.0))
-                            .children(badges.iter().enumerate().map(|(bix, badge)| {
-                                crate::badges::render(
-                                    SharedString::from(format!("{}#badge{bix}", row.id)),
-                                    badge,
-                                    &theme,
-                                )
-                            })),
-                    );
+                            .pb(px(6.0));
+                        for (cix, reference) in refs.iter().enumerate() {
+                            let path = reference.path.clone();
+                            strip = strip.child(crate::badges::render_removable_ref(
+                                SharedString::from(format!("{}#edit-ref{cix}", row.id)),
+                                SharedString::from(format!("{}#edit-ref-remove{cix}", row.id)),
+                                reference,
+                                &theme,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.remove_message_edit_reference(&path, cx);
+                                }),
+                            ));
+                        }
+                        column = column.child(strip);
+                    }
+                } else {
+                    if !attachments.is_empty() {
+                        column = column.child(self.render_user_attachments(
+                            &row.id,
+                            &attachments,
+                            targets,
+                            cx,
+                        ));
+                    }
+                    if !badges.is_empty() {
+                        column = column.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .justify_end()
+                                .items_center()
+                                .gap(px(6.0))
+                                .pb(px(6.0))
+                                .children(badges.iter().enumerate().map(|(bix, badge)| {
+                                    crate::badges::render(
+                                        SharedString::from(format!("{}#badge{bix}", row.id)),
+                                        badge,
+                                        &theme,
+                                    )
+                                })),
+                        );
+                    }
                 }
                 if !text.is_empty()
                     || skill.is_some()

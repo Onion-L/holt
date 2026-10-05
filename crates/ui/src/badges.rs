@@ -62,6 +62,10 @@ const ICON_SIZE: f32 = 12.0;
 const TEXT_SIZE: f32 = 12.0;
 const CARD_WIDTH: f32 = 320.0;
 const HOVER_DELAY: Duration = Duration::from_millis(280);
+/// Chip label cap shared by every attachment pill (the composer's staged
+/// strip reads it through `composer/layout.rs`'s `REF_CHIP_LABEL_MAX` alias,
+/// which feeds that strip's wrap arithmetic).
+pub const CHIP_LABEL_MAX: f32 = 160.0;
 
 /// `id` scopes the hover card and must be stable per rendered pill.
 pub fn render(
@@ -180,6 +184,67 @@ impl Render for BadgeCard {
         // text.
         crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, card)
     }
+}
+
+/// A lifted path reference as a removable pill — the attachment chip of the
+/// queue and message editors. Same geometry as [`render`] so an edit strip
+/// reads as the same object as the transcript's display pills; the full
+/// target rides the hover tooltip, and removal is session-local until the
+/// edit saves.
+pub fn render_removable_ref(
+    id: impl Into<gpui::ElementId>,
+    remove_id: impl Into<gpui::ElementId>,
+    reference: &crate::path_refs::SentReference,
+    theme: &Theme,
+    on_remove: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let tooltip: SharedString = reference.path.clone().into();
+    div()
+        .id(id)
+        .h(px(BADGE_HEIGHT))
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(8.0))
+        .rounded(px(PILL_RADIUS))
+        .bg(crate::theme::ink(0.06))
+        .text_size(px(TEXT_SIZE))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.text_muted)
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::popover::TextTooltip(tooltip.clone()))
+                .into()
+        })
+        .tooltip_show_delay(HOVER_DELAY)
+        .child(
+            crate::icons::icon(if reference.is_dir {
+                crate::icons::FOLDER
+            } else {
+                crate::icons::DOCUMENT
+            })
+            .size(px(ICON_SIZE))
+            .text_color(theme.text_muted.opacity(0.7)),
+        )
+        .child(
+            div()
+                .max_w(px(CHIP_LABEL_MAX))
+                .overflow_hidden()
+                .truncate()
+                .child(SharedString::from(reference.label.clone())),
+        )
+        .child(
+            div()
+                .id(remove_id)
+                .cursor_pointer()
+                .on_click(on_remove)
+                .child(
+                    crate::icons::icon(crate::icons::CLOSE_CIRCLE)
+                        .size(px(12.0))
+                        .text_color(theme.text_muted.opacity(0.7)),
+                ),
+        )
 }
 
 #[cfg(test)]

@@ -359,7 +359,10 @@ impl ImageViewer {
             .bg(gpui::rgb(0x303030))
             .hover(|el| el.bg(gpui::rgb(0x444444)))
             .cursor_pointer()
-            .tooltip(move |_, cx| cx.new(|_| ViewerTooltip(tooltip.into())).into())
+            .tooltip(move |_, cx| {
+                cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
+                    .into()
+            })
             .child(child)
     }
 
@@ -477,23 +480,6 @@ impl ImageViewer {
                             ),
                     ),
             )
-    }
-}
-
-/// A minimal centered tooltip (same look as the composer's ActionTooltip,
-/// re-declared because that one is composer-internal).
-pub(crate) struct ViewerTooltip(pub(crate) SharedString);
-
-impl Render for ViewerTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
-        div()
-            .px_2()
-            .py_1()
-            .bg(theme.bg)
-            .text_color(theme.text)
-            .text_size(crate::typography::ui_rems(12.0))
-            .child(self.0.clone())
     }
 }
 

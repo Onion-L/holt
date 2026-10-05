@@ -1504,7 +1504,7 @@ impl FileTreePanel {
                             }))
                             .child(letter)
                             .tooltip(move |_, cx| {
-                                cx.new(|_| crate::image_viewer::ViewerTooltip(label.clone()))
+                                cx.new(|_| crate::popover::TextTooltip(label.clone()))
                                     .into()
                             }),
                     )
@@ -1513,7 +1513,7 @@ impl FileTreePanel {
             .tooltip({
                 let path = row.path.clone();
                 move |_, cx| {
-                    cx.new(|_| crate::image_viewer::ViewerTooltip(path.clone().into()))
+                    cx.new(|_| crate::popover::TextTooltip(path.clone().into()))
                         .into()
                 }
             });
@@ -1569,9 +1569,7 @@ impl FileTreePanel {
                         .hover(|state| state.bg(crate::theme::wash(0.10)))
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
-                                crate::image_viewer::ViewerTooltip(
-                                    format!("Retry: {message}").into(),
-                                )
+                                crate::popover::TextTooltip(format!("Retry: {message}").into())
                             })
                             .into()
                         })

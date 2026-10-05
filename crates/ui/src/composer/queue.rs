@@ -2,9 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::{
-    Context, Entity, Focusable, KeyDownEvent, Render, Subscription, Window, div, prelude::*, px,
-};
+use gpui::{Context, Entity, Focusable, KeyDownEvent, Subscription, Window, div, prelude::*, px};
 use holt_rpc::methods;
 
 use super::layout::INPUT_LINE_HEIGHT;
@@ -107,6 +105,16 @@ impl Composer {
 pub(super) struct QueueEdit {
     pub(super) message_id: String,
     pub(super) original: String,
+    /// The appended path list lifted out of the prompt at open
+    /// (`split_sent_references`): it never enters the editor's text — it
+    /// renders as the removable chip strip above the list, and Save
+    /// re-appends what remains, so the raw `Referenced paths:` transport
+    /// stays out of the user's way without dropping the attachments the
+    /// model receives.
+    pub(super) references: Vec<crate::path_refs::SentReference>,
+    /// The list as lifted at open: an edit whose only change is chip
+    /// removal still counts as touched for the stale-dismissal check.
+    pub(super) original_references: Vec<crate::path_refs::SentReference>,
     pub(super) input: Entity<ComposerInput>,
     pub(super) focus_pending: bool,
     _events: Subscription,
@@ -167,11 +175,12 @@ impl Composer {
     }
 
     /// Start editing a pending item's one editable field: the message body
-    /// (skill mentions ride it verbatim since ADR-0035). The captured
-    /// model, the kind, and the position belong to the queue and are not
-    /// offered here.
+    /// (skill mentions ride it verbatim since ADR-0035). The appended path
+    /// list lifts out of the editing text into the removable chip strip —
+    /// Save re-appends what remains. The captured model, the kind, and the
+    /// position belong to the queue and are not offered here.
     pub(super) fn open_queue_edit(&mut self, message_id: &str, cx: &mut Context<Self>) {
-        let body = {
+        let (body, references) = {
             let state = self.state.read(cx);
             let Some(item) = state.message_queue.as_ref().and_then(|queue| {
                 queue
@@ -181,16 +190,12 @@ impl Composer {
             }) else {
                 return;
             };
-            match item.kind {
-                // Pending Skill items no longer exist (load-time migration,
-                // ADR-0035); the arm stays for the enum.
-                holt_proto::PendingKind::Ordinary | holt_proto::PendingKind::Skill => {
-                    item.request.prompt.clone()
-                }
-                // A pending Compaction has no edit affordance — never open
-                // an editor against its (unused) prompt.
-                holt_proto::PendingKind::Compact => return,
-            }
+            // A pending Compaction has no edit affordance — never open an
+            // editor against its (unused) prompt.
+            let Some(split) = split_pending_prompt(item) else {
+                return;
+            };
+            split
         };
         let placeholder = "Edit the queued message";
         let input = cx.new(|cx| ComposerInput::new(placeholder, cx));
@@ -209,12 +214,28 @@ impl Composer {
         self.queue_edit = Some(QueueEdit {
             message_id: message_id.into(),
             original: body,
+            original_references: references.clone(),
+            references,
             input,
             focus_pending: true,
             _events: events,
         });
         self.queue_expanded = true;
         cx.notify();
+    }
+
+    /// Remove one attachment from the open queue edit's chip strip. The
+    /// change is session-local until Save re-appends what remains; Cancel
+    /// discards it. The queue's stored prompt keeps the path referenced
+    /// until the save lands, so the engine's managed-file reclaim cannot
+    /// race the edit.
+    pub(super) fn remove_queue_edit_reference(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.as_mut() else {
+            return;
+        };
+        if crate::path_refs::remove_lifted_reference(&mut edit.references, path) {
+            cx.notify();
+        }
     }
 
     pub(super) fn run_queue_now(&mut self, message_id: String, cx: &mut Context<Self>) {
@@ -255,9 +276,12 @@ impl Composer {
         }));
     }
 
-    /// Save the edit through the typed RPC boundary. The acknowledgement
-    /// means the queue file was persisted; a failure keeps the editor open
-    /// with the unsaved text.
+    /// Save the edit through the typed RPC boundary. The path list's
+    /// remaining chips re-append to the edited body; the empty guard runs
+    /// on the recombined prompt, so a references-only message stays
+    /// submittable while a fully emptied one refuses with a reason. The
+    /// acknowledgement means the queue file was persisted; a failure keeps
+    /// the editor open with the unsaved text.
     pub(super) fn save_queue_edit(&mut self, cx: &mut Context<Self>) {
         if self.queue_busy {
             return;
@@ -266,8 +290,14 @@ impl Composer {
             return;
         };
         let message_id = edit.message_id.clone();
-        let prompt = edit.input.read(cx).text().trim().to_string();
-        if prompt.is_empty() {
+        let body = edit.input.read(cx).text().trim().to_string();
+        let prompt = crate::path_refs::append_lifted_references(&body, &edit.references);
+        if prompt.trim().is_empty() {
+            // Body cleared and every attachment removed — there is nothing
+            // left to send. Say so instead of silently swallowing the Save.
+            self.failure = Some(crate::path_refs::EMPTY_EDIT_MESSAGE.into());
+            self.failure_key = Some(self.current_key.clone());
+            cx.notify();
             return;
         }
         let chat_id = self.current_key.clone();
@@ -401,7 +431,8 @@ impl Composer {
                 .pending
                 .iter()
                 .any(|item| item.message_id == edit.message_id);
-            let untouched = edit.input.read(cx).text() == edit.original;
+            let untouched = edit.input.read(cx).text() == edit.original
+                && edit.references == edit.original_references;
             if !still_pending && untouched {
                 self.queue_edit = None;
             }
@@ -459,6 +490,14 @@ impl Composer {
         // The editor renders inline in its own row; the entity is cloned in so
         // the closure can hand it to that row.
         let edit_input = self.queue_edit.as_ref().map(|edit| edit.input.clone());
+        // The open edit's attachments render as a removable chip strip above
+        // the list (one edit exists at a time); removal is session-local
+        // until Save.
+        let edit_refs = self
+            .queue_edit
+            .as_ref()
+            .filter(|edit| !edit.references.is_empty())
+            .map(|edit| edit.references.clone());
         let error = queue
             .error
             .clone()
@@ -476,7 +515,8 @@ impl Composer {
         // from the height the user actually saw when they clicked.
         let list_visible = count > 0;
         let error_visible = error.is_some();
-        let body_present = list_visible || error_visible;
+        let chips_visible = edit_refs.is_some();
+        let body_present = list_visible || error_visible || chips_visible;
         let list_content_height = if list_visible {
             30.0 * count as f32 + 8.0
         } else {
@@ -491,12 +531,15 @@ impl Composer {
         } else {
             0.0
         };
-        let inter_gap = if list_visible && error_visible {
-            QUEUE_INTER_GAP
+        let chips_height = if chips_visible {
+            crate::badges::BADGE_HEIGHT
         } else {
             0.0
         };
-        let body_height = list_height + inter_gap + error_height;
+        // One gap_2 per pair of mounted sections (chips / list / error).
+        let sections = list_visible as usize + error_visible as usize + chips_visible as usize;
+        let gaps = sections.saturating_sub(1) as f32 * QUEUE_INTER_GAP;
+        let body_height = chips_height + list_height + error_height + gaps;
         let target_body_height = if expanded { body_height } else { 0.0 };
         let body = if body_present {
             // Always mounted during the tween (the frame's `overflow_hidden`
@@ -504,6 +547,34 @@ impl Composer {
             // (no list, no error) we wouldn't reach this — `body_present`
             // gates it.
             let mut content = div().w_full().min_w_0().flex().flex_col().gap_2();
+            if let Some(refs) = edit_refs.as_ref() {
+                // One clipped row: chip labels truncate at the shared cap,
+                // so an overflowing count clips instead of reflowing the
+                // list's fixed-height rows.
+                let mut strip = div()
+                    .w_full()
+                    .min_w_0()
+                    .h(px(crate::badges::BADGE_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .overflow_hidden()
+                    .pl(px(12.0));
+                for (cix, reference) in refs.iter().enumerate() {
+                    let path = reference.path.clone();
+                    strip = strip.child(crate::badges::render_removable_ref(
+                        ("queue-edit-ref", cix),
+                        ("queue-edit-ref-remove", cix),
+                        reference,
+                        theme,
+                        cx.listener(move |this, _, _, cx| {
+                            this.remove_queue_edit_reference(&path, cx);
+                        }),
+                    ));
+                }
+                content = content.child(strip);
+            }
             if list_visible {
                 content = content.child(
                     gpui::uniform_list("pending-messages", count, move |range, _, cx| {
@@ -514,12 +585,13 @@ impl Composer {
                                 // Typed rows (ticket 04): the command kind
                                 // leads, never a raw slash directive. The
                                 // prompt text rides verbatim — inline skill
-                                // mentions included (ADR-0035).
-                                let title = match item.kind {
-                                    holt_proto::PendingKind::Ordinary
-                                    | holt_proto::PendingKind::Skill => item.request.prompt.clone(),
-                                    holt_proto::PendingKind::Compact => "/compact".to_string(),
-                                };
+                                // mentions included (ADR-0035) — but the
+                                // appended path list leaves the title: it
+                                // collapses to a paperclip + basenames, the
+                                // same projection the transcript applies to
+                                // sent bubbles.
+                                let (title, references) = split_pending_prompt(item)
+                                    .unwrap_or_else(|| ("/compact".to_string(), Vec::new()));
                                 let editing =
                                     editing_id.as_deref() == Some(item.message_id.as_str());
                                 let row = div()
@@ -561,19 +633,65 @@ impl Composer {
                                             .gap(px(8.0))
                                             .pl(px(12.0))
                                             // Editing swaps the row's title
-                                            // for a borderless inline input.
+                                            // for a borderless inline input;
+                                            // the attachments sit in the chip
+                                            // strip above the list.
                                             .when(editing, |el| {
                                                 el.when_some(edit_input.clone(), |el, input| {
                                                     el.child(div().w_full().min_w_0().child(input))
                                                 })
                                             })
                                             .when(!editing, |el| {
-                                                el.child(
+                                                let mut cell = div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(6.0));
+                                                if !references.is_empty() {
+                                                    cell = cell.child(
+                                                        crate::icons::icon(crate::icons::PAPERCLIP)
+                                                            .size(px(12.0))
+                                                            .flex_none()
+                                                            .text_color(theme.text_muted),
+                                                    );
+                                                }
+                                                // A references-only message's
+                                                // title IS the attachments.
+                                                let body = if title.is_empty() {
+                                                    crate::path_refs::reference_summary(
+                                                        &references,
+                                                        usize::MAX,
+                                                    )
+                                                } else {
+                                                    title.clone()
+                                                };
+                                                cell = cell.child(
                                                     div()
+                                                        .min_w_0()
+                                                        .flex_shrink(1.0)
                                                         .truncate()
                                                         .text_color(theme.text)
-                                                        .child(title),
-                                                )
+                                                        .child(body),
+                                                );
+                                                // Beside a non-empty body the
+                                                // attachments collapse to a
+                                                // muted tail that never
+                                                // truncates away.
+                                                if !references.is_empty() && !title.is_empty() {
+                                                    cell = cell.child(
+                                                        div()
+                                                            .flex_none()
+                                                            .text_color(theme.text_faint)
+                                                            .child(
+                                                                crate::path_refs::reference_summary(
+                                                                    &references,
+                                                                    1,
+                                                                ),
+                                                            ),
+                                                    );
+                                                }
+                                                el.child(cell)
                                             }),
                                     );
                                 // The editing row's affordances: Enter saves,
@@ -888,18 +1006,20 @@ fn queue_row_action(
         )
 }
 
-pub(super) struct ActionTooltip(pub gpui::SharedString);
-
-impl Render for ActionTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx);
-        div()
-            .px_2()
-            .py_1()
-            .bg(theme.bg)
-            .text_color(theme.text)
-            .text_size(crate::typography::ui_rems(12.0))
-            .child(self.0.clone())
+/// The editable prompt pieces of a pending item: the lifted body and
+/// references for ordinary/skill items (ADR-0035); `None` for a pending
+/// Compaction, which has no editable field — its row shows the fixed
+/// directive title instead.
+fn split_pending_prompt(
+    item: &holt_proto::PendingMessage,
+) -> Option<(String, Vec<crate::path_refs::SentReference>)> {
+    match item.kind {
+        // Pending Skill items no longer exist (load-time migration,
+        // ADR-0035); the arm stays for the enum.
+        holt_proto::PendingKind::Ordinary | holt_proto::PendingKind::Skill => Some(
+            crate::path_refs::split_sent_references(&item.request.prompt),
+        ),
+        holt_proto::PendingKind::Compact => None,
     }
 }
 
@@ -974,6 +1094,48 @@ mod tests {
             px(0.0),
             "empty paused queue still occupies space"
         );
+    }
+
+    #[gpui::test]
+    fn the_queue_editor_edits_the_body_not_the_path_trailer(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        let queue: holt_proto::MessageQueue = serde_json::from_value(serde_json::json!({
+            "pending": [{
+                "messageId": "m-1", "kind": "ordinary", "submittedAt": 0,
+                "request": {
+                    "prompt": "look at this\n\nReferenced paths:\n- \"/abs/a.png\"\n- \"/abs/dir/\"",
+                    "provider": "openai", "model": "openai/gpt-5.4", "cwd": "/tmp"
+                },
+            }],
+            "paused": true
+        }))
+        .unwrap();
+        state.update(cx, |state, _| state.message_queue = Some(queue));
+        composer.update(cx, |this, cx| this.open_queue_edit("m-1", cx));
+        composer.update(cx, |this, cx| {
+            let edit = this.queue_edit.as_ref().expect("editor opens");
+            // The raw transport never enters the editing text; the lifted
+            // references ride the edit session for the save-time re-append.
+            assert_eq!(edit.input.read(cx).text(), "look at this");
+            assert_eq!(edit.original, "look at this");
+            assert_eq!(edit.references.len(), 2);
+            assert_eq!(edit.references[0].path, "/abs/a.png");
+            assert!(edit.references[1].is_dir);
+        });
+        // Chip removal is session-local and survives for the re-append.
+        composer.update(cx, |this, cx| {
+            this.remove_queue_edit_reference("/abs/a.png", cx);
+            let edit = this.queue_edit.as_ref().unwrap();
+            assert_eq!(edit.references.len(), 1);
+            assert_eq!(edit.references[0].path, "/abs/dir/");
+            assert_eq!(edit.original_references.len(), 2);
+            // A removal-only edit counts as touched, so the stale-dismissal
+            // path keeps the editor open.
+            assert_ne!(edit.references, edit.original_references);
+        });
     }
 
     #[test]

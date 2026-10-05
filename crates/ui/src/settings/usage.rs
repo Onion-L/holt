@@ -930,7 +930,7 @@ impl UsagePage {
                     .hover(|state| state.bg(crate::theme::wash(0.06)).text_color(theme.text))
                     .on_click(cx.listener(|page, _, _, cx| page.refresh(cx)))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
+                        cx.new(|_| crate::popover::TextTooltip(tooltip.clone()))
                             .into()
                     })
                     .child(if self.reloading {
@@ -1564,7 +1564,7 @@ impl UsagePage {
             .cursor_default()
             .hover(|cell| cell.bg(theme.ink(0.03)))
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::image_viewer::ViewerTooltip(detail.clone().into()))
+                cx.new(|_| crate::popover::TextTooltip(detail.clone().into()))
                     .into()
             })
             .tooltip_show_delay(DAY_TOOLTIP_DELAY)
@@ -1739,7 +1739,7 @@ impl UsagePage {
             .bg(heatmap_cell_color(level, theme))
             .cursor_default()
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.clone()))
+                cx.new(|_| crate::popover::TextTooltip(tooltip.clone()))
                     .into()
             })
             .tooltip_show_delay(DAY_TOOLTIP_DELAY)

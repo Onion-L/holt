@@ -653,7 +653,7 @@ impl Render for AppearancePage {
                         .text_color(theme.text_muted)
                         .hover(|style| style.bg(theme.element_hover).text_color(theme.text))
                         .tooltip(move |_, cx| {
-                            cx.new(|_| crate::image_viewer::ViewerTooltip(full_path.clone()))
+                            cx.new(|_| crate::popover::TextTooltip(full_path.clone()))
                                 .into()
                         })
                         .child(SharedString::from(name))

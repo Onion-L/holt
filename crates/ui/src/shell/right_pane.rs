@@ -823,9 +823,7 @@ impl Shell {
                                 .hover(|style| style.bg(crate::theme::ink(0.09)))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| {
-                                        crate::image_viewer::ViewerTooltip(
-                                            "Show file sidebar".into(),
-                                        )
+                                        crate::popover::TextTooltip("Show file sidebar".into())
                                     })
                                     .into()
                                 })

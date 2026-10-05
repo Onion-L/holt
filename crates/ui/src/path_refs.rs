@@ -99,9 +99,11 @@ pub fn format_reference(path: &str, is_dir: bool) -> String {
 pub const REFS_HEADER: &str = "Referenced paths:";
 
 /// Append the explicit path list to the message body (spec: one list at the
-/// end of the prompt, editable as ordinary text in the queue afterwards).
-/// An empty body with references stays instruction-free — a references-only
-/// send must not invent a task.
+/// end of the prompt, riding it as plain text). The queue editor lifts the
+/// list out with [`split_sent_references`] and re-appends it on save — the
+/// raw transport never enters the editing text. An empty body with
+/// references stays instruction-free — a references-only send must not
+/// invent a task.
 pub fn append_references(text: &str, refs: &[PathRef]) -> String {
     if refs.is_empty() {
         return text.to_string();
@@ -163,9 +165,12 @@ fn quoted_paths(text: &str) -> Vec<(Range<usize>, String)> {
                         Some('r') => path.push('\r'),
                         Some('t') => path.push('\t'),
                         Some('u') => {
-                            // The `\u{XX}` control-char escape.
+                            // The `\u{XX}` control-char escape. `rest` starts
+                            // AT the `u`: the braces and hex are `rest[1..end]`
+                            // and the whole escape spans `end + 2` bytes from
+                            // the backslash.
                             let Some(end) = rest.find('}') else { break };
-                            let Some(hex) = rest[..end].strip_prefix('{') else {
+                            let Some(hex) = rest[1..end].strip_prefix('{') else {
                                 break;
                             };
                             let Ok(code) = u32::from_str_radix(hex, 16) else {
@@ -173,7 +178,7 @@ fn quoted_paths(text: &str) -> Vec<(Range<usize>, String)> {
                             };
                             let Some(c) = char::from_u32(code) else { break };
                             path.push(c);
-                            cursor += 2 + end + 1;
+                            cursor += end + 2;
                             continue;
                         }
                         // Unknown escape: not our format.
@@ -220,6 +225,64 @@ pub struct SentReference {
     /// The full absolute target (hover text).
     pub path: String,
     pub is_dir: bool,
+}
+
+/// The inverse of [`split_sent_references`]: re-append a lifted path list to
+/// an edited body. Byte-identical to the original prompt when the body and
+/// list are unchanged (the queue/message editors rely on that for no-op
+/// saves). Formats the lifted targets directly rather than re-binding
+/// `PathRef`s — an edit session has no chip ids and cannot honor a
+/// `managed` claim. The queue's stored text keeps a removed path referenced
+/// until the save lands, so the engine's managed-file reclaim cannot race
+/// the edit.
+pub fn append_lifted_references(text: &str, refs: &[SentReference]) -> String {
+    if refs.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.trim_end().to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(REFS_HEADER);
+    for reference in refs {
+        out.push_str("\n- ");
+        out.push_str(&format_reference(&reference.path, reference.is_dir));
+    }
+    out
+}
+
+/// Remove one lifted reference by its absolute target — the attach-time
+/// dedup key, so it identifies a chip uniquely. Returns true when one was
+/// removed.
+pub fn remove_lifted_reference(refs: &mut Vec<SentReference>, path: &str) -> bool {
+    let before = refs.len();
+    refs.retain(|reference| reference.path != path);
+    refs.len() != before
+}
+
+/// Both editors' refusal when a save would empty the message (body cleared,
+/// every attachment chip removed).
+pub const EMPTY_EDIT_MESSAGE: &str = "Nothing to send — add text or keep an attachment";
+
+/// One-line attachment summary for the queue row: the first `max_labels`
+/// basenames comma-joined, the rest collapsed to `+N` ("name.png, dir/" —
+/// "name.png +2"). The row shows it as the title of a references-only
+/// message and as the muted tail next to a non-empty body.
+pub fn reference_summary(refs: &[SentReference], max_labels: usize) -> String {
+    let shown = refs
+        .iter()
+        .take(max_labels)
+        .map(|reference| reference.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = refs.len().saturating_sub(max_labels);
+    if rest == 0 {
+        shown
+    } else if shown.is_empty() {
+        format!("+{rest}")
+    } else {
+        format!("{shown} +{rest}")
+    }
 }
 
 /// Lift the appended path list OUT of a sent message: the trailer rides the
@@ -475,6 +538,74 @@ mod tests {
         assert_eq!(sent_reference_display("unterminated \"/abs/path"), None);
         // A bare root has no basename to label.
         assert_eq!(sent_reference_display("root is \"/\" here"), None);
+    }
+
+    #[test]
+    fn reference_summary_joins_and_collapses() {
+        let lifted = |label: &str, path: &str, is_dir: bool| SentReference {
+            label: label.to_string(),
+            path: path.to_string(),
+            is_dir,
+        };
+        let refs = vec![
+            lifted("a.png", "/abs/a.png", false),
+            lifted("dir/", "/abs/dir/", true),
+            lifted("b.rs", "/abs/b.rs", false),
+        ];
+        assert_eq!(reference_summary(&refs, usize::MAX), "a.png, dir/, b.rs");
+        assert_eq!(reference_summary(&refs, 2), "a.png, dir/ +1");
+        assert_eq!(reference_summary(&refs, 1), "a.png +2");
+        assert_eq!(reference_summary(&refs, 0), "+3");
+        assert_eq!(reference_summary(&[], usize::MAX), "");
+    }
+
+    #[test]
+    fn a_lifted_reference_reappends_byte_identically() {
+        // The queue/message editors' open/save round-trip: split the trailer
+        // out, re-append what remains — the prompt the model sees never
+        // changes under a body-only edit, escapes, folders, and
+        // control-char targets included.
+        let refs = vec![
+            reference("/abs/a file.rs", false),
+            reference("/abs/dir", true),
+            reference("/abs/say \"hi\".rs", false),
+            reference("/abs/bel\u{7}l.rs", false),
+        ];
+        for body_text in ["look at these", ""] {
+            let original = append_references(body_text, &refs);
+            let (body, lifted) = split_sent_references(&original);
+            assert_eq!(append_lifted_references(&body, &lifted), original);
+        }
+    }
+
+    #[test]
+    fn quoted_paths_unescape_control_char_escapes() {
+        // `format_reference` emits `\u{…}` only for control characters.
+        let raw = "- \"/abs/bel\\u{7}l.rs\" and \"/abs/esc\\u{1b}ape.rs\"";
+        let paths = quoted_paths(raw);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].1, "/abs/bel\u{7}l.rs");
+        assert_eq!(paths[1].1, "/abs/esc\u{1b}ape.rs");
+        // A trailing path ends at the closing quote, not a byte past it.
+        let raw = "\"/abs/bel\\u{7}l.rs\" tail";
+        let paths = quoted_paths(raw);
+        let [(range, path)] = paths.as_slice() else {
+            panic!("one path: {raw}")
+        };
+        assert_eq!(path, "/abs/bel\u{7}l.rs");
+        assert_eq!(&raw[range.end..], " tail");
+    }
+
+    #[test]
+    fn remove_lifted_reference_drops_the_target_once() {
+        let (_, mut refs) = split_sent_references(&append_references(
+            "body",
+            &[reference("/abs/a.rs", false), reference("/abs/b.rs", false)],
+        ));
+        assert!(remove_lifted_reference(&mut refs, "/abs/a.rs"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].path, "/abs/b.rs");
+        assert!(!remove_lifted_reference(&mut refs, "/abs/a.rs"));
     }
 
     #[test]

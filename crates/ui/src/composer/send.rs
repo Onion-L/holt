@@ -959,7 +959,7 @@ impl Composer {
                 .aria_label("Interrupt the running turn")
                 .focusable()
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::queue::ActionTooltip("Press Esc again to stop".into()))
+                    cx.new(|_| crate::popover::TextTooltip("Press Esc again to stop".into()))
                         .into()
                 })
                 .size(px(28.0))
@@ -998,7 +998,7 @@ impl Composer {
                 .aria_label("Stop and pause message queue")
                 .focusable()
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::queue::ActionTooltip("Stop and pause queue".into()))
+                    cx.new(|_| crate::popover::TextTooltip("Stop and pause queue".into()))
                         .into()
                 })
                 .size(px(28.0))

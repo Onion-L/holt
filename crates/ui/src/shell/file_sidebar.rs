@@ -785,7 +785,7 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|style| style.bg(crate::theme::ink(0.09)))
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip("Hide file sidebar".into()))
+                        cx.new(|_| crate::popover::TextTooltip("Hide file sidebar".into()))
                             .into()
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1757,7 +1757,7 @@ impl Shell {
                 row = match invalid {
                     Some(reason) => row.opacity(0.45).tooltip(move |_, cx| {
                         cx.new(|_| {
-                            crate::image_viewer::ViewerTooltip(
+                            crate::popover::TextTooltip(
                                 format!("Can't paste here: {reason}").into(),
                             )
                         })

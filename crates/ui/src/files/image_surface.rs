@@ -215,7 +215,7 @@ impl FileImageSurface {
             .cursor_pointer()
             .hover(|el| el.bg(crate::theme::ink(0.10)))
             .tooltip(move |_, cx| {
-                cx.new(|_| crate::image_viewer::ViewerTooltip(tooltip.into()))
+                cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
                     .into()
             })
             .child(child)

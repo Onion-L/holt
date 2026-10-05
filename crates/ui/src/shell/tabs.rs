@@ -230,7 +230,7 @@ impl Shell {
                     )
                     .when(self.terminal_open(cx), |el| el.bg(theme.glass_hover()))
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle terminal".into()))
+                        cx.new(|_| crate::popover::TextTooltip("Toggle terminal".into()))
                             .into()
                     }),
                 )
@@ -244,7 +244,7 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
                     )
                     .tooltip(|_, cx| {
-                        cx.new(|_| crate::image_viewer::ViewerTooltip("Expand panel".into()))
+                        cx.new(|_| crate::popover::TextTooltip("Expand panel".into()))
                             .into()
                     }),
                 )
@@ -258,7 +258,7 @@ impl Shell {
                 )
                 .when(right_open, |el| el.bg(theme.glass_hover()))
                 .tooltip(|_, cx| {
-                    cx.new(|_| crate::image_viewer::ViewerTooltip("Toggle right panel".into()))
+                    cx.new(|_| crate::popover::TextTooltip("Toggle right panel".into()))
                         .into()
                 }),
             )

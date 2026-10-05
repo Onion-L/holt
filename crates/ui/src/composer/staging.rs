@@ -288,7 +288,7 @@ impl Composer {
                         this.open_viewer(targets.clone(), image_index, window, cx);
                     }))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| super::queue::ActionTooltip(full_path.clone().into()))
+                        cx.new(|_| crate::popover::TextTooltip(full_path.clone().into()))
                             .into()
                     });
                 let thumb_frame = match thumb {
@@ -317,7 +317,7 @@ impl Composer {
                     }
                     image_store::Snapshot::Error { cause, .. } => thumb_frame
                         .tooltip(move |_, cx| {
-                            cx.new(|_| super::queue::ActionTooltip(cause.clone()))
+                            cx.new(|_| crate::popover::TextTooltip(cause.clone()))
                                 .into()
                         })
                         .flex()
@@ -346,7 +346,7 @@ impl Composer {
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme.text_muted)
                 .tooltip(move |_, cx| {
-                    cx.new(|_| super::queue::ActionTooltip(full_path.clone().into()))
+                    cx.new(|_| crate::popover::TextTooltip(full_path.clone().into()))
                         .into()
                 });
             let chip = if let Some(thumb_frame) = frame {

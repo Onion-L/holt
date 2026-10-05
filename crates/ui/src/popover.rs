@@ -324,6 +324,24 @@ pub fn popover_card(theme: &Theme) -> gpui::Div {
     }
 }
 
+/// The plain-text hover tooltip: one line of content on the window
+/// background (attachment paths, action labels). The shared shape so every
+/// surface's hover text reads identically.
+pub struct TextTooltip(pub SharedString);
+
+impl Render for TextTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .px_2()
+            .py_1()
+            .bg(theme.bg)
+            .text_color(theme.text)
+            .text_size(crate::typography::ui_rems(12.0))
+            .child(self.0.clone())
+    }
+}
+
 /// [`popover_card`] without the `p-1` inset — for popovers that manage their
 /// own internal panes (the provider/model picker's rail + list split).
 pub fn popover_card_flush(theme: &Theme) -> gpui::Div {
