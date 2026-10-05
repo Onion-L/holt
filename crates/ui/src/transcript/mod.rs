@@ -2639,7 +2639,7 @@ mod tests {
     }
 
     /// The card lists its first files and folds the rest behind "Show
-    /// more"; the toggle pins the full list and folds it back.
+    /// more"; the header folds the whole list.
     #[gpui::test]
     fn change_card_caps_its_file_list(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
@@ -2696,7 +2696,7 @@ mod tests {
         assert!(cx.debug_bounds("turn-card-file-f9.rs").is_some());
         transcript.update(cx, |this, _| {
             assert_eq!(
-                this.folds.get("m-1#tcs").and_then(|fold| fold.open),
+                this.folds.get("m-1#tcs#more").and_then(|fold| fold.open),
                 Some(true)
             );
         });
@@ -2704,6 +2704,17 @@ mod tests {
         let less = cx.debug_bounds("turn-card-more").expect("less drawn");
         cx.simulate_click(less.center(), Default::default());
         assert!(cx.debug_bounds("turn-card-file-f8.rs").is_none());
+
+        // The header folds the whole list; Review inside it does not.
+        let review = cx.debug_bounds("turn-card-review").expect("review drawn");
+        cx.simulate_click(review.center(), Default::default());
+        assert!(cx.debug_bounds("turn-card-file-f0.rs").is_some());
+        let toggle = cx.debug_bounds("turn-card-toggle").expect("toggle drawn");
+        cx.simulate_click(toggle.center(), Default::default());
+        assert!(cx.debug_bounds("turn-card-file-f0.rs").is_none());
+        assert!(cx.debug_bounds("turn-card-more").is_none());
+        cx.simulate_click(toggle.center(), Default::default());
+        assert!(cx.debug_bounds("turn-card-file-f0.rs").is_some());
     }
 
     #[test]

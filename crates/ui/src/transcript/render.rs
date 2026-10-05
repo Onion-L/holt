@@ -546,8 +546,9 @@ impl Transcript {
     /// it only exists once the engine's Final frame settles the Turn — live
     /// frames never draw (user request), and a failed or interrupted settle
     /// is also a Final, so those Turns keep their cards. The header carries
-    /// the totals with Undo and Review; the file list stays open below it,
-    /// capped at [`TURN_CARD_VISIBLE_FILES`] rows until "Show more". A row
+    /// the totals with Undo and Review and folds the file list (open by
+    /// default), which is capped at [`TURN_CARD_VISIBLE_FILES`] rows until
+    /// "Show more". A row
     /// click opens the read-only review for that file; hovering a live
     /// file reveals Open — deleted files offer Review only.
     fn render_turn_change_card(
@@ -560,9 +561,15 @@ impl Transcript {
     ) -> AnyElement {
         let chat_id = self.chat_id.clone().unwrap_or_default();
         let message_id = change_set.message_id.clone();
-        let show_all = self
+        let open = self
             .folds
             .get(row_id)
+            .and_then(|fold| fold.open)
+            .unwrap_or(true);
+        let more_id = SharedString::from(format!("{row_id}#more"));
+        let show_all = self
+            .folds
+            .get(&more_id)
             .and_then(|fold| fold.open)
             .unwrap_or(false);
         let count = change_set.files.len();
@@ -624,14 +631,33 @@ impl Transcript {
             .flex_col()
             .child(
                 div()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .line_height(px(18.0))
-                    .text_color(theme.text)
-                    .child(SharedString::from(format!(
-                        "Edited {count} file{}",
-                        if count == 1 { "" } else { "s" }
-                    ))),
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .line_height(px(18.0))
+                            .text_color(theme.text)
+                            .child(SharedString::from(format!(
+                                "Edited {count} file{}",
+                                if count == 1 { "" } else { "s" }
+                            ))),
+                    )
+                    .child(
+                        crate::icons::icon(if open {
+                            crate::icons::ALT_ARROW_DOWN
+                        } else {
+                            crate::icons::ALT_ARROW_RIGHT
+                        })
+                        .flex_none()
+                        .size(px(12.0))
+                        .text_color(theme.text_faint),
+                    ),
             )
             .child(summary);
 
@@ -665,6 +691,7 @@ impl Transcript {
                     .text_color(theme.text_muted),
             )
             .on_click(cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
                 cx.emit(super::TranscriptEvent::RestoreTurnChanges {
                     chat_id: restore_chat.clone(),
                     message_id: restore_message.clone(),
@@ -689,13 +716,23 @@ impl Transcript {
             .hover(|el| el.bg(crate::theme::wash(0.06)))
             .child("Review changes")
             .on_click(cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
                 cx.emit(super::TranscriptEvent::ReviewTurnChanges {
                     chat_id: review_chat.clone(),
                     message_id: review_message.clone(),
                     path: None,
                 });
             }));
+        let toggle_id = row_id.clone();
         let header = div()
+            .id("turn-change-toggle")
+            .debug_selector(|| "turn-card-toggle".to_string())
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let fold = this.folds.entry(toggle_id.clone()).or_default();
+                fold.open = Some(!fold.open.unwrap_or(true));
+                cx.notify();
+            }))
             .flex()
             .flex_row()
             .items_center()
@@ -707,7 +744,9 @@ impl Transcript {
             .when(can_undo, |el| el.child(undo))
             .child(review);
 
-        let visible = if show_all {
+        let visible = if !open {
+            0
+        } else if show_all {
             count
         } else {
             count.min(TURN_CARD_VISIBLE_FILES)
@@ -778,8 +817,7 @@ impl Transcript {
                 .child(turn_change_file_counts(file, theme))
         });
         let hidden = count - visible;
-        let more_row_id = row_id.clone();
-        let more = (hidden > 0 || show_all && count > TURN_CARD_VISIBLE_FILES).then(|| {
+        let more = (open && count > TURN_CARD_VISIBLE_FILES).then(|| {
             div()
                 .id("turn-change-more")
                 .debug_selector(|| "turn-card-more".to_string())
@@ -800,7 +838,7 @@ impl Transcript {
                     "Show less".to_string()
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    let fold = this.folds.entry(more_row_id.clone()).or_default();
+                    let fold = this.folds.entry(more_id.clone()).or_default();
                     fold.open = Some(!fold.open.unwrap_or(false));
                     cx.notify();
                 }))
