@@ -148,7 +148,7 @@ async fn complete_title(spec: &TitleTaskSpec, cancel: &CancellationToken) -> Opt
     let stream_fn = spec
         .stream_fn
         .clone()
-        .unwrap_or_else(crate::agent::default_stream_fn);
+        .unwrap_or_else(crate::stream::default_stream_fn);
     let stream = stream_fn(&spec.model, &context, Some(&options)).ok()?;
     // Race the consume against the token — the scripted seam's never-ending
     // streams can only be cancelled this way, and a real transport sees the

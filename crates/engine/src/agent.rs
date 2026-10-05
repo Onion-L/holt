@@ -1,5 +1,7 @@
-//! The single-agent run loop over pi-core: per-chat runtime state,
-//! event-to-transcript translation, and history persistence.
+//! The single-agent run loop over pi-core: per-chat runtime state and
+//! history persistence. The provider-stream transport (idle watchdog,
+//! mid-stream retry) lives in [`crate::stream`]; the agent-event →
+//! transcript translation in [`crate::decode`].
 
 use std::{
     collections::HashMap,
@@ -9,7 +11,7 @@ use std::{
 };
 
 use chrono::Utc;
-use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
+use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 use holt_proto::{
     Chat, PermissionMode, ReasoningLevel, Session, SessionStatus, ToolCall as TranscriptToolCall,
     WorkspaceScope,
@@ -20,25 +22,25 @@ use pi_core::{
         agent_loop::{AgentEventSink, run_agent_loop, run_agent_loop_continue},
         types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentToolResult},
     },
-    ai::{
-        compat,
-        types::{
-            AssistantContent, AssistantMessage, AssistantMessageEvent, BlockContent,
-            CacheRetention, Context as PiContext, ErrorReason, Model as PiModel, RoleUser,
-            SimpleStreamOptions, StopReason, ThinkingLevel as ProviderThinkingLevel, UserContent,
-            UserMessage,
-        },
-        utils::event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream},
+    ai::types::{
+        CacheRetention, Model as PiModel, RoleUser, SimpleStreamOptions,
+        ThinkingLevel as ProviderThinkingLevel, UserContent, UserMessage,
     },
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::decode::{
+    assistant_parts, part_char_len, push_system_part, record_mid_turn_compaction,
+    record_turn_start_compaction, resolve_tool_part, settle_unresolved_tools, tool_output_full,
+    tool_usage_total, update_assistant_entry,
+};
 use crate::history::CompactionRecord;
 use crate::store::{
     append_transcript_entry, append_transcript_part, append_transcript_parts, delete_transcript,
     load_transcript, transcript_exists,
 };
+use crate::stream::{STREAM_IDLE_TIMEOUT, default_stream_fn, guard_stream_fn, retry_stream_fn};
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("system_prompt.md");
 
@@ -682,7 +684,7 @@ impl ChatRuntime {
         }
     }
 
-    fn append_compaction(&self, record: &CompactionRecord) {
+    pub(crate) fn append_compaction(&self, record: &CompactionRecord) {
         let _persistence = self.persistence.lock().unwrap_or_else(|e| e.into_inner());
         if self.is_removed() {
             return;
@@ -1068,645 +1070,6 @@ fn user_agent_message(text: String, timestamp: i64) -> AgentMessage {
     })
 }
 
-/// Decode a pi-core tool call into the transcript's decoded shape. Heavy
-/// inputs (write content, edit strings) decode here and are stripped by the
-/// render-only policy below; unknown tools keep their raw input so the chip
-/// can still name them.
-fn decode_tool_call(
-    name: &str,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-) -> TranscriptToolCall {
-    let arg = |key: &str| {
-        arguments
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    };
-    match name {
-        "bash" => TranscriptToolCall::Exec {
-            command: arg("command").unwrap_or_default(),
-        },
-        "read" => TranscriptToolCall::ReadFile {
-            path: arg("path").unwrap_or_default(),
-        },
-        "read_chat" => TranscriptToolCall::ReadChat {
-            chat_id: arg("url")
-                .as_deref()
-                .and_then(|url| holt_proto::parse_holt_chat_link(url).ok())
-                .map(|link| link.chat_id)
-                .unwrap_or_else(|| "invalid Chat link".into()),
-            title: None,
-        },
-        "write" => TranscriptToolCall::WriteFile {
-            path: arg("path").unwrap_or_default(),
-            content: None,
-        },
-        "edit" => TranscriptToolCall::EditFile {
-            path: arg("path").unwrap_or_default(),
-            old_string: None,
-            new_string: None,
-        },
-        // The agent-facing `grep` API decodes into the pre-existing Search
-        // chip; its other knobs
-        // (glob, output_mode, …) are not carried — they show through the
-        // tool output instead.
-        "grep" => TranscriptToolCall::Search {
-            pattern: arg("pattern").unwrap_or_default(),
-            path: arg("path"),
-        },
-        "ls" => TranscriptToolCall::ListDir { path: arg("path") },
-        // ADR-0023: the web tools decode onto the sync-era chips. `prompt`
-        // is never populated — full-text fetch has no summarizer — and the
-        // search chip carries only its query.
-        "web_fetch" => TranscriptToolCall::WebFetch {
-            url: arg("url").unwrap_or_default(),
-            prompt: None,
-        },
-        "web_search" => TranscriptToolCall::WebSearch {
-            query: arg("query").unwrap_or_default(),
-        },
-        // MCP tools (ADR-0034) decode onto the structured Mcp chip: the
-        // two-level name splits at the first `__` after the prefix, the
-        // input rides verbatim. A server name containing `__` would
-        // mis-split the DISPLAY only — the full name stays authoritative
-        // in History and approval grants.
-        name if let Some(rest) = name.strip_prefix("mcp__") => {
-            let (server, tool) = rest.split_once("__").unwrap_or((rest, ""));
-            TranscriptToolCall::Mcp {
-                server: server.to_owned(),
-                tool: tool.to_owned(),
-                input: Some(serde_json::Value::Object(arguments.clone())),
-            }
-        }
-        other => TranscriptToolCall::Unknown {
-            name: other.to_owned(),
-            input: Some(serde_json::Value::Object(arguments.clone())),
-        },
-    }
-}
-
-fn transcript_tool_call(tool_call: &pi_core::ai::types::ToolCall) -> TranscriptToolCall {
-    sanitize_tool_call(&decode_tool_call(&tool_call.name, &tool_call.arguments))
-}
-
-/// The full tool output persisted on the resolved tool part — a Read's file
-/// content, the whole command transcript. pi-core bounds its builtins (read
-/// truncates by lines/bytes), so results ride verbatim; the defensive ceiling
-/// only keeps an unbounded MCP payload from flooding the doc.
-fn tool_output_full(result: &AgentToolResult) -> Option<String> {
-    const MAX_CHARS: usize = 1024 * 1024;
-    let text = result
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            BlockContent::Text(text) => Some(text.text.as_str()),
-            BlockContent::Image(_) => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.chars().count() <= MAX_CHARS {
-        return (!text.trim().is_empty()).then_some(text);
-    }
-    let mut out: String = text.chars().take(MAX_CHARS).collect();
-    out.push_str("\n…");
-    Some(out)
-}
-
-fn tool_usage_total(result: &AgentToolResult) -> Option<u64> {
-    if let Some(usage) = result.usage.as_ref() {
-        return Some(crate::usage::gross_tokens(usage));
-    }
-    // Older history records may only retain the serialized details payload.
-    // Accept both the typed result and that wire-shaped fallback.
-    let usage = result.details.get("usage")?.as_object()?;
-    let token = |name: &str| {
-        usage
-            .get(name)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-    };
-    let total = token("input") + token("output") + token("cacheRead") + token("cacheWrite");
-    Some(total)
-}
-
-/// Stamp a tool result onto the matching Tool part, wherever its entry sits.
-fn resolve_tool_part(
-    chat: &ChatRuntime,
-    tool_call_id: &str,
-    is_error: bool,
-    output: Option<String>,
-    read_chat_title: Option<&str>,
-    subagent_usage: Option<u64>,
-) {
-    let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let mut changed: Option<(String, usize)> = None;
-    for entry in transcript.iter_mut() {
-        let hit =
-            entry.parts.iter_mut().enumerate().find(
-                |(_, part)| matches!(part, MessagePart::Tool { id, .. } if id == tool_call_id),
-            );
-        if let Some((
-            tool_index,
-            MessagePart::Tool {
-                call,
-                resolved,
-                is_error: part_error,
-                output: part_output,
-                subagent_usage: usage_slot,
-                ..
-            },
-        )) = hit
-        {
-            *resolved = true;
-            *part_error = is_error;
-            *part_output = output.clone();
-            if call.is_subagent_spawn() {
-                *usage_slot = subagent_usage;
-            }
-            if let TranscriptToolCall::ReadChat { title, .. } = call {
-                *title = read_chat_title.map(str::to_owned);
-            }
-            changed = Some((entry.id.clone(), tool_index));
-        }
-        if changed.is_some() {
-            break;
-        }
-    }
-    drop(transcript);
-    // A completed tool call is a completed unit (ADR-0032 mirrors
-    // ADR-0010's per-message granularity): the round's new parts and the
-    // result line land now, so a crash mid-Turn keeps every finished round
-    // on disk — incrementally, not as a whole-entry re-append.
-    if let Some((entry_id, tool_index)) = changed {
-        chat.persist_tool_result(&entry_id, tool_index);
-    }
-}
-
-/// Append one housekeeping part (a compaction divider, a notice) as its
-/// own System entry at the transcript's tail and publish — the record
-/// grows, never shrinks (ADR-0011).
-pub(crate) fn push_system_part(
-    chat: &ChatRuntime,
-    device_id: &str,
-    entry_id: String,
-    part: MessagePart,
-) {
-    chat.transcript
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(SessionMessageEntry {
-            id: entry_id.clone(),
-            role: MessageRole::System,
-            parts: vec![part],
-            created_at: Utc::now().timestamp_millis(),
-            device_id: device_id.to_string(),
-            status: None,
-            continuation_of: None,
-        });
-    // A housekeeping entry is complete the moment it is built — it lands
-    // in the log now, not on a later publish (ADR-0032).
-    chat.persist_entry(&entry_id);
-}
-
-/// The Transcript's row for one recorded compaction.
-pub(crate) fn divider_part(record: &CompactionRecord) -> MessagePart {
-    let CompactionRecord {
-        summary,
-        tokens_before,
-        tokens_after,
-        trigger,
-        timestamp,
-        ..
-    } = record;
-    MessagePart::CompactionDivider {
-        id: "d0".into(),
-        summary: summary.clone(),
-        tokens_before: *tokens_before,
-        tokens_after: *tokens_after,
-        trigger: *trigger,
-        timestamp: *timestamp,
-    }
-}
-
-/// Record a Turn-boundary compaction: the `compaction` entry into the
-/// History file and the divider as its own Transcript entry at the tail.
-pub(crate) fn record_turn_start_compaction(
-    chat: &ChatRuntime,
-    device_id: &str,
-    record: &CompactionRecord,
-) {
-    if chat.is_removed() {
-        return;
-    }
-    chat.append_compaction(record);
-    push_system_part(
-        chat,
-        device_id,
-        format!("compaction-{}", uuid::Uuid::new_v4()),
-        divider_part(record),
-    );
-}
-
-/// Record a mid-Turn compaction (ADR-0011): the entry into the History
-/// file — its position in the append-only record IS the ordering, it
-/// summarizes exactly the messages before it — and the divider INTO the
-/// run's live entry base, so it renders between the tool rows that
-/// completed before it and whatever the Turn does next. The session
-/// status does not change.
-fn record_mid_turn_compaction(
-    chat: &ChatRuntime,
-    record: &CompactionRecord,
-    run_base_parts: &Arc<Mutex<Vec<MessagePart>>>,
-) {
-    if chat.is_removed() {
-        return;
-    }
-    chat.append_compaction(record);
-    let MessagePart::CompactionDivider {
-        summary,
-        tokens_before,
-        tokens_after,
-        trigger,
-        timestamp,
-        ..
-    } = divider_part(record)
-    else {
-        unreachable!("divider_part builds a divider");
-    };
-    let mut base = run_base_parts.lock().unwrap_or_else(|e| e.into_inner());
-    let id = format!("d{timestamp}-{}", base.len());
-    base.push(MessagePart::CompactionDivider {
-        id,
-        summary,
-        tokens_before,
-        tokens_after,
-        trigger,
-        timestamp,
-    });
-}
-
-/// How long a provider stream may stay silent before the engine fails the
-/// request. Five minutes without any event — the first or any later one —
-/// means the connection is gone, and without a deadline a main Turn or a
-/// child agent stays `streaming` until an application restart.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// Give a cancelled provider a short window to emit its own terminal abort
-/// event before the engine synthesizes one. Providers use that event to finish
-/// transport-specific cleanup; the bound keeps cancellation from hanging when
-/// a transport ignores its signal.
-const STREAM_CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// The built-in provider transport: the compat stream over the resolved
-/// model, behind the stream idle watchdog. Tests inject their own through
-/// `EngineConfig::stream_fn` and get the same guard at
-/// `AgentRuntime::new`, so every engine-owned request path — Turns,
-/// subagents, compaction, title tasks — runs exactly one watchdog.
-pub(crate) fn default_stream_fn() -> pi_core::agent::types::StreamFn {
-    let raw: pi_core::agent::types::StreamFn = Arc::new(
-        |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-            Ok(compat::stream_simple(model, context, options))
-        },
-    );
-    guard_stream_fn(raw, STREAM_IDLE_TIMEOUT)
-}
-
-/// Wrap a raw transport so a stream that stops producing events cannot
-/// stall a run forever: every `next()` — the first one included — races an
-/// idle deadline that resets on each forwarded event, so the rule is time
-/// between events, never total request duration.
-///
-/// The raw transport sees a child `CancellationToken` in place of the
-/// caller's: a timeout cancels the provider without mutating the Turn's
-/// own token, while the link task below keeps the parent's cancellation
-/// authority. Every terminal branch cancels the child and drops the
-/// upstream stream, so nothing keeps consuming the provider afterwards.
-fn guard_stream_fn(
-    raw: pi_core::agent::types::StreamFn,
-    idle: Duration,
-) -> pi_core::agent::types::StreamFn {
-    Arc::new(
-        move |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-            let parent = options.and_then(|options| options.base.base.signal.clone());
-            let mut child_options = options.cloned().unwrap_or_default();
-            let child = CancellationToken::new();
-            child_options.base.base.signal = Some(child.clone());
-            let upstream = raw(model, context, Some(&child_options))?;
-            if let Some(parent) = parent.clone() {
-                let linked = child.clone();
-                tokio::spawn(async move {
-                    tokio::select! {
-                        _ = parent.cancelled() => linked.cancel(),
-                        _ = linked.cancelled() => {}
-                    }
-                });
-            }
-            let output = create_assistant_message_event_stream();
-            let fallback = AssistantMessage {
-                api: model.api.clone(),
-                provider: model.provider.clone(),
-                model: model.id.clone(),
-                timestamp: Utc::now().timestamp_millis(),
-                ..Default::default()
-            };
-            tokio::spawn(forward_with_idle_watchdog(
-                upstream,
-                output.clone(),
-                parent,
-                child,
-                idle,
-                fallback,
-            ));
-            Ok(output)
-        },
-    )
-}
-
-/// The watchdog's forwarding loop: copy events upstream→output until one
-/// of the four endings — a terminal event (forwarded unchanged), an idle
-/// timeout, a parent cancellation, or an upstream end without a terminal
-/// event. The last three push a synthetic terminal event so the consumer's
-/// `result().await` can never hang, and all four cancel the child token
-/// before returning (which drops `upstream` with it).
-async fn forward_with_idle_watchdog(
-    upstream: AssistantMessageEventStream,
-    output: AssistantMessageEventStream,
-    parent: Option<CancellationToken>,
-    child: CancellationToken,
-    idle: Duration,
-    fallback: AssistantMessage,
-) {
-    let mut partial: Option<AssistantMessage> = None;
-    let mut seen_event = false;
-    loop {
-        let phase = if seen_event {
-            "between_events"
-        } else {
-            "first_event"
-        };
-        let event = tokio::select! {
-            _ = parent_cancelled(&parent) => {
-                // The Turn's own cancellation keeps its meaning:
-                // interrupted by the user, never a provider failure. When
-                // the transport's own abort event wins the race instead, it
-                // was already forwarded below and this branch never runs.
-                child.cancel();
-                finish_cancelled_stream(upstream, output, partial, fallback).await;
-                return;
-            }
-            event = tokio::time::timeout(idle, upstream.next()) => match event {
-                Ok(event) => event,
-                Err(_) => {
-                    child.cancel();
-                    tracing::warn!(
-                        target: "holt::agent",
-                        provider = %fallback.provider,
-                        model = %fallback.model,
-                        timeout_ms = idle.as_millis() as u64,
-                        phase,
-                        "provider stream stalled; failing the request"
-                    );
-                    output.push(synthetic_terminal(
-                        partial.unwrap_or_else(|| fallback.clone()),
-                        StopReason::Error,
-                        &stream_stall_message(idle),
-                    ));
-                    return;
-                }
-            },
-        };
-        let Some(event) = event else {
-            // The transport ended its stream without a terminal event:
-            // `output.end(None)` would leave `result().await` pending
-            // forever, so settle it as a provider error instead.
-            child.cancel();
-            output.push(synthetic_terminal(
-                partial.unwrap_or_else(|| fallback.clone()),
-                StopReason::Error,
-                "The provider closed the stream without completing the response",
-            ));
-            return;
-        };
-        let terminal = event.is_terminal();
-        if !terminal && let Some(message) = stream_event_partial(&event) {
-            partial = Some(message.clone());
-        }
-        output.push(event);
-        if terminal {
-            child.cancel();
-            return;
-        }
-        seen_event = true;
-    }
-}
-
-/// Let a cancelled provider finish its own abort handshake, but never wait
-/// indefinitely for a transport that ignores cancellation.
-async fn finish_cancelled_stream(
-    upstream: AssistantMessageEventStream,
-    output: AssistantMessageEventStream,
-    mut partial: Option<AssistantMessage>,
-    fallback: AssistantMessage,
-) {
-    let settle = tokio::time::sleep(STREAM_CANCEL_SETTLE_TIMEOUT);
-    tokio::pin!(settle);
-    loop {
-        let event = tokio::select! {
-            event = upstream.next() => event,
-            _ = &mut settle => {
-                output.push(synthetic_terminal(
-                    partial.unwrap_or_else(|| fallback.clone()),
-                    StopReason::Aborted,
-                    "Request was aborted",
-                ));
-                return;
-            }
-        };
-        let Some(event) = event else {
-            output.push(synthetic_terminal(
-                partial.unwrap_or_else(|| fallback.clone()),
-                StopReason::Aborted,
-                "Request was aborted",
-            ));
-            return;
-        };
-        let terminal = event.is_terminal();
-        if !terminal && let Some(message) = stream_event_partial(&event) {
-            partial = Some(message.clone());
-        }
-        output.push(event);
-        if terminal {
-            return;
-        }
-    }
-}
-
-/// Await the caller's cancellation token, or never resolve when the
-/// request carries none (the watchdog's own branches are the only
-/// endings left).
-async fn parent_cancelled(parent: &Option<CancellationToken>) {
-    match parent {
-        Some(parent) => parent.cancelled().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// A terminal event carrying `message`'s already-received content, so a
-/// synthetic failure does not discard streamed text or tool calls.
-fn synthetic_terminal(
-    mut message: AssistantMessage,
-    stop_reason: StopReason,
-    error: &str,
-) -> AssistantMessageEvent {
-    message.stop_reason = stop_reason;
-    message.error_message = Some(error.to_string());
-    AssistantMessageEvent::Error {
-        reason: match stop_reason {
-            StopReason::Aborted => ErrorReason::Aborted,
-            _ => ErrorReason::Error,
-        },
-        error: message,
-    }
-}
-
-/// The stable, human-readable failure text of an idle timeout — it names
-/// the interval so the transcript says how long the silence was.
-fn stream_stall_message(idle: Duration) -> String {
-    format!(
-        "The provider stopped responding: no event arrived for {} ms, \
-         so the request was closed",
-        idle.as_millis()
-    )
-}
-
-/// The mid-stream retry budget, on top of the request layer's HTTP retries.
-const STREAM_MAX_RETRIES: u32 = 2;
-
-/// Re-send a request whose stream failed after the provider accepted it
-/// (`Start` seen) but before any content reached the consumer — an SSE
-/// `overloaded_error`, a dropped body, a stall — since nothing has to be
-/// taken back. A failure before `Start` already went through pi-core's HTTP
-/// retries, and one after content surfaces as-is. Each scheduled retry
-/// reports through `on_retry`, like the request layer's.
-fn retry_stream_fn(
-    inner: pi_core::agent::types::StreamFn,
-    on_retry: pi_core::ai::types::OnRetryCallback,
-) -> pi_core::agent::types::StreamFn {
-    Arc::new(
-        move |model: &PiModel, context: &PiContext, options: Option<&SimpleStreamOptions>| {
-            let upstream = inner(model, context, options)?;
-            let output = create_assistant_message_event_stream();
-            tokio::spawn(forward_with_stream_retry(
-                upstream,
-                output.clone(),
-                inner.clone(),
-                model.clone(),
-                context.clone(),
-                options.cloned(),
-                on_retry.clone(),
-            ));
-            Ok(output)
-        },
-    )
-}
-
-/// Forward `upstream` into `output`, re-dialing `inner` for each retryable
-/// content-free failure. Only the first attempt's `Start` is forwarded, so
-/// the consumer sees one message however many attempts it took.
-async fn forward_with_stream_retry(
-    mut upstream: AssistantMessageEventStream,
-    output: AssistantMessageEventStream,
-    inner: pi_core::agent::types::StreamFn,
-    model: PiModel,
-    context: PiContext,
-    options: Option<SimpleStreamOptions>,
-    on_retry: pi_core::ai::types::OnRetryCallback,
-) {
-    let signal = options
-        .as_ref()
-        .and_then(|options| options.base.base.signal.clone());
-    let mut start_forwarded = false;
-    let mut retries = 0;
-    loop {
-        let mut started = false;
-        let mut content = false;
-        let failed = loop {
-            let Some(event) = upstream.next().await else {
-                output.end(None);
-                return;
-            };
-            match &event {
-                AssistantMessageEvent::Start { .. } => {
-                    started = true;
-                    if start_forwarded {
-                        continue;
-                    }
-                    start_forwarded = true;
-                }
-                AssistantMessageEvent::Error { .. } => break event,
-                AssistantMessageEvent::Done { .. } => {
-                    output.push(event);
-                    return;
-                }
-                _ => content = true,
-            }
-            output.push(event);
-        };
-        let AssistantMessageEvent::Error { error: message, .. } = &failed else {
-            unreachable!("the inner loop only breaks on an error event");
-        };
-        if !started
-            || content
-            || retries >= STREAM_MAX_RETRIES
-            || signal.as_ref().is_some_and(CancellationToken::is_cancelled)
-            || !pi_core::ai::utils::retry::is_retryable_assistant_error(message)
-        {
-            output.push(failed);
-            return;
-        }
-        let message = message.clone();
-        retries += 1;
-        let delay_ms = 1000 * 2u64.pow(retries - 1);
-        on_retry(
-            retries,
-            STREAM_MAX_RETRIES,
-            delay_ms,
-            message.error_message.as_deref().unwrap_or_default(),
-        );
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
-            _ = parent_cancelled(&signal) => {
-                output.push(synthetic_terminal(message, StopReason::Aborted, "Request was aborted"));
-                return;
-            }
-        }
-        upstream = match inner(&model, &context, options.as_ref()) {
-            Ok(upstream) => upstream,
-            Err(_) => {
-                output.push(failed);
-                return;
-            }
-        };
-    }
-}
-
-/// The partial assistant message carried by every non-terminal stream
-/// event — the state a synthetic terminal must preserve.
-fn stream_event_partial(event: &AssistantMessageEvent) -> Option<&AssistantMessage> {
-    match event {
-        AssistantMessageEvent::Start { partial }
-        | AssistantMessageEvent::TextStart { partial, .. }
-        | AssistantMessageEvent::TextDelta { partial, .. }
-        | AssistantMessageEvent::TextEnd { partial, .. }
-        | AssistantMessageEvent::ThinkingStart { partial, .. }
-        | AssistantMessageEvent::ThinkingDelta { partial, .. }
-        | AssistantMessageEvent::ThinkingEnd { partial, .. }
-        | AssistantMessageEvent::ToolcallStart { partial, .. }
-        | AssistantMessageEvent::ToolcallDelta { partial, .. }
-        | AssistantMessageEvent::ToolcallEnd { partial, .. } => Some(partial),
-        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => None,
-    }
-}
-
 /// The base a run's loop continues from, shared with the mid-Turn
 /// compaction hook and the end-of-run consolidation. `consumed` counts the
 /// run's own messages a mid-Turn compaction folded into `history`, so the
@@ -1714,195 +1077,6 @@ fn stream_event_partial(event: &AssistantMessageEvent) -> Option<&AssistantMessa
 struct RunBase {
     history: Vec<AgentMessage>,
     consumed: usize,
-}
-
-/// A run that ends early (abort, loop error) leaves tool parts without their
-/// results; settle them so no chip stays "in call" forever.
-fn settle_unresolved_tools(chat: &ChatRuntime) {
-    let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    let mut changed = Vec::new();
-    for entry in transcript.iter_mut() {
-        let mut entry_changed = false;
-        for part in entry.parts.iter_mut() {
-            if let MessagePart::Tool { resolved, .. } = part
-                && !*resolved
-            {
-                *resolved = true;
-                entry_changed = true;
-            }
-        }
-        if entry_changed {
-            changed.push(entry.id.clone());
-        }
-    }
-    drop(transcript);
-    // The run's entry may already have landed in the log (the settle pass
-    // runs first); re-append it so the settled chips persist too
-    // (ADR-0032).
-    for entry_id in changed {
-        chat.persist_entry(&entry_id);
-    }
-}
-
-/// char length of a part for the run-cadence debug trace.
-fn part_char_len(part: &MessagePart) -> usize {
-    match part {
-        MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => text.len(),
-        MessagePart::Error { message, .. } => message.len(),
-        _ => 0,
-    }
-}
-
-/// The doc parts of one assistant message. `id_base` offsets the generated
-/// text/thinking/error part ids: a run folds every message into ONE entry, so
-/// per-message ids (`t0`, `r1`, …) must not collide across its messages — the
-/// UI keys rows by `entry_id#part_id`.
-///
-/// `cancelled` is the run's own cancellation (Stop / Steer). A cancelled run
-/// ends on an aborted assistant message whose `error_message` is the
-/// transport's abort artifact ("The operation was aborted"), not a provider
-/// failure — like the loop-error path, it must not become an ErrorChip. An
-/// abort WITHOUT cancellation (a transport dying on its own) keeps the chip.
-///
-/// `skill_files` maps this run's catalog `SKILL.md` paths (normalized
-/// absolute) to skill names: a read of one collapses to the same skill chip
-/// an invocation uses (ADR-0006) — the file's content reached the model
-/// context through the tool result, and never enters the transcript.
-fn assistant_parts(
-    message: &AgentMessage,
-    id_base: usize,
-    cwd: &str,
-    skill_files: &HashMap<String, String>,
-    cancelled: bool,
-) -> Vec<MessagePart> {
-    let AgentMessage::Assistant(message) = message else {
-        return Vec::new();
-    };
-    let mut parts = Vec::new();
-    for content in &message.content {
-        match content {
-            AssistantContent::Text(text) => {
-                // `<proposed_plan>` blocks fold into approval cards; the
-                // surrounding text stays prose. Ids keep the running
-                // offset so entry keys stay unique across messages.
-                let base = id_base + parts.len();
-                let mut n = 0usize;
-                parts.extend(crate::plan_mode::plan_aware_text_parts(
-                    &text.text,
-                    &mut || {
-                        n += 1;
-                        format!("t{}", base + n - 1)
-                    },
-                ));
-            }
-            AssistantContent::Thinking(thinking) if !thinking.thinking.is_empty() => {
-                parts.push(MessagePart::Reasoning {
-                    id: format!("r{}", id_base + parts.len()),
-                    text: thinking.thinking.clone(),
-                });
-            }
-            AssistantContent::ToolCall(tool_call) => {
-                if let Some(part) = skill_read_part(tool_call, cwd, skill_files) {
-                    parts.push(part);
-                } else {
-                    parts.push(MessagePart::Tool {
-                        id: tool_call.id.clone(),
-                        call: transcript_tool_call(tool_call),
-                        is_error: false,
-                        resolved: false,
-                        output: None,
-                        diff: None,
-                        output_ref: None,
-                        output_bytes: None,
-                        diff_ref: None,
-                        diff_stats: None,
-                        subagent_ref: None,
-                        subagent_status: None,
-                        subagent_tail: None,
-                        subagent_usage: None,
-                        gate: None,
-                    });
-                }
-            }
-            AssistantContent::Thinking(_) => {}
-        }
-    }
-    if let Some(error) = message.error_message.as_ref() {
-        let user_aborted =
-            cancelled && message.stop_reason == pi_core::ai::types::StopReason::Aborted;
-        if !user_aborted {
-            parts.push(MessagePart::Error {
-                id: format!("e{}", id_base + parts.len()),
-                message: error.clone(),
-            });
-        }
-    }
-    parts
-}
-
-/// A read-tool call on a catalog skill's `SKILL.md`, collapsed to the skill
-/// chip. Paths match after resolving the call's argument against the run's
-/// cwd; any other file — including other `.md` files inside a skill's
-/// directory — decodes as an ordinary read.
-fn skill_read_part(
-    tool_call: &pi_core::ai::types::ToolCall,
-    cwd: &str,
-    skill_files: &HashMap<String, String>,
-) -> Option<MessagePart> {
-    if tool_call.name != "read" {
-        return None;
-    }
-    let path = tool_call.arguments.get("path")?.as_str()?;
-    let resolved = crate::tools::to_absolute(cwd, path);
-    let name = skill_files.get(&resolved)?;
-    Some(MessagePart::Skill {
-        id: tool_call.id.clone(),
-        name: name.clone(),
-        file: resolved,
-        // The read result is not the chip's to carry (it lands in the
-        // model context, not the doc); the file pointer stands in.
-        content: None,
-    })
-}
-
-/// Insert or refresh the run's live entry. `created_at` is stamped once at
-/// first appearance — the delta protocol keys appends off an unchanged entry,
-/// and the hover timestamp should say when the reply started anyway.
-fn update_assistant_entry(
-    chat: &ChatRuntime,
-    entry_id: &str,
-    parts: Vec<MessagePart>,
-    status: MessageStatus,
-    device_id: &str,
-    publish: bool,
-) {
-    let mut transcript = chat.transcript.write().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = transcript.iter_mut().find(|entry| entry.id == entry_id) {
-        let mut parts = parts;
-        crate::provider_mode::carry_card_states(&existing.parts, &mut parts);
-        existing.parts = parts;
-        existing.status = Some(status);
-    } else {
-        transcript.push(SessionMessageEntry {
-            id: entry_id.to_string(),
-            role: MessageRole::Assistant,
-            parts,
-            created_at: Utc::now().timestamp_millis(),
-            device_id: device_id.to_string(),
-            status: Some(status),
-            continuation_of: None,
-        });
-    }
-    drop(transcript);
-    // A terminal write is the entry's one landing in the log (ADR-0032);
-    // while it streams, the entry lives in memory and the watch only.
-    if status == MessageStatus::Streaming {
-        if publish {
-            chat.publish();
-        }
-    } else {
-        chat.persist_entry(entry_id);
-    }
 }
 
 pub(crate) struct AgentRun {
@@ -1951,6 +1125,285 @@ pub(crate) struct AgentRun {
     pub(crate) attribution: Option<crate::tools::ChangeAttribution>,
     /// Test-injected provider transport; `None` means the built-in one.
     pub(crate) stream_fn: Option<pi_core::agent::types::StreamFn>,
+}
+
+/// The run's event-sink state: everything the agent-loop event → transcript
+/// translation holds for ONE run — the run's single transcript entry, the
+/// base parts shared with the permission gate and the run itself, the
+/// delta-publish cadence, and the run's own cancellation. One `Arc`'d
+/// instance backs the `AgentEventSink` handed to the loop; the arm bodies
+/// live in [`RunSink::emit`].
+struct RunSink {
+    chat: Arc<ChatRuntime>,
+    device_id: String,
+    run_entry: String,
+    base_parts: Arc<Mutex<Vec<MessagePart>>>,
+    last_publish: Mutex<Option<Instant>>,
+    run_start: Instant,
+    cwd: String,
+    skill_files: HashMap<String, String>,
+    cancel: CancellationToken,
+}
+
+impl RunSink {
+    /// The live entry's parts as they stand plus `message`'s — the shape
+    /// the streaming events publish.
+    fn entry_parts_with(&self, message: &AgentMessage) -> Vec<MessagePart> {
+        let base = self.base_parts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut parts = base.clone();
+        parts.extend(assistant_parts(
+            message,
+            base.len(),
+            &self.cwd,
+            &self.skill_files,
+            self.cancel.is_cancelled(),
+        ));
+        parts
+    }
+
+    /// The same fold, with the extended parts REPLACING the base under one
+    /// lock — the completed-round shape. The replacement must not race a
+    /// card the permission gate pushes into the base concurrently, so the
+    /// read-modify-write stays inside a single guard.
+    fn fold_message_into_base(&self, message: &AgentMessage) -> Vec<MessagePart> {
+        let mut base = self.base_parts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut parts = base.clone();
+        parts.extend(assistant_parts(
+            message,
+            base.len(),
+            &self.cwd,
+            &self.skill_files,
+            self.cancel.is_cancelled(),
+        ));
+        *base = parts.clone();
+        parts
+    }
+
+    /// Debug trace of the event cadence: answers "did the reply stream?"
+    /// without a debugger — deltas arriving bunched here are an upstream
+    /// (provider/pi-core) shape, not a UI problem.
+    fn trace(&self, kind: &str, chars: usize, published: bool) {
+        tracing::debug!(
+            target: "holt::agent",
+            at = ?self.run_start.elapsed(),
+            kind,
+            chars,
+            published,
+            "run event"
+        );
+    }
+
+    /// A delta publish is due when the cadence interval elapsed; a due
+    /// publish stamps the anchor the next delta measures from.
+    fn publish_due(&self) -> bool {
+        let mut last = self.last_publish.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_none_or(|at| at.elapsed() >= STREAM_PUBLISH_INTERVAL) {
+            *last = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The sink body: one match arm per event shape, everything else
+    /// ignored. Assistant messages fold into the run's ONE entry at the
+    /// cadence above; completed units (messages, tool results) persist
+    /// here, not at Turn end.
+    fn emit(&self, event: AgentEvent) {
+        match event {
+            AgentEvent::MessageStart { message }
+                if matches!(&*message, AgentMessage::Assistant(_)) =>
+            {
+                let parts = self.entry_parts_with(&message);
+                self.trace("start", parts.iter().map(part_char_len).sum(), true);
+                update_assistant_entry(
+                    &self.chat,
+                    &self.run_entry,
+                    parts,
+                    MessageStatus::Streaming,
+                    &self.device_id,
+                    true,
+                );
+            }
+            AgentEvent::MessageUpdate { message, .. }
+                if matches!(&*message, AgentMessage::Assistant(_)) =>
+            {
+                let due = self.publish_due();
+                let parts = self.entry_parts_with(&message);
+                self.trace("delta", parts.iter().map(part_char_len).sum(), due);
+                update_assistant_entry(
+                    &self.chat,
+                    &self.run_entry,
+                    parts,
+                    MessageStatus::Streaming,
+                    &self.device_id,
+                    due,
+                );
+            }
+            AgentEvent::MessageEnd { message }
+                if matches!(&*message, AgentMessage::Assistant(_)) =>
+            {
+                let parts = self.fold_message_into_base(&message);
+                // The next message's first delta must publish immediately.
+                *self.last_publish.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                // Status stays Streaming: the loop's settle pass stamps
+                // the terminal state once the WHOLE run returns, so the
+                // entry never poses as complete between tool rounds.
+                update_assistant_entry(
+                    &self.chat,
+                    &self.run_entry,
+                    parts,
+                    MessageStatus::Streaming,
+                    &self.device_id,
+                    true,
+                );
+                // A completed message is a completed unit (ADR-0032):
+                // its new parts land here even while the run continues,
+                // so a crash mid-Turn keeps every finished round — and
+                // an approval paused behind a tool call — on disk. The
+                // tail append, not a whole-entry re-append.
+                self.chat.persist_entry_tail(&self.run_entry);
+                // The completed round-trip's usage joins the running
+                // Turn's pending batch (the usage ledger): captured on
+                // the raw message, before the History repair below
+                // decides what persists, so failed and aborted answers
+                // stay billed. The batch lands at settlement.
+                if let AgentMessage::Assistant(assistant) = &*message {
+                    crate::usage::capture_round_trip(&self.chat, assistant);
+                }
+                // The completed assistant message joins the persisted
+                // History as it ends (ADR-0010), in its History version:
+                // a message the run ends on is rewritten to a normal
+                // end (or dropped when it carries nothing but the
+                // error) — the repair invariant, applied per message.
+                if let AgentMessage::Assistant(assistant) = &*message
+                    && let Some(for_history) = crate::history::history_assistant(assistant)
+                {
+                    self.chat
+                        .append_history(AgentMessage::Assistant(Box::new(for_history)));
+                }
+            }
+            AgentEvent::MessageEnd { message }
+                if matches!(&*message, AgentMessage::ToolResult(_)) =>
+            {
+                // Tool results land in the History as they complete —
+                // the loop emits one MessageEnd per tool result right
+                // after the tool finishes, so a crash mid-Turn keeps
+                // every completed call.
+                self.chat.append_history((*message).clone());
+                // A result the provider billed separately folds into
+                // its round-trip's usage record (the usage ledger); the
+                // Agent delegation result is skipped inside — the
+                // child's total is booked per round-trip as subagent
+                // records.
+                if let AgentMessage::ToolResult(result) = &*message {
+                    crate::usage::merge_tool_result(&self.chat, result);
+                }
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                is_error,
+            } => self.on_tool_execution_end(tool_call_id, tool_name, result, is_error),
+            _ => {}
+        }
+    }
+
+    /// A finished tool call: stamp the result onto its chip in the base
+    /// and wherever its entry sits, then land any card the call raised.
+    fn on_tool_execution_end(
+        &self,
+        tool_call_id: String,
+        tool_name: String,
+        result: Box<AgentToolResult>,
+        is_error: bool,
+    ) {
+        let output = tool_output_full(&result);
+        let read_chat_title = result.details["title"].as_str().map(str::to_owned);
+        for part in self
+            .base_parts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+        {
+            if let MessagePart::Tool {
+                id,
+                call,
+                resolved,
+                is_error: failed,
+                output: slot,
+                subagent_usage: usage_slot,
+                ..
+            } = part
+                && id == &tool_call_id
+            {
+                *resolved = true;
+                *failed = is_error;
+                *slot = output.clone();
+                *usage_slot = tool_usage_total(&result);
+                if let TranscriptToolCall::ReadChat { title, .. } = call {
+                    *title = read_chat_title.clone();
+                }
+            }
+        }
+        resolve_tool_part(
+            &self.chat,
+            &tool_call_id,
+            is_error,
+            output,
+            read_chat_title.as_deref(),
+            tool_usage_total(&result),
+        );
+        // Provider Mode cards (ADR-0037): a stored proposal or a
+        // shown Key request lands as a card after its tool part;
+        // the question card (ADR-0040) lands the same way.
+        if !is_error
+            && let Some(card) = crate::provider_mode::tool_card(
+                &tool_call_id,
+                &tool_name,
+                &result.details,
+            )
+            .or_else(|| {
+                crate::tools::ask_user::tool_card(&tool_call_id, &tool_name, &result.details)
+            })
+        {
+            let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
+            match card {
+                MessagePart::KeyRequest { .. } => {
+                    crate::provider_mode::stamp_key_cards(
+                        &self.chat,
+                        holt_doc::parts::KeyCardState::Superseded,
+                    );
+                }
+                MessagePart::ProviderChoice { .. } => {
+                    crate::provider_mode::supersede_choice_cards(&self.chat);
+                }
+                MessagePart::QuestionCard { .. } => {
+                    crate::tools::ask_user::supersede_question_cards(&self.chat);
+                }
+                _ => {}
+            }
+            self.base_parts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(card.clone());
+            if let Some(entry) = self
+                .chat
+                .transcript
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter_mut()
+                .find(|entry| entry.id == self.run_entry)
+            {
+                entry.parts.push(card);
+            }
+            self.chat.persist_entry_tail(&self.run_entry);
+            if proposal_card {
+                crate::provider_mode::supersede_orphan_proposal_cards(&self.chat);
+            }
+        }
+    }
 }
 
 /// The terminal outcome of one run (ADR-0019). Cancellation (Stop / Steer)
@@ -2057,9 +1510,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         .map(|(skill, _)| (skill.file_path.clone(), skill.name.clone()))
         .collect();
     let entry_id = uuid::Uuid::new_v4().to_string();
-    let sink_chat = chat.clone();
-    let sink_device_id = runtime.device_id.clone();
-    let sink_run_entry = entry_id.clone();
     // ONE transcript entry per run: every assistant message of the loop
     // appends its parts to the same entry (base holds the parts of the
     // messages that already ended — seeded with the invocation chip, so the
@@ -2071,256 +1521,21 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     // wherever they sit.
     let base_parts: Arc<Mutex<Vec<MessagePart>>> =
         Arc::new(Mutex::new(invocation.into_iter().collect()));
-    let sink_base = base_parts.clone();
-    let sink_last_publish = Arc::new(Mutex::new(None::<Instant>));
-    let sink_run_start = Instant::now();
-    let sink_cwd = cwd.clone();
-    let sink_skill_files: Arc<HashMap<String, String>> = Arc::new(skill_files);
-    let sink_cancel = cancel.clone();
+    let sink = Arc::new(RunSink {
+        chat: chat.clone(),
+        device_id: runtime.device_id.clone(),
+        run_entry: entry_id.clone(),
+        base_parts: base_parts.clone(),
+        last_publish: Mutex::new(None),
+        run_start: Instant::now(),
+        cwd: cwd.clone(),
+        skill_files,
+        cancel: cancel.clone(),
+    });
+    let emit_sink = Arc::clone(&sink);
     let emit: AgentEventSink = Arc::new(move |event| {
-        let chat = sink_chat.clone();
-        let base_parts = sink_base.clone();
-        let device_id = sink_device_id.clone();
-        let run_entry = sink_run_entry.clone();
-        let last_publish = sink_last_publish.clone();
-        let cwd = sink_cwd.clone();
-        let skill_files = sink_skill_files.clone();
-        let cancel = sink_cancel.clone();
-        Box::pin(async move {
-            // Debug trace of the event cadence: answers "did the reply
-            // stream?" without a debugger — deltas arriving bunched here are
-            // an upstream (provider/pi-core) shape, not a UI problem.
-            let trace = |kind: &str, chars: usize, published: bool| {
-                tracing::debug!(
-                    target: "holt::agent",
-                    at = ?sink_run_start.elapsed(),
-                    kind,
-                    chars,
-                    published,
-                    "run event"
-                );
-            };
-            match event {
-                AgentEvent::MessageStart { message }
-                    if matches!(&*message, AgentMessage::Assistant(_)) =>
-                {
-                    let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut parts = base.clone();
-                    parts.extend(assistant_parts(
-                        &message,
-                        base.len(),
-                        &cwd,
-                        &skill_files,
-                        cancel.is_cancelled(),
-                    ));
-                    drop(base);
-                    trace("start", parts.iter().map(part_char_len).sum(), true);
-                    update_assistant_entry(
-                        &chat,
-                        &run_entry,
-                        parts,
-                        MessageStatus::Streaming,
-                        &device_id,
-                        true,
-                    );
-                }
-                AgentEvent::MessageUpdate { message, .. }
-                    if matches!(&*message, AgentMessage::Assistant(_)) =>
-                {
-                    let due = {
-                        let mut last = last_publish.lock().unwrap_or_else(|e| e.into_inner());
-                        if last.is_none_or(|at| at.elapsed() >= STREAM_PUBLISH_INTERVAL) {
-                            *last = Some(Instant::now());
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    let base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut parts = base.clone();
-                    parts.extend(assistant_parts(
-                        &message,
-                        base.len(),
-                        &cwd,
-                        &skill_files,
-                        cancel.is_cancelled(),
-                    ));
-                    drop(base);
-                    trace("delta", parts.iter().map(part_char_len).sum(), due);
-                    update_assistant_entry(
-                        &chat,
-                        &run_entry,
-                        parts,
-                        MessageStatus::Streaming,
-                        &device_id,
-                        due,
-                    );
-                }
-                AgentEvent::MessageEnd { message }
-                    if matches!(&*message, AgentMessage::Assistant(_)) =>
-                {
-                    let mut base = base_parts.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut parts = base.clone();
-                    parts.extend(assistant_parts(
-                        &message,
-                        base.len(),
-                        &cwd,
-                        &skill_files,
-                        cancel.is_cancelled(),
-                    ));
-                    *base = parts.clone();
-                    drop(base);
-                    // The next message's first delta must publish immediately.
-                    *last_publish.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    // Status stays Streaming: the loop's settle pass stamps
-                    // the terminal state once the WHOLE run returns, so the
-                    // entry never poses as complete between tool rounds.
-                    update_assistant_entry(
-                        &chat,
-                        &run_entry,
-                        parts,
-                        MessageStatus::Streaming,
-                        &device_id,
-                        true,
-                    );
-                    // A completed message is a completed unit (ADR-0032):
-                    // its new parts land here even while the run continues,
-                    // so a crash mid-Turn keeps every finished round — and
-                    // an approval paused behind a tool call — on disk. The
-                    // tail append, not a whole-entry re-append.
-                    chat.persist_entry_tail(&run_entry);
-                    // The completed round-trip's usage joins the running
-                    // Turn's pending batch (the usage ledger): captured on
-                    // the raw message, before the History repair below
-                    // decides what persists, so failed and aborted answers
-                    // stay billed. The batch lands at settlement.
-                    if let AgentMessage::Assistant(assistant) = &*message {
-                        crate::usage::capture_round_trip(&chat, assistant);
-                    }
-                    // The completed assistant message joins the persisted
-                    // History as it ends (ADR-0010), in its History version:
-                    // a message the run ends on is rewritten to a normal
-                    // end (or dropped when it carries nothing but the
-                    // error) — the repair invariant, applied per message.
-                    if let AgentMessage::Assistant(assistant) = &*message
-                        && let Some(for_history) = crate::history::history_assistant(assistant)
-                    {
-                        chat.append_history(AgentMessage::Assistant(Box::new(for_history)));
-                    }
-                }
-                AgentEvent::MessageEnd { message }
-                    if matches!(&*message, AgentMessage::ToolResult(_)) =>
-                {
-                    // Tool results land in the History as they complete —
-                    // the loop emits one MessageEnd per tool result right
-                    // after the tool finishes, so a crash mid-Turn keeps
-                    // every completed call.
-                    chat.append_history((*message).clone());
-                    // A result the provider billed separately folds into
-                    // its round-trip's usage record (the usage ledger); the
-                    // Agent delegation result is skipped inside — the
-                    // child's total is booked per round-trip as subagent
-                    // records.
-                    if let AgentMessage::ToolResult(result) = &*message {
-                        crate::usage::merge_tool_result(&chat, result);
-                    }
-                }
-                AgentEvent::ToolExecutionEnd {
-                    tool_call_id,
-                    tool_name,
-                    result,
-                    is_error,
-                } => {
-                    let output = tool_output_full(&result);
-                    let read_chat_title = result.details["title"].as_str().map(str::to_owned);
-                    for part in base_parts
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .iter_mut()
-                    {
-                        if let MessagePart::Tool {
-                            id,
-                            call,
-                            resolved,
-                            is_error: failed,
-                            output: slot,
-                            subagent_usage: usage_slot,
-                            ..
-                        } = part
-                            && id == &tool_call_id
-                        {
-                            *resolved = true;
-                            *failed = is_error;
-                            *slot = output.clone();
-                            *usage_slot = tool_usage_total(&result);
-                            if let TranscriptToolCall::ReadChat { title, .. } = call {
-                                *title = read_chat_title.clone();
-                            }
-                        }
-                    }
-                    resolve_tool_part(
-                        &chat,
-                        &tool_call_id,
-                        is_error,
-                        output,
-                        read_chat_title.as_deref(),
-                        tool_usage_total(&result),
-                    );
-                    // Provider Mode cards (ADR-0037): a stored proposal or a
-                    // shown Key request lands as a card after its tool part;
-                    // the question card (ADR-0040) lands the same way.
-                    if !is_error
-                        && let Some(card) = crate::provider_mode::tool_card(
-                            &tool_call_id,
-                            &tool_name,
-                            &result.details,
-                        )
-                        .or_else(|| {
-                            crate::tools::ask_user::tool_card(
-                                &tool_call_id,
-                                &tool_name,
-                                &result.details,
-                            )
-                        })
-                    {
-                        let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
-                        match card {
-                            MessagePart::KeyRequest { .. } => {
-                                crate::provider_mode::stamp_key_cards(
-                                    &chat,
-                                    holt_doc::parts::KeyCardState::Superseded,
-                                );
-                            }
-                            MessagePart::ProviderChoice { .. } => {
-                                crate::provider_mode::supersede_choice_cards(&chat);
-                            }
-                            MessagePart::QuestionCard { .. } => {
-                                crate::tools::ask_user::supersede_question_cards(&chat);
-                            }
-                            _ => {}
-                        }
-                        base_parts
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .push(card.clone());
-                        if let Some(entry) = chat
-                            .transcript
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .iter_mut()
-                            .find(|entry| entry.id == run_entry)
-                        {
-                            entry.parts.push(card);
-                        }
-                        chat.persist_entry_tail(&run_entry);
-                        if proposal_card {
-                            crate::provider_mode::supersede_orphan_proposal_cards(&chat);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        })
+        let sink = Arc::clone(&emit_sink);
+        Box::pin(async move { sink.emit(event) })
     });
 
     let stream_fn = stream_fn.unwrap_or_else(default_stream_fn);
@@ -2949,7 +2164,6 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
 mod tests {
     use super::*;
     use holt_proto::TitleSource;
-    use pi_core::ai::types::{DoneReason, TextContent, ThinkingContent, ToolCall};
 
     fn session_chat(id: &str) -> Chat {
         Chat {
@@ -2976,362 +2190,6 @@ mod tests {
             worktree: None,
             provider_mode: false,
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // The provider-stream idle watchdog
-    // -----------------------------------------------------------------------
-
-    /// A partial assistant message carrying `text`, the state a stalled
-    /// stream must not lose.
-    fn watchdog_partial(text: &str) -> AssistantMessage {
-        AssistantMessage {
-            api: "test-api".into(),
-            provider: "test-provider".into(),
-            model: "test-model".into(),
-            content: vec![AssistantContent::Text(TextContent {
-                text: text.into(),
-                ..Default::default()
-            })],
-            ..Default::default()
-        }
-    }
-
-    /// Drain a guarded stream to its end, bounded: a watchdog bug shows up
-    /// as a hang, which must fail the test instead of the runner.
-    async fn settle_stream(stream: &AssistantMessageEventStream) -> Vec<AssistantMessageEvent> {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            let mut events = Vec::new();
-            while let Some(event) = stream.next().await {
-                events.push(event);
-            }
-            events
-        })
-        .await
-        .expect("the guarded stream always settles")
-    }
-
-    /// The text of an assistant message's first content block.
-    fn first_text(message: &AssistantMessage) -> &str {
-        let AssistantContent::Text(text) = &message.content[0] else {
-            panic!("expected text content: {:?}", message.content);
-        };
-        &text.text
-    }
-
-    #[tokio::test]
-    async fn a_stream_that_never_emits_fails_after_the_idle_deadline() {
-        let raw: pi_core::agent::types::StreamFn =
-            Arc::new(|_, _, _| Ok(create_assistant_message_event_stream()));
-        let guarded = guard_stream_fn(raw, Duration::from_millis(50));
-        let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], AssistantMessageEvent::Error { .. }));
-        let message = stream.result().await;
-        assert_eq!(message.stop_reason, StopReason::Error);
-        let error = message.error_message.expect("synthetic error message");
-        assert!(error.contains("50 ms"), "unexpected message: {error}");
-    }
-
-    #[tokio::test]
-    async fn a_stream_that_stalls_between_events_fails_and_keeps_the_partial() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
-            let stream = create_assistant_message_event_stream();
-            stream.push(AssistantMessageEvent::Start {
-                partial: watchdog_partial("streamed so far"),
-            });
-            Ok(stream)
-        });
-        let guarded = guard_stream_fn(raw, Duration::from_millis(50));
-        let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        // The forwarded start plus one synthetic terminal error.
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
-        let message = stream.result().await;
-        assert_eq!(message.stop_reason, StopReason::Error);
-        assert_eq!(first_text(&message), "streamed so far");
-        assert!(message.error_message.as_deref().unwrap().contains("50 ms"));
-    }
-
-    #[tokio::test]
-    async fn the_idle_deadline_resets_on_every_event() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
-            let stream = create_assistant_message_event_stream();
-            let publisher = stream.clone();
-            tokio::spawn(async move {
-                // Gaps shorter than the deadline, but a total span longer
-                // than it: only the trailing silence may fail the stream.
-                for text in ["one", "two", "three"] {
-                    tokio::time::sleep(Duration::from_millis(60)).await;
-                    publisher.push(AssistantMessageEvent::TextDelta {
-                        content_index: 0,
-                        delta: text.into(),
-                        partial: watchdog_partial(text),
-                    });
-                }
-            });
-            Ok(stream)
-        });
-        let guarded = guard_stream_fn(raw, Duration::from_millis(250));
-        let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        // All three deltas pass through, then exactly one terminal error.
-        assert_eq!(events.len(), 4);
-        for (event, text) in events.iter().zip(["one", "two", "three"]) {
-            let AssistantMessageEvent::TextDelta { delta, .. } = event else {
-                panic!("unexpected event: {event:?}");
-            };
-            assert_eq!(delta, text);
-        }
-        assert!(matches!(events[3], AssistantMessageEvent::Error { .. }));
-        assert_eq!(stream.result().await.stop_reason, StopReason::Error);
-    }
-
-    #[tokio::test]
-    async fn parent_cancellation_aborts_without_a_timeout() {
-        let parent = CancellationToken::new();
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
-            // A transport that emits one event and then goes silent: only
-            // the parent token can end this stream.
-            let stream = create_assistant_message_event_stream();
-            stream.push(AssistantMessageEvent::Start {
-                partial: watchdog_partial("partial"),
-            });
-            Ok(stream)
-        });
-        let guarded = guard_stream_fn(raw, Duration::from_secs(30));
-        let mut options = SimpleStreamOptions::default();
-        options.base.base.signal = Some(parent.clone());
-        let stream = guarded(&PiModel::default(), &PiContext::default(), Some(&options)).unwrap();
-
-        // Cancel well inside the idle deadline.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        parent.cancel();
-
-        let events = settle_stream(&stream).await;
-
-        assert_eq!(events.len(), 2);
-        let AssistantMessageEvent::Error { reason, .. } = &events[1] else {
-            panic!("unexpected terminal event: {:?}", events[1]);
-        };
-        assert_eq!(*reason, ErrorReason::Aborted);
-        let message = stream.result().await;
-        assert_eq!(message.stop_reason, StopReason::Aborted);
-        assert_eq!(first_text(&message), "partial");
-        // The timeout branch is the only producer of the stall message, so
-        // its absence proves the cancellation branch settled the stream.
-        assert!(
-            !message
-                .error_message
-                .as_deref()
-                .unwrap()
-                .contains("no event arrived")
-        );
-    }
-
-    #[tokio::test]
-    async fn a_terminal_done_event_passes_through_unchanged() {
-        let mut done = watchdog_partial("all good");
-        done.stop_reason = StopReason::Stop;
-        let expected = done.clone();
-        let raw: pi_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
-            let stream = create_assistant_message_event_stream();
-            stream.push(AssistantMessageEvent::Done {
-                reason: DoneReason::Stop,
-                message: done.clone(),
-            });
-            Ok(stream)
-        });
-        let guarded = guard_stream_fn(raw, Duration::from_millis(50));
-        let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        // The terminal event and nothing synthetic.
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], AssistantMessageEvent::Done { .. }));
-        assert_eq!(stream.result().await, expected);
-    }
-
-    #[tokio::test]
-    async fn a_stream_that_ends_without_a_terminal_event_settles_as_an_error() {
-        let raw: pi_core::agent::types::StreamFn = Arc::new(|_, _, _| {
-            let stream = create_assistant_message_event_stream();
-            stream.push(AssistantMessageEvent::Start {
-                partial: watchdog_partial("cut off"),
-            });
-            // Complete with no result: `result().await` on this stream
-            // alone would never resolve.
-            stream.end(None);
-            Ok(stream)
-        });
-        let guarded = guard_stream_fn(raw, Duration::from_secs(30));
-        let stream = guarded(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[1], AssistantMessageEvent::Error { .. }));
-        let message = stream.result().await;
-        assert_eq!(message.stop_reason, StopReason::Error);
-        assert_eq!(first_text(&message), "cut off");
-        assert!(
-            message
-                .error_message
-                .as_deref()
-                .unwrap()
-                .contains("closed the stream")
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Mid-stream retries
-    // -----------------------------------------------------------------------
-
-    /// One scripted attempt: whether the provider accepted the request
-    /// (`Start`), the text streamed before the ending, and the ending — an
-    /// error message, or `None` for a clean `Done`.
-    type Attempt = (bool, Option<&'static str>, Option<&'static str>);
-
-    /// A transport replaying one scripted attempt per call (the last one
-    /// repeats), plus a call counter and the `on_retry` notices it saw.
-    type RetryNotices = Arc<Mutex<Vec<(u32, u64, String)>>>;
-
-    fn scripted_retry_stream(
-        attempts: Vec<Attempt>,
-    ) -> (
-        pi_core::agent::types::StreamFn,
-        Arc<std::sync::atomic::AtomicUsize>,
-        RetryNotices,
-    ) {
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        let raw: pi_core::agent::types::StreamFn = Arc::new(move |_, _, _| {
-            let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let (started, text, error) = attempts[index.min(attempts.len() - 1)];
-            let stream = create_assistant_message_event_stream();
-            let mut partial = watchdog_partial(text.unwrap_or_default());
-            if text.is_none() {
-                partial.content.clear();
-            }
-            if started {
-                stream.push(AssistantMessageEvent::Start {
-                    partial: partial.clone(),
-                });
-            }
-            if let Some(text) = text {
-                stream.push(AssistantMessageEvent::TextDelta {
-                    content_index: 0,
-                    delta: text.into(),
-                    partial: partial.clone(),
-                });
-            }
-            stream.push(match error {
-                Some(error) => synthetic_terminal(partial, StopReason::Error, error),
-                None => AssistantMessageEvent::Done {
-                    reason: DoneReason::Stop,
-                    message: partial,
-                },
-            });
-            Ok(stream)
-        });
-        let notices = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&notices);
-        let on_retry: pi_core::ai::types::OnRetryCallback =
-            Arc::new(move |attempt, _, delay_ms, error| {
-                sink.lock()
-                    .unwrap()
-                    .push((attempt, delay_ms, error.to_string()));
-            });
-        (retry_stream_fn(raw, on_retry), calls, notices)
-    }
-
-    const OVERLOADED: &str =
-        r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-
-    #[tokio::test(start_paused = true)]
-    async fn a_content_free_mid_stream_failure_is_resent() {
-        let (stream_fn, calls, notices) = scripted_retry_stream(vec![
-            (true, None, Some(OVERLOADED)),
-            (true, Some("answer"), None),
-        ]);
-        let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        let events = settle_stream(&stream).await;
-
-        // One Start, the second attempt's content, its Done.
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
-        assert!(matches!(events[2], AssistantMessageEvent::Done { .. }));
-        assert_eq!(first_text(&stream.result().await), "answer");
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert_eq!(
-            *notices.lock().unwrap(),
-            vec![(1, 1000, OVERLOADED.to_string())]
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn mid_stream_retries_stop_at_the_budget() {
-        let (stream_fn, calls, notices) =
-            scripted_retry_stream(vec![(true, None, Some(OVERLOADED))]);
-        let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-        // 1s + 2s of backoff outlasts `settle_stream`'s bound.
-        let message = tokio::time::timeout(Duration::from_secs(10), stream.result())
-            .await
-            .expect("the retrying stream settles");
-        assert_eq!(message.stop_reason, StopReason::Error);
-        assert_eq!(message.error_message.as_deref(), Some(OVERLOADED));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
-        let delays: Vec<u64> = notices.lock().unwrap().iter().map(|n| n.1).collect();
-        assert_eq!(delays, vec![1000, 2000]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn failures_the_stream_layer_must_not_resend_surface_at_once() {
-        for attempt in [
-            // Streamed content would have to be taken back.
-            (true, Some("half an answer"), Some(OVERLOADED)),
-            // Never accepted: the HTTP layer already retried it.
-            (false, None, Some(OVERLOADED)),
-            // Not transient.
-            (true, None, Some("invalid x-api-key")),
-        ] {
-            let (stream_fn, calls, notices) = scripted_retry_stream(vec![attempt]);
-            let stream = stream_fn(&PiModel::default(), &PiContext::default(), None).unwrap();
-
-            settle_stream(&stream).await;
-
-            assert_eq!(stream.result().await.stop_reason, StopReason::Error);
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert!(notices.lock().unwrap().is_empty());
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancellation_during_the_backoff_aborts() {
-        let (stream_fn, calls, _) = scripted_retry_stream(vec![(true, None, Some(OVERLOADED))]);
-        let cancel = CancellationToken::new();
-        let mut options = SimpleStreamOptions::default();
-        options.base.base.signal = Some(cancel.clone());
-        let stream = stream_fn(&PiModel::default(), &PiContext::default(), Some(&options)).unwrap();
-
-        // The first attempt fails and the backoff starts; cancel inside it.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        cancel.cancel();
-        settle_stream(&stream).await;
-
-        assert_eq!(stream.result().await.stop_reason, StopReason::Aborted);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -3428,102 +2286,6 @@ mod tests {
 
         stop.cancel();
         heartbeat.await.unwrap();
-    }
-
-    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
-        ToolCall {
-            content_type: Default::default(),
-            id: "call-1".into(),
-            name: name.into(),
-            arguments: arguments.as_object().cloned().unwrap_or_default(),
-            thought_signature: None,
-            namespace: None,
-        }
-    }
-
-    #[test]
-    fn assistant_message_maps_text_and_reasoning_to_doc_parts() {
-        let message = AgentMessage::Assistant(Box::new(AssistantMessage {
-            content: vec![
-                AssistantContent::Thinking(ThinkingContent {
-                    thinking: "plan".into(),
-                    ..Default::default()
-                }),
-                AssistantContent::Text(TextContent {
-                    text: "answer".into(),
-                    ..Default::default()
-                }),
-            ],
-            ..Default::default()
-        }));
-        assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
-            vec![
-                MessagePart::Reasoning {
-                    id: "r0".into(),
-                    text: "plan".into(),
-                },
-                MessagePart::Text {
-                    id: "t1".into(),
-                    text: "answer".into(),
-                },
-            ]
-        );
-        // A second message of the same run folds into the same entry: its
-        // generated part ids continue after the base so row keys never
-        // collide.
-        assert_eq!(
-            assistant_parts(&message, 2, "/tmp/x", &HashMap::new(), false),
-            vec![
-                MessagePart::Reasoning {
-                    id: "r2".into(),
-                    text: "plan".into(),
-                },
-                MessagePart::Text {
-                    id: "t3".into(),
-                    text: "answer".into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_cancelled_runs_aborted_message_drops_the_abort_error_part() {
-        let aborted = || {
-            AgentMessage::Assistant(Box::new(AssistantMessage {
-                content: vec![AssistantContent::Text(TextContent {
-                    text: "partial".into(),
-                    ..Default::default()
-                })],
-                stop_reason: pi_core::ai::types::StopReason::Aborted,
-                error_message: Some("The operation was aborted".into()),
-                ..Default::default()
-            }))
-        };
-        // Stop / Steer: the transport's abort artifact is not an error —
-        // only the partial text lands.
-        assert_eq!(
-            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), true),
-            vec![MessagePart::Text {
-                id: "t0".into(),
-                text: "partial".into(),
-            }]
-        );
-        // An abort WITHOUT the run's cancellation (the transport died on
-        // its own) keeps the chip — that failure must stay diagnosable.
-        assert_eq!(
-            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), false),
-            vec![
-                MessagePart::Text {
-                    id: "t0".into(),
-                    text: "partial".into(),
-                },
-                MessagePart::Error {
-                    id: "e1".into(),
-                    message: "The operation was aborted".into(),
-                },
-            ]
-        );
     }
 
     #[test]
@@ -3682,248 +2444,6 @@ mod tests {
     }
 
     #[test]
-    fn assistant_message_maps_tool_calls_to_tool_parts() {
-        let message = AgentMessage::Assistant(Box::new(AssistantMessage {
-            content: vec![AssistantContent::ToolCall(tool_call(
-                "bash",
-                serde_json::json!({ "command": "ls -la" }),
-            ))],
-            ..Default::default()
-        }));
-        assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
-            vec![MessagePart::Tool {
-                id: "call-1".into(),
-                call: TranscriptToolCall::Exec {
-                    command: "ls -la".into(),
-                },
-                is_error: false,
-                resolved: false,
-                output: None,
-                diff: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
-                diff_stats: None,
-                subagent_ref: None,
-                subagent_status: None,
-                subagent_tail: None,
-                subagent_usage: None,
-                gate: None,
-            }]
-        );
-    }
-
-    #[test]
-    fn tool_calls_decode_to_known_shapes_and_strip_heavy_inputs() {
-        assert_eq!(
-            transcript_tool_call(&tool_call("read", serde_json::json!({ "path": "a.rs" }))),
-            TranscriptToolCall::ReadFile {
-                path: "a.rs".into()
-            }
-        );
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "read_chat",
-                serde_json::json!({
-                    "url": "holt://open/chat/chat-2?workspace=workspace"
-                })
-            )),
-            TranscriptToolCall::ReadChat {
-                chat_id: "chat-2".into(),
-                title: None,
-            }
-        );
-        // Write content is stripped before it can reach the doc.
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "write",
-                serde_json::json!({ "path": "a.rs", "content": "lots of text" })
-            )),
-            TranscriptToolCall::WriteFile {
-                path: "a.rs".into(),
-                content: None,
-            }
-        );
-        // MCP two-level names decode onto the structured Mcp chip; like
-        // every chip, the sanitize pass drops the input (it stays in
-        // History and the expandable detail's live journal).
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "mcp__dashboard-icons__suggest_icon",
-                serde_json::json!({ "query": "home" })
-            )),
-            TranscriptToolCall::Mcp {
-                server: "dashboard-icons".into(),
-                tool: "suggest_icon".into(),
-                input: None,
-            }
-        );
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "edit",
-                serde_json::json!({ "path": "a.rs", "edits": [{ "oldText": "x", "newText": "y" }] })
-            )),
-            TranscriptToolCall::EditFile {
-                path: "a.rs".into(),
-                old_string: None,
-                new_string: None,
-            }
-        );
-        // ADR-0023: the two web tools fold onto the sync-era chips. A
-        // `prompt` argument is dropped — full-text fetch never summarizes,
-        // and the field stays `None` forever.
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "web_fetch",
-                serde_json::json!({ "url": "https://example.test/page", "prompt": "summarize" })
-            )),
-            TranscriptToolCall::WebFetch {
-                url: "https://example.test/page".into(),
-                prompt: None,
-            }
-        );
-        // Only the query rides the chip; `max_results` has no slot.
-        assert_eq!(
-            transcript_tool_call(&tool_call(
-                "web_search",
-                serde_json::json!({ "query": "holt", "max_results": 3 })
-            )),
-            TranscriptToolCall::WebSearch {
-                query: "holt".into(),
-            }
-        );
-        // Unknown tools degrade to a named chip, input intact (the policy
-        // strips non-spawn inputs).
-        let decoded = transcript_tool_call(&tool_call(
-            "whats_new",
-            serde_json::json!({ "query": "holt" }),
-        ));
-        assert!(matches!(
-            decoded,
-            TranscriptToolCall::Unknown { ref name, input: None } if name == "whats_new"
-        ));
-    }
-
-    #[test]
-    fn catalog_skill_md_reads_collapse_to_the_skill_chip() {
-        let skill_files: HashMap<String, String> =
-            HashMap::from([("/roots/grill/SKILL.md".to_string(), "grill".to_string())]);
-        let read = |path: &str| {
-            let message = AgentMessage::Assistant(Box::new(AssistantMessage {
-                content: vec![AssistantContent::ToolCall(tool_call(
-                    "read",
-                    serde_json::json!({ "path": path }),
-                ))],
-                ..Default::default()
-            }));
-            assistant_parts(&message, 0, "/roots", &skill_files, false)
-        };
-        // The advertised location, absolute…
-        assert_eq!(
-            read("/roots/grill/SKILL.md"),
-            vec![MessagePart::Skill {
-                id: "call-1".into(),
-                name: "grill".into(),
-                file: "/roots/grill/SKILL.md".into(),
-                content: None,
-            }]
-        );
-        // …and the same file reached through a relative path.
-        assert_eq!(
-            read("grill/SKILL.md"),
-            vec![MessagePart::Skill {
-                id: "call-1".into(),
-                name: "grill".into(),
-                file: "/roots/grill/SKILL.md".into(),
-                content: None,
-            }]
-        );
-        // Any other file — including another `.md` inside the skill's own
-        // directory — renders as an ordinary read.
-        assert_eq!(
-            read("/roots/grill/notes.md"),
-            vec![MessagePart::Tool {
-                id: "call-1".into(),
-                call: TranscriptToolCall::ReadFile {
-                    path: "/roots/grill/notes.md".into(),
-                },
-                is_error: false,
-                resolved: false,
-                output: None,
-                diff: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
-                diff_stats: None,
-                subagent_ref: None,
-                subagent_status: None,
-                subagent_tail: None,
-                subagent_usage: None,
-                gate: None,
-            }]
-        );
-        // An empty catalog (the file stopped being a skill) renders the
-        // plain read again — detection keys off the live catalog.
-        let message = AgentMessage::Assistant(Box::new(AssistantMessage {
-            content: vec![AssistantContent::ToolCall(tool_call(
-                "read",
-                serde_json::json!({ "path": "/roots/grill/SKILL.md" }),
-            ))],
-            ..Default::default()
-        }));
-        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new(), false);
-        assert!(matches!(
-            &parts[0],
-            MessagePart::Tool {
-                call: TranscriptToolCall::ReadFile { .. },
-                ..
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn collapse_keys_agree_with_the_real_loader_paths() {
-        // The map the run builds and the read-argument resolver must agree
-        // on the loader's own file paths — hand-built maps can't catch a
-        // normalization divergence, a real scan can.
-        let base = tempfile::tempdir().unwrap();
-        let personal = base.path().join("personal");
-        std::fs::create_dir_all(&personal).unwrap();
-        write_skill(
-            &personal,
-            "grill",
-            "name: grill\ndescription: Grill a plan.\n",
-        );
-        let skills = crate::skills::Skills::new(&base.path().join("data"), Some(&personal));
-        let catalog = skills.catalog(None).await;
-        let skill_files: HashMap<String, String> = catalog
-            .winners
-            .iter()
-            .map(|(skill, _)| (skill.file_path.clone(), skill.name.clone()))
-            .collect();
-        let skill_file = personal.join("grill").join("SKILL.md");
-        let skill_file = skill_file.to_string_lossy().into_owned();
-        assert_eq!(
-            skill_read_part(
-                &tool_call("read", serde_json::json!({ "path": skill_file })),
-                "/",
-                &skill_files,
-            ),
-            Some(MessagePart::Skill {
-                id: "call-1".into(),
-                name: "grill".into(),
-                file: skill_files
-                    .keys()
-                    .find(|path| path.ends_with("grill/SKILL.md"))
-                    .cloned()
-                    .unwrap(),
-                content: None,
-            })
-        );
-    }
-
-    #[test]
     fn transcript_survives_runtime_restart() {
         let dir = std::env::temp_dir().join(format!("holt-restart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3985,52 +2505,6 @@ mod tests {
         );
         assert_eq!(again.chat("chat-1").transcript.read().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn resolve_tool_part_stamps_the_matching_chip() {
-        let chat = ChatRuntime::new();
-        chat.transcript.write().unwrap().push(SessionMessageEntry {
-            id: "entry-1".into(),
-            role: MessageRole::Assistant,
-            parts: vec![MessagePart::Tool {
-                id: "call-9".into(),
-                call: TranscriptToolCall::Exec {
-                    command: "sleep 1".into(),
-                },
-                is_error: false,
-                resolved: false,
-                output: None,
-                diff: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
-                diff_stats: None,
-                subagent_ref: None,
-                subagent_status: None,
-                subagent_tail: None,
-                subagent_usage: None,
-                gate: None,
-            }],
-            created_at: 0,
-            device_id: "device".into(),
-            status: Some(MessageStatus::Complete),
-            continuation_of: None,
-        });
-        resolve_tool_part(&chat, "call-9", true, Some("boom".into()), None, None);
-        let transcript = chat.transcript.read().unwrap();
-        let Some(MessagePart::Tool {
-            resolved,
-            is_error,
-            output,
-            ..
-        }) = transcript[0].parts.first()
-        else {
-            panic!("expected a tool part");
-        };
-        assert!(*resolved);
-        assert!(*is_error);
-        assert_eq!(output.as_deref(), Some("boom"));
     }
 
     fn tool_part(id: &str, output: Option<String>) -> MessagePart {
@@ -4158,64 +2632,5 @@ mod tests {
         let loaded = load_transcript(&dir, "chat-1").unwrap();
         assert_eq!(loaded[0].parts.len(), 2);
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn run_messages_fold_into_one_entry_with_stable_created_at() {
-        let chat = ChatRuntime::new();
-        let text = |text: &str| {
-            AgentMessage::Assistant(Box::new(AssistantMessage {
-                content: vec![AssistantContent::Text(TextContent {
-                    text: text.into(),
-                    ..Default::default()
-                })],
-                ..Default::default()
-            }))
-        };
-        // First message creates the entry, later ones replace its parts in
-        // place — same id, same created_at (the delta protocol keys appends
-        // off an unchanged entry and the strip stamps once).
-        let mut first_parts = assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new(), false);
-        update_assistant_entry(
-            &chat,
-            "run-1",
-            first_parts.clone(),
-            MessageStatus::Streaming,
-            "device",
-            true,
-        );
-        let created_at = chat.transcript.read().unwrap()[0].created_at;
-        let second = assistant_parts(
-            &text(" world"),
-            first_parts.len(),
-            "/tmp/x",
-            &HashMap::new(),
-            false,
-        );
-        first_parts.extend(second);
-        update_assistant_entry(
-            &chat,
-            "run-1",
-            first_parts,
-            MessageStatus::Streaming,
-            "device",
-            false,
-        );
-        let transcript = chat.transcript.read().unwrap();
-        assert_eq!(transcript.len(), 1);
-        assert_eq!(transcript[0].created_at, created_at);
-        assert_eq!(
-            transcript[0].parts,
-            vec![
-                MessagePart::Text {
-                    id: "t0".into(),
-                    text: "hello".into(),
-                },
-                MessagePart::Text {
-                    id: "t1".into(),
-                    text: " world".into(),
-                },
-            ]
-        );
     }
 }

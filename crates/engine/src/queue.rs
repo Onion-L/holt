@@ -654,7 +654,7 @@ impl EngineService {
             if let Err(error) = admitted {
                 return (false, (!cancel.is_cancelled()).then(|| error.to_string()));
             }
-            crate::agent::push_system_part(
+            crate::decode::push_system_part(
                 chat,
                 &self.engine_info.device_id,
                 format!("compaction-skipped-{}", message.message_id),
@@ -700,7 +700,7 @@ impl EngineService {
             .runtime
             .stream_fn
             .clone()
-            .unwrap_or_else(crate::agent::default_stream_fn);
+            .unwrap_or_else(crate::stream::default_stream_fn);
         self.runtime
             .set_session(&chat.chat_id, SessionStatus::Compacting);
         // A manual Compaction runs outside the Turn model: its summary
@@ -723,7 +723,7 @@ impl EngineService {
         .await;
         match outcome {
             Ok(Some(outcome)) => {
-                crate::agent::record_turn_start_compaction(
+                crate::decode::record_turn_start_compaction(
                     chat,
                     &self.engine_info.device_id,
                     &outcome.record,
@@ -743,7 +743,7 @@ impl EngineService {
                     (false, None)
                 } else {
                     tracing::warn!(target: "holt::compaction", %reason, "manual compaction failed");
-                    crate::agent::push_system_part(
+                    crate::decode::push_system_part(
                         chat,
                         &self.engine_info.device_id,
                         format!("compaction-failed-{}", uuid::Uuid::new_v4()),
