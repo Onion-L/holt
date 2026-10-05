@@ -35,7 +35,7 @@ const PROVIDER_TOOLTIP_DELAY: Duration = Duration::from_secs(1);
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::popover::{self, Loadable, MenuKey};
 use crate::settings::composer::ComposerDefaults;
-use crate::state::{AppState, EngineHandle};
+use crate::state::{AppState, EngineHandle, Indicator};
 use crate::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +170,10 @@ pub struct Pickers {
     pub(crate) provider_mode_draft: bool,
     /// Space the branch draft/cache belong to (see the state observer).
     space_owner: Option<String>,
+    /// Whether the selected chat's Turn was running at the last state
+    /// change: a Turn ending re-lists refs, since the agent may have
+    /// switched branches.
+    turn_live: bool,
     open: popover::Popup<PickerKind>,
     /// The provider/model picker's rail selection (provider catalog vs the effective
     /// provider's list). Re-primed on every open.
@@ -294,6 +298,15 @@ impl Pickers {
                 this.refs = Loadable::Idle;
                 this.refs_target = None;
             }
+            let turn_live = state.read(cx).selected_chat.as_deref().is_some_and(|chat| {
+                matches!(
+                    state.read(cx).indicator_for(chat, chrono::Utc::now()),
+                    Indicator::Working | Indicator::AwaitingInput
+                )
+            });
+            if std::mem::replace(&mut this.turn_live, turn_live) && !turn_live {
+                this.refresh_refs(cx);
+            }
             cx.notify();
         });
         // A Settings → Providers change updated the configured set: force-refresh
@@ -343,6 +356,7 @@ impl Pickers {
         Self {
             state,
             space_owner,
+            turn_live: false,
             config: DraftConfig::default(),
             defaults,
             data_dir,

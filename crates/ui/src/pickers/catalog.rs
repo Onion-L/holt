@@ -187,6 +187,15 @@ impl Pickers {
         .detach();
     }
 
+    /// Re-list refs in place (stale rows stay on screen): the branch can
+    /// move outside the picker — a terminal or agent checkout — and only
+    /// the refs carry the live `current` the branch chip reads.
+    pub fn refresh_refs(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.refs, Loadable::Idle) {
+            self.ensure_refs(true, cx);
+        }
+    }
+
     /// ListRefs for the selected SPACE's folder, keyed/invalidated by space
     /// id. Rows carry checkout state (`current`, `worktreePath`) so the
     /// picker can tag refs and the checkout-kind selector can offer worktree

@@ -3278,6 +3278,10 @@ impl Render for Shell {
                 |this: &mut Shell, window, cx| {
                     if !window.is_window_active() {
                         this.set_jump_hints(false, cx);
+                    } else {
+                        // Back from a terminal: the branch may have moved.
+                        let pickers = this.composer.read(cx).pickers().clone();
+                        pickers.update(cx, |pickers, cx| pickers.refresh_refs(cx));
                     }
                 },
             ));
