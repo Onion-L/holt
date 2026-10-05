@@ -3023,15 +3023,18 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
 }
 
 /// One file row of the Turn change card: status letter in a fixed lane,
-/// mono path (a rename shows `old → new`), then `+n`/`−n`. A binary entry
+/// mono path as a faint directory and a brighter file name (a rename leads
+/// with `old → `), then `+n`/`−n`. A binary entry
 /// carries its status and a `BIN` tag — never invented line counts — so its
 /// zeros stay absent instead of falsified.
 fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
     let (letter, color) = turn_change_marker(file.status, theme);
-    let path = match &file.old_path {
-        Some(old) => format!("{old} → {}", file.path),
-        None => file.path.clone(),
+    let (dir, name) = split_turn_path(&file.path);
+    let lead = match &file.old_path {
+        Some(old) => format!("{old} → {dir}"),
+        None => dir.to_string(),
     };
+    let mono = theme.font_mono.clone();
     div()
         .w_full()
         .flex()
@@ -3043,20 +3046,40 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
             div()
                 .flex_none()
                 .w(px(12.0))
-                .font_family(theme.font_mono.clone())
+                .font_family(mono.clone())
                 .text_size(crate::typography::ui_rems(11.0))
                 .text_color(color)
                 .child(letter),
         )
+        // Directory then file name: the directory gives way first, so a long
+        // path keeps its file name readable.
         .child(
             div()
                 .min_w_0()
                 .flex_1()
-                .truncate()
-                .font_family(theme.font_mono.clone())
+                .flex()
+                .flex_row()
+                .overflow_hidden()
+                .font_family(mono)
                 .text_size(crate::typography::ui_rems(13.0))
-                .text_color(theme.text_dim)
-                .child(SharedString::from(path)),
+                .when(!lead.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink(1.0)
+                            .truncate()
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(lead)),
+                    )
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_shrink(0.01)
+                        .truncate()
+                        .text_color(theme.text_dim)
+                        .child(SharedString::from(name.to_string())),
+                ),
         )
         .when(file.binary, |el| {
             el.child(
@@ -3073,6 +3096,14 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
         .when(!file.binary && file.deletions > 0, |el| {
             el.child(turn_change_count(file.deletions, false, theme))
         })
+}
+
+/// `src/ui/app.rs` → (`src/ui/`, `app.rs`); a root file has no directory.
+fn split_turn_path(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(ix) => path.split_at(ix + 1),
+        None => ("", path),
+    }
 }
 
 /// The change card's status vocabulary: new content green, modification
@@ -3978,6 +4009,12 @@ impl Render for Transcript {
 mod tests {
     use super::*;
     use holt_proto::view::tool_chip_content;
+
+    #[test]
+    fn turn_paths_split_into_directory_and_file_name() {
+        assert_eq!(split_turn_path("src/ui/app.rs"), ("src/ui/", "app.rs"));
+        assert_eq!(split_turn_path("Cargo.toml"), ("", "Cargo.toml"));
+    }
 
     #[gpui::test]
     fn nested_compaction_scroll_does_not_move_transcript_list(cx: &mut gpui::TestAppContext) {
