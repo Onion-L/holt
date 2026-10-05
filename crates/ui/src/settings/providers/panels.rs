@@ -383,8 +383,7 @@ pub(super) fn panel_danger_row(
         .into_any_element()
 }
 
-/// Confirm removing a custom provider's definition; the copy names what
-/// stays behind.
+/// Confirm removing a custom provider and its catalog entries.
 pub(super) fn remove_provider_dialog(
     confirm: &RemoveConfirm,
     theme: &Theme,
@@ -403,8 +402,8 @@ pub(super) fn remove_provider_dialog(
         ))
         .child(div().mt(px(6.0)).child(popover::dialog_body(
             theme,
-            "The provider definition and its logo are deleted. The API key and model \
-             records stay, so adding a provider with the same id brings them back.",
+            "The provider definition, custom models, model records, hidden list, and logo \
+             are deleted. The API key is kept. This can't be undone.",
         )))
         .child(
             div()

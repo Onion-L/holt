@@ -36,6 +36,15 @@ pub(crate) struct StoredSettings {
 /// can never overwrite an intervening settings change.
 pub(crate) type ProviderSettingsSnapshot = StoredSettings;
 
+impl StoredSettings {
+    pub(crate) fn remove_provider_entries(&mut self, provider_id: &str) -> bool {
+        self.custom_models.remove(provider_id).is_some()
+            | self.model_records.remove(provider_id).is_some()
+            | self.custom_providers.remove(provider_id).is_some()
+            | self.hidden_models.remove(provider_id).is_some()
+    }
+}
+
 /// One user-defined provider: identity and transport only. Its models are
 /// `model_records` entries under the same id, and its auth shape is api_key
 /// by definition — keys enter through Settings, never this file. There is
@@ -209,9 +218,19 @@ impl ProviderSettingsStore {
                 "provider settings changed since this proposal was created".into(),
             ));
         }
+        let removed_providers: Vec<String> = settings
+            .custom_providers
+            .keys()
+            .filter(|id| !next.custom_providers.contains_key(*id))
+            .cloned()
+            .collect();
         let previous = settings.clone();
         *settings = next;
-        self.commit(settings, previous)
+        self.commit(settings, previous)?;
+        for provider_id in removed_providers {
+            self.drop_logo(&provider_id);
+        }
+        Ok(())
     }
 
     /// Drops one user-added model id. Returns `false` when the id is not a
@@ -314,21 +333,16 @@ impl ProviderSettingsStore {
         self.commit(settings, previous)
     }
 
-    /// Drops a user-defined provider definition (its model records are
-    /// separate entries and survive). Returns `false` for an unknown id.
+    /// Drops a user-defined provider definition together with every
+    /// entry filed under its id (custom models, records, hidden ids,
+    /// logo): without the definition those entries are inert dead data
+    /// that a same-id re-add would silently resurrect. Returns `false`
+    /// when the id is not a custom provider.
     pub fn remove_custom_provider(&self, provider_id: &str) -> Result<bool, EngineError> {
-        let mut settings = self
-            .settings
-            .write()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous = settings.clone();
-        let removed = settings.custom_providers.remove(provider_id).is_some();
-        if !removed {
+        if self.custom_provider(provider_id).is_none() {
             return Ok(false);
         }
-        self.commit(settings, previous)?;
-        self.drop_logo(provider_id);
-        Ok(true)
+        self.reset_provider(provider_id)
     }
 
     /// Replaces the provider's hidden set wholesale; an empty set clears the
@@ -361,10 +375,7 @@ impl ProviderSettingsStore {
             .write()
             .unwrap_or_else(|error| error.into_inner());
         let previous = settings.clone();
-        let removed = settings.custom_models.remove(provider_id).is_some()
-            | settings.model_records.remove(provider_id).is_some()
-            | settings.custom_providers.remove(provider_id).is_some()
-            | settings.hidden_models.remove(provider_id).is_some();
+        let removed = settings.remove_provider_entries(provider_id);
         if !removed {
             return Ok(false);
         }
@@ -837,6 +848,42 @@ mod tests {
         // The legacy section keeps its always-present shape: an empty map,
         // exactly what the pre-records code wrote.
         assert_eq!(document["customModels"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn removing_a_custom_provider_drops_every_entry_filed_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = ProviderSettingsStore::load(dir.path()).unwrap();
+        settings
+            .upsert_custom_provider(custom_provider("acme"))
+            .unwrap();
+        settings
+            .upsert_model_record("acme", record("acme", "acme-1", "https://acme.example/v1"))
+            .unwrap();
+        settings
+            .set_hidden_models("acme", BTreeSet::from(["acme-1".to_string()]))
+            .unwrap();
+        settings
+            .upsert_model_record(
+                "openai",
+                record("openai", "gpt-record", "https://openai.example/v1"),
+            )
+            .unwrap();
+
+        // A builtin id never owns a definition; the call stays a no-op.
+        assert!(!settings.remove_custom_provider("openai").unwrap());
+        assert_eq!(settings.model_records_for("openai").len(), 1);
+
+        assert!(settings.remove_custom_provider("acme").unwrap());
+        assert!(settings.custom_provider("acme").is_none());
+        assert!(settings.model_records_for("acme").is_empty());
+        assert!(settings.hidden_models_for("acme").is_empty());
+
+        let restored = ProviderSettingsStore::load(dir.path()).unwrap();
+        assert!(restored.custom_provider("acme").is_none());
+        assert!(restored.model_records_for("acme").is_empty());
+        // Other providers keep their entries.
+        assert_eq!(restored.model_records_for("openai").len(), 1);
     }
 
     #[test]

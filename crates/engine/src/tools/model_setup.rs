@@ -59,7 +59,8 @@ after the user saved one for exactly that baseUrl). Each change is an object wit
 of: upsert_model_record ({providerId, record — a complete model record: id, name, api, \
 provider, baseUrl, reasoning, input, cost, contextWindow, maxTokens, and optionally \
 thinkingLevelMap/compat}), upsert_custom_provider ({provider: {id, name, baseUrl, \
-defaultApi}}), remove_custom_provider ({providerId}), remove_model_record ({providerId, \
+defaultApi}}), remove_custom_provider ({providerId; deletes its definition, models, hidden ids, \
+and logo; keeps the API key}), remove_model_record ({providerId, \
 modelId}), or set_hidden_models ({providerId, modelIds}). When replacing an existing id, \
 inspect it first and copy its api/compat/thinkingLevelMap, changing only what differs. \
 Research model facts first with web_fetch/web_search, then propose. A newer proposal \
@@ -575,6 +576,26 @@ pub(crate) fn build_proposal(
                     no_ops += 1;
                 } else {
                     lines.push(format!("- provider {provider_id}"));
+                    let settings = providers.settings.snapshot();
+                    if let Some(models) = settings.custom_models.get(provider_id) {
+                        lines.push(format!(
+                            "{DETAIL_INDENT}custom models: {}",
+                            models.iter().cloned().collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                    if let Some(records) = settings.model_records.get(provider_id) {
+                        lines.push(format!(
+                            "{DETAIL_INDENT}model records: {}",
+                            records.keys().cloned().collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                    if let Some(hidden) = settings.hidden_models.get(provider_id) {
+                        lines.push(format!(
+                            "{DETAIL_INDENT}hidden ids: {}",
+                            hidden.iter().cloned().collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                    lines.push(format!("{DETAIL_INDENT}logo (if present); API key kept"));
                     providers_touched.insert(provider_id.clone());
                 }
             }
@@ -755,7 +776,7 @@ pub(crate) fn apply_changes(
                     .insert(provider.id.clone(), provider.clone());
             }
             CatalogChange::RemoveCustomProvider { provider_id } => {
-                next.custom_providers.remove(provider_id);
+                next.remove_provider_entries(provider_id);
             }
             CatalogChange::RemoveModelRecord {
                 provider_id,
@@ -2161,6 +2182,78 @@ mod tests {
         assert!(lines[0].contains("already exactly as proposed"));
         // And apply rejects the stale batch.
         assert!(apply_changes(&providers, &providers.settings.snapshot(), &changes).is_err());
+    }
+
+    #[test]
+    fn removing_a_custom_provider_proposal_clears_its_catalog_entries_and_logo() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = adapter(dir.path());
+        let provider = CustomProvider {
+            id: "acme".into(),
+            name: "Acme".into(),
+            base_url: "https://acme.example/v1".into(),
+            default_api: "openai-completions".into(),
+        };
+        providers
+            .settings
+            .upsert_custom_provider(provider.clone())
+            .unwrap();
+        providers
+            .settings
+            .upsert_model_record("acme", record("acme", "acme-1", &provider.base_url))
+            .unwrap();
+        providers
+            .settings
+            .set_hidden_models("acme", BTreeSet::from(["acme-1".into()]))
+            .unwrap();
+        let before = providers.settings.snapshot();
+        let mut with_legacy_model = before.clone();
+        with_legacy_model
+            .custom_models
+            .insert("acme".into(), BTreeSet::from(["acme-legacy".into()]));
+        providers
+            .settings
+            .replace_if_unchanged(&before, with_legacy_model)
+            .unwrap();
+        providers
+            .settings
+            .set_custom_provider_logo("acme", br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#)
+            .unwrap();
+
+        let removal = CatalogChange::RemoveCustomProvider {
+            provider_id: "acme".into(),
+        };
+        let ProposalOutcome::Changes { lines, .. } =
+            build_proposal(&providers, std::slice::from_ref(&removal)).unwrap()
+        else {
+            panic!("expected a change");
+        };
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("custom models: acme-legacy"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("model records: acme-1"))
+        );
+        assert!(lines.iter().any(|line| line.contains("hidden ids: acme-1")));
+        assert!(lines.iter().any(|line| line.contains("logo")));
+
+        apply_changes(&providers, &providers.settings.snapshot(), &[removal]).unwrap();
+        assert!(providers.settings.custom_provider("acme").is_none());
+        assert!(providers.settings.custom_models_for("acme").is_empty());
+        assert!(providers.settings.model_records_for("acme").is_empty());
+        assert!(providers.settings.hidden_models_for("acme").is_empty());
+        assert!(providers.settings.custom_provider_logo("acme").is_none());
+
+        let restored = adapter(dir.path());
+        restored.settings.upsert_custom_provider(provider).unwrap();
+        assert!(restored.settings.custom_models_for("acme").is_empty());
+        assert!(restored.settings.model_records_for("acme").is_empty());
+        assert!(restored.settings.hidden_models_for("acme").is_empty());
+        assert!(restored.settings.custom_provider_logo("acme").is_none());
     }
 
     #[test]
