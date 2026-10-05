@@ -144,6 +144,28 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str, message_id: &str) -> Option<T
     }
 }
 
+/// Every readable record of a chat — the stacking check's view of later
+/// Turns. Malformed or unreadable files are skipped.
+pub(crate) fn list(data_dir: &Path, chat_id: &str) -> Vec<TurnChangeRecord> {
+    if !crate::store::id_is_path_safe(chat_id) {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(data_dir.join("turn-changes").join(chat_id)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return None;
+            }
+            let message_id = path.file_stem()?.to_str()?;
+            load(data_dir, chat_id, message_id)
+        })
+        .collect()
+}
+
 /// Drop one Turn's persisted record — the edit path's retraction (an edit
 /// prunes its Turn from the transcript; the frozen change set dies with
 /// it). A missing file is fine: the Turn may never have settled.

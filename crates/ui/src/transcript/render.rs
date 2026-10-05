@@ -622,6 +622,8 @@ impl Transcript {
         };
         let review_chat = chat_id.clone();
         let review_message = message_id.clone();
+        let restore_chat = chat_id.clone();
+        let restore_message = message_id.clone();
         header = header
             .child(
                 div()
@@ -676,6 +678,31 @@ impl Transcript {
                             path: None,
                         });
                     })),
+            )
+            .when(
+                change_set.phase == holt_proto::TurnChangeSetPhase::Final,
+                |el| {
+                    el.child(
+                        div()
+                            .id("turn-change-restore")
+                            .debug_selector(|| "turn-card-restore".to_string())
+                            .flex_none()
+                            .px(px(7.0))
+                            .rounded(px(5.0))
+                            .text_size(px(11.5))
+                            .text_color(theme.text_muted)
+                            .cursor_pointer()
+                            .hover(|el| el.bg(crate::theme::wash(0.06)))
+                            .child("Restore")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(super::TranscriptEvent::RestoreTurnChanges {
+                                    chat_id: restore_chat.clone(),
+                                    message_id: restore_message.clone(),
+                                });
+                            })),
+                    )
+                },
             );
 
         // The header-to-body spacing rides INSIDE the fold-tweened wrapper

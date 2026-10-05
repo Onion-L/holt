@@ -522,11 +522,26 @@ impl Shell {
             } => {
                 self.open_turn_review(chat_id.clone(), message_id.clone(), path.clone(), cx);
             }
+            // The card's Restore affordance: confirm in a dialog over the
+            // conversation — the review pane stays closed.
+            TranscriptEvent::RestoreTurnChanges {
+                chat_id,
+                message_id,
+            } => {
+                self.restore_confirm = Some((chat_id.clone(), message_id.clone()));
+                cx.notify();
+            }
             // The card's Open affordance: the post-Turn file in the
             // workspace file tab (the ordinary file-open path — pinned, not
             // a replaceable preview).
             TranscriptEvent::OpenTurnFile { path } => {
-                self.open_file(path.clone(), None, true, cx);
+                // The change set's path is repo-relative; the file tab
+                // takes an absolute one.
+                let Some(root) = self.state.read(cx).search_root() else {
+                    return;
+                };
+                let absolute = root.join(path).to_string_lossy().into_owned();
+                self.open_file(absolute, None, true, cx);
             }
             // A skill chip / "Open SKILL.md" affordance: the source file in
             // the workspace file tab — same open path, pinned. The path may
@@ -555,6 +570,35 @@ impl Shell {
     /// The Turn review companion (ADR-0024 ticket 04): ONE review surface,
     /// focused when alive and recreated when closed, then aimed at the
     /// Turn's file — a new selection replaces the active view.
+    pub(super) fn restore_turn_changes(
+        &mut self,
+        chat_id: String,
+        message_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                "The engine is not connected.".into(),
+                cx,
+            );
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let (message, clean) =
+                crate::turn_review::restore_call(engine, chat_id, message_id, None).await;
+            let kind = if clean {
+                HoltNoticeKind::Success
+            } else {
+                HoltNoticeKind::Warning
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.push_holt_notice(kind, message.into(), cx)
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn open_turn_review(
         &mut self,
         chat_id: String,

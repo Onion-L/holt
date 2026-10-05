@@ -270,6 +270,48 @@ impl EngineService {
         }
     }
 
+    // Turn restore: plain file I/O over a settled Turn's persisted record
+    // (turn_restore). Refused while the chat runs a Turn — a live agent
+    // writes the same tree.
+    pub(super) async fn restore_turn_changes(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let request: RestoreTurnChangesRequest = holt_rpc::parse_params(params)?;
+        if let Some(chat) = self.runtime.loaded_chat(&request.chat_id) {
+            let idle = chat
+                .queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .idle();
+            if !idle
+                || chat
+                    .driver_running
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(RpcError::Failed(
+                    "a Turn is running in this chat; restore after it settles".into(),
+                ));
+            }
+        }
+        let Some(record) =
+            crate::turn_change_store::load(&self.data_dir, &request.chat_id, &request.message_id)
+        else {
+            return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+        };
+        let root = self.turn_change_root(&request.chat_id)?;
+        let workdir = self.git.workdir(&root).await.map_err(RpcError::Failed)?;
+        let data_dir = self.data_dir.clone();
+        let reply = tokio::task::spawn_blocking(move || {
+            let later = crate::turn_change_store::list(&data_dir, &request.chat_id);
+            crate::turn_restore::restore(&workdir, &record, &later, &request.paths, request.dry_run)
+        })
+        .await
+        .map_err(|error| RpcError::Failed(format!("restore task failed: {error}")))?
+        .map_err(RpcError::Failed)?;
+        RpcReply::value(&reply)
+    }
+
     pub(super) async fn watch_turn_change_set(
         &self,
         params: serde_json::Value,
@@ -332,6 +374,17 @@ impl EngineService {
         .map_err(RpcError::Failed)?;
         RpcReply::value(&serde_json::json!({}))
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreTurnChangesRequest {
+    chat_id: String,
+    message_id: String,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 /// The explicit non-Git answer `GetTurnChangeSet`/`WatchTurnChangeSet`

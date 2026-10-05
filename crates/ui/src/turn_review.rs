@@ -2,8 +2,9 @@
 //! read-only per-file unified diff over one Turn's change set. The data is
 //! `GetCheckoutFileDiffText` in `turn` mode addressed by the Turn's message
 //! id — a settled Turn serves its immutable persisted before/after pair, the
-//! live current Turn reads the working tree against its baseline. Deliberately
-//! no accept/undo/stage/commit: the review reads, nothing more.
+//! live current Turn reads the working tree against its baseline. The one
+//! write is Restore (`RestoreTurnChanges`): confirmed inline, then file I/O
+//! in the engine; no accept/stage/commit.
 
 use gpui::{AnyElement, Context, Render, SharedString, div, prelude::*, px};
 use holt_proto::{TurnFileChange, TurnFileChangeStatus};
@@ -43,7 +44,18 @@ enum ReviewLoad {
     },
 }
 
-/// One Turn's read-only review surface. A single companion per shell: a new
+/// The restore flow: confirm dialog, then an inline running/result line.
+enum RestoreUi {
+    Idle,
+    /// `None` restores the whole change set.
+    Confirm {
+        path: Option<String>,
+    },
+    Running,
+    Done(SharedString),
+}
+
+/// One Turn's review surface. A single companion per shell: a new
 /// file selection RE-aims this entity (replacing the active view), never
 /// stacks tabs. The file list is captured at aim time from the change set —
 /// final sets are frozen in the store, so only a live Turn's review can go
@@ -56,6 +68,7 @@ pub struct TurnReview {
     /// index; this is the review's stable one.
     files: Vec<TurnFileChange>,
     load: ReviewLoad,
+    restore: RestoreUi,
     /// Memoized scroll-content width of the loaded body (the text system is
     /// window-scoped, so measuring happens lazily at render); cleared per aim.
     content_width: Option<gpui::Pixels>,
@@ -72,6 +85,7 @@ impl TurnReview {
             message_id: String::new(),
             files: Vec::new(),
             load: ReviewLoad::Idle,
+            restore: RestoreUi::Idle,
             content_width: None,
             generation: 0,
             fetch: None,
@@ -90,6 +104,7 @@ impl TurnReview {
     ) {
         self.chat_id = chat_id.to_string();
         self.message_id = message_id.to_string();
+        self.restore = RestoreUi::Idle;
         self.files = self
             .state
             .read(cx)
@@ -218,6 +233,39 @@ impl TurnReview {
         cx.notify();
     }
 
+    /// Ask to restore one file (`Some`) or the whole set (`None`); nothing is
+    /// written until the user confirms.
+    pub(crate) fn request_restore(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        if !matches!(self.restore, RestoreUi::Running) {
+            self.restore = RestoreUi::Confirm { path };
+            cx.notify();
+        }
+    }
+
+    fn run_restore(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.restore = RestoreUi::Done("The engine is not connected.".into());
+            cx.notify();
+            return;
+        };
+        self.restore = RestoreUi::Running;
+        cx.notify();
+        let (chat_id, message_id) = (self.chat_id.clone(), self.message_id.clone());
+        cx.spawn(async move |this, cx| {
+            let (message, _) = restore_call(engine, chat_id, message_id, path).await;
+            let _ = this.update(cx, |this, cx| {
+                // Only a still-Running flow owns the reply: a re-aim resets
+                // the state mid-flight, and a late Done must not stomp the
+                // fresh one (the fetch path's generation rule, restated).
+                if matches!(this.restore, RestoreUi::Running) {
+                    this.restore = RestoreUi::Done(message.into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Retry the failed read (the image-viewer idiom): a failed review is a
     /// failed fetch, and the fix is the same fetch again.
     pub(crate) fn retry(&mut self, cx: &mut Context<Self>) {
@@ -248,6 +296,164 @@ impl TurnReview {
         };
         SharedString::from(path.clone())
     }
+}
+
+/// Run `RestoreTurnChanges` for one file (`Some`) or the whole set and
+/// phrase the outcome; the flag is true when nothing was refused or failed.
+pub(crate) async fn restore_call(
+    engine: crate::state::EngineHandle,
+    chat_id: String,
+    message_id: String,
+    path: Option<String>,
+) -> (String, bool) {
+    let params = serde_json::json!({
+        "chatId": chat_id,
+        "messageId": message_id,
+        "paths": path.into_iter().collect::<Vec<_>>(),
+    });
+    let reply = engine
+        .client()
+        .call(holt_rpc::methods::RESTORE_TURN_CHANGES, params)
+        .await;
+    match reply {
+        Err(error) => (format!("Restore failed: {error}"), false),
+        Ok(value) => match serde_json::from_value::<holt_proto::TurnRestoreReply>(value) {
+            Ok(reply) => {
+                let clean = reply.files.iter().all(|file| {
+                    !matches!(file.outcome, holt_proto::TurnRestoreOutcome::Refused { .. })
+                });
+                (restore_summary(&reply), clean)
+            }
+            Err(_) => ("Restore failed: malformed reply".to_string(), false),
+        },
+    }
+}
+
+/// The confirm dialog's title and body for restoring `path` (or, with
+/// `None`, every file of `files`).
+pub(crate) fn restore_question(
+    files: &[TurnFileChange],
+    path: Option<&str>,
+) -> (&'static str, String) {
+    match path {
+        // A rename restores to the OLD path and removes the current one —
+        // say so before the write.
+        Some(path) => {
+            let old = files
+                .iter()
+                .find(|file| file.path == path)
+                .and_then(|file| file.old_path.clone());
+            match old {
+                Some(old) => (
+                    "Restore file?",
+                    format!(
+                        "Move {path} back to {old} with its pre-Turn content? The file at {path} will be removed."
+                    ),
+                ),
+                None => (
+                    "Restore file?",
+                    format!("{path} will be restored to its content before this Turn."),
+                ),
+            }
+        }
+        None => (
+            "Restore all files?",
+            format!(
+                "{} file{} will be restored to their content before this Turn.{}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" },
+                if files.iter().any(|file| file.old_path.is_some()) {
+                    " Moved files return to their pre-Turn paths."
+                } else {
+                    ""
+                }
+            ),
+        ),
+    }
+}
+
+/// The restore confirm modal, shared by the Turn card (hosted by the shell)
+/// and the review pane. The caller wires cancel (scrim click and button) and
+/// confirm.
+pub(crate) fn restore_dialog(
+    theme: &Theme,
+    viewport: gpui::Size<gpui::Pixels>,
+    title: &str,
+    question: String,
+    cancel_out: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    cancel: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    confirm: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let card = crate::popover::dialog_card(theme)
+        .on_mouse_down_out(cancel_out)
+        .child(crate::popover::dialog_title(theme, title))
+        .child(
+            div()
+                .mt(px(6.0))
+                .child(crate::popover::dialog_body(theme, question)),
+        )
+        .child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    crate::popover::btn_ghost(theme, "Cancel", "turn-review-restore-cancel")
+                        .id("turn-review-restore-cancel")
+                        .debug_selector(|| "turn-review-restore-cancel".to_string())
+                        .on_click(cancel),
+                )
+                .child(
+                    crate::popover::btn_primary(theme, "Restore")
+                        .id("turn-review-restore-confirm")
+                        .debug_selector(|| "turn-review-restore-confirm".to_string())
+                        .on_click(confirm),
+                ),
+        )
+        .into_any_element();
+    crate::popover::modal("turn-review-restore-dialog", viewport, card)
+}
+
+fn refusal_text(reason: &holt_proto::TurnRestoreRefusal) -> String {
+    use holt_proto::TurnRestoreRefusal::*;
+    match reason {
+        Conflict => "changed since the Turn".into(),
+        LaterTurn => "changed by a later Turn".into(),
+        Truncated => "stored content is truncated".into(),
+        Binary => "binary file".into(),
+        LossyText => "not valid UTF-8".into(),
+        UnsafePath => "path outside the working tree".into(),
+        Io { message } => message.clone(),
+    }
+}
+
+fn restore_summary(reply: &holt_proto::TurnRestoreReply) -> String {
+    use holt_proto::TurnRestoreOutcome::*;
+    let restored = reply
+        .files
+        .iter()
+        .filter(|file| file.outcome == Restored)
+        .count();
+    let already = reply
+        .files
+        .iter()
+        .filter(|file| file.outcome == AlreadyRestored)
+        .count();
+    let mut text = format!(
+        "Restored {restored} file{}.",
+        if restored == 1 { "" } else { "s" }
+    );
+    if already > 0 {
+        text.push_str(&format!(" {already} already restored."));
+    }
+    for file in &reply.files {
+        if let Refused { reason } = &file.outcome {
+            text.push_str(&format!(" {}: {}.", file.path, refusal_text(reason)));
+        }
+    }
+    text
 }
 
 /// The scroll content's minimum width: row chrome plus the widest rendered
@@ -315,6 +521,12 @@ impl Render for TurnReview {
         } else {
             None
         };
+        let can_restore = self
+            .state
+            .read(cx)
+            .turn_change_sets
+            .get(&self.message_id)
+            .is_some_and(|set| set.phase == holt_proto::TurnChangeSetPhase::Final);
         let body = match &self.load {
             ReviewLoad::Idle => {
                 centered_note("Nothing to review — the Turn changed no files.", &theme)
@@ -442,6 +654,25 @@ impl Render for TurnReview {
                                     .text_color(theme.text_faint)
                                     .child("content truncated"),
                             )
+                        })
+                        .when(can_restore && !*truncated, |el| {
+                            let restore_path = file.path.clone();
+                            el.child(
+                                div()
+                                    .id("turn-review-restore-file")
+                                    .debug_selector(|| "turn-review-restore-file".into())
+                                    .flex_none()
+                                    .px(px(7.0))
+                                    .rounded(px(5.0))
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_muted)
+                                    .cursor_pointer()
+                                    .hover(|el| el.bg(crate::theme::wash(0.06)))
+                                    .child("Restore")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.request_restore(Some(restore_path.clone()), cx);
+                                    })),
+                            )
                         }),
                 )
                 .child(
@@ -464,7 +695,52 @@ impl Render for TurnReview {
                 )
                 .into_any_element(),
         };
-        div().size_full().flex().flex_col().child(body)
+        let bar = match &self.restore {
+            RestoreUi::Idle => None,
+            RestoreUi::Running => Some(div().child("Restoring…")),
+            RestoreUi::Done(message) => Some(div().child(message.clone())),
+            RestoreUi::Confirm { .. } => None,
+        };
+        let dialog = match &self.restore {
+            RestoreUi::Confirm { path } => {
+                let (title, question) = restore_question(&self.files, path.as_deref());
+                let path = path.clone();
+                Some(restore_dialog(
+                    &theme,
+                    window.viewport_size(),
+                    title,
+                    question,
+                    cx.listener(|this, _, _, cx| {
+                        this.restore = RestoreUi::Idle;
+                        cx.notify();
+                    }),
+                    cx.listener(|this, _, _, cx| {
+                        this.restore = RestoreUi::Idle;
+                        cx.notify();
+                    }),
+                    cx.listener(move |this, _, _, cx| this.run_restore(path.clone(), cx)),
+                ))
+            }
+            _ => None,
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .when_some(bar, |el, bar| {
+                el.child(
+                    bar.flex_none()
+                        .w_full()
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.5))
+                        .text_color(theme.text_dim),
+                )
+            })
+            .child(div().flex_1().min_h_0().w_full().child(body))
+            .children(dialog)
     }
 }
 

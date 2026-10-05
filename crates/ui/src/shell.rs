@@ -720,6 +720,8 @@ pub struct Shell {
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    /// The Turn card's pending restore: `(chat_id, message_id)`.
+    restore_confirm: Option<(String, String)>,
     /// Chat id awaiting archive confirmation.
     archive_confirm: Option<String>,
     /// Space-row context menu (dropdown rows): (space id, window position).
@@ -1090,6 +1092,7 @@ impl Shell {
             chat_copy_task: None,
             rename_dialog: None,
             delete_confirm: None,
+            restore_confirm: None,
             archive_confirm: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
@@ -2277,6 +2280,39 @@ impl Shell {
         overlays.extend(self.render_file_menu_overlay(viewport, window, cx));
         if let Some(overlay) = self.render_file_lookup_overlay(viewport, window, cx) {
             overlays.push(overlay);
+        }
+
+        if let Some((chat_id, message_id)) = self.restore_confirm.clone() {
+            match self
+                .state
+                .read(cx)
+                .turn_change_sets
+                .get(&message_id)
+                .map(|set| set.files.clone())
+            {
+                Some(files) => {
+                    let (title, question) = crate::turn_review::restore_question(&files, None);
+                    overlays.push(crate::turn_review::restore_dialog(
+                        &theme,
+                        viewport,
+                        title,
+                        question,
+                        cx.listener(|this, _, _, cx| {
+                            this.restore_confirm = None;
+                            cx.notify();
+                        }),
+                        cx.listener(|this, _, _, cx| {
+                            this.restore_confirm = None;
+                            cx.notify();
+                        }),
+                        cx.listener(move |this, _, _, cx| {
+                            this.restore_confirm = None;
+                            this.restore_turn_changes(chat_id.clone(), message_id.clone(), cx);
+                        }),
+                    ));
+                }
+                None => self.restore_confirm = None,
+            }
         }
 
         if let Some(chat_id) = self.delete_confirm.clone() {

@@ -34,5 +34,5 @@ replacement reports its own set only.
 
 The engine owns the baseline and durable change record. The UI renders a
 change card on the Turn, opens a read-only per-file review in the right
-sidebar, and opens the post-Turn file for the Open action. Accept, undo, and
-non-Git snapshot support remain future work.
+sidebar, and opens the post-Turn file for the Open action. Accept and
+non-Git snapshot support remain future work; undo is ADR-0041.

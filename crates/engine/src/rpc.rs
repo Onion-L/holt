@@ -349,6 +349,7 @@ impl RpcService for EngineService {
 
             methods::GET_TURN_CHANGE_SET => self.get_turn_change_set(params).await,
             methods::WATCH_TURN_CHANGE_SET => self.watch_turn_change_set(params).await,
+            methods::RESTORE_TURN_CHANGES => self.restore_turn_changes(params).await,
 
             methods::LIST_GIT_HISTORY => self.list_git_history(params).await,
             methods::FETCH_ALL => self.fetch_all(params).await,

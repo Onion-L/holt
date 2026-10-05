@@ -63,6 +63,7 @@ mod turn_change_store;
 mod turn_change_watch;
 mod turn_changes;
 mod turn_events;
+mod turn_restore;
 mod update;
 mod usage;
 mod usage_stats;

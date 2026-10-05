@@ -1016,6 +1016,59 @@ pub enum TurnChangeSetReply {
     Captured(TurnChangeSet),
 }
 
+/// Why one file of a Turn restore was left untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnRestoreRefusal {
+    /// The file changed after the Turn settled; the restore would clobber it.
+    Conflict,
+    /// A later settled Turn also changed the file, and the file moved on.
+    LaterTurn,
+    /// The stored side is incomplete (over the per-side cap).
+    Truncated,
+    /// Binary files keep hashes only; there is no text to write back.
+    Binary,
+    /// The stored text is not a byte-exact copy (non-UTF-8 source).
+    LossyText,
+    /// The path leaves the working tree or points into `.git`.
+    UnsafePath,
+    /// The write itself failed.
+    Io { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum TurnRestoreOutcome {
+    Restored,
+    AlreadyRestored,
+    Refused { reason: TurnRestoreRefusal },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRestoreFile {
+    pub path: String,
+    #[serde(flatten)]
+    pub outcome: TurnRestoreOutcome,
+}
+
+/// Paths of the requested restore that a later settled Turn also changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRestoreOverlap {
+    pub message_id: String,
+    pub paths: Vec<String>,
+}
+
+/// `RestoreTurnChanges` reply. With `dryRun` the outcomes are what a real
+/// call would report and nothing was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRestoreReply {
+    pub files: Vec<TurnRestoreFile>,
+    pub overlaps: Vec<TurnRestoreOverlap>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {

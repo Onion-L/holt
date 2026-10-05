@@ -526,6 +526,20 @@ impl Git {
         .await
     }
 
+    /// The work tree root of the repository containing `repo_path` — the
+    /// base that a Turn record's repo-relative paths resolve against.
+    pub(crate) async fn workdir(&self, repo_path: &str) -> Result<PathBuf, String> {
+        let path = repo_path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let repo = Repository::discover(&path).map_err(git_message)?;
+            repo.workdir()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "the repository has no work tree".to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
     /// Whether `repo_path` resolves to a Git work tree. The change set's
     /// non-Git answer keys on this, never on a capture error.
     pub(crate) async fn is_work_tree(&self, repo_path: &str) -> bool {
@@ -1069,6 +1083,13 @@ pub(crate) fn diff_checksum(head_sha: &str, mode: &str, base_ref: &str, patch: &
     hasher.update(mode.as_bytes());
     hasher.update(base_ref.as_bytes());
     hasher.update(patch.as_bytes());
+    hex(&hasher.finalize())
+}
+
+/// Hex SHA-256 of raw bytes — the Turn records' content-hash formula.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
     hex(&hasher.finalize())
 }
 

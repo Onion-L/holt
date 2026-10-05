@@ -463,8 +463,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `messageId` (a settled Turn therefore reviews its immutable stored pair,
   a live one the working tree), while Open opens the post-Turn file in the
   Space's pinned file tab. A deleted file stays reviewable but offers no
-  Open, and nothing in the surface writes: no accept, undo, discard, stage,
-  or commit.
+  Open. The one write is Restore (ADR-0041, `RestoreTurnChanges`): the
+  card's whole-set and the review's per-file buttons confirm inline, then the
+  engine writes each file's stored `old_text` back (or deletes an added file)
+  by plain file I/O under the repository work tree — no Git — and only while
+  the file's current hash still equals the record's `newContentHash`. Truncated,
+  binary, non-UTF-8, symlinked, and `.git` paths are refused, as is a chat with
+  a running Turn; later settled Turns touching the same paths are reported as
+  overlaps. Records stay immutable; no accept, stage, or commit.
 - Capability surfaces the UI keeps rendered but the local backend leaves empty:
   worktree lifecycle RPCs (`CreateWorktree` / `DeleteWorktree` — the
   run-carried `WorktreeSpec` IS served: a chat's persisted isolation intent

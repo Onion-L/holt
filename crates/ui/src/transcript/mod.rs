@@ -393,6 +393,9 @@ pub enum TranscriptEvent {
         message_id: String,
         path: Option<String>,
     },
+    /// A Turn change card's Restore affordance: open the review and ask to
+    /// restore the whole change set (it confirms there before writing).
+    RestoreTurnChanges { chat_id: String, message_id: String },
     /// A Turn change card row's Open affordance: the post-Turn file in the
     /// workspace file tab — the path is the change set's repo-relative one.
     /// Deleted files never emit this (the file is gone).

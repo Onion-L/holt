@@ -429,6 +429,12 @@ pub mod methods {
     /// Turns until the UI drops it. A non-Git root streams a single
     /// `unsupported` frame and ends.
     pub const WATCH_TURN_CHANGE_SET: &str = "WatchTurnChangeSet";
+    /// Restore a settled Turn's files to their pre-Turn content (plain file
+    /// I/O over the persisted record, no Git). Params `{chatId, messageId,
+    /// paths?, dryRun?}` — empty `paths` means the whole set; replies
+    /// `holt_proto::TurnRestoreReply`. A file is written only while its
+    /// current content still hashes to the record's `newContentHash`.
+    pub const RESTORE_TURN_CHANGES: &str = "RestoreTurnChanges";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
