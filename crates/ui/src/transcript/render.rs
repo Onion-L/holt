@@ -678,18 +678,12 @@ impl Transcript {
             .px(px(8.0))
             .flex()
             .items_center()
-            .gap(px(5.0))
             .rounded(px(7.0))
             .text_size(crate::typography::ui_rems(12.5))
             .text_color(theme.text_muted)
             .cursor_pointer()
             .hover(|el| el.bg(crate::theme::wash(0.06)))
             .child("Undo")
-            .child(
-                crate::icons::icon(crate::icons::RESTART)
-                    .size(px(12.0))
-                    .text_color(theme.text_muted),
-            )
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.stop_propagation();
                 cx.emit(super::TranscriptEvent::RestoreTurnChanges {
