@@ -59,6 +59,7 @@ mod right_pane;
 mod spaces;
 mod tabs;
 mod titlebar;
+mod update;
 
 pub use chat_list::*;
 use chat_menu::ChatMenuState;
@@ -722,6 +723,8 @@ pub struct Shell {
     delete_confirm: Option<String>,
     /// The Turn card's pending restore: `(chat_id, message_id)`.
     restore_confirm: Option<(String, String)>,
+    /// The app-update dialog is open (download confirm / progress / restart).
+    update_dialog: bool,
     /// Chat id awaiting archive confirmation.
     archive_confirm: Option<String>,
     /// Space-row context menu (dropdown rows): (space id, window position).
@@ -1093,6 +1096,7 @@ impl Shell {
             rename_dialog: None,
             delete_confirm: None,
             restore_confirm: None,
+            update_dialog: false,
             archive_confirm: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
@@ -2313,6 +2317,10 @@ impl Shell {
                 }
                 None => self.restore_confirm = None,
             }
+        }
+
+        if let Some(dialog) = self.render_update_dialog(&theme, viewport, cx) {
+            overlays.push(dialog);
         }
 
         if let Some(chat_id) = self.delete_confirm.clone() {

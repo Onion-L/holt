@@ -486,7 +486,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   the latest GitHub release when it is newer and ships this arch's DMG
   (checked only when running from an `.app` bundle); `ApplyUpdate`
   downloads it, verifies the bundle's Developer ID signature, and swaps it
-  in place of the running bundle. The UI relaunches on success.
+  in place of the running bundle, streaming `phase` and byte progress on
+  `UpdateStatus`. `CancelUpdate` aborts the download (not the install).
+  The UI relaunches when the user picks Restart on a `Ready` status.
 
 Reply shapes are serialized camelCase; the UI parses tolerantly and skips
 methods that error with `UnknownMethod`.

@@ -200,6 +200,10 @@ impl RpcService for EngineService {
                 self.updater.apply().await.map_err(RpcError::Failed)?;
                 RpcReply::value(&serde_json::json!({}))
             }
+            methods::CANCEL_UPDATE => {
+                self.updater.cancel();
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LOCAL_DEVICE => RpcReply::value(&serde_json::json!({

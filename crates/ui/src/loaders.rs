@@ -207,53 +207,27 @@ const RING_SEGMENTS: f32 = 64.0;
 /// Radial upload-progress ring with the percent centered — overlaid on a
 /// sending echo's attachment thumbnail while its bytes cross the relay
 /// (2026-08-18 "Sending… forever" report; the thumbnail is where the wait
-/// visibly belongs). A faint full track plus a bright arc growing clockwise
-/// from 12 o'clock; gpui paths have no arc primitive, so both are stroked
-/// polylines. Fixed white-on-wash palette: the caller dims the image behind
-/// it, which reads in both themes.
+/// visibly belongs). Fixed white-on-wash palette: the caller dims the image
+/// behind it, which reads in both themes.
 pub fn upload_progress_ring(percent: u8, diameter: f32) -> AnyElement {
     let frac = f32::from(percent.min(100)) / 100.0;
-    let ring = canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let center = bounds.center();
-            let radius = diameter / 2.0 - RING_STROKE;
-            let mut paint_arc = |sweep: f32, color: gpui::Hsla| {
-                if sweep <= 0.0 {
-                    return;
-                }
-                let steps = ((RING_SEGMENTS * sweep).ceil() as usize).max(2);
-                let at = |i: usize| {
-                    // Clockwise from 12 o'clock.
-                    let theta = -std::f32::consts::FRAC_PI_2
-                        + std::f32::consts::TAU * sweep * (i as f32 / steps as f32);
-                    point(
-                        center.x + px(radius * theta.cos()),
-                        center.y + px(radius * theta.sin()),
-                    )
-                };
-                let mut builder = PathBuilder::stroke(px(RING_STROKE));
-                builder.move_to(at(0));
-                for i in 1..=steps {
-                    builder.line_to(at(i));
-                }
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, color);
-                }
-            };
-            paint_arc(1.0, gpui::hsla(0.0, 0.0, 1.0, 0.22));
-            paint_arc(frac, gpui::hsla(0.0, 0.0, 1.0, 0.95));
-        },
-    )
-    .absolute()
-    .inset_0();
     div()
         .relative()
         .size(px(diameter))
         .flex()
         .items_center()
         .justify_center()
-        .child(ring)
+        .child(
+            progress_ring(
+                frac,
+                diameter,
+                RING_STROKE,
+                gpui::hsla(0.0, 0.0, 1.0, 0.22),
+                gpui::hsla(0.0, 0.0, 1.0, 0.95),
+            )
+            .absolute()
+            .inset_0(),
+        )
         .child(
             div()
                 .text_size(px(9.0))
@@ -262,6 +236,51 @@ pub fn upload_progress_ring(percent: u8, diameter: f32) -> AnyElement {
                 .child(SharedString::from(format!("{percent}%"))),
         )
         .into_any_element()
+}
+
+/// A bare progress ring sized to its bounds: a full `track` circle plus a
+/// `fill` arc of `frac` growing clockwise from 12 o'clock. gpui paths have no
+/// arc primitive, so both are stroked polylines.
+pub fn progress_ring(
+    frac: f32,
+    diameter: f32,
+    stroke: f32,
+    track: gpui::Hsla,
+    fill: gpui::Hsla,
+) -> gpui::Canvas<()> {
+    let frac = frac.clamp(0.0, 1.0);
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let center = bounds.center();
+            let radius = diameter / 2.0 - stroke;
+            let mut paint_arc = |sweep: f32, color: gpui::Hsla| {
+                if sweep <= 0.0 {
+                    return;
+                }
+                let steps = ((RING_SEGMENTS * sweep).ceil() as usize).max(2);
+                let at = |i: usize| {
+                    let theta = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::TAU * sweep * (i as f32 / steps as f32);
+                    point(
+                        center.x + px(radius * theta.cos()),
+                        center.y + px(radius * theta.sin()),
+                    )
+                };
+                let mut builder = PathBuilder::stroke(px(stroke));
+                builder.move_to(at(0));
+                for i in 1..=steps {
+                    builder.line_to(at(i));
+                }
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
+            };
+            paint_arc(1.0, track);
+            paint_arc(frac, fill);
+        },
+    )
+    .size(px(diameter))
 }
 
 // Compile-time proof the specs referenced here stay wired to the catalog.

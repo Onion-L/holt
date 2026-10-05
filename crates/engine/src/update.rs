@@ -1,22 +1,29 @@
 //! App self-update behind `UpdateStatus` / `ApplyUpdate`: polls the latest
 //! GitHub release, and on apply downloads this arch's DMG, verifies the
 //! bundle's signature against the release team, and swaps it in place of
-//! the running `.app`. Restarting onto the new bundle is the UI's job.
-//! A binary not running from an `.app` bundle (`cargo run`) never checks.
+//! the running `.app`. The download streams progress on the status and can
+//! be cancelled until the install starts; restarting onto the new bundle is
+//! the UI's job. A binary not running from an `.app` bundle (`cargo run`)
+//! never checks — debug builds can fake a release with `HOLT_FAKE_UPDATE`.
 
 use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use holt_proto::UpdateStatus;
+use futures::StreamExt;
+use holt_proto::{UpdatePhase, UpdateStatus};
 use serde::Deserialize;
-use tokio::sync::watch;
+use tokio::{io::AsyncWriteExt, sync::watch};
+use tokio_util::sync::CancellationToken;
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Onion-L/holt/releases/latest";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Minimum gap between download-progress frames.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const CANCELLED: &str = "update cancelled";
 /// Designated requirement every release bundle must satisfy (the Developer
 /// ID team `scripts/build-dmg.sh` signs with).
 const CODE_REQUIREMENT: &str =
@@ -39,6 +46,8 @@ struct Inner {
     /// Download URL of `status.available`'s DMG.
     asset_url: Option<String>,
     checking: bool,
+    /// Aborts the running download; `None` outside `Downloading`.
+    cancel: Option<CancellationToken>,
 }
 
 #[derive(Deserialize)]
@@ -77,17 +86,31 @@ impl Updater {
             let mut inner = self.lock();
             !std::mem::replace(&mut inner.checking, true)
         };
-        if start && bundle_path().is_some() {
+        if start && fake_update() {
+            {
+                let mut inner = self.lock();
+                inner.status.available = Some("99.0.0".into());
+                inner.asset_url = Some(String::new());
+            }
+            self.publish();
+        } else if start && bundle_path().is_some() {
             tokio::spawn(check_loop(Arc::downgrade(self)));
         }
         self.tx.subscribe()
     }
 
+    /// Download and install the available release. Returns once the new
+    /// bundle is in place (`Ready`), or `Ok` on a cancel.
     pub(crate) async fn apply(&self) -> Result<(), String> {
-        let bundle = bundle_path().ok_or("Holt is not running from an app bundle")?;
+        let bundle = if fake_update() {
+            None
+        } else {
+            Some(bundle_path().ok_or("Holt is not running from an app bundle")?)
+        };
+        let token = CancellationToken::new();
         let (version, url) = {
             let mut inner = self.lock();
-            if inner.status.applying {
+            if inner.status.phase != UpdatePhase::Idle {
                 return Err("an update is already in progress".into());
             }
             let (Some(version), Some(url)) =
@@ -95,16 +118,151 @@ impl Updater {
             else {
                 return Err("no update available".into());
             };
-            inner.status.applying = true;
+            inner.status.phase = UpdatePhase::Downloading;
+            inner.status.downloaded = 0;
+            inner.status.total = None;
+            inner.status.error = None;
+            inner.cancel = Some(token.clone());
             (version, url)
         };
         self.publish();
-        let result = install(&version, &url, bundle).await;
-        if result.is_err() {
-            self.lock().status.applying = false;
-            self.publish();
+        let result = match bundle {
+            Some(bundle) => self.install(&version, &url, bundle, &token).await,
+            None => self.fake_install(&token).await,
+        };
+        let cancelled = token.is_cancelled() && result.is_err();
+        {
+            let mut inner = self.lock();
+            inner.cancel = None;
+            match &result {
+                Ok(()) => inner.status.phase = UpdatePhase::Ready,
+                Err(error) => {
+                    inner.status.phase = UpdatePhase::Idle;
+                    inner.status.downloaded = 0;
+                    inner.status.total = None;
+                    inner.status.error = (!cancelled).then(|| error.clone());
+                }
+            }
         }
-        result
+        self.publish();
+        if cancelled { Ok(()) } else { result }
+    }
+
+    /// Abort a download in flight; a no-op once the install has started.
+    pub(crate) fn cancel(&self) {
+        if let Some(token) = &self.lock().cancel {
+            token.cancel();
+        }
+    }
+
+    async fn install(
+        &self,
+        version: &str,
+        url: &str,
+        bundle: PathBuf,
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        let work = std::env::temp_dir().join(format!("holt-update-{version}"));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        let dmg = work.join("Holt.dmg");
+        let downloaded = async {
+            self.download(url, &dmg, token).await?;
+            self.begin_install(token)
+        }
+        .await;
+        if let Err(error) = downloaded {
+            let _ = std::fs::remove_dir_all(&work);
+            return Err(error);
+        }
+        tokio::task::spawn_blocking(move || swap_from_dmg(&dmg, &work, &bundle))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    async fn download(
+        &self,
+        url: &str,
+        dmg: &Path,
+        token: &CancellationToken,
+    ) -> Result<(), String> {
+        let failed = |e: reqwest::Error| format!("download failed: {e}");
+        let response = client()?
+            .get(url)
+            .timeout(Duration::from_secs(15 * 60))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(failed)?;
+        let total = response.content_length();
+        self.set_progress(0, total);
+        let mut file = tokio::fs::File::create(dmg)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut stream = response.bytes_stream();
+        let mut downloaded = 0;
+        let mut published = Instant::now();
+        loop {
+            let chunk = tokio::select! {
+                _ = token.cancelled() => return Err(CANCELLED.into()),
+                chunk = stream.next() => chunk,
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            let chunk = chunk.map_err(failed)?;
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            downloaded += chunk.len() as u64;
+            if published.elapsed() >= PROGRESS_INTERVAL {
+                published = Instant::now();
+                self.set_progress(downloaded, total);
+            }
+        }
+        file.flush().await.map_err(|e| e.to_string())?;
+        self.set_progress(downloaded, total);
+        Ok(())
+    }
+
+    /// `HOLT_FAKE_UPDATE`'s stand-in for [`Self::install`]: ticks a 48 MB
+    /// download over ~6 s, then "installs" without touching the bundle.
+    async fn fake_install(&self, token: &CancellationToken) -> Result<(), String> {
+        const TOTAL: u64 = 48 << 20;
+        let mut downloaded = 0;
+        while downloaded < TOTAL {
+            tokio::select! {
+                _ = token.cancelled() => return Err(CANCELLED.into()),
+                _ = tokio::time::sleep(PROGRESS_INTERVAL) => {}
+            }
+            downloaded = (downloaded + TOTAL / 60).min(TOTAL);
+            self.set_progress(downloaded, Some(TOTAL));
+        }
+        self.begin_install(token)?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        Ok(())
+    }
+
+    fn set_progress(&self, downloaded: u64, total: Option<u64>) {
+        {
+            let mut inner = self.lock();
+            inner.status.downloaded = downloaded;
+            inner.status.total = total;
+        }
+        self.publish();
+    }
+
+    /// Leave `Downloading` for `Installing`; past this point a cancel can
+    /// no longer land (the bundle swap must not stop halfway).
+    fn begin_install(&self, token: &CancellationToken) -> Result<(), String> {
+        {
+            let mut inner = self.lock();
+            inner.cancel = None;
+            if token.is_cancelled() {
+                return Err(CANCELLED.into());
+            }
+            inner.status.phase = UpdatePhase::Installing;
+        }
+        self.publish();
+        Ok(())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -131,7 +289,8 @@ async fn check_loop(updater: Weak<Updater>) {
                 let changed = {
                     let mut inner = updater.lock();
                     let available = (newer && asset.is_some()).then_some(version);
-                    let changed = !inner.status.applying && inner.status.available != available;
+                    let changed = inner.status.phase == UpdatePhase::Idle
+                        && inner.status.available != available;
                     if changed {
                         inner.status.available = available;
                         inner.asset_url = asset.map(|a| a.browser_download_url);
@@ -187,32 +346,17 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     parts(candidate) > parts(current)
 }
 
+/// Debug builds only: `HOLT_FAKE_UPDATE` offers a fake release, so the
+/// update flow can be exercised from `cargo run`.
+fn fake_update() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("HOLT_FAKE_UPDATE").is_some()
+}
+
 /// `…/Holt.app` when the running binary sits at `Holt.app/Contents/MacOS/`.
 fn bundle_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let bundle = exe.parent()?.parent()?.parent()?;
     (bundle.extension()? == "app").then(|| bundle.to_path_buf())
-}
-
-async fn install(version: &str, url: &str, bundle: PathBuf) -> Result<(), String> {
-    let work = std::env::temp_dir().join(format!("holt-update-{version}"));
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let dmg = work.join("Holt.dmg");
-    let bytes = client()?
-        .get(url)
-        .timeout(Duration::from_secs(15 * 60))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("download failed: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("download failed: {e}"))?;
-    std::fs::write(&dmg, &bytes).map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || swap_from_dmg(&dmg, &work, &bundle))
-        .await
-        .map_err(|e| e.to_string())?
 }
 
 fn swap_from_dmg(dmg: &Path, work: &Path, bundle: &Path) -> Result<(), String> {

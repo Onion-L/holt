@@ -1129,10 +1129,32 @@ pub struct UpdateStatus {
     pub current_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available: Option<String>,
-    /// An `ApplyUpdate` is downloading/installing; stays set after success
-    /// until the process restarts onto the new bundle.
+    /// Where an `ApplyUpdate` stands; `Ready` holds until the process
+    /// restarts onto the new bundle.
     #[serde(default)]
-    pub applying: bool,
+    pub phase: UpdatePhase,
+    /// Bytes of the release DMG downloaded so far (`Downloading` only).
+    #[serde(default)]
+    pub downloaded: u64,
+    /// The DMG's size when the server reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// Why the last apply failed; cleared by the next one. A cancelled
+    /// download is not a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `Idle → Downloading → Installing → Ready`. Only `Downloading` can be
+/// cancelled (`CancelUpdate`); a failure or cancel returns to `Idle`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Downloading,
+    Installing,
+    Ready,
 }
 
 /// Live edge-connectivity posture (the `WatchConnectivity` stream): the truth

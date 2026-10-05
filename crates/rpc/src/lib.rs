@@ -460,6 +460,8 @@ pub mod methods {
     /// Download + apply the newest release on the target device (symlink-managed
     /// installs; the service restart is scheduled after the reply flushes).
     pub const APPLY_UPDATE: &str = "ApplyUpdate";
+    /// Abort an `ApplyUpdate` still downloading; a no-op once it installs.
+    pub const CANCEL_UPDATE: &str = "CancelUpdate";
 }
 
 #[derive(Debug, thiserror::Error)]
