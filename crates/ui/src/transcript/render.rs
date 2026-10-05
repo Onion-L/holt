@@ -602,7 +602,7 @@ impl Transcript {
         // CHEVRON pattern) instead of hard-cutting it.
         let chevron = div()
             .flex_none()
-            .text_size(px(10.0))
+            .text_size(crate::typography::ui_rems(10.0))
             .text_color(theme.text_muted.opacity(0.8))
             .child(SharedString::from(if open {
                 "\u{25be}"
@@ -630,7 +630,7 @@ impl Transcript {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_size(px(13.0))
+                    .text_size(crate::typography::ui_rems(13.0))
                     .line_height(px(20.0))
                     .text_color(theme.text_dim)
                     .child(SharedString::from(format!(
@@ -644,7 +644,7 @@ impl Transcript {
                 el.child(
                     div()
                         .flex_none()
-                        .text_size(px(11.0))
+                        .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_faint)
                         .child("diff truncated"),
                 )
@@ -665,7 +665,7 @@ impl Transcript {
                     .flex_none()
                     .px(px(7.0))
                     .rounded(px(5.0))
-                    .text_size(px(11.5))
+                    .text_size(crate::typography::ui_rems(11.5))
                     .text_color(theme.text_muted)
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::wash(0.06)))
@@ -689,7 +689,7 @@ impl Transcript {
                             .flex_none()
                             .px(px(7.0))
                             .rounded(px(5.0))
-                            .text_size(px(11.5))
+                            .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text_muted)
                             .cursor_pointer()
                             .hover(|el| el.bg(crate::theme::wash(0.06)))
@@ -760,7 +760,7 @@ impl Transcript {
                             .flex_none()
                             .px(px(6.0))
                             .rounded(px(4.0))
-                            .text_size(px(11.0))
+                            .text_size(crate::typography::ui_rems(11.0))
                             .text_color(theme.text_faint)
                             .cursor_pointer()
                             .hover(|el| el.bg(crate::theme::wash(0.08)))
@@ -777,15 +777,15 @@ impl Transcript {
 
         let mut card = div()
             .w_full()
+            .max_w(px(720.0))
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(10.0))
+            .rounded(px(12.0))
             .border_1()
-            .border_color(theme.border)
-            .bg(theme.input_glass_bg())
+            .border_color(theme.hairline(0.12))
             .px(px(12.0))
-            .py(px(9.0))
+            .py(px(10.0))
             .child(header);
         if animating {
             // The tween's wrapper-space start is the card's painted height
@@ -3001,7 +3001,7 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
                 .flex_none()
                 .w(px(12.0))
                 .font_family(theme.font_mono.clone())
-                .text_size(px(11.0))
+                .text_size(crate::typography::ui_rems(11.0))
                 .text_color(color)
                 .child(letter),
         )
@@ -3011,7 +3011,7 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
                 .flex_1()
                 .truncate()
                 .font_family(theme.font_mono.clone())
-                .text_size(px(13.0))
+                .text_size(crate::typography::ui_rems(13.0))
                 .text_color(theme.text_dim)
                 .child(SharedString::from(path)),
         )
@@ -3019,7 +3019,7 @@ fn turn_change_file_row(file: &TurnFileChange, theme: &Theme) -> gpui::Div {
             el.child(
                 div()
                     .flex_none()
-                    .text_size(px(11.0))
+                    .text_size(crate::typography::ui_rems(11.0))
                     .text_color(theme.text_faint)
                     .child("BIN"),
             )
@@ -3049,7 +3049,7 @@ fn turn_change_count(count: u32, added: bool, theme: &Theme) -> gpui::Div {
     div()
         .flex_none()
         .font_family(theme.font_mono.clone())
-        .text_size(px(12.0))
+        .text_size(crate::typography::ui_rems(12.0))
         .text_color(if added {
             theme.diff_add
         } else {
