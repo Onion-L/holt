@@ -710,7 +710,8 @@ impl Transcript {
             .flex()
             .flex_row()
             .justify_end()
-            .mt(px(2.0))
+            .mt(px(4.0))
+            .px(px(6.0))
             .child(
                 div()
                     .id("turn-change-restore")
@@ -738,12 +739,14 @@ impl Transcript {
         // (an `mt` here, not a flex gap on the card): a card-level gap would
         // outlive the body's height tween and step when the settled closed
         // state unmounts the wrapper.
+        // Rows carry their own padding so the hover wash clears the text;
+        // the list's negative margin keeps that text on the header's edge.
         let files = div()
-            .w_full()
+            .mx(px(-6.0))
             .mt(px(5.0))
             .flex()
             .flex_col()
-            .gap(px(5.0))
+            .gap(px(1.0))
             .children(change_set.files.iter().map(|file| {
                 let review_chat = chat_id.clone();
                 let review_message = message_id.clone();
@@ -760,7 +763,9 @@ impl Transcript {
                     .flex_row()
                     .items_center()
                     .min_w_0()
-                    .rounded(px(5.0))
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(6.0))
                     .cursor_pointer()
                     .hover(|el| el.bg(crate::theme::wash(0.04)))
                     .on_click(cx.listener(move |_, _, _, cx| {
