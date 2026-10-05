@@ -678,31 +678,36 @@ impl Transcript {
                             path: None,
                         });
                     })),
-            )
-            .when(
-                change_set.phase == holt_proto::TurnChangeSetPhase::Final,
-                |el| {
-                    el.child(
-                        div()
-                            .id("turn-change-restore")
-                            .debug_selector(|| "turn-card-restore".to_string())
-                            .flex_none()
-                            .px(px(7.0))
-                            .rounded(px(5.0))
-                            .text_size(crate::typography::ui_rems(11.5))
-                            .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::wash(0.06)))
-                            .child("Restore")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.stop_propagation();
-                                cx.emit(super::TranscriptEvent::RestoreTurnChanges {
-                                    chat_id: restore_chat.clone(),
-                                    message_id: restore_message.clone(),
-                                });
-                            })),
-                    )
-                },
+            );
+
+        // Restore sits at the foot of the expanded body, away from Review: a
+        // destructive action must not read as a sibling of the main one.
+        let danger = theme.danger;
+        let restore = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .mt(px(2.0))
+            .child(
+                div()
+                    .id("turn-change-restore")
+                    .debug_selector(|| "turn-card-restore".to_string())
+                    .flex_none()
+                    .px(px(7.0))
+                    .py(px(2.0))
+                    .rounded(px(5.0))
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_faint)
+                    .cursor_pointer()
+                    .hover(move |el| el.text_color(danger).bg(crate::theme::wash(0.06)))
+                    .child("Restore all")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(super::TranscriptEvent::RestoreTurnChanges {
+                            chat_id: restore_chat.clone(),
+                            message_id: restore_message.clone(),
+                        });
+                    })),
             );
 
         // The header-to-body spacing rides INSIDE the fold-tweened wrapper
@@ -773,7 +778,11 @@ impl Transcript {
                             })),
                     )
                 }
-            }));
+            }))
+            .when(
+                change_set.phase == holt_proto::TurnChangeSetPhase::Final,
+                |el| el.child(restore),
+            );
 
         let mut card = div()
             .w_full()
