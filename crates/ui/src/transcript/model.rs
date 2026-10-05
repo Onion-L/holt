@@ -327,6 +327,7 @@ pub enum RowKind {
     /// ticket 04.
     TurnChangeCard {
         change_set: Arc<holt_proto::TurnChangeSet>,
+        restore: Option<crate::state::TurnRestoreMark>,
     },
     /// A live provider-retry chip (WatchTurnRetry): the streaming entry's
     /// provider request hit a transient failure and is backing off before
@@ -1247,13 +1248,15 @@ pub fn turn_change_row(
     turn_id: &str,
     entry_id: SharedString,
     change_set: &holt_proto::TurnChangeSet,
+    restore: Option<crate::state::TurnRestoreMark>,
 ) -> Row {
     Row {
         id: SharedString::from(format!("{turn_id}#tcs")),
-        version: turn_change_version(change_set),
+        version: turn_change_version(change_set, restore),
         turn_start: false,
         kind: RowKind::TurnChangeCard {
             change_set: Arc::new(change_set.clone()),
+            restore,
         },
         entry_id,
         timestamp: None,
@@ -1285,9 +1288,13 @@ pub fn retry_chip_row(entry_id: SharedString, notice: &TurnRetryNotice) -> Row {
 /// Content fingerprint of one change set. Intra-session stability is all the
 /// row diff needs; hashing the payload directly (rather than a map epoch)
 /// keeps a live Turn's updates from resplicing every historical card.
-fn turn_change_version(change_set: &holt_proto::TurnChangeSet) -> u64 {
+fn turn_change_version(
+    change_set: &holt_proto::TurnChangeSet,
+    restore: Option<crate::state::TurnRestoreMark>,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    restore.map(|mark| mark as u8).hash(&mut hasher);
     change_set.files.len().hash(&mut hasher);
     change_set.additions.hash(&mut hasher);
     change_set.deletions.hash(&mut hasher);
@@ -2327,12 +2334,15 @@ mod tests {
             holt_proto::TurnChangeSetPhase::Live,
             vec![file.clone()],
         );
-        let row = turn_change_row("m-1", "a-1".into(), &live);
+        let row = turn_change_row("m-1", "a-1".into(), &live, None);
         assert_eq!(row.id.as_ref(), "m-1#tcs");
         assert_eq!(row.entry_id.as_ref(), "a-1");
         assert!(!row.turn_start, "the card closes a turn, never opens one");
         assert!(row.timestamp.is_none() && row.copy_text.is_none());
-        let RowKind::TurnChangeCard { change_set: stored } = &row.kind else {
+        let RowKind::TurnChangeCard {
+            change_set: stored, ..
+        } = &row.kind
+        else {
             panic!("expected a change-card row")
         };
         assert_eq!(stored.message_id, "m-1");
@@ -2340,7 +2350,7 @@ mod tests {
 
         // Same payload (phase flip aside): a content change moves the
         // version, an identical rebuild does not.
-        let same_live = turn_change_row("m-1", "a-1".into(), &live);
+        let same_live = turn_change_row("m-1", "a-1".into(), &live, None);
         assert_eq!(same_live.version, row.version);
         let final_set = change_set(
             "m-1",
@@ -2350,11 +2360,19 @@ mod tests {
                 ..file.clone()
             }],
         );
-        let settled = turn_change_row("m-1", "a-1".into(), &final_set);
+        let settled = turn_change_row("m-1", "a-1".into(), &final_set, None);
         assert_ne!(settled.version, row.version);
         // A different Turn's card has its own identity.
-        let other = turn_change_row("m-2", "a-1".into(), &final_set);
+        let other = turn_change_row("m-2", "a-1".into(), &final_set, None);
         assert_ne!(other.id, row.id);
+        // A restore mark redraws the same card.
+        let restored = turn_change_row(
+            "m-1",
+            "a-1".into(),
+            &final_set,
+            Some(crate::state::TurnRestoreMark::Restored),
+        );
+        assert_ne!(restored.version, settled.version);
     }
 
     fn change_set(

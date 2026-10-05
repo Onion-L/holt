@@ -584,15 +584,30 @@ impl Shell {
             );
             return;
         };
+        use crate::state::TurnRestoreMark;
+        self.state.update(cx, |state, cx| {
+            state
+                .turn_restores
+                .insert(message_id.clone(), TurnRestoreMark::Running);
+            cx.notify();
+        });
         cx.spawn(async move |this, cx| {
-            let (message, clean) =
-                crate::turn_review::restore_call(engine, chat_id, message_id, None).await;
-            let kind = if clean {
+            let (message, mark) =
+                crate::turn_review::restore_call(engine, chat_id, message_id.clone(), None).await;
+            let kind = if mark == TurnRestoreMark::Restored {
                 HoltNoticeKind::Success
             } else {
                 HoltNoticeKind::Warning
             };
             let _ = this.update(cx, |this, cx| {
+                this.state.update(cx, |state, cx| {
+                    // A chat switch or edit cleared the slot mid-flight:
+                    // the reply belongs to a card that is gone.
+                    if let Some(slot) = state.turn_restores.get_mut(&message_id) {
+                        *slot = mark;
+                        cx.notify();
+                    }
+                });
                 this.push_holt_notice(kind, message.into(), cx)
             });
         })

@@ -18,6 +18,8 @@ use gpui::{
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SubagentStatus, ToolGateState};
 use holt_proto::ToolCall;
 use holt_proto::TurnChangeSet;
+
+use crate::state::TurnRestoreMark;
 use holt_proto::TurnFileChange;
 use holt_proto::TurnFileChangeStatus;
 use holt_proto::view::tool_chip_content_in;
@@ -561,6 +563,7 @@ impl Transcript {
         &mut self,
         row_id: &SharedString,
         change_set: &Arc<TurnChangeSet>,
+        restore_mark: Option<TurnRestoreMark>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -647,6 +650,22 @@ impl Transcript {
                         .text_size(crate::typography::ui_rems(11.0))
                         .text_color(theme.text_faint)
                         .child("diff truncated"),
+                )
+            })
+            .when_some(restore_mark, |el, mark| {
+                let (label, color) = match mark {
+                    TurnRestoreMark::Running => ("Restoring…", theme.text_faint),
+                    TurnRestoreMark::Restored => ("Restored", theme.success),
+                    TurnRestoreMark::Partial => ("Partially restored", theme.warning),
+                    TurnRestoreMark::Failed => ("Restore failed", theme.danger),
+                };
+                el.child(
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "turn-card-restore-mark".to_string())
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(color)
+                        .child(label),
                 )
             })
             .when(change_set.additions > 0, |el| {
@@ -787,8 +806,14 @@ impl Transcript {
                     )
                 }
             }))
+            // A running or clean restore has nothing left to offer; a
+            // partial or failed one keeps the retry.
             .when(
-                change_set.phase == holt_proto::TurnChangeSetPhase::Final,
+                change_set.phase == holt_proto::TurnChangeSetPhase::Final
+                    && !matches!(
+                        restore_mark,
+                        Some(TurnRestoreMark::Running | TurnRestoreMark::Restored)
+                    ),
                 |el| el.child(restore),
             );
 
@@ -1676,9 +1701,10 @@ impl Transcript {
                 &theme,
                 cx,
             ),
-            RowKind::TurnChangeCard { change_set } => {
-                self.render_turn_change_card(&row.id, change_set, &theme, cx)
-            }
+            RowKind::TurnChangeCard {
+                change_set,
+                restore,
+            } => self.render_turn_change_card(&row.id, change_set, *restore, &theme, cx),
         };
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the

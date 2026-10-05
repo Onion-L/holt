@@ -1548,7 +1548,7 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        let (selected, entries, echoes, replay, turn_change_sets, turn_retry) = {
+        let (selected, entries, echoes, replay, turn_change_sets, turn_restores, turn_retry) = {
             let s = self.state.read(cx);
             match &self.doc_override {
                 // Pinned to a subagent doc: `selected` equals `chat_id` by
@@ -1561,6 +1561,7 @@ impl Transcript {
                     s.sub_transcript(doc_id).to_vec(),
                     Vec::new(),
                     TranscriptReplayState::Populated,
+                    HashMap::new(),
                     HashMap::new(),
                     s.sub_retry(doc_id).cloned(),
                 ),
@@ -1578,6 +1579,7 @@ impl Transcript {
                         s.pending_echoes().to_vec(),
                         replay,
                         s.turn_change_sets.clone(),
+                        s.turn_restores.clone(),
                         s.turn_retry.clone(),
                     )
                 }
@@ -1680,7 +1682,12 @@ impl Transcript {
                 // not progress (user request).
                 && change_set.phase == holt_proto::TurnChangeSetPhase::Final
             {
-                new_rows.push(turn_change_row(id, entry.id.clone().into(), change_set));
+                new_rows.push(turn_change_row(
+                    id,
+                    entry.id.clone().into(),
+                    change_set,
+                    turn_restores.get(id).copied(),
+                ));
             }
             // The live retry chip closes the STREAMING entry: it rides app
             // state (never the doc) and only draws while the entry is still
@@ -2269,6 +2276,7 @@ impl Transcript {
                             // slot (the final-freeze guard would otherwise
                             // keep the pruned Turn's card forever).
                             this.state.update(cx, |state, cx| {
+                                state.turn_restores.remove(&message_id);
                                 if state.turn_change_sets.remove(&message_id).is_some() {
                                     cx.notify();
                                 }
@@ -2450,6 +2458,52 @@ mod tests {
                 this.rows.iter().any(|row| row.id.as_ref() == "m-2#tcs"),
                 "the settled Turn's card now shows"
             );
+        });
+
+        // A restore mark resplices the card with it; a new final for the
+        // same Turn (an edit's rerun) drops the stale mark.
+        state.update(cx, |s, cx| {
+            s.turn_restores
+                .insert("m-1".into(), crate::state::TurnRestoreMark::Restored);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        transcript.update(cx, |this, _| {
+            let card = this.rows.iter().find(|row| row.id.as_ref() == "m-1#tcs");
+            assert!(matches!(
+                card.map(|row| &row.kind),
+                Some(RowKind::TurnChangeCard {
+                    restore: Some(crate::state::TurnRestoreMark::Restored),
+                    ..
+                })
+            ));
+        });
+        cx.draw(
+            gpui::point(gpui::px(0.0), gpui::px(0.0)),
+            gpui::size(gpui::px(800.0), gpui::px(600.0)),
+            |_, _| transcript.clone().into_any_element(),
+        );
+        assert!(cx.debug_bounds("turn-card-restore-mark").is_some());
+        state.update(cx, |s, _| {
+            s.turn_change_sets.remove("m-1");
+            s.apply_turn_change_set(holt_proto::TurnChangeSet {
+                chat_id: "chat-1".into(),
+                message_id: "m-1".into(),
+                phase: holt_proto::TurnChangeSetPhase::Final,
+                files: vec![holt_proto::TurnFileChange {
+                    path: "src/main.rs".into(),
+                    old_path: None,
+                    status: holt_proto::TurnFileChangeStatus::Modified,
+                    additions: 1,
+                    deletions: 0,
+                    binary: false,
+                }],
+                additions: 1,
+                deletions: 0,
+                truncated: false,
+                updated_at: chrono::Utc::now(),
+            });
+            assert!(!s.turn_restores.contains_key("m-1"));
         });
     }
 
