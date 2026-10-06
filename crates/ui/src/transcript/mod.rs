@@ -406,6 +406,8 @@ pub enum TranscriptEvent {
         message_id: String,
         text: String,
     },
+    /// A run chat's caption: open its Routine on the Scheduled page.
+    OpenRoutine { routine_id: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}

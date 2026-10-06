@@ -325,6 +325,8 @@ impl Shell {
         // nine chips appear together instead of leaving a hole on whichever
         // row is busy or under the pointer.
         jump_label: Option<SharedString>,
+        // A Routine's folded run row: its run count (the row is the latest).
+        routine_runs: Option<usize>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -629,7 +631,15 @@ impl Shell {
                                 ),
                         )
                     })
-                    .when(!pinned, |el| {
+                    .when(!pinned && routine_runs.is_some(), |el| {
+                        el.child(
+                            icon(icons::CLOCK_CIRCLE)
+                                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                                .flex_none()
+                                .text_color(subline.opacity(0.8)),
+                        )
+                    })
+                    .when(!pinned && routine_runs.is_none(), |el| {
                         el.when_some(
                             provider
                                 .as_ref()
@@ -649,12 +659,29 @@ impl Shell {
                             .truncate()
                             // The hover-revealed "…" menu button floats
                             // over the row's right edge (right 6 + 18 hit
-                            // target): the title truncates clear of it.
-                            .pr(px(24.0))
+                            // target): the title truncates clear of it —
+                            // or the run count does.
+                            .when(!routine_runs.is_some_and(|runs| runs > 1), |el| {
+                                el.pr(px(24.0))
+                            })
                             .text_size(crate::typography::ui_rems(13.0))
                             .line_height(px(17.0))
                             .child(title),
-                    ),
+                    )
+                    .when_some(routine_runs.filter(|runs| *runs > 1), |el, runs| {
+                        let count_selector = id.clone();
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("chat-runs-{id}")))
+                                .debug_selector(move || format!("chat-runs-{count_selector}"))
+                                .flex_none()
+                                // Clear of the hover "…" like the title.
+                                .mr(px(24.0))
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(subline)
+                                .child(SharedString::from(format!("\u{d7}{runs}"))),
+                        )
+                    }),
             )
             // Line 3 is reserved whitespace once either metadata view option
             // is on (fixed-height rows), pinned to the PR badge's 16px; it is

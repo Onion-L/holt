@@ -553,6 +553,9 @@ impl Shell {
             TranscriptEvent::OpenProviderSettings { provider_id } => {
                 self.open_provider_settings(provider_id.clone(), cx);
             }
+            TranscriptEvent::OpenRoutine { routine_id } => {
+                self.open_routine(routine_id.clone(), cx);
+            }
             TranscriptEvent::EditLastMessage {
                 chat_id,
                 message_id,

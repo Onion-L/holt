@@ -959,7 +959,26 @@ impl AppState {
             .map(|c| (self.display_status_for(c, now), c))
             .collect();
         sort_active(&mut rows);
+        // A Routine's runs fold into its latest one (Recent stays readable
+        // under an hourly Routine); the row counts the rest.
+        let mut seen = HashSet::new();
+        rows.retain(|(_, chat)| match &chat.routine_run {
+            Some(marker) => seen.insert(marker.routine_id.clone()),
+            None => true,
+        });
         rows
+    }
+
+    /// How many unarchived run chats `routine_id` has — the count a folded
+    /// Recent row shows.
+    pub fn routine_run_count(&self, routine_id: &str) -> usize {
+        self.visible_chats()
+            .filter(|chat| {
+                chat.routine_run
+                    .as_ref()
+                    .is_some_and(|marker| marker.routine_id == routine_id)
+            })
+            .count()
     }
 
     /// The sidebar's active list exactly as it is drawn: [`Self::overview_chats`]

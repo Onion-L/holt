@@ -1223,6 +1223,13 @@ impl Shell {
         cx.notify();
     }
 
+    /// The Scheduled page with `routine_id`'s drawer open.
+    pub(super) fn open_routine(&mut self, routine_id: String, cx: &mut Context<Self>) {
+        self.open_scheduled(cx);
+        let page = self.scheduled_page(cx);
+        page.update(cx, |page, cx| page.open_drawer(routine_id, cx));
+    }
+
     /// Re-land keyboard focus on a cached Scheduled page.
     fn reveal_scheduled(&mut self, cx: &mut Context<Self>) {
         if let Some(page) = &self.scheduled_page {
@@ -3300,6 +3307,33 @@ mod tests {
             page.read_with(cx, |page, _| page.drawer()),
             Some("r1".into())
         );
+    }
+
+    /// The run caption's click lands on the Routine's drawer.
+    #[gpui::test]
+    fn open_routine_shows_its_drawer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("succeeded"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        shell.update(cx, |shell, cx| shell.open_routine("r1".into(), cx));
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(matches!(shell.route, Route::Scheduled));
+            assert_eq!(
+                shell.nav.current().clone(),
+                NavEntry::Scheduled(Some("r1".into()))
+            );
+        });
     }
 
     #[gpui::test]
