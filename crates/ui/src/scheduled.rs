@@ -4,6 +4,9 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
 
 use gpui::{
     AnyElement, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task, Window,
@@ -24,6 +27,8 @@ use crate::theme::{Theme, hairline, ink};
 const PAGE_MAX_W: f32 = 960.0;
 const CARD_MIN_W: f32 = 240.0;
 const GRID_GAP: f32 = 12.0;
+/// How often the cards' countdowns repaint.
+const TICK: Duration = Duration::from_secs(30);
 
 pub enum ScheduledEvent {
     /// A run Chat to show (Run now landed).
@@ -58,6 +63,7 @@ pub struct ScheduledPage {
     focus_pending: bool,
     task: Option<Task<()>>,
     _observe: Subscription,
+    _tick: Task<()>,
 }
 
 impl gpui::EventEmitter<ScheduledEvent> for ScheduledPage {}
@@ -65,6 +71,14 @@ impl gpui::EventEmitter<ScheduledEvent> for ScheduledPage {}
 impl ScheduledPage {
     pub fn new(state: Entity<AppState>, pickers: Entity<Pickers>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let tick = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             state,
             pickers,
@@ -76,6 +90,7 @@ impl ScheduledPage {
             focus_pending: true,
             task: None,
             _observe: observe,
+            _tick: tick,
         }
     }
 
@@ -380,6 +395,14 @@ impl ScheduledPage {
                     ))),
             )
             .child(div().flex_1())
+            .when_some(view.next_fire_at, |card, next| {
+                card.child(
+                    div()
+                        .text_size(crate::typography::ui_rems(15.0))
+                        .text_color(theme.text)
+                        .child(countdown(next, Utc::now())),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -813,6 +836,21 @@ fn grid_columns(width: f32) -> u16 {
 }
 
 /// The delete confirmation's consequence line; run Chats outlive the Routine.
+/// Time until the next fire at minute grain: "in 2h 14m", "in 3d 4h".
+fn countdown(next: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let minutes = (next - now).num_minutes();
+    if next <= now {
+        return "due now".into();
+    }
+    let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
+    match (days, hours, minutes) {
+        (0, 0, 0) => "in <1m".into(),
+        (0, 0, m) => format!("in {m}m"),
+        (0, h, m) => format!("in {h}h {m}m"),
+        (d, h, _) => format!("in {d}d {h}h"),
+    }
+}
+
 fn delete_body(runs: usize) -> String {
     match runs {
         0 => "It stops firing.".into(),
@@ -931,6 +969,21 @@ mod tests {
         assert_eq!(grid_columns(240.0), 1);
         assert_eq!(grid_columns(492.0), 2);
         assert_eq!(grid_columns(912.0), 3);
+    }
+
+    #[test]
+    fn countdown_reads_at_minute_grain() {
+        let now = DateTime::parse_from_rfc3339("2026-10-07T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let at = |minutes: i64, seconds: i64| {
+            now + chrono::Duration::minutes(minutes) + chrono::Duration::seconds(seconds)
+        };
+        assert_eq!(countdown(at(0, -5), now), "due now");
+        assert_eq!(countdown(at(0, 40), now), "in <1m");
+        assert_eq!(countdown(at(14, 30), now), "in 14m");
+        assert_eq!(countdown(at(134, 0), now), "in 2h 14m");
+        assert_eq!(countdown(at(3 * 1440 + 250, 0), now), "in 3d 4h");
     }
 
     #[test]

@@ -19,7 +19,7 @@ mod git_surface;
 mod images;
 mod modes;
 mod providers;
-mod routines;
+pub(crate) mod routines;
 mod run;
 mod settings;
 mod spaces;

@@ -53,6 +53,7 @@ mod queue;
 mod retry_events;
 mod routines;
 mod rpc;
+mod scheduler;
 mod shell_env;
 mod skills;
 mod store;
@@ -193,6 +194,8 @@ struct EngineService {
     clock: Clock,
     /// Persisted Routines (ADR-0042) and their pushed watch value.
     routines: Arc<routines::Routines>,
+    /// Stops the Routine scheduler task on shutdown.
+    scheduler: tokio_util::sync::CancellationToken,
     terminals: Arc<terminals::Terminals>,
     /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
@@ -297,7 +300,7 @@ impl LocalEngine {
             spaces.clone(),
             spaces_tx.subscribe(),
         ));
-        Ok(Self {
+        let engine = Self {
             service: EngineService {
                 engine_info: EngineInfo {
                     device_id,
@@ -320,12 +323,15 @@ impl LocalEngine {
                 search_backend_resolver: config.search_backend_resolver.clone(),
                 clock: config.clock.clone().unwrap_or_default(),
                 routines,
+                scheduler: tokio_util::sync::CancellationToken::new(),
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),
                 updater: update::Updater::new(),
             },
             _instance_lock: lock,
-        })
+        };
+        engine.service.spawn_scheduler();
+        Ok(engine)
     }
 
     pub fn engine_info(&self) -> &EngineInfo {
@@ -333,6 +339,7 @@ impl LocalEngine {
     }
 
     pub fn shutdown(&self) {
+        self.service.scheduler.cancel();
         self.service.runtime.shutdown();
         self.service.terminals.close_all(true);
     }

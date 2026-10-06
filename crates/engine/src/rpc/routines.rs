@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::required_string;
 use crate::EngineService;
-use crate::routines::{local_time_zone, push_run};
+use crate::routines::{local_time_zone, parse_schedule, push_run};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +46,11 @@ impl EngineService {
         if params.cron.trim().is_empty() {
             return Err(RpcError::BadParams("cron must not be empty".into()));
         }
+        let time_zone = params
+            .time_zone
+            .filter(|zone| !zone.trim().is_empty())
+            .map_or_else(local_time_zone, |zone| zone.trim().to_string());
+        parse_schedule(&params.cron, &time_zone)?;
         if !self.space_exists(&params.space_id) {
             return Err(RpcError::BadParams("unknown space".into()));
         }
@@ -55,10 +60,7 @@ impl EngineService {
             space_id: params.space_id,
             prompt: params.prompt,
             cron: params.cron.trim().to_string(),
-            time_zone: params
-                .time_zone
-                .filter(|zone| !zone.trim().is_empty())
-                .unwrap_or_else(local_time_zone),
+            time_zone,
             config: params.config,
             checkout: params.checkout,
             paused: None,

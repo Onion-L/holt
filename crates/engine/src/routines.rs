@@ -4,8 +4,12 @@
 //! publishes the Routines watch.
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Mutex;
 
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
+use croner::Cron;
 use holt_proto::{ROUTINE_RUN_LIMIT, Routine, RoutineRun, RoutineView};
 use holt_rpc::RpcError;
 use tokio::sync::watch;
@@ -50,6 +54,11 @@ impl Routines {
             .iter()
             .find(|routine| routine.id == id)
             .cloned()
+    }
+
+    /// Every Routine, as stored.
+    pub fn list(&self) -> Vec<Routine> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<serde_json::Value> {
@@ -101,12 +110,53 @@ pub(crate) fn local_time_zone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string())
 }
 
+/// Parse a Routine's schedule: a cron expression read in an IANA zone.
+pub(crate) fn parse_schedule(cron: &str, time_zone: &str) -> Result<(Cron, Tz), RpcError> {
+    let cron = Cron::from_str(cron.trim())
+        .map_err(|error| RpcError::BadParams(format!("invalid cron: {error}")))?;
+    let zone = Tz::from_str(time_zone.trim())
+        .map_err(|_| RpcError::BadParams(format!("unknown time zone: {time_zone}")))?;
+    Ok((cron, zone))
+}
+
+/// The first scheduled fire strictly after `after`. A local time skipped by
+/// a DST jump fires at the next valid time; a repeated one fires once.
+pub(crate) fn next_after(cron: &Cron, zone: Tz, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    cron.find_next_occurrence(&after.with_timezone(&zone), false)
+        .ok()
+        .map(|next| next.with_timezone(&Utc))
+}
+
+/// A Routine's next fire: the first scheduled time after it last fired (or
+/// was created). `None` while paused or when the schedule cannot be read.
+/// It can lie in the past until the scheduler catches up.
+pub(crate) fn next_fire(routine: &Routine) -> Option<DateTime<Utc>> {
+    if routine.paused.is_some() {
+        return None;
+    }
+    let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
+    let after = routine
+        .last_fired_at
+        .map_or(routine.created_at, |last| last.max(routine.created_at));
+    next_after(&cron, zone, after)
+}
+
+/// The latest scheduled time at or before `now`, if the Routine is due.
+pub(crate) fn due_at(routine: &Routine, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let mut due = next_fire(routine).filter(|next| *next <= now)?;
+    let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
+    while let Some(next) = next_after(&cron, zone, due).filter(|next| *next <= now) {
+        due = next;
+    }
+    Some(due)
+}
+
 fn views(routines: &[Routine]) -> serde_json::Value {
     let views: Vec<RoutineView> = routines
         .iter()
         .map(|routine| RoutineView {
             routine: routine.clone(),
-            next_fire_at: None,
+            next_fire_at: next_fire(routine),
         })
         .collect();
     serde_json::to_value(views).unwrap_or_default()

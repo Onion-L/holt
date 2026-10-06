@@ -20,7 +20,11 @@ fn clock() -> Clock {
 }
 
 async fn setup(fixture: &Fixture, provider: &ScriptedProvider) -> LocalEngine {
-    let engine = fixture.engine_with_clock(provider, clock());
+    setup_at(fixture, provider, clock()).await
+}
+
+async fn setup_at(fixture: &Fixture, provider: &ScriptedProvider, clock: Clock) -> LocalEngine {
+    let engine = fixture.engine_with_clock(provider, clock);
     engine
         .handle(
             methods::SAVE_PROVIDER_KEY,
@@ -175,6 +179,9 @@ async fn create_defaults_the_time_zone_and_rejects_bad_params() {
         json!({ "name": "  " }),
         json!({ "prompt": "" }),
         json!({ "spaceId": "missing" }),
+        json!({ "cron": "61 * * * *" }),
+        json!({ "cron": "every morning" }),
+        json!({ "timeZone": "Mars/Olympus_Mons" }),
     ] {
         let error = engine
             .handle(methods::CREATE_ROUTINE, create_params(extra.clone()))
@@ -264,6 +271,150 @@ async fn routines_and_run_chats_survive_restart_and_delete() {
         .err()
         .expect("a deleted Routine cannot run");
     assert!(matches!(error, RpcError::BadParams(_)));
+}
+
+/// Wait for the Routine `id` on the Routines watch to satisfy `done`.
+async fn wait_for_routine(engine: &LocalEngine, id: &str, done: impl Fn(&Value) -> bool) -> Value {
+    let RpcReply::Stream(mut watch) = engine
+        .handle(methods::WATCH_ROUTINES, json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchRoutines did not return a stream");
+    };
+    loop {
+        let frame = next_frame(&mut watch).await;
+        if let Some(routine) = frame
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|routine| routine["id"] == id)
+            && done(routine)
+        {
+            return routine.clone();
+        }
+    }
+}
+
+async fn chats(engine: &LocalEngine) -> Vec<Value> {
+    let RpcReply::Stream(mut chats) = engine
+        .handle(methods::WATCH_CHATS, json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchChats did not return a stream");
+    };
+    next_frame(&mut chats).await.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_scheduled_fire_starts_a_run_chat_and_records_last_fired_at() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    // 09:00 in Shanghai is 01:00 UTC.
+    assert_eq!(list(&engine).await[0]["nextFireAt"], "2026-10-08T01:00:00Z");
+
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 8, 1, 0, 0).unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| {
+        !routine["runs"].as_array().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(fired["lastFiredAt"], "2026-10-08T01:00:00Z");
+    assert_eq!(fired["nextFireAt"], "2026-10-09T01:00:00Z");
+    let run = &fired["runs"][0];
+    assert_eq!(run["manual"], false);
+    assert_eq!(run["firedAt"], "2026-10-08T01:00:00Z");
+
+    wait_for_requests(&provider, 1).await;
+    let chat_id = run["chatId"].as_str().unwrap();
+    let row = chat_row(&engine, chat_id).await.expect("run chat listed");
+    assert_eq!(row["title"], "Daily digest");
+    assert_eq!(row["routineRun"]["manual"], false);
+    assert_eq!(row["routineRun"]["missedFires"], 0);
+}
+
+#[tokio::test]
+async fn deleting_a_routine_cancels_its_planned_fire() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let doomed = create(&engine, json!({})).await;
+    let kept = create(
+        &engine,
+        json!({ "name": "Later", "cron": "30 1 * * *", "timeZone": "UTC" }),
+    )
+    .await;
+    engine
+        .handle(
+            methods::DELETE_ROUTINE,
+            json!({ "routineId": doomed["id"] }),
+        )
+        .await
+        .unwrap();
+
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 8, 1, 30, 0).unwrap());
+    let kept_id = kept["id"].as_str().unwrap();
+    wait_for_routine(&engine, kept_id, |routine| {
+        !routine["lastFiredAt"].is_null()
+    })
+    .await;
+    let fired: Vec<_> = chats(&engine)
+        .await
+        .into_iter()
+        .filter_map(|chat| chat["routineRun"]["routineId"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(fired, [kept_id]);
+}
+
+/// Create a Routine in New York at `start`, assert its next fire, fire it,
+/// and return the fire after that.
+async fn new_york_fires(start: chrono::DateTime<Utc>, cron: &str, first: &str) -> Value {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = Clock::manual(start);
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let routine = create(
+        &engine,
+        json!({ "cron": cron, "timeZone": "America/New_York" }),
+    )
+    .await;
+    let id = routine["id"].as_str().unwrap();
+    assert_eq!(list(&engine).await[0]["nextFireAt"], first);
+
+    clock.set(first.parse().unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| !routine["lastFiredAt"].is_null()).await;
+    assert_eq!(fired["lastFiredAt"], first);
+    fired["nextFireAt"].clone()
+}
+
+#[tokio::test]
+async fn a_local_time_skipped_by_spring_forward_fires_at_the_next_valid_time() {
+    // 2026-03-08 02:30 does not exist in New York; it fires at 03:00 EDT.
+    let next = new_york_fires(
+        Utc.with_ymd_and_hms(2026, 3, 7, 12, 0, 0).unwrap(),
+        "30 2 * * *",
+        "2026-03-08T07:00:00Z",
+    )
+    .await;
+    // The next day is back on 02:30 EDT.
+    assert_eq!(next, "2026-03-09T06:30:00Z");
+}
+
+#[tokio::test]
+async fn a_local_time_repeated_by_fall_back_fires_once() {
+    // 2026-11-01 01:30 happens twice in New York; only the first (EDT) fires.
+    let next = new_york_fires(
+        Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap(),
+        "30 1 * * *",
+        "2026-11-01T05:30:00Z",
+    )
+    .await;
+    assert_eq!(next, "2026-11-02T06:30:00Z");
 }
 
 fn init_repo(dir: &Path) {
