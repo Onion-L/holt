@@ -47,6 +47,21 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    // About: the native info alert (same dialog path as the close
+    // confirmations; macOS shows the app icon on info alerts), carrying the
+    // workspace version. Fire-and-forget like the notice prompts in
+    // terminal::lifecycle.
+    cx.on_action(|_: &About, cx| {
+        with_active_window(cx, |window, cx| {
+            drop(window.prompt(
+                gpui::PromptLevel::Info,
+                "Holt",
+                Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                &["OK"],
+                cx,
+            ));
+        });
+    });
     // Window verbs route to the active window. holt is single-window, so a
     // global handler suffices where zed registers these per-workspace
     // (crates/zed/src/zed.rs `register_action(Minimize/Zoom)`).
@@ -163,8 +178,7 @@ pub fn app_menus() -> Vec<Menu> {
     // macOS titles the first menu with the bundle/process name regardless of
     // what we pass, but gpui still wants a name.
     let mut app_items = vec![
-        // Placeholder until a real about dialog exists (explicitly disabled).
-        MenuItem::action("About Holt", About).disabled(true),
+        MenuItem::action("About Holt", About),
         MenuItem::separator(),
         MenuItem::action("Settings", shell::OpenSettings),
         MenuItem::separator(),
@@ -263,13 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn about_is_disabled_placeholder() {
+    fn about_is_the_first_enabled_app_menu_item() {
         let menus = app_menus();
-        let first = &menus[0].items[0];
-        assert!(
-            first.is_disabled(),
-            "About stays disabled until implemented"
-        );
+        let MenuItem::Action { name, action, .. } = &menus[0].items[0] else {
+            panic!("first app-menu item must be the About action");
+        };
+        assert_eq!(name.as_ref(), "About Holt");
+        assert_eq!(action.name(), About.name());
+        assert!(!menus[0].items[0].is_disabled());
     }
 
     #[test]
