@@ -27,6 +27,7 @@ where
         personal_skills_dir: None,
         stream_fn: None,
         search_backend_resolver: None,
+        clock: None,
     })
     .unwrap();
     drop(bootstrap);

@@ -21,6 +21,7 @@ fn assemble_unwrapped(
         personal_skills_dir: None,
         stream_fn: Some(provider.stream_fn()),
         search_backend_resolver: None,
+        clock: None,
     })
 }
 
