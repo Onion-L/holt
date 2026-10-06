@@ -3335,6 +3335,34 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_routine_whose_space_was_removed_cannot_run_now(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = routine_state("succeeded");
+            state.routines[0].routine.paused = Some(holt_proto::RoutinePause::SpaceRemoved);
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        let page = shell.update(cx, |shell, cx| {
+            shell.open_scheduled(cx);
+            shell.scheduled_page(cx)
+        });
+        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("routine-drawer-run-disabled").is_some());
+    }
+
+    #[gpui::test]
     fn a_live_run_marks_the_nav_row_and_the_drawer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("waiting"));

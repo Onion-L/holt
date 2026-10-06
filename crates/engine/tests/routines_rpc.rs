@@ -947,3 +947,105 @@ async fn preview_lists_the_next_three_fires() {
         assert!(matches!(error, RpcError::BadParams(message) if message.starts_with(prefix)));
     }
 }
+
+#[tokio::test]
+async fn removing_its_space_pauses_a_routine_until_edited_to_another() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let id = create(&engine, json!({})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    engine
+        .handle(
+            methods::MUTATE,
+            json!({ "op": "deleteSpace", "spaceId": "space-1" }),
+        )
+        .await
+        .unwrap();
+    let routine = list(&engine).await.remove(0);
+    assert_eq!(routine["paused"], "space-removed");
+    assert!(routine["runs"].as_array().unwrap().is_empty());
+    assert!(routine["nextFireAt"].is_null());
+
+    let error = engine
+        .handle(methods::RUN_ROUTINE_NOW, json!({ "routineId": id }))
+        .await
+        .err()
+        .expect("Run now refused");
+    assert!(matches!(error, RpcError::Failed(message) if message.contains("project was removed")));
+    let error = engine
+        .handle(
+            methods::SET_ROUTINE_PAUSED,
+            json!({ "routineId": id, "paused": false }),
+        )
+        .await
+        .err()
+        .expect("plain resume refused");
+    assert!(matches!(error, RpcError::BadParams(_)));
+    let routine = list(&engine).await.remove(0);
+    assert_eq!(routine["paused"], "space-removed");
+    assert!(
+        routine["runs"].as_array().unwrap().is_empty(),
+        "nothing recorded"
+    );
+
+    // Edited back onto an existing Space, it resumes from now.
+    engine
+        .handle(
+            methods::MUTATE,
+            json!({
+                "op": "createSpace",
+                "spaceId": "space-2",
+                "deviceId": engine.engine_info().device_id,
+                "path": fixture.cwd(),
+            }),
+        )
+        .await
+        .unwrap();
+    engine
+        .handle(
+            methods::UPDATE_ROUTINE,
+            create_params(json!({ "routineId": id, "spaceId": "space-2" })),
+        )
+        .await
+        .unwrap();
+    let routine = list(&engine).await.remove(0);
+    assert!(routine["paused"].is_null());
+    assert_eq!(routine["nextFireAt"], "2026-10-08T01:00:00Z");
+    run_now(&engine, &id).await;
+    wait_for_requests(&provider, 1).await;
+}
+
+#[tokio::test]
+async fn an_unavailable_model_fails_the_run_and_keeps_the_routine_active() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let mut params = create_params(json!({}));
+    params["config"]["model"] = json!("openai/retired-model");
+    let RpcReply::Value(routine) = engine
+        .handle(methods::CREATE_ROUTINE, params)
+        .await
+        .unwrap()
+    else {
+        panic!("CreateRoutine did not reply a value");
+    };
+    let id = routine["id"].as_str().unwrap();
+    let error = engine
+        .handle(methods::RUN_ROUTINE_NOW, json!({ "routineId": id }))
+        .await
+        .err()
+        .expect("the run fails");
+    assert!(matches!(&error, RpcError::Failed(message) if message.contains("retired-model")));
+
+    let routine = list(&engine).await.remove(0);
+    assert!(routine["paused"].is_null(), "the Routine stays active");
+    assert!(!routine["nextFireAt"].is_null());
+    let run = &routine["runs"][0];
+    assert_eq!(run["outcome"], "failed");
+    assert!(run["note"].as_str().unwrap().contains("retired-model"));
+    assert!(run["chatId"].is_null(), "no run Chat is created");
+    assert!(provider.requests().is_empty());
+}

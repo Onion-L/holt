@@ -415,7 +415,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   schedule's anchor to now, so fires passed while paused are not made up),
   and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running
   or waiting, any further fire — scheduled or Run now — is recorded as
-  skipped with no Chat (`RunRoutineNow` then replies `{}`). The scheduler
+  skipped with no Chat (`RunRoutineNow` then replies `{}`). Removing a
+  Space pauses its Routines with reason `space-removed` (no run recorded);
+  only an `UpdateRoutine` onto an existing Space resumes them —
+  `SetRoutinePaused` refuses, and Run now fails. A fire whose model is gone
+  from the catalog or whose provider has no key records a failed run with
+  the reason and no Chat; the Routine stays active. The scheduler
   coalesces every fire since `lastFiredAt` that it reaches late — at
   startup, or after the wall clock jumps on wake — into one Catch-up run
   whose `missedFires` (on the record and the Chat marker) counts them; an

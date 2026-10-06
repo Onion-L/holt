@@ -173,6 +173,7 @@ impl EngineService {
         drop(spaces);
         if removed {
             self.spaces_tx.send_replace(value);
+            self.pause_routines_in_space(&params.space_id);
         }
         RpcReply::value(&serde_json::json!({}))
     }

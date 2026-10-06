@@ -36,7 +36,7 @@ impl EngineService {
             for routine in self.routines.list() {
                 if let Some(due) = due_at(&routine, now) {
                     // A recorded fire changes the list, which re-plans.
-                    if !self.fire_scheduled(&routine.id, due) {
+                    if !self.fire_scheduled(&routine.id, due).await {
                         plan(now + RETRY_AFTER);
                     }
                 } else if let Some(next) = next_fire(&routine) {
@@ -60,7 +60,7 @@ impl EngineService {
     /// Record `due.at` as the Routine's `last_fired_at`, then start its run.
     /// The fire is recorded first so a run that cannot start is not retried
     /// on every pass. Returns whether the fire was recorded.
-    fn fire_scheduled(&self, id: &str, due: Due) -> bool {
+    async fn fire_scheduled(&self, id: &str, due: Due) -> bool {
         let recorded = self.routines.update(|routines| {
             if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
                 routine.last_fired_at = Some(due.at);
@@ -75,7 +75,7 @@ impl EngineService {
             missed_fires: due.missed_fires,
             manual: false,
         };
-        if let Err(error) = self.start_routine_run(id, fire) {
+        if let Err(error) = self.start_routine_run(id, fire).await {
             tracing::warn!(routine = id, %error, "a scheduled Routine run did not start");
         }
         true

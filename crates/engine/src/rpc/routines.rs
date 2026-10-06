@@ -84,7 +84,13 @@ impl EngineService {
                 .iter_mut()
                 .find(|routine| routine.id == id)
                 .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
-            if routine.cron != config.cron || routine.time_zone != config.time_zone {
+            // Pointing a Routine whose Space was removed at an existing
+            // one resumes it, from now like any resume.
+            let resumed = routine.paused == Some(RoutinePause::SpaceRemoved);
+            if resumed {
+                routine.paused = None;
+            }
+            if resumed || routine.cron != config.cron || routine.time_zone != config.time_zone {
                 routine.last_fired_at =
                     Some(routine.last_fired_at.map_or(now, |last| last.max(now)));
             }
@@ -174,7 +180,9 @@ impl EngineService {
 
     /// Pause (reason "user") or resume a Routine. Resuming moves the
     /// schedule's anchor to now, so fires passed while paused are not made
-    /// up and the next fire is the first one in the future.
+    /// up and the next fire is the first one in the future. A Routine
+    /// paused because its Space was removed keeps that reason; only an edit
+    /// to another Space resumes it.
     pub(super) fn set_routine_paused(
         &self,
         params: serde_json::Value,
@@ -190,6 +198,14 @@ impl EngineService {
                 .iter_mut()
                 .find(|routine| routine.id == id)
                 .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+            if routine.paused == Some(RoutinePause::SpaceRemoved) {
+                if paused {
+                    return Ok(());
+                }
+                return Err(RpcError::BadParams(
+                    "its project was removed; edit it to pick another".into(),
+                ));
+            }
             if paused {
                 routine.paused = Some(RoutinePause::User);
             } else if routine.paused.take().is_some() {
@@ -202,15 +218,20 @@ impl EngineService {
     }
 
     /// → `{chatId}`, or `{}` when the fire was skipped.
-    pub(super) fn run_routine_now(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+    pub(super) async fn run_routine_now(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
         let id = required_string(&params, "routineId")?;
-        let chat_id = self.start_routine_run(
-            id,
-            Fire {
-                missed_fires: 0,
-                manual: true,
-            },
-        )?;
+        let chat_id = self
+            .start_routine_run(
+                id,
+                Fire {
+                    missed_fires: 0,
+                    manual: true,
+                },
+            )
+            .await?;
         RpcReply::value(&match chat_id {
             Some(chat_id) => serde_json::json!({ "chatId": chat_id }),
             None => serde_json::json!({}),
@@ -221,8 +242,10 @@ impl EngineService {
     /// user-owned title, its model and Permission mode, the run marker),
     /// enqueue the prompt verbatim as the first message, and record the
     /// run. Returns the new Chat's id, or `None` when a run is still live
-    /// and the fire is recorded as skipped instead.
-    pub(crate) fn start_routine_run(
+    /// and the fire is recorded as skipped instead. A removed Space pauses
+    /// the Routine and records nothing; an unavailable model records a
+    /// failed run and leaves the Routine active — both reply the reason.
+    pub(crate) async fn start_routine_run(
         &self,
         id: &str,
         fire: Fire,
@@ -256,8 +279,30 @@ impl EngineService {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|space| space.id == routine.space_id)
-            .cloned()
-            .ok_or_else(|| RpcError::Failed("the Routine's Space was removed".into()))?;
+            .cloned();
+        let Some(space) = space else {
+            self.pause_routines_in_space(&routine.space_id);
+            return Err(RpcError::Failed(
+                "its project was removed; edit it to pick another".into(),
+            ));
+        };
+        if let Some(reason) = self.model_unavailable(&routine.config).await {
+            let run = RoutineRun {
+                fired_at: now,
+                outcome: RunOutcome::Failed,
+                note: Some(reason.clone()),
+                chat_id: None,
+                missed_fires: fire.missed_fires,
+                manual: fire.manual,
+            };
+            self.routines.update(|routines| {
+                if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
+                    push_run(routine, run);
+                }
+                Ok(())
+            })?;
+            return Err(RpcError::Failed(reason));
+        }
         let chat_id = uuid::Uuid::new_v4().to_string();
         self.runtime
             .chats
@@ -353,6 +398,42 @@ impl EngineService {
         if let Err(error) = result {
             tracing::warn!(chat_id, %error, "could not mark a Routine run's Chat deleted");
         }
+    }
+
+    /// Pause every Routine in a removed Space (reason "Space removed"). No
+    /// run is recorded.
+    pub(crate) fn pause_routines_in_space(&self, space_id: &str) {
+        let result = self.routines.update(|routines| {
+            for routine in routines
+                .iter_mut()
+                .filter(|routine| routine.space_id == space_id)
+            {
+                routine.paused = Some(RoutinePause::SpaceRemoved);
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::warn!(space_id, %error, "could not pause the Routines of a removed Space");
+        }
+    }
+
+    /// Why a run on `config` could not start: its model is gone from the
+    /// catalog or its provider has no key. Same wording as the queue's.
+    async fn model_unavailable(&self, config: &ChatConfig) -> Option<String> {
+        let provider = config.provider.as_str();
+        if let Err(error) = self.providers.resolve_model(provider, &config.model) {
+            return Some(error);
+        }
+        if self
+            .providers
+            .credentials
+            .reveal_key(provider)
+            .await
+            .is_none()
+        {
+            return Some(format!("provider {provider} is not configured"));
+        }
+        None
     }
 
     fn space_exists(&self, space_id: &str) -> bool {

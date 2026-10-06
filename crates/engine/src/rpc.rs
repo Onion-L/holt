@@ -319,7 +319,7 @@ impl RpcService for EngineService {
             methods::PREVIEW_ROUTINE_SCHEDULE => self.preview_routine_schedule(params),
             methods::DELETE_ROUTINE => self.delete_routine(params),
             methods::SET_ROUTINE_PAUSED => self.set_routine_paused(params),
-            methods::RUN_ROUTINE_NOW => self.run_routine_now(params),
+            methods::RUN_ROUTINE_NOW => self.run_routine_now(params).await,
             methods::WATCH_CONNECTIVITY => {
                 // Default = state Disabled ("no edge transports on this
                 // profile — hide the pill"), no chat rooms.

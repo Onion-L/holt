@@ -316,7 +316,12 @@ impl ScheduledPage {
                 prompt: routine.prompt,
                 cron: routine.cron,
                 time_zone: routine.time_zone,
-                space_id: Some(routine.space_id),
+                // A removed Space is not offered; the form picks another.
+                space_id: self
+                    .state
+                    .read(cx)
+                    .space_row(&routine.space_id)
+                    .map(|_| routine.space_id.clone()),
                 mode: routine.config.permission_mode,
                 config: Some(routine.config),
                 checkout: routine.checkout,
@@ -771,6 +776,7 @@ impl ScheduledPage {
             .unwrap_or_else(|| "Missing project".into());
         let run_id = routine.id.clone();
         let delete_id = routine.id.clone();
+        let space_removed = routine.paused == Some(RoutinePause::SpaceRemoved);
         let actions = div()
             .flex_none()
             .flex()
@@ -778,18 +784,20 @@ impl ScheduledPage {
             .gap(px(2.0))
             .invisible()
             .group_hover(group.clone(), |s| s.visible())
-            .child(
-                icon_button(
-                    theme,
-                    format!("routine-run-{}", routine.id).into(),
-                    icons::PLAY,
-                    false,
+            .when(!space_removed, |actions| {
+                actions.child(
+                    icon_button(
+                        theme,
+                        format!("routine-run-{}", routine.id).into(),
+                        icons::PLAY,
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.run_now(run_id.clone(), cx);
+                    })),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.run_now(run_id.clone(), cx);
-                })),
-            )
+            })
             .child(
                 icon_button(
                     theme,
@@ -959,6 +967,8 @@ impl ScheduledPage {
         let run_id = routine.id.clone();
         let pause_id = routine.id.clone();
         let paused = routine.paused.is_some();
+        // Only an edit to another Space brings it back.
+        let space_removed = routine.paused == Some(RoutinePause::SpaceRemoved);
         let edit_id = routine.id.clone();
         let delete_id = routine.id.clone();
         let banner = routine.paused.map(|pause| {
@@ -1071,23 +1081,33 @@ impl ScheduledPage {
                             .child(
                                 popover::btn_primary(theme, "Run now")
                                     .id("routine-drawer-run")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.run_now(run_id.clone(), cx)
-                                    })),
+                                    .when(space_removed, |button| {
+                                        button
+                                            .debug_selector(|| "routine-drawer-run-disabled".into())
+                                            .opacity(0.4)
+                                            .cursor_default()
+                                    })
+                                    .when(!space_removed, |button| {
+                                        button.on_click(cx.listener(move |this, _, _, cx| {
+                                            this.run_now(run_id.clone(), cx)
+                                        }))
+                                    }),
                             )
-                            .child(
-                                popover::btn_ghost(
-                                    theme,
-                                    if paused { "Resume" } else { "Pause" },
-                                    "routine-drawer-pause",
+                            .when(!space_removed, |row| {
+                                row.child(
+                                    popover::btn_ghost(
+                                        theme,
+                                        if paused { "Resume" } else { "Pause" },
+                                        "routine-drawer-pause",
+                                    )
+                                    .id("routine-drawer-pause")
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.set_paused(pause_id.clone(), !paused, cx)
+                                        },
+                                    )),
                                 )
-                                .id("routine-drawer-pause")
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_paused(pause_id.clone(), !paused, cx)
-                                    },
-                                )),
-                            )
+                            })
                             .child(
                                 popover::btn_ghost(theme, "Edit", "routine-drawer-edit")
                                     .id("routine-drawer-edit")
@@ -2042,7 +2062,9 @@ fn live_banner(outcome: RunOutcome) -> &'static str {
 fn pause_banner(pause: RoutinePause) -> &'static str {
     match pause {
         RoutinePause::User => "Paused. It won't fire until you resume it.",
-        RoutinePause::SpaceRemoved => "Paused because its project was removed.",
+        RoutinePause::SpaceRemoved => {
+            "Paused because its project was removed. Edit it to pick another project."
+        }
     }
 }
 
