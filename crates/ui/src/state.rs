@@ -232,6 +232,8 @@ pub struct AppState {
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
+    /// Routines with their next fire (WatchRoutines), in creation order.
+    pub routines: Vec<holt_proto::RoutineView>,
     /// The project the new-session canvas mints into. Healed by
     /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
     /// its project.
@@ -327,6 +329,7 @@ impl AppState {
             connectivity: holt_proto::Connectivity::default(),
             update: holt_proto::UpdateStatus::default(),
             spaces: Vec::new(),
+            routines: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
             selected_space: None,
@@ -455,6 +458,10 @@ impl AppState {
 
     pub fn apply_sessions(&mut self, sessions: Vec<Session>) {
         self.sessions = sessions;
+    }
+
+    pub fn apply_routines(&mut self, routines: Vec<holt_proto::RoutineView>) {
+        self.routines = routines;
     }
 
     pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
@@ -1084,6 +1091,7 @@ impl AppState {
         self.spaces.clear();
         self.chats.clear();
         self.sessions.clear();
+        self.routines.clear();
         self.selected_space = None;
         self.selected_chat = None;
         self.auto_selected = false;
@@ -1142,7 +1150,7 @@ impl AppState {
         self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
-        let mut watch_tasks = Vec::with_capacity(7);
+        let mut watch_tasks = Vec::with_capacity(8);
         watch_tasks.extend([
             spawn_watch(
                 cx,
@@ -1168,6 +1176,12 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_ROUTINES,
+                AppState::apply_routines,
             ),
             // Auth frames parse tolerantly — engine and proto tags differ today.
             spawn_watch(

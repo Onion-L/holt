@@ -172,7 +172,9 @@ impl Shell {
             Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
             // The Chat manager keeps the session sidebar — it manages what
             // that sidebar lists.
-            Route::Chat | Route::ChatManager => self.render_chat_sidebar(&theme, cx),
+            Route::Chat | Route::ChatManager | Route::Scheduled => {
+                self.render_chat_sidebar(&theme, cx)
+            }
         };
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main
@@ -1117,43 +1119,34 @@ impl Shell {
     /// the settings page directly. Styled exactly like the settings sidebar's
     /// Back row — same padding, height, and hover.
     /// The page nav pinned above the session list: one row per global page
-    /// (today the Chat manager), then the "Recent" label heading the list.
+    /// (the Chat manager and Scheduled), then the "Recent" label heading the list.
     /// Rows share the settings sidebar's row recipe; the current page wears
     /// the selected wash.
     fn render_sidebar_nav(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let selected = matches!(self.route, Route::ChatManager);
-        let chats = div()
-            .id("sidebar-nav-chats")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .text_size(crate::typography::ui_rems(13.0))
-            .when(selected, |el| {
-                el.bg(crate::theme::glass_selected_bg())
-                    .font_weight(gpui::FontWeight::MEDIUM)
-            })
-            .text_color(if selected {
-                theme.text
-            } else {
-                theme.text_muted
-            })
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
-            .on_click(cx.listener(|this, _, _, cx| {
-                if !matches!(this.route, Route::ChatManager) {
-                    this.open_chat_manager(cx);
-                }
-            }))
-            .child(
-                icon(icons::INBOX)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(SharedString::from("Chats"));
+        let chats = nav_row(
+            theme,
+            "sidebar-nav-chats",
+            icons::INBOX,
+            "Chats",
+            matches!(self.route, Route::ChatManager),
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            if !matches!(this.route, Route::ChatManager) {
+                this.open_chat_manager(cx);
+            }
+        }));
+        let scheduled = nav_row(
+            theme,
+            "sidebar-nav-scheduled",
+            icons::CLOCK_CIRCLE,
+            "Scheduled",
+            matches!(self.route, Route::Scheduled),
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            if !matches!(this.route, Route::Scheduled) {
+                this.open_scheduled(cx);
+            }
+        }));
 
         // The spaces filter below brings its own 8px top pad.
         div()
@@ -1163,6 +1156,7 @@ impl Shell {
             .flex()
             .flex_col()
             .child(chats)
+            .child(scheduled)
             .child(
                 div()
                     .px(px(Theme::SPACE_SM))
@@ -1204,6 +1198,40 @@ impl Shell {
             .child(SharedString::from("Settings"))
             .into_any_element()
     }
+}
+
+/// One page row in the sidebar nav — the settings sidebar's row recipe;
+/// the current page wears the selected wash.
+fn nav_row(
+    theme: &Theme,
+    id: &'static str,
+    path: &'static str,
+    label: &'static str,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(8.0))
+        .px(px(Theme::SPACE_SM))
+        .py(px(6.0))
+        .text_size(crate::typography::ui_rems(13.0))
+        .when(selected, |el| {
+            el.bg(crate::theme::glass_selected_bg())
+                .font_weight(gpui::FontWeight::MEDIUM)
+        })
+        .text_color(if selected {
+            theme.text
+        } else {
+            theme.text_muted
+        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+        .child(icon(path).size(px(16.0)).text_color(theme.text_muted))
+        .child(SharedString::from(label))
 }
 
 #[cfg(test)]

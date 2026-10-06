@@ -38,6 +38,7 @@ use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
 use crate::pickers::{PickerEvent, Pickers};
 use crate::popover::{self, Loadable};
 use crate::rail;
+use crate::scheduled::{ScheduledEvent, ScheduledPage};
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
 use crate::settings::providers::{ProvidersPage, ProvidersPageEvent};
@@ -253,6 +254,8 @@ pub enum Route {
     Settings(SettingsSection),
     /// The Chat manager page (glossary) — global batch session operations.
     ChatManager,
+    /// The Scheduled page (glossary: Routine).
+    Scheduled,
 }
 
 /// The chat-row Rename dialog.
@@ -407,6 +410,8 @@ pub struct Shell {
     usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
     chat_manager_page: Option<Entity<ChatManagerPage>>,
     chat_manager_sub: Option<Subscription>,
+    scheduled_page: Option<Entity<ScheduledPage>>,
+    scheduled_sub: Option<Subscription>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -702,6 +707,7 @@ impl Shell {
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `chats` boots straight into the Chat manager page.
             Some("chats") => Route::ChatManager,
+            Some("scheduled") => Route::Scheduled,
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
@@ -727,6 +733,7 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
             Route::ChatManager => NavEntry::ChatManager,
+            Route::Scheduled => NavEntry::Scheduled,
         });
         Self {
             state,
@@ -789,6 +796,8 @@ impl Shell {
             usage_page: None,
             chat_manager_page: None,
             chat_manager_sub: None,
+            scheduled_page: None,
+            scheduled_sub: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1198,6 +1207,41 @@ impl Shell {
             },
         ));
         self.chat_manager_page = Some(page.clone());
+        page
+    }
+
+    /// Show the Scheduled page from the sidebar nav.
+    pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
+        self.route = Route::Scheduled;
+        self.nav.push(NavEntry::Scheduled);
+        self.reveal_scheduled(cx);
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
+    /// Re-land keyboard focus on a cached Scheduled page.
+    fn reveal_scheduled(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &self.scheduled_page {
+            page.update(cx, |page, cx| page.reveal(cx));
+        }
+    }
+
+    /// The Scheduled page, created on first use. Run now lands on the run
+    /// Chat via the page's OpenChat event.
+    fn scheduled_page(&mut self, cx: &mut Context<Self>) -> Entity<ScheduledPage> {
+        if let Some(page) = &self.scheduled_page {
+            return page.clone();
+        }
+        let state = self.state.clone();
+        let pickers = self.composer.read(cx).pickers().clone();
+        let page = cx.new(|cx| ScheduledPage::new(state, pickers, cx));
+        self.scheduled_sub = Some(cx.subscribe(
+            &page,
+            |this: &mut Shell, _, event: &ScheduledEvent, cx| match event {
+                ScheduledEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
+            },
+        ));
+        self.scheduled_page = Some(page.clone());
         page
     }
 
@@ -1830,6 +1874,7 @@ impl Shell {
         let page_outlet: Option<AnyElement> = match self.route {
             Route::Settings(section) => Some(self.settings_outlet(section, cx)),
             Route::ChatManager => Some(self.chat_manager_page(cx).into_any_element()),
+            Route::Scheduled => Some(self.scheduled_page(cx).into_any_element()),
             Route::Chat => None,
         };
         if let Some(outlet) = page_outlet {
@@ -2490,7 +2535,7 @@ impl Render for Shell {
                     // reads None (the render hook below re-lands focus when the
                     // route returns to Chat; a lingering unmounted handle would
                     // otherwise dead-end keyboard dispatch for good).
-                    Route::Settings(_) | Route::ChatManager => window.blur(),
+                    Route::Settings(_) | Route::ChatManager | Route::Scheduled => window.blur(),
                 }
             }));
         }

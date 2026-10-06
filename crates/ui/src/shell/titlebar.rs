@@ -134,7 +134,7 @@ impl Shell {
     pub(super) fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
-            Route::Settings(_) | Route::ChatManager => {
+            Route::Settings(_) | Route::ChatManager | Route::Scheduled => {
                 let inner = div()
                     .size_full()
                     .flex()
