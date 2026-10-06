@@ -1,5 +1,5 @@
-//! Routines (ADR-0042) over the RPC surface: create, list, delete, the
-//! Routines watch, and Run now — the run Chat's shape (the Routine's name as
+//! Routines (ADR-0042) over the RPC surface: create, list, delete, pause,
+//! the Routines watch, and Run now — the run Chat's shape (the Routine's name as
 //! a user-owned title, its model and Permission mode, the run marker, the
 //! prompt verbatim as the first message), and persistence across restart.
 
@@ -532,6 +532,112 @@ async fn deleting_a_run_chat_keeps_its_record_unopenable() {
     assert!(run.get("chatId").is_none());
     assert_eq!(run["note"], "chat deleted");
     assert_eq!(run["outcome"], "succeeded");
+}
+
+async fn set_paused(engine: &LocalEngine, id: &str, paused: bool) {
+    engine
+        .handle(
+            methods::SET_ROUTINE_PAUSED,
+            json!({ "routineId": id, "paused": paused }),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn fires_while_a_run_is_live_are_skipped() {
+    let fixture = Fixture::new();
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![])
+        .with_chat_script(PROMPT, vec![ScriptedReply::gated(gate.clone(), "Done.")]);
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    let chat_id = run_now(&engine, id).await;
+    wait_for_requests(&provider, 1).await;
+
+    // Run now while the run is live: skipped, no Chat.
+    let RpcReply::Value(reply) = engine
+        .handle(methods::RUN_ROUTINE_NOW, json!({ "routineId": id }))
+        .await
+        .unwrap()
+    else {
+        panic!("RunRoutineNow did not reply a value");
+    };
+    assert!(reply.get("chatId").is_none());
+
+    // So is the scheduled fire.
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 8, 1, 0, 0).unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| {
+        routine["runs"].as_array().unwrap().len() == 3
+    })
+    .await;
+    let runs = fired["runs"].as_array().unwrap();
+    for (run, manual) in runs[..2].iter().zip([false, true]) {
+        assert_eq!(run["outcome"], "skipped");
+        assert_eq!(run["manual"], manual);
+        assert!(run.get("chatId").is_none());
+    }
+    assert_eq!(runs[2]["chatId"], chat_id);
+    assert_eq!(runs[2]["outcome"], "running");
+    let run_chats = chats(&engine)
+        .await
+        .into_iter()
+        .filter(|chat| !chat["routineRun"].is_null())
+        .count();
+    assert_eq!(run_chats, 1);
+
+    gate.notify_one();
+    wait_for_routine(&engine, id, |routine| {
+        routine["runs"][2]["outcome"] == "succeeded"
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_paused_routine_does_not_fire_and_resume_does_not_make_up() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+
+    set_paused(&engine, id, true).await;
+    let paused = list(&engine).await.remove(0);
+    assert_eq!(paused["paused"], "user");
+    assert!(paused.get("nextFireAt").is_none());
+
+    // The 01:00 UTC fire passes while paused.
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 8, 2, 0, 0).unwrap());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        list(&engine).await[0]["runs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    set_paused(&engine, id, false).await;
+    let resumed = list(&engine).await.remove(0);
+    assert!(resumed.get("paused").is_none());
+    assert_eq!(resumed["nextFireAt"], "2026-10-09T01:00:00Z");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        list(&engine).await[0]["runs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 9, 1, 0, 0).unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| {
+        !routine["runs"].as_array().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(fired["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(fired["runs"][0]["firedAt"], "2026-10-09T01:00:00Z");
 }
 
 fn init_repo(dir: &Path) {

@@ -1,9 +1,9 @@
-//! The Routines surface (ADR-0042): list, create, delete, Run now, and the
-//! Routines watch. Every run creates its Chat through `start_routine_run`.
+//! The Routines surface (ADR-0042): list, create, delete, pause, Run now,
+//! and the Routines watch. Every fire goes through `start_routine_run`.
 
 use holt_proto::{
-    Chat, ChatConfig, Routine, RoutineCheckout, RoutineRun, RoutineRunMarker, RunOutcome,
-    TitleSource, WorktreeSpec,
+    Chat, ChatConfig, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineRunMarker,
+    RunOutcome, TitleSource, WorktreeSpec,
 };
 use holt_rpc::{RpcError, RpcReply};
 use serde::Deserialize;
@@ -86,6 +86,36 @@ impl EngineService {
         RpcReply::value(&serde_json::json!({}))
     }
 
+    /// Pause (reason "user") or resume a Routine. Resuming moves the
+    /// schedule's anchor to now, so fires passed while paused are not made
+    /// up and the next fire is the first one in the future.
+    pub(super) fn set_routine_paused(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let id = required_string(&params, "routineId")?;
+        let paused = params
+            .get("paused")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| RpcError::BadParams("paused must be a boolean".into()))?;
+        let now = self.clock.now();
+        self.routines.update(|routines| {
+            let routine = routines
+                .iter_mut()
+                .find(|routine| routine.id == id)
+                .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+            if paused {
+                routine.paused = Some(RoutinePause::User);
+            } else if routine.paused.take().is_some() {
+                routine.last_fired_at =
+                    Some(routine.last_fired_at.map_or(now, |last| last.max(now)));
+            }
+            Ok(())
+        })?;
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    /// → `{chatId}`, or `{}` when the fire was skipped.
     pub(super) fn run_routine_now(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let id = required_string(&params, "routineId")?;
         let chat_id = self.start_routine_run(
@@ -95,18 +125,45 @@ impl EngineService {
                 manual: true,
             },
         )?;
-        RpcReply::value(&serde_json::json!({ "chatId": chat_id }))
+        RpcReply::value(&match chat_id {
+            Some(chat_id) => serde_json::json!({ "chatId": chat_id }),
+            None => serde_json::json!({}),
+        })
     }
 
     /// Fire a Routine: create its run Chat (the Routine's name as a
     /// user-owned title, its model and Permission mode, the run marker),
     /// enqueue the prompt verbatim as the first message, and record the
-    /// run. Returns the new Chat's id.
-    pub(crate) fn start_routine_run(&self, id: &str, fire: Fire) -> Result<String, RpcError> {
+    /// run. Returns the new Chat's id, or `None` when a run is still live
+    /// and the fire is recorded as skipped instead.
+    pub(crate) fn start_routine_run(
+        &self,
+        id: &str,
+        fire: Fire,
+    ) -> Result<Option<String>, RpcError> {
         let routine = self
             .routines
             .get(id)
             .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+        let now = self.clock.now();
+        // Skipped records land on top of the live run, so look past them.
+        if routine.runs.iter().any(|run| run.outcome.is_live()) {
+            let run = RoutineRun {
+                fired_at: now,
+                outcome: RunOutcome::Skipped,
+                note: None,
+                chat_id: None,
+                missed_fires: fire.missed_fires,
+                manual: fire.manual,
+            };
+            self.routines.update(|routines| {
+                if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
+                    push_run(routine, run);
+                }
+                Ok(())
+            })?;
+            return Ok(None);
+        }
         let space = self
             .spaces
             .read()
@@ -115,7 +172,6 @@ impl EngineService {
             .find(|space| space.id == routine.space_id)
             .cloned()
             .ok_or_else(|| RpcError::Failed("the Routine's Space was removed".into()))?;
-        let now = self.clock.now();
         let chat_id = uuid::Uuid::new_v4().to_string();
         self.runtime
             .chats
@@ -180,7 +236,7 @@ impl EngineService {
             }
             Ok(())
         })?;
-        Ok(chat_id)
+        Ok(Some(chat_id))
     }
 
     /// A run Chat's Turn settled: the first one decides the run's outcome.

@@ -406,7 +406,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
 - Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
   — the Routine plus its computed next fire), `CreateRoutine` (the time zone
   defaults to the device's), `DeleteRoutine` (run chats stay as ordinary
-  Chats), and `RunRoutineNow` (`{routineId}` → `{chatId}`). A run creates
+  Chats), `SetRoutinePaused` (`{routineId, paused}`; resuming moves the
+  schedule's anchor to now, so fires passed while paused are not made up),
+  and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running
+  or waiting, any further fire — scheduled or Run now — is recorded as
+  skipped with no Chat (`RunRoutineNow` then replies `{}`). A run creates
   its Chat engine-side — the Routine's name as a user-owned title, its
   `ChatConfig` (Permission mode included, bypassing the sticky default),
   the `Chat::routine_run` marker, and the new-worktree intent when the

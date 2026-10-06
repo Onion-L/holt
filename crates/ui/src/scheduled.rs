@@ -1,6 +1,6 @@
 //! The Scheduled page (glossary: Routine, ADR-0042): a card grid of the
 //! user's Routines with Run now and delete on hover, the Routine drawer with
-//! its configuration and runs, and the create modal. Reads come from the
+//! its configuration, runs, and pause/resume, and the create modal. Reads come from the
 //! AppState Routines watch; writes are RPCs from here.
 
 use std::cell::Cell;
@@ -14,7 +14,9 @@ use gpui::{
     div, prelude::*, px,
 };
 
-use holt_proto::{PermissionMode, RoutineCheckout, RoutineRun, RoutineView, RunOutcome};
+use holt_proto::{
+    PermissionMode, RoutineCheckout, RoutinePause, RoutineRun, RoutineView, RunOutcome,
+};
 use holt_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -286,6 +288,30 @@ impl ScheduledPage {
         }));
     }
 
+    fn set_paused(&mut self, routine_id: String, paused: bool, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        self.error = None;
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::SET_ROUTINE_PAUSED,
+                    serde_json::json!({ "routineId": routine_id, "paused": paused }),
+                )
+                .await;
+            if let Err(err) = result {
+                let verb = if paused { "Pause" } else { "Resume" };
+                this.update(cx, |page, cx| {
+                    page.error = Some(format!("{verb} failed: {err}").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        }));
+    }
+
     fn ask_delete(&mut self, routine_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm = Some(routine_id);
         // Enter / Esc answer the dialog through the root's key handler.
@@ -455,12 +481,14 @@ impl ScheduledPage {
                     .items_center()
                     .justify_between()
                     .gap(px(8.0))
-                    .child(
-                        div()
+                    .child(match routine.paused {
+                        Some(pause) => paused_pill(theme, pause).into_any_element(),
+                        None => div()
                             .text_size(crate::typography::ui_rems(15.0))
                             .text_color(theme.text)
-                            .children(view.next_fire_at.map(|next| countdown(next, Utc::now()))),
-                    )
+                            .children(view.next_fire_at.map(|next| countdown(next, Utc::now())))
+                            .into_any_element(),
+                    })
                     .child(run_strip(theme, &routine.runs)),
             )
             .child(
@@ -548,7 +576,21 @@ impl ScheduledPage {
                     )
             }));
         let run_id = routine.id.clone();
+        let pause_id = routine.id.clone();
+        let paused = routine.paused.is_some();
         let delete_id = routine.id.clone();
+        let banner = routine.paused.map(|pause| {
+            div()
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(ink(0.05))
+                .border_1()
+                .border_color(hairline(0.08))
+                .text_size(crate::typography::ui_rems(12.5))
+                .text_color(theme.text_muted)
+                .child(pause_banner(pause))
+        });
         let rows: Vec<AnyElement> = routine
             .runs
             .iter()
@@ -622,6 +664,19 @@ impl ScheduledPage {
                                     })),
                             )
                             .child(
+                                popover::btn_ghost(
+                                    theme,
+                                    if paused { "Resume" } else { "Pause" },
+                                    "routine-drawer-pause",
+                                )
+                                .id("routine-drawer-pause")
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.set_paused(pause_id.clone(), !paused, cx)
+                                    },
+                                )),
+                            )
+                            .child(
                                 popover::btn_ghost(theme, "Delete", "routine-drawer-delete")
                                     .id("routine-drawer-delete")
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -629,6 +684,7 @@ impl ScheduledPage {
                                     })),
                             ),
                     )
+                    .children(banner)
                     .child(grid)
                     .child(
                         div()
@@ -709,13 +765,11 @@ impl ScheduledPage {
             .items_center()
             .gap(px(10.0))
             .text_size(crate::typography::ui_rems(12.5))
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(7.0))
-                    .rounded(px(999.0))
-                    .bg(outcome_color(theme, run.outcome)),
-            )
+            .child(outcome_mark(
+                theme,
+                run.outcome,
+                div().flex_none().size(px(7.0)).rounded(px(999.0)),
+            ))
             .child(
                 div()
                     .flex_none()
@@ -1222,7 +1276,38 @@ fn outcome_color(theme: &Theme, outcome: RunOutcome) -> gpui::Hsla {
         RunOutcome::Succeeded => theme.success,
         RunOutcome::Failed => theme.danger,
         RunOutcome::Interrupted => theme.text_faint,
-        RunOutcome::Skipped => ink(0.14),
+        RunOutcome::Skipped => ink(0.3),
+    }
+}
+
+/// Fill `mark` with the outcome's colour; a skipped fire is only outlined.
+fn outcome_mark(theme: &Theme, outcome: RunOutcome, mark: gpui::Div) -> gpui::Div {
+    let color = outcome_color(theme, outcome);
+    if outcome == RunOutcome::Skipped {
+        mark.border_1().border_color(color)
+    } else {
+        mark.bg(color)
+    }
+}
+
+fn paused_pill(theme: &Theme, pause: RoutinePause) -> gpui::Div {
+    div()
+        .px(px(8.0))
+        .py(px(2.0))
+        .rounded_full()
+        .bg(ink(0.06))
+        .text_size(crate::typography::ui_rems(11.5))
+        .text_color(theme.text_muted)
+        .child(match pause {
+            RoutinePause::User => "Paused",
+            RoutinePause::SpaceRemoved => "Paused \u{b7} Project removed",
+        })
+}
+
+fn pause_banner(pause: RoutinePause) -> &'static str {
+    match pause {
+        RoutinePause::User => "Paused. It won't fire until you resume it.",
+        RoutinePause::SpaceRemoved => "Paused because its project was removed.",
     }
 }
 
@@ -1245,11 +1330,11 @@ fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
         .items_center()
         .gap(px(2.0))
         .children(strip_outcomes(runs).into_iter().map(|outcome| {
-            div()
-                .w(px(4.0))
-                .h(px(12.0))
-                .rounded(px(1.5))
-                .bg(outcome_color(theme, outcome))
+            outcome_mark(
+                theme,
+                outcome,
+                div().w(px(4.0)).h(px(12.0)).rounded(px(1.5)),
+            )
         }))
 }
 

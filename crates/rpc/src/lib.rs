@@ -281,7 +281,11 @@ pub mod methods {
     pub const CREATE_ROUTINE: &str = "CreateRoutine";
     /// Params `{routineId}`. Run chats stay as ordinary Chats.
     pub const DELETE_ROUTINE: &str = "DeleteRoutine";
-    /// Fire a Routine once, off schedule. Params `{routineId}` → `{chatId}`.
+    /// Params `{routineId, paused}`: pause (reason "user") or resume.
+    /// Resuming does not make up fires passed while paused.
+    pub const SET_ROUTINE_PAUSED: &str = "SetRoutinePaused";
+    /// Fire a Routine once, off schedule. Params `{routineId}` → `{chatId}`,
+    /// or `{}` when a run is still live and the fire was skipped.
     pub const RUN_ROUTINE_NOW: &str = "RunRoutineNow";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
     /// Params are tagged `{op: createChat|createSpace|renameSpace|deleteSpace|

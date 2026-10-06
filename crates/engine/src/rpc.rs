@@ -316,6 +316,7 @@ impl RpcService for EngineService {
             methods::WATCH_ROUTINES => Ok(Self::watch_value(self.routines.subscribe())),
             methods::CREATE_ROUTINE => self.create_routine(params),
             methods::DELETE_ROUTINE => self.delete_routine(params),
+            methods::SET_ROUTINE_PAUSED => self.set_routine_paused(params),
             methods::RUN_ROUTINE_NOW => self.run_routine_now(params),
             methods::WATCH_CONNECTIVITY => {
                 // Default = state Disabled ("no edge transports on this

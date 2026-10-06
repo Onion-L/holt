@@ -188,6 +188,7 @@ pub(crate) fn next_fire(routine: &Routine) -> Option<DateTime<Utc>> {
 }
 
 /// The latest scheduled time at or before `now`, if the Routine is due.
+/// Never while paused.
 pub(crate) fn due_at(routine: &Routine, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let mut due = next_fire(routine).filter(|next| *next <= now)?;
     let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
