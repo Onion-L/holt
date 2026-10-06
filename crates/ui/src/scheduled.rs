@@ -750,7 +750,7 @@ impl ScheduledPage {
             marks.push("Manual".into());
         }
         if run.missed_fires > 0 {
-            marks.push(format!("Catch-up \u{b7} {} missed", run.missed_fires));
+            marks.push(format!("补跑 \u{b7} {} missed", run.missed_fires));
         }
         let detail = run.note.clone().or_else(|| {
             (run.chat_id.is_some() && chat_id.is_none()).then(|| "chat deleted".to_string())
@@ -1311,12 +1311,13 @@ fn pause_banner(pause: RoutinePause) -> &'static str {
     }
 }
 
-/// The newest runs as outcome ticks, oldest left (`runs` is newest first).
-fn strip_outcomes(runs: &[RoutineRun]) -> Vec<RunOutcome> {
-    let mut outcomes: Vec<RunOutcome> = runs
+/// The newest runs as the strip shows them, oldest left (`runs` is newest
+/// first): each outcome, and whether it was a Catch-up run.
+fn strip_outcomes(runs: &[RoutineRun]) -> Vec<(RunOutcome, bool)> {
+    let mut outcomes: Vec<(RunOutcome, bool)> = runs
         .iter()
         .take(STRIP_RUNS)
-        .map(|run| run.outcome)
+        .map(|run| (run.outcome, run.missed_fires > 0))
         .collect();
     outcomes.reverse();
     outcomes
@@ -1329,12 +1330,15 @@ fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
         .flex_row()
         .items_center()
         .gap(px(2.0))
-        .children(strip_outcomes(runs).into_iter().map(|outcome| {
-            outcome_mark(
-                theme,
-                outcome,
-                div().w(px(4.0)).h(px(12.0)).rounded(px(1.5)),
-            )
+        .children(strip_outcomes(runs).into_iter().map(|(outcome, catch_up)| {
+            let mark = div().w(px(4.0)).h(px(12.0)).rounded(px(1.5));
+            // A Catch-up run is ringed; a skipped one stays hollow.
+            let mark = if catch_up && outcome != RunOutcome::Skipped {
+                mark.border_1().border_color(theme.text)
+            } else {
+                mark
+            };
+            outcome_mark(theme, outcome, mark)
         }))
 }
 
@@ -1473,12 +1477,12 @@ mod tests {
     }
 
     #[test]
-    fn strip_shows_the_newest_fourteen_oldest_first() {
+    fn strip_shows_the_newest_fourteen_oldest_first_and_marks_catch_up() {
         let at = DateTime::parse_from_rfc3339("2026-10-07T09:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         // Newest first: one failure on top of twenty successes.
-        let runs: Vec<RoutineRun> = std::iter::once(RunOutcome::Failed)
+        let mut runs: Vec<RoutineRun> = std::iter::once(RunOutcome::Failed)
             .chain(std::iter::repeat_n(RunOutcome::Succeeded, 20))
             .map(|outcome| RoutineRun {
                 fired_at: at,
@@ -1491,8 +1495,14 @@ mod tests {
             .collect();
         let strip = strip_outcomes(&runs);
         assert_eq!(strip.len(), STRIP_RUNS);
-        assert_eq!(strip.last(), Some(&RunOutcome::Failed));
+        assert_eq!(strip.last(), Some(&(RunOutcome::Failed, false)));
         assert_eq!(strip_outcomes(&runs[..3]).len(), 3);
+        runs[0].missed_fires = 3;
+        assert_eq!(
+            strip_outcomes(&runs).last(),
+            Some(&(RunOutcome::Failed, true)),
+            "a Catch-up run is marked"
+        );
     }
 
     #[test]

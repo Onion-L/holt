@@ -410,7 +410,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   schedule's anchor to now, so fires passed while paused are not made up),
   and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running
   or waiting, any further fire — scheduled or Run now — is recorded as
-  skipped with no Chat (`RunRoutineNow` then replies `{}`). A run creates
+  skipped with no Chat (`RunRoutineNow` then replies `{}`). The scheduler
+  coalesces every fire since `lastFiredAt` that it reaches late — at
+  startup, or after the wall clock jumps on wake — into one Catch-up run
+  whose `missedFires` (on the record and the Chat marker) counts them; an
+  on-time fire carries 0. A run creates
   its Chat engine-side — the Routine's name as a user-owned title, its
   `ChatConfig` (Permission mode included, bypassing the sticky default),
   the `Chat::routine_run` marker, and the new-worktree intent when the

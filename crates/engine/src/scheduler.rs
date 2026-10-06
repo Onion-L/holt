@@ -1,11 +1,14 @@
 //! The Routine scheduler (ADR-0042): one long-lived task that sleeps until
 //! the earliest next fire among active Routines, fires whatever is due, and
-//! re-plans whenever the Routine list changes.
+//! re-plans whenever the Routine list changes. Fires missed while Holt was
+//! quit or the device slept are found the same way — at startup, or when the
+//! wall clock has jumped past them on wake — and coalesce into one Catch-up
+//! run.
 
 use chrono::{DateTime, Utc};
 
 use crate::EngineService;
-use crate::routines::{due_at, next_fire};
+use crate::routines::{Due, due_at, next_fire};
 use crate::rpc::routines::Fire;
 
 /// How long a fire whose `last_fired_at` could not be recorded waits before
@@ -54,13 +57,13 @@ impl EngineService {
         }
     }
 
-    /// Record `due` as the Routine's `last_fired_at`, then start its run.
+    /// Record `due.at` as the Routine's `last_fired_at`, then start its run.
     /// The fire is recorded first so a run that cannot start is not retried
     /// on every pass. Returns whether the fire was recorded.
-    fn fire_scheduled(&self, id: &str, due: DateTime<Utc>) -> bool {
+    fn fire_scheduled(&self, id: &str, due: Due) -> bool {
         let recorded = self.routines.update(|routines| {
             if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
-                routine.last_fired_at = Some(due);
+                routine.last_fired_at = Some(due.at);
             }
             Ok(())
         });
@@ -69,7 +72,7 @@ impl EngineService {
             return false;
         }
         let fire = Fire {
-            missed_fires: 0,
+            missed_fires: due.missed_fires,
             manual: false,
         };
         if let Err(error) = self.start_routine_run(id, fire) {

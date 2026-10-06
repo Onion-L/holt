@@ -640,6 +640,71 @@ async fn a_paused_routine_does_not_fire_and_resume_does_not_make_up() {
     assert_eq!(fired["runs"][0]["firedAt"], "2026-10-09T01:00:00Z");
 }
 
+#[tokio::test]
+async fn fires_missed_while_quit_coalesce_into_one_catch_up_run() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    drop(engine);
+
+    // Quit across the 01:00 UTC fires of Oct 8, 9 and 10.
+    let engine = fixture.engine_with_clock(
+        &provider,
+        Clock::manual(Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).unwrap()),
+    );
+    let fired = wait_for_routine(&engine, id, |routine| first_run(routine).is_some()).await;
+    assert_eq!(fired["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(fired["lastFiredAt"], "2026-10-10T01:00:00Z");
+    assert_eq!(fired["nextFireAt"], "2026-10-11T01:00:00Z");
+    let run = first_run(&fired).unwrap();
+    assert_eq!(run["missedFires"], 3);
+    assert_eq!(run["manual"], false);
+    let row = chat_row(&engine, run["chatId"].as_str().unwrap())
+        .await
+        .expect("catch-up chat listed");
+    assert_eq!(row["routineRun"]["missedFires"], 3);
+}
+
+#[tokio::test]
+async fn a_clock_jump_past_fires_coalesces_into_one_catch_up_run() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    let routine = create(&engine, json!({ "cron": "0 * * * *", "timeZone": "UTC" })).await;
+    let id = routine["id"].as_str().unwrap();
+
+    // The device sleeps through 10:00, 11:00 and 12:00.
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 7, 12, 30, 0).unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| first_run(routine).is_some()).await;
+    assert_eq!(fired["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(first_run(&fired).unwrap()["missedFires"], 3);
+    assert_eq!(fired["lastFiredAt"], "2026-10-07T12:00:00Z");
+    assert_eq!(fired["nextFireAt"], "2026-10-07T13:00:00Z");
+}
+
+#[tokio::test]
+async fn a_paused_routine_has_no_catch_up_run() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    set_paused(&engine, id, true).await;
+    drop(engine);
+
+    let engine = fixture.engine_with_clock(
+        &provider,
+        Clock::manual(Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).unwrap()),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let listed = list(&engine).await;
+    assert!(listed[0]["runs"].as_array().unwrap().is_empty());
+    assert!(chats(&engine).await.is_empty());
+}
+
 fn init_repo(dir: &Path) {
     let repo = git2::Repository::init(dir).unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();

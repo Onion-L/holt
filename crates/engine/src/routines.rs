@@ -187,15 +187,35 @@ pub(crate) fn next_fire(routine: &Routine) -> Option<DateTime<Utc>> {
     next_after(&cron, zone, after)
 }
 
-/// The latest scheduled time at or before `now`, if the Routine is due.
-/// Never while paused.
-pub(crate) fn due_at(routine: &Routine, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let mut due = next_fire(routine).filter(|next| *next <= now)?;
+/// A fire later than this behind its scheduled time was missed (Holt was
+/// quit or the device slept) and runs as a Catch-up run.
+const LATE_AFTER: chrono::Duration = chrono::Duration::minutes(2);
+
+/// What a due Routine fires now.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Due {
+    /// The latest scheduled time at or before now; the new `last_fired_at`.
+    pub at: DateTime<Utc>,
+    /// Fires the Catch-up run stands in for; 0 for an on-time fire.
+    pub missed_fires: u32,
+}
+
+/// Whether the Routine is due at `now`, and how many fires passed since it
+/// last fired. One on-time fire is a normal fire; anything else coalesces
+/// into one Catch-up run. Never while paused.
+pub(crate) fn due_at(routine: &Routine, now: DateTime<Utc>) -> Option<Due> {
+    let mut at = next_fire(routine).filter(|next| *next <= now)?;
     let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
-    while let Some(next) = next_after(&cron, zone, due).filter(|next| *next <= now) {
-        due = next;
+    let mut fires: u32 = 1;
+    while let Some(next) = next_after(&cron, zone, at).filter(|next| *next <= now) {
+        at = next;
+        fires = fires.saturating_add(1);
     }
-    Some(due)
+    let on_time = fires == 1 && now - at <= LATE_AFTER;
+    Some(Due {
+        at,
+        missed_fires: if on_time { 0 } else { fires },
+    })
 }
 
 fn views(routines: &[Routine]) -> serde_json::Value {
@@ -213,16 +233,48 @@ fn views(routines: &[Routine]) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    #[test]
-    fn push_run_keeps_the_newest_records() {
-        let mut routine: Routine = serde_json::from_value(serde_json::json!({
-            "id": "r", "name": "r", "spaceId": "s", "prompt": "p", "cron": "* * * * *",
+    fn routine(cron: &str) -> Routine {
+        serde_json::from_value(serde_json::json!({
+            "id": "r", "name": "r", "spaceId": "s", "prompt": "p", "cron": cron,
             "timeZone": "UTC",
             "config": { "provider": "openai", "model": "m", "reasoning": null,
                         "permissionMode": "auto-review" },
             "checkout": "main-checkout", "createdAt": "2026-10-07T09:00:00Z",
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    fn at(time: &str) -> DateTime<Utc> {
+        time.parse().unwrap()
+    }
+
+    #[test]
+    fn due_at_tells_on_time_fires_from_missed_ones() {
+        let hourly = routine("0 * * * *");
+        let due = |now| due_at(&hourly, at(now)).map(|due| (due.at, due.missed_fires));
+        assert_eq!(due("2026-10-07T09:59:00Z"), None);
+        assert_eq!(
+            due("2026-10-07T10:00:30Z"),
+            Some((at("2026-10-07T10:00:00Z"), 0))
+        );
+        // One fire, but well past its time: Holt was not running.
+        assert_eq!(
+            due("2026-10-07T10:30:00Z"),
+            Some((at("2026-10-07T10:00:00Z"), 1))
+        );
+        // Every fire since the anchor, on time or not, coalesces.
+        assert_eq!(
+            due("2026-10-07T13:00:00Z"),
+            Some((at("2026-10-07T13:00:00Z"), 4))
+        );
+        let mut paused = hourly.clone();
+        paused.paused = Some(holt_proto::RoutinePause::User);
+        assert_eq!(due_at(&paused, at("2026-10-07T13:00:00Z")), None);
+    }
+
+    #[test]
+    fn push_run_keeps_the_newest_records() {
+        let mut routine = routine("* * * * *");
         let start = routine.created_at;
         for minute in 0..ROUTINE_RUN_LIMIT as i64 + 5 {
             push_run(
