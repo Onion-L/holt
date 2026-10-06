@@ -361,6 +361,7 @@ impl EngineService {
             self.runtime.remove_chat(&params.chat_id);
             self.terminals.close_chat(&params.chat_id);
             self.runtime.publish_chats();
+            self.forget_routine_run_chat(&params.chat_id);
             // Reclaim at restart, when no in-memory draft or retry owns files.
         }
         // Unknown chat: idempotent no-op, matching the archive path.

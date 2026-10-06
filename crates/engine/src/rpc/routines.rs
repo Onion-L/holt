@@ -183,6 +183,36 @@ impl EngineService {
         Ok(chat_id)
     }
 
+    /// A run Chat's Turn settled: the first one decides the run's outcome.
+    /// Later Turns find the record no longer live and leave it alone.
+    pub(crate) fn settle_routine_run(&self, chat_id: &str, outcome: RunOutcome) {
+        let result = self.routines.update_run(chat_id, |run| {
+            if !run.outcome.is_live() {
+                return false;
+            }
+            run.outcome = outcome;
+            true
+        });
+        if let Err(error) = result {
+            tracing::warn!(chat_id, %error, "could not record a Routine run outcome");
+        }
+    }
+
+    /// A run Chat was deleted: its record stays, no longer openable.
+    pub(crate) fn forget_routine_run_chat(&self, chat_id: &str) {
+        let result = self.routines.update_run(chat_id, |run| {
+            run.chat_id = None;
+            run.note = Some("chat deleted".into());
+            if run.outcome.is_live() {
+                run.outcome = RunOutcome::Interrupted;
+            }
+            true
+        });
+        if let Err(error) = result {
+            tracing::warn!(chat_id, %error, "could not mark a Routine run's Chat deleted");
+        }
+    }
+
     fn space_exists(&self, space_id: &str) -> bool {
         self.spaces
             .read()

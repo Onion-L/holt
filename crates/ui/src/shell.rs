@@ -733,7 +733,7 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
             Route::ChatManager => NavEntry::ChatManager,
-            Route::Scheduled => NavEntry::Scheduled,
+            Route::Scheduled => NavEntry::Scheduled(None),
         });
         Self {
             state,
@@ -1213,7 +1213,11 @@ impl Shell {
     /// Show the Scheduled page from the sidebar nav.
     pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Scheduled;
-        self.nav.push(NavEntry::Scheduled);
+        let drawer = self
+            .scheduled_page
+            .as_ref()
+            .and_then(|page| page.read(cx).drawer());
+        self.nav.push(NavEntry::Scheduled(drawer));
         self.reveal_scheduled(cx);
         self.close_chat_menu(cx);
         cx.notify();
@@ -1227,7 +1231,8 @@ impl Shell {
     }
 
     /// The Scheduled page, created on first use. Run now lands on the run
-    /// Chat via the page's OpenChat event.
+    /// Chat via the page's OpenChat event; the open drawer rides on the
+    /// current history entry.
     fn scheduled_page(&mut self, cx: &mut Context<Self>) -> Entity<ScheduledPage> {
         if let Some(page) = &self.scheduled_page {
             return page.clone();
@@ -1239,6 +1244,11 @@ impl Shell {
             &page,
             |this: &mut Shell, _, event: &ScheduledEvent, cx| match event {
                 ScheduledEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
+                ScheduledEvent::Drawer(drawer) => {
+                    if matches!(this.nav.current(), NavEntry::Scheduled(_)) {
+                        this.nav.replace(NavEntry::Scheduled(drawer.clone()));
+                    }
+                }
             },
         ));
         self.scheduled_page = Some(page.clone());
@@ -3212,6 +3222,79 @@ mod tests {
         assert_eq!(
             stable_panel_content_width(conversation, Some((takeover, conversation))),
             conversation
+        );
+    }
+
+    #[gpui::test]
+    fn back_from_a_run_chat_reopens_the_routine_drawer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "run-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-10-07T09:00:00Z"
+                }))
+                .unwrap(),
+            );
+            state.routines.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "r1", "name": "Daily digest", "spaceId": "space-1",
+                    "prompt": "Summarize.", "cron": "0 9 * * *", "timeZone": "UTC",
+                    "config": {
+                        "provider": "openai", "model": "openai/gpt-5.4",
+                        "reasoning": null, "permissionMode": "auto-review"
+                    },
+                    "checkout": "main-checkout", "createdAt": "2026-10-07T08:00:00Z",
+                    "runs": [{
+                        "firedAt": "2026-10-07T09:00:00Z", "outcome": "succeeded",
+                        "chatId": "run-chat"
+                    }],
+                }))
+                .unwrap(),
+            );
+            state
+        });
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        let page = shell.update(cx, |shell, cx| {
+            shell.open_scheduled(cx);
+            shell.scheduled_page(cx)
+        });
+        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
+        cx.run_until_parked();
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.nav.current().clone()),
+            NavEntry::Scheduled(Some("r1".into()))
+        );
+
+        page.update(cx, |page, cx| page.open_run("run-chat".into(), cx));
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Chat));
+            assert_eq!(
+                shell.state.read(cx).selected_chat.as_deref(),
+                Some("run-chat")
+            );
+        });
+
+        shell.update(cx, |shell, cx| shell.navigate_back(cx));
+        cx.run_until_parked();
+        shell.read_with(cx, |shell, _| {
+            assert!(matches!(shell.route, Route::Scheduled))
+        });
+        assert_eq!(
+            page.read_with(cx, |page, _| page.drawer()),
+            Some("r1".into())
         );
     }
 

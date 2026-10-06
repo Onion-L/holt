@@ -411,7 +411,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `ChatConfig` (Permission mode included, bypassing the sticky default),
   the `Chat::routine_run` marker, and the new-worktree intent when the
   Routine asks for one — then queues the prompt verbatim through the normal
-  run path.
+  run path. A run record's outcome is its first Turn's, set where the queue
+  publishes `TurnTerminalEvent`; follow-up Turns leave it alone. Records
+  still running or waiting at launch become interrupted, and deleting a run
+  Chat clears the record's `chatId` (note "chat deleted").
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
   branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout

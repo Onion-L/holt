@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
-use holt_proto::{ROUTINE_RUN_LIMIT, Routine, RoutineRun, RoutineView};
+use holt_proto::{ROUTINE_RUN_LIMIT, Routine, RoutineRun, RoutineView, RunOutcome};
 use holt_rpc::RpcError;
 use tokio::sync::watch;
 
@@ -27,19 +27,35 @@ pub(crate) struct Routines {
 impl Routines {
     pub fn load(data_dir: &Path) -> Result<Self, EngineError> {
         let path = data_dir.join(FILE_NAME);
-        let routines: Vec<Routine> = match std::fs::read(&path) {
+        let mut routines: Vec<Routine> = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
                 EngineError::Other(format!("could not read {}: {error}", path.display()))
             })?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
+        // Runs live when Holt quit never finish: they become interrupted.
+        let mut interrupted = false;
+        for run in routines
+            .iter_mut()
+            .flat_map(|routine| routine.runs.iter_mut())
+        {
+            if run.outcome.is_live() {
+                run.outcome = RunOutcome::Interrupted;
+                interrupted = true;
+            }
+        }
         let (tx, _) = watch::channel(views(&routines));
-        Ok(Self {
+        let store = Self {
             path,
-            state: Mutex::new(routines),
+            state: Mutex::new(Vec::new()),
             tx,
-        })
+        };
+        if interrupted {
+            store.persist(&routines)?;
+        }
+        *store.state.lock().unwrap_or_else(|e| e.into_inner()) = routines;
+        Ok(store)
     }
 
     /// The current `Vec<RoutineView>` as served by `ListRoutines`.
@@ -75,11 +91,41 @@ impl Routines {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut next = state.clone();
         let out = f(&mut next)?;
+        self.commit(&mut state, next)?;
+        Ok(out)
+    }
+
+    /// Mutate the run record of the run Chat `chat_id`, if any Routine has
+    /// one. `f` returns whether it changed the record; nothing is written
+    /// otherwise.
+    pub fn update_run(
+        &self,
+        chat_id: &str,
+        f: impl FnOnce(&mut RoutineRun) -> bool,
+    ) -> Result<(), RpcError> {
+        let is_run = |run: &RoutineRun| run.chat_id.as_deref() == Some(chat_id);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.iter().any(|routine| routine.runs.iter().any(is_run)) {
+            return Ok(());
+        }
+        let mut next = state.clone();
+        let changed = next
+            .iter_mut()
+            .flat_map(|routine| routine.runs.iter_mut())
+            .find(|run| is_run(run))
+            .is_some_and(f);
+        if changed {
+            self.commit(&mut state, next)?;
+        }
+        Ok(())
+    }
+
+    fn commit(&self, state: &mut Vec<Routine>, next: Vec<Routine>) -> Result<(), RpcError> {
         self.persist(&next)
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         *state = next;
-        self.tx.send_replace(views(&state));
-        Ok(out)
+        self.tx.send_replace(views(state));
+        Ok(())
     }
 
     fn persist(&self, routines: &[Routine]) -> Result<(), EngineError> {
@@ -160,4 +206,44 @@ fn views(routines: &[Routine]) -> serde_json::Value {
         })
         .collect();
     serde_json::to_value(views).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_run_keeps_the_newest_records() {
+        let mut routine: Routine = serde_json::from_value(serde_json::json!({
+            "id": "r", "name": "r", "spaceId": "s", "prompt": "p", "cron": "* * * * *",
+            "timeZone": "UTC",
+            "config": { "provider": "openai", "model": "m", "reasoning": null,
+                        "permissionMode": "auto-review" },
+            "checkout": "main-checkout", "createdAt": "2026-10-07T09:00:00Z",
+        }))
+        .unwrap();
+        let start = routine.created_at;
+        for minute in 0..ROUTINE_RUN_LIMIT as i64 + 5 {
+            push_run(
+                &mut routine,
+                RoutineRun {
+                    fired_at: start + chrono::Duration::minutes(minute),
+                    outcome: RunOutcome::Succeeded,
+                    note: None,
+                    chat_id: None,
+                    missed_fires: 0,
+                    manual: false,
+                },
+            );
+        }
+        assert_eq!(routine.runs.len(), ROUTINE_RUN_LIMIT);
+        assert_eq!(
+            routine.runs[0].fired_at,
+            start + chrono::Duration::minutes(ROUTINE_RUN_LIMIT as i64 + 4)
+        );
+        assert_eq!(
+            routine.runs[ROUTINE_RUN_LIMIT - 1].fired_at,
+            start + chrono::Duration::minutes(5)
+        );
+    }
 }

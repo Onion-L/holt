@@ -12,7 +12,9 @@ use std::{
 
 use futures::FutureExt as _;
 use holt_doc::MessagePart;
-use holt_proto::{MessageQueue, PendingKind, PendingMessage, RunRequest, SessionStatus};
+use holt_proto::{
+    MessageQueue, PendingKind, PendingMessage, RunOutcome, RunRequest, SessionStatus,
+};
 use holt_rpc::{RpcError, turns::TurnTerminalEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -1040,6 +1042,16 @@ impl EngineService {
                                 (holt_rpc::turns::TurnOutcome::Interrupted, None)
                             }
                         };
+                        service.settle_routine_run(
+                            &worker_chat.chat_id,
+                            match outcome {
+                                holt_rpc::turns::TurnOutcome::Succeeded => RunOutcome::Succeeded,
+                                holt_rpc::turns::TurnOutcome::Failed => RunOutcome::Failed,
+                                holt_rpc::turns::TurnOutcome::Interrupted => {
+                                    RunOutcome::Interrupted
+                                }
+                            },
+                        );
                         service.turn_events.publish(TurnTerminalEvent {
                             event_id: uuid::Uuid::new_v4().to_string(),
                             chat_id: worker_chat.chat_id.clone(),

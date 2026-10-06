@@ -8,7 +8,10 @@ mod common;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
-use common::{Fixture, ScriptedProvider, ScriptedReply, next_frame, wait_for_requests};
+use common::{
+    Fixture, ScriptedProvider, ScriptedReply, next_frame, run_prompt, wait_for_requests,
+    wait_for_session_status,
+};
 use holt_engine::{Clock, LocalEngine};
 use holt_rpc::{RpcError, RpcReply, RpcService, methods};
 use serde_json::{Value, json};
@@ -415,6 +418,120 @@ async fn a_local_time_repeated_by_fall_back_fires_once() {
     )
     .await;
     assert_eq!(next, "2026-11-02T06:30:00Z");
+}
+
+fn first_run(routine: &Value) -> Option<&Value> {
+    routine["runs"].as_array().and_then(|runs| runs.first())
+}
+
+#[tokio::test]
+async fn the_first_turn_decides_the_outcome_and_follow_ups_leave_it() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+
+    let chat_id = run_now(&engine, id).await;
+    let settled = wait_for_routine(&engine, id, |routine| {
+        first_run(routine).is_some_and(|run| run["outcome"] != "running")
+    })
+    .await;
+    assert_eq!(first_run(&settled).unwrap()["outcome"], "succeeded");
+
+    // The provider has no reply for this prompt: the follow-up Turn fails.
+    run_prompt(&engine, &chat_id, &fixture.cwd(), "And today's?").await;
+    wait_for_requests(&provider, 2).await;
+    let RpcReply::Stream(mut sessions) = engine
+        .handle(methods::WATCH_SESSIONS, json!({}))
+        .await
+        .unwrap()
+    else {
+        panic!("WatchSessions did not return a stream");
+    };
+    wait_for_session_status(&mut sessions, &chat_id, "errored").await;
+    assert_eq!(
+        first_run(&list(&engine).await[0]).unwrap()["outcome"],
+        "succeeded"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_first_turn_fails_the_run() {
+    let fixture = Fixture::new();
+    // No script for the prompt: the run's only Turn fails.
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    run_now(&engine, id).await;
+    let settled = wait_for_routine(&engine, id, |routine| {
+        first_run(routine).is_some_and(|run| run["outcome"] != "running")
+    })
+    .await;
+    assert_eq!(first_run(&settled).unwrap()["outcome"], "failed");
+}
+
+#[tokio::test]
+async fn runs_live_at_quit_are_interrupted_on_launch() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    drop(engine);
+
+    // A record the previous launch left running or waiting.
+    let path = fixture.data_dir.path().join("routines.json");
+    let mut stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stored[0]["runs"] = json!([
+        { "firedAt": "2026-10-07T08:00:00Z", "outcome": "waiting", "chatId": "c2" },
+        { "firedAt": "2026-10-07T07:00:00Z", "outcome": "running", "chatId": "c1" },
+        { "firedAt": "2026-10-07T06:00:00Z", "outcome": "succeeded", "chatId": "c0" },
+    ]);
+    std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    let engine = fixture.engine_with_clock(&provider, clock());
+    let listed = list(&engine).await;
+    assert_eq!(listed[0]["id"], routine["id"]);
+    let outcomes: Vec<_> = listed[0]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["outcome"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(outcomes, ["interrupted", "interrupted", "succeeded"]);
+    drop(engine);
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        stored[0]["runs"][1]["outcome"], "interrupted",
+        "the fix is persisted"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_run_chat_keeps_its_record_unopenable() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    let chat_id = run_now(&engine, id).await;
+    wait_for_routine(&engine, id, |routine| {
+        first_run(routine).is_some_and(|run| run["outcome"] == "succeeded")
+    })
+    .await;
+
+    engine
+        .handle(
+            methods::MUTATE,
+            json!({ "op": "deleteChat", "chatId": chat_id }),
+        )
+        .await
+        .unwrap();
+    let run = first_run(&list(&engine).await[0]).unwrap().clone();
+    assert!(run.get("chatId").is_none());
+    assert_eq!(run["note"], "chat deleted");
+    assert_eq!(run["outcome"], "succeeded");
 }
 
 fn init_repo(dir: &Path) {

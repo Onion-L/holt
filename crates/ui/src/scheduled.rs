@@ -1,19 +1,20 @@
 //! The Scheduled page (glossary: Routine, ADR-0042): a card grid of the
-//! user's Routines with Run now and delete on hover, and the create modal.
-//! Reads come from the AppState Routines watch; writes are RPCs from here.
+//! user's Routines with Run now and delete on hover, the Routine drawer with
+//! its configuration and runs, and the create modal. Reads come from the
+//! AppState Routines watch; writes are RPCs from here.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 
 use gpui::{
     AnyElement, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task, Window,
     div, prelude::*, px,
 };
 
-use holt_proto::{PermissionMode, RoutineCheckout, RoutineView};
+use holt_proto::{PermissionMode, RoutineCheckout, RoutineRun, RoutineView, RunOutcome};
 use holt_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -29,10 +30,16 @@ const CARD_MIN_W: f32 = 240.0;
 const GRID_GAP: f32 = 12.0;
 /// How often the cards' countdowns repaint.
 const TICK: Duration = Duration::from_secs(30);
+const DRAWER_W: f32 = 420.0;
+/// Outcomes the card strip shows, oldest left.
+const STRIP_RUNS: usize = 14;
 
 pub enum ScheduledEvent {
-    /// A run Chat to show (Run now landed).
+    /// A run Chat to show (Run now landed, or a drawer run row).
     OpenChat(String),
+    /// The user opened (Some) or closed (None) a Routine's drawer; the shell
+    /// keeps it in navigation history so Back from a run Chat restores it.
+    Drawer(Option<String>),
 }
 
 /// The open create modal.
@@ -56,6 +63,8 @@ pub struct ScheduledPage {
     create: Option<CreateForm>,
     /// The Routine the open delete confirmation targets.
     confirm: Option<String>,
+    /// The Routine whose drawer is open.
+    drawer: Option<String>,
     error: Option<SharedString>,
     /// Grid columns, measured from the grid's width last paint.
     columns: Rc<Cell<u16>>,
@@ -84,6 +93,7 @@ impl ScheduledPage {
             pickers,
             create: None,
             confirm: None,
+            drawer: None,
             error: None,
             columns: Rc::new(Cell::new(3)),
             focus: cx.focus_handle(),
@@ -98,6 +108,37 @@ impl ScheduledPage {
     pub fn reveal(&mut self, cx: &mut Context<Self>) {
         self.focus_pending = true;
         cx.notify();
+    }
+
+    pub fn drawer(&self) -> Option<String> {
+        self.drawer.clone()
+    }
+
+    /// Show `routine_id`'s drawer (or none) without recording a navigation:
+    /// the shell calls this when walking history.
+    pub fn set_drawer(&mut self, routine_id: Option<String>, cx: &mut Context<Self>) {
+        self.drawer = routine_id;
+        cx.notify();
+    }
+
+    pub(crate) fn open_drawer(&mut self, routine_id: String, cx: &mut Context<Self>) {
+        if self.drawer.as_ref() == Some(&routine_id) {
+            return;
+        }
+        self.drawer = Some(routine_id.clone());
+        cx.emit(ScheduledEvent::Drawer(Some(routine_id)));
+        cx.notify();
+    }
+
+    fn close_drawer(&mut self, cx: &mut Context<Self>) {
+        if self.drawer.take().is_some() {
+            cx.emit(ScheduledEvent::Drawer(None));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn open_run(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        cx.emit(ScheduledEvent::OpenChat(chat_id));
     }
 
     fn open_create(&mut self, cx: &mut Context<Self>) {
@@ -256,6 +297,9 @@ impl ScheduledPage {
         let Some(routine_id) = self.confirm.take() else {
             return;
         };
+        if self.drawer.as_ref() == Some(&routine_id) {
+            self.close_drawer(cx);
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -289,6 +333,8 @@ impl ScheduledPage {
             }
         } else if self.create.is_some() && key == "escape" {
             self.close_create(window, cx);
+        } else if self.drawer.is_some() && key == "escape" {
+            self.close_drawer(cx);
         } else {
             return;
         }
@@ -351,9 +397,13 @@ impl ScheduledPage {
                 })),
             );
         let faint = theme.text_muted.opacity(0.75);
+        let open_id = routine.id.clone();
+        let selected = self.drawer.as_ref() == Some(&routine.id);
         div()
             .id(group.clone())
             .group(group)
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| this.open_drawer(open_id.clone(), cx)))
             .min_w_0()
             .min_h(px(176.0))
             .p(px(14.0))
@@ -362,6 +412,9 @@ impl ScheduledPage {
             .border_color(hairline(0.08))
             .bg(ink(0.025))
             .hover(|s| s.bg(ink(0.045)))
+            .when(selected, |card| {
+                card.border_color(hairline(0.2)).bg(ink(0.045))
+            })
             .flex()
             .flex_col()
             .gap(px(8.0))
@@ -395,14 +448,21 @@ impl ScheduledPage {
                     ))),
             )
             .child(div().flex_1())
-            .when_some(view.next_fire_at, |card, next| {
-                card.child(
-                    div()
-                        .text_size(crate::typography::ui_rems(15.0))
-                        .text_color(theme.text)
-                        .child(countdown(next, Utc::now())),
-                )
-            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(15.0))
+                            .text_color(theme.text)
+                            .children(view.next_fire_at.map(|next| countdown(next, Utc::now()))),
+                    )
+                    .child(run_strip(theme, &routine.runs)),
+            )
             .child(
                 div()
                     .flex()
@@ -419,6 +479,270 @@ impl ScheduledPage {
                             .child(mode_label(routine.config.permission_mode)),
                     ),
             )
+            .into_any_element()
+    }
+
+    fn render_drawer(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let routine_id = self.drawer.as_ref()?;
+        let (view, space, chats) = {
+            let state = self.state.read(cx);
+            let view = state
+                .routines
+                .iter()
+                .find(|view| &view.routine.id == routine_id)?
+                .clone();
+            let space = state
+                .space_row(&view.routine.space_id)
+                .map(|space| space.display_name().to_string())
+                .unwrap_or_else(|| "Missing project".into());
+            let chats: std::collections::HashSet<String> =
+                state.chats.iter().map(|chat| chat.id.clone()).collect();
+            (view, space, chats)
+        };
+        let routine = &view.routine;
+        let model = self.model_label(&view, cx);
+        let next = view
+            .next_fire_at
+            .map(|next| format!("{} ({})", local_time(next), countdown(next, Utc::now())))
+            .unwrap_or_else(|| "\u{2014}".into());
+        let checkout = match routine.checkout {
+            RoutineCheckout::MainCheckout => "Main checkout",
+            RoutineCheckout::NewWorktree => "New worktree",
+        };
+        let config: [(&'static str, SharedString); 7] = [
+            ("Schedule", routine.cron.clone().into()),
+            ("Time zone", routine.time_zone.clone().into()),
+            ("Next run", next.into()),
+            ("Project", space.into()),
+            ("Checkout", checkout.into()),
+            ("Model", model),
+            (
+                "Permission",
+                mode_label(routine.config.permission_mode).into(),
+            ),
+        ];
+        let label = |text: &'static str| {
+            div()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child(text)
+        };
+        let grid = div()
+            .grid()
+            .grid_cols(2)
+            .gap_x(px(12.0))
+            .gap_y(px(8.0))
+            .children(config.into_iter().map(|(key, value)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .min_w_0()
+                    .child(label(key))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .text_color(theme.text)
+                            .child(value),
+                    )
+            }));
+        let run_id = routine.id.clone();
+        let delete_id = routine.id.clone();
+        let rows: Vec<AnyElement> = routine
+            .runs
+            .iter()
+            .enumerate()
+            .map(|(ix, run)| self.render_run_row(theme, ix, run, &chats, cx))
+            .collect();
+        let empty = rows.is_empty();
+        let panel = div()
+            .id("routine-drawer")
+            .debug_selector(|| "routine-drawer".into())
+            .occlude()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h_full()
+            .w(px(DRAWER_W))
+            .bg(theme.surface_dialog)
+            .border_l_1()
+            .border_color(hairline(0.10))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                // Clicks inside a dialog this drawer opened stay put.
+                if this.confirm.is_none() && this.create.is_none() {
+                    this.close_drawer(cx);
+                }
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(20.0))
+                    .pt(px(18.0))
+                    .pb(px(14.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(popover::dialog_title(theme, &routine.name)),
+                            )
+                            .child(
+                                icon_button(
+                                    theme,
+                                    "routine-drawer-close".into(),
+                                    icons::CLOSE,
+                                    false,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.close_drawer(cx))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .child(
+                                popover::btn_primary(theme, "Run now")
+                                    .id("routine-drawer-run")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.run_now(run_id.clone(), cx)
+                                    })),
+                            )
+                            .child(
+                                popover::btn_ghost(theme, "Delete", "routine-drawer-delete")
+                                    .id("routine-drawer-delete")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.ask_delete(delete_id.clone(), window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(grid)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(label("Prompt"))
+                            .child(
+                                div()
+                                    .id("routine-drawer-prompt")
+                                    .max_h(px(140.0))
+                                    .overflow_y_scroll()
+                                    .occlude()
+                                    .px(px(12.0))
+                                    .py(px(10.0))
+                                    .rounded(px(8.0))
+                                    .bg(ink(0.03))
+                                    .border_1()
+                                    .border_color(hairline(0.06))
+                                    .text_size(crate::typography::ui_rems(13.0))
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(routine.prompt.clone())),
+                            ),
+                    )
+                    .child(label("Runs")),
+            )
+            .child(
+                // A nested scroller inside the page: occlude so one wheel
+                // gesture can't move both (ADR-0013).
+                div()
+                    .id("routine-drawer-runs")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .occlude()
+                    .px(px(12.0))
+                    .pb(px(16.0))
+                    .when(empty, |list| {
+                        list.child(
+                            div()
+                                .px(px(8.0))
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .text_color(theme.text_muted)
+                                .child("No runs yet."),
+                        )
+                    })
+                    .children(rows),
+            );
+        Some(panel.into_any_element())
+    }
+
+    fn render_run_row(
+        &self,
+        theme: &Theme,
+        ix: usize,
+        run: &RoutineRun,
+        chats: &std::collections::HashSet<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chat_id = run.chat_id.clone().filter(|id| chats.contains(id));
+        let mut marks: Vec<String> = Vec::new();
+        if run.manual {
+            marks.push("Manual".into());
+        }
+        if run.missed_fires > 0 {
+            marks.push(format!("Catch-up \u{b7} {} missed", run.missed_fires));
+        }
+        let detail = run.note.clone().or_else(|| {
+            (run.chat_id.is_some() && chat_id.is_none()).then(|| "chat deleted".to_string())
+        });
+        div()
+            .id(("routine-run-row", ix))
+            .px(px(8.0))
+            .py(px(7.0))
+            .rounded(px(8.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .text_size(crate::typography::ui_rems(12.5))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(7.0))
+                    .rounded(px(999.0))
+                    .bg(outcome_color(theme, run.outcome)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(84.0))
+                    .text_color(theme.text)
+                    .child(outcome_label(run.outcome)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(
+                        std::iter::once(local_time(run.fired_at))
+                            .chain(marks)
+                            .chain(detail)
+                            .collect::<Vec<_>>()
+                            .join(" \u{b7} "),
+                    )),
+            )
+            .map(|row| match chat_id {
+                Some(chat_id) => row.cursor_pointer().hover(|s| s.bg(ink(0.05))).on_click(
+                    cx.listener(move |this, _, _, cx| this.open_run(chat_id.clone(), cx)),
+                ),
+                None => row.opacity(0.7),
+            })
             .into_any_element()
     }
 
@@ -790,6 +1114,15 @@ impl Render for ScheduledPage {
             .clone()
             .and_then(|id| self.render_confirm(&theme, &id, window, cx));
         let create = self.render_create(&theme, window, cx);
+        // A Routine deleted elsewhere takes its drawer with it.
+        if self
+            .drawer
+            .as_ref()
+            .is_some_and(|id| !routines.iter().any(|view| &view.routine.id == id))
+        {
+            self.drawer = None;
+        }
+        let drawer = self.render_drawer(&theme, cx);
 
         div()
             .id("scheduled-page")
@@ -798,33 +1131,40 @@ impl Render for ScheduledPage {
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 this.on_key(event, window, cx);
             }))
+            .relative()
             .size_full()
-            .overflow_y_scroll()
             .child(
                 div()
-                    .w_full()
-                    .max_w(px(PAGE_MAX_W))
-                    .mx_auto()
-                    .px(px(24.0))
-                    .pt(px(28.0))
-                    .pb(px(32.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(20.0))
-                    .child(self.render_header(&theme, routines.len(), cx))
-                    .when_some(self.error.clone(), |el, message| {
-                        el.child(
-                            widgets::error_strip(&theme, message)
-                                .id("routine-error")
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(grid),
+                    .id("scheduled-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(PAGE_MAX_W))
+                            .mx_auto()
+                            .px(px(24.0))
+                            .pt(px(28.0))
+                            .pb(px(32.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(20.0))
+                            .child(self.render_header(&theme, routines.len(), cx))
+                            .when_some(self.error.clone(), |el, message| {
+                                el.child(
+                                    widgets::error_strip(&theme, message)
+                                        .id("routine-error")
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.error = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(grid),
+                    ),
             )
+            .children(drawer)
             .children(confirm)
             .children(create)
     }
@@ -835,7 +1175,6 @@ fn grid_columns(width: f32) -> u16 {
     (((width + GRID_GAP) / (CARD_MIN_W + GRID_GAP)).floor() as u16).max(1)
 }
 
-/// The delete confirmation's consequence line; run Chats outlive the Routine.
 /// Time until the next fire at minute grain: "in 2h 14m", "in 3d 4h".
 fn countdown(next: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let minutes = (next - now).num_minutes();
@@ -851,12 +1190,67 @@ fn countdown(next: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// The delete confirmation's consequence line; run Chats outlive the Routine.
 fn delete_body(runs: usize) -> String {
     match runs {
         0 => "It stops firing.".into(),
         1 => "It stops firing. Its run chat stays in Recent as an ordinary chat.".into(),
         n => format!("It stops firing. Its {n} run chats stay in Recent as ordinary chats."),
     }
+}
+
+/// A run time in the viewer's zone: "Oct 7, 09:00".
+fn local_time(at: DateTime<Utc>) -> String {
+    at.with_timezone(&Local).format("%b %-d, %H:%M").to_string()
+}
+
+fn outcome_label(outcome: RunOutcome) -> &'static str {
+    match outcome {
+        RunOutcome::Running => "Running",
+        RunOutcome::Waiting => "Waiting",
+        RunOutcome::Succeeded => "Succeeded",
+        RunOutcome::Failed => "Failed",
+        RunOutcome::Interrupted => "Interrupted",
+        RunOutcome::Skipped => "Skipped",
+    }
+}
+
+fn outcome_color(theme: &Theme, outcome: RunOutcome) -> gpui::Hsla {
+    match outcome {
+        RunOutcome::Running => theme.busy,
+        RunOutcome::Waiting => theme.warning,
+        RunOutcome::Succeeded => theme.success,
+        RunOutcome::Failed => theme.danger,
+        RunOutcome::Interrupted => theme.text_faint,
+        RunOutcome::Skipped => ink(0.14),
+    }
+}
+
+/// The newest runs as outcome ticks, oldest left (`runs` is newest first).
+fn strip_outcomes(runs: &[RoutineRun]) -> Vec<RunOutcome> {
+    let mut outcomes: Vec<RunOutcome> = runs
+        .iter()
+        .take(STRIP_RUNS)
+        .map(|run| run.outcome)
+        .collect();
+    outcomes.reverse();
+    outcomes
+}
+
+fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(2.0))
+        .children(strip_outcomes(runs).into_iter().map(|outcome| {
+            div()
+                .w(px(4.0))
+                .h(px(12.0))
+                .rounded(px(1.5))
+                .bg(outcome_color(theme, outcome))
+        }))
 }
 
 /// `openai/gpt-5.4` → `gpt-5.4` when the catalog hasn't named the model.
@@ -991,6 +1385,29 @@ mod tests {
         assert_eq!(delete_body(0), "It stops firing.");
         assert!(delete_body(1).contains("Its run chat stays"));
         assert!(delete_body(4).contains("Its 4 run chats stay"));
+    }
+
+    #[test]
+    fn strip_shows_the_newest_fourteen_oldest_first() {
+        let at = DateTime::parse_from_rfc3339("2026-10-07T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Newest first: one failure on top of twenty successes.
+        let runs: Vec<RoutineRun> = std::iter::once(RunOutcome::Failed)
+            .chain(std::iter::repeat_n(RunOutcome::Succeeded, 20))
+            .map(|outcome| RoutineRun {
+                fired_at: at,
+                outcome,
+                note: None,
+                chat_id: None,
+                missed_fires: 0,
+                manual: false,
+            })
+            .collect();
+        let strip = strip_outcomes(&runs);
+        assert_eq!(strip.len(), STRIP_RUNS);
+        assert_eq!(strip.last(), Some(&RunOutcome::Failed));
+        assert_eq!(strip_outcomes(&runs[..3]).len(), 3);
     }
 
     #[test]
