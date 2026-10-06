@@ -56,6 +56,10 @@ use crate::transcript::{self, Transcript, TranscriptEvent};
 mod about;
 mod chat_list;
 mod chat_menu;
+mod external_apps;
+mod navigation;
+mod notices;
+mod panes;
 mod right_pane;
 mod spaces;
 mod tabs;
@@ -66,6 +70,10 @@ pub use chat_list::*;
 use chat_menu::ChatMenuState;
 mod file_lookup;
 mod file_sidebar;
+use external_apps::*;
+pub use navigation::*;
+use notices::*;
+use panes::*;
 pub use right_pane::*;
 use spaces::{AddSpaceFlow, RenameSpaceDialog, SidebarDisclosureMotion};
 pub use titlebar::*;
@@ -86,27 +94,6 @@ actions!(
     ]
 );
 
-/// Vertical pane resize hitboxes yield the global titlebar. Keeping this in
-/// the shared constructor makes left/right seams mirror each other and avoids
-/// relying on paint order when chrome crosses an animated pane boundary.
-const PANE_RESIZE_HITBOX_TOP: f32 = Theme::TITLEBAR_HEIGHT;
-
-fn stable_panel_content_width(target: f32, transition: Option<(f32, f32)>) -> f32 {
-    transition.map(|(from, to)| from.max(to)).unwrap_or(target)
-}
-
-fn right_panel_content_width(
-    target: f32,
-    transition: Option<(f32, f32)>,
-    takeover_width: Option<f32>,
-) -> f32 {
-    takeover_width.unwrap_or_else(|| stable_panel_content_width(target, transition))
-}
-
-fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
-    (viewport - sidebar - right).max(0.0)
-}
-
 /// Random index into `loaders::MARK_SHAPES` — time-seeded, display-only (no
 /// crypto need). Re-rolled per new-chat canvas visit.
 fn random_mark_index() -> usize {
@@ -115,111 +102,6 @@ fn random_mark_index() -> usize {
         .map(|d| d.subsec_nanos() as usize)
         .unwrap_or(0)
         % loaders::MARK_SHAPES.len()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ExternalApp {
-    Finder,
-    VsCode,
-    Cursor,
-    Zed,
-    PyCharm,
-    Terminal,
-    Ghostty,
-}
-
-impl ExternalApp {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Finder => "Finder",
-            Self::VsCode => "VS Code",
-            Self::Cursor => "Cursor",
-            Self::Zed => "Zed",
-            Self::PyCharm => "PyCharm",
-            Self::Terminal => "Terminal",
-            Self::Ghostty => "Ghostty",
-        }
-    }
-
-    fn bundle_name(self) -> Option<&'static str> {
-        match self {
-            Self::Finder => None,
-            Self::VsCode => Some("Visual Studio Code"),
-            Self::Cursor => Some("Cursor"),
-            Self::Zed => Some("Zed"),
-            Self::PyCharm => Some("PyCharm"),
-            Self::Terminal => Some("Terminal"),
-            Self::Ghostty => Some("Ghostty"),
-        }
-    }
-
-    /// Full-colour brand mark (PNG under `assets/apps/`), rendered by the
-    /// titlebar via `img` — not the tinted Solar SVG path. Cursor/Zed ship
-    /// per-appearance variants (`-dark` is the light glyph for dark
-    /// surfaces, same convention as the provider brand icons).
-    fn icon(self, appearance: crate::theme::Appearance) -> &'static str {
-        let dark = appearance.is_dark();
-        match self {
-            Self::Finder => icons::APP_FINDER,
-            Self::VsCode => icons::APP_VSCODE,
-            Self::Cursor => {
-                if dark {
-                    icons::APP_CURSOR_DARK
-                } else {
-                    icons::APP_CURSOR_LIGHT
-                }
-            }
-            Self::Zed => {
-                if dark {
-                    icons::APP_ZED_DARK
-                } else {
-                    icons::APP_ZED_LIGHT
-                }
-            }
-            Self::PyCharm => icons::APP_PYCHARM,
-            Self::Terminal => icons::APP_TERMINAL,
-            Self::Ghostty => icons::APP_GHOSTTY,
-        }
-    }
-}
-
-fn available_external_apps() -> Vec<ExternalApp> {
-    if !cfg!(target_os = "macos") {
-        return Vec::new();
-    }
-    [
-        ExternalApp::Finder,
-        ExternalApp::VsCode,
-        ExternalApp::Cursor,
-        ExternalApp::Zed,
-        ExternalApp::PyCharm,
-        ExternalApp::Terminal,
-        ExternalApp::Ghostty,
-    ]
-    .into_iter()
-    .filter(|app| external_app_installed(*app))
-    .collect()
-}
-
-fn external_app_installed(app: ExternalApp) -> bool {
-    let candidates: &[&str] = match app {
-        ExternalApp::Finder => &["/System/Library/CoreServices/Finder.app"],
-        ExternalApp::VsCode => &["/Applications/Visual Studio Code.app"],
-        ExternalApp::Cursor => &["/Applications/Cursor.app"],
-        ExternalApp::Zed => &["/Applications/Zed.app"],
-        ExternalApp::PyCharm => &["/Applications/PyCharm.app", "/Applications/PyCharm CE.app"],
-        ExternalApp::Terminal => &["/System/Applications/Utilities/Terminal.app"],
-        ExternalApp::Ghostty => &["/Applications/Ghostty.app"],
-    };
-    candidates.iter().any(|path| Path::new(path).exists())
-        || std::env::var_os("HOME").is_some_and(|home| {
-            candidates.iter().any(|path| {
-                Path::new(path)
-                    .file_name()
-                    .map(|name| Path::new(&home).join("Applications").join(name).exists())
-                    .unwrap_or(false)
-            })
-        })
 }
 
 /// Open the session at `slot` (zero-based) of the sidebar's active list. One
@@ -373,130 +255,6 @@ pub enum Route {
     ChatManager,
 }
 
-/// One route-history entry (holt parity: the renderer's TanStack memory
-/// history — every route the user visited, browser-style).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NavEntry {
-    /// A chat route; the id of the selected chat ("" = the new-chat canvas).
-    Chat(String),
-    Settings(SettingsSection),
-    ChatManager,
-}
-
-/// Browser-style navigation history for the titlebar back/forward buttons
-/// (holt window-controls.tsx semantics): every route change pushes an entry;
-/// Back/Forward walk the stack without changing it; pushing while behind the
-/// tip truncates the entries ahead (a new branch, exactly like a browser).
-#[derive(Debug)]
-pub struct NavHistory {
-    entries: Vec<NavEntry>,
-    index: usize,
-}
-
-impl NavHistory {
-    pub fn new(initial: NavEntry) -> Self {
-        Self {
-            entries: vec![initial],
-            index: 0,
-        }
-    }
-
-    pub fn current(&self) -> &NavEntry {
-        &self.entries[self.index]
-    }
-
-    /// Record a route change. Re-navigating to the current route is a no-op
-    /// (selecting the already-selected chat never happened as a navigation);
-    /// otherwise any forward branch is truncated and the entry appended.
-    pub fn push(&mut self, entry: NavEntry) {
-        if *self.current() == entry {
-            return;
-        }
-        self.entries.truncate(self.index + 1);
-        self.entries.push(entry);
-        self.index += 1;
-    }
-
-    /// Swap the current entry in place without growing the stack — the native
-    /// equivalent of a `replace: true` navigation (holt's boot redirect from
-    /// `/` into the last-used chat leaves no dead Back target behind).
-    pub fn replace(&mut self, entry: NavEntry) {
-        self.entries[self.index] = entry;
-    }
-
-    pub fn can_back(&self) -> bool {
-        self.index > 0
-    }
-
-    /// Memory history keeps every entry, so "behind the last entry" is exactly
-    /// "can go forward" (holt window-controls.tsx).
-    pub fn can_forward(&self) -> bool {
-        self.index + 1 < self.entries.len()
-    }
-
-    pub fn back(&mut self) -> Option<NavEntry> {
-        if !self.can_back() {
-            return None;
-        }
-        self.index -= 1;
-        Some(self.current().clone())
-    }
-
-    pub fn forward(&mut self) -> Option<NavEntry> {
-        if !self.can_forward() {
-            return None;
-        }
-        self.index += 1;
-        Some(self.current().clone())
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-/// Drag marker for the sidebar resize handle.
-struct SidebarResize;
-/// Drag marker for the terminal-panel height handle.
-struct TerminalResize;
-
-/// Invisible drag ghost — resize drags render nothing at the cursor.
-struct DragGhost;
-
-impl Render for DragGhost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-/// A oneshot width tween (200ms ease-out), driven MANUALLY from render via
-/// [`Shell::eval_tween`] — never through a `with_animation` wrapper. gpui keys
-/// an animation element's start time by its full global element-id path, so a
-/// wrapper that mounts/remounts (route swap, or an ancestor animation keyed by
-/// a fresh epoch) silently REPLAYS the tween from t=0. Manual evaluation keeps
-/// the element tree's shape constant: a finished or stale tween is exactly the
-/// steady state, no matter how the tree around it remounts (round-6 §1–3).
-#[derive(Debug, Clone, Copy)]
-struct WidthTween {
-    from: f32,
-    to: f32,
-    started: std::time::Instant,
-}
-
-impl WidthTween {
-    fn new(from: f32, to: f32) -> Self {
-        Self {
-            from,
-            to,
-            started: std::time::Instant::now(),
-        }
-    }
-}
-
 /// The chat-row Rename dialog.
 struct RenameChatDialog {
     chat_id: String,
@@ -516,66 +274,6 @@ struct SubagentTab {
     _fetch: Option<Task<()>>,
     /// Spawn chips INSIDE the subagent transcript open their own tabs.
     _events: Subscription,
-}
-
-/// Semantic kind for a holt notice — drives the icon + color tokens used
-/// to render the chip. Each kind pairs with a `(border/icon, text)` color
-/// pair so error reads as urgent, success as affirming, etc.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HoltNoticeKind {
-    /// Routine status (e.g. "Copying…", deep-link echoes). Brand-accent
-    /// tint — informational but not alarming.
-    Plain,
-    /// Completed an action the user asked for (copy succeeded).
-    Success,
-    /// Heads-up that something is wrong or might fail (missing data,
-    /// deprecation). Amber tint — softer than error.
-    Warning,
-    /// Action failed. Red tint — the most attention-demanding kind.
-    Error,
-}
-
-/// One stacked top-right notification chip — replaces the inline sidebar
-/// notice strip. Each entry owns its own auto-dismiss timer; the timer is
-/// dropped (canceled) while hovered and re-armed on unhover. Manual
-/// dismissal is also exposed via the close button.
-struct HoltNotice {
-    /// Stable per-notice id — lets listeners and animations key on the
-    /// specific entry even when several stack at once.
-    id: u64,
-    kind: HoltNoticeKind,
-    message: SharedString,
-    /// Whether the pointer is currently over the chip. Drives the
-    /// hover-pause contract for the auto-dismiss timer.
-    hovered: bool,
-    /// 2s auto-dismiss. Dropped (and therefore canceled) when the chip
-    /// becomes hovered, re-armed on unhover, and on manual close.
-    timer: Option<Task<()>>,
-}
-
-/// Color pair used to paint a holt notice chip: `(border/icon, text)`.
-/// Kept local to the shell since the pairing is a chip-specific decision,
-/// not a generic theme contract.
-fn holt_notice_palette(kind: HoltNoticeKind, theme: &Theme) -> (gpui::Hsla, gpui::Hsla) {
-    match kind {
-        // Plain uses the brand accent — informational without alarm.
-        HoltNoticeKind::Plain => (theme.accent, theme.accent.opacity(0.85)),
-        HoltNoticeKind::Success => (theme.success, theme.success_muted),
-        HoltNoticeKind::Warning => (theme.warning, theme.warning_muted),
-        HoltNoticeKind::Error => (theme.danger, theme.danger_muted),
-    }
-}
-
-/// Icon glyph for each notice kind. Warning and error share the triangle
-/// so the *color* — not the shape — carries the severity distinction
-/// (matches the rest of the app, e.g. provider_error).
-fn holt_notice_icon(kind: HoltNoticeKind) -> &'static str {
-    match kind {
-        HoltNoticeKind::Plain => icons::INFO_CIRCLE,
-        HoltNoticeKind::Success => icons::CHECK,
-        HoltNoticeKind::Warning => icons::DANGER_TRIANGLE,
-        HoltNoticeKind::Error => icons::DANGER_TRIANGLE,
-    }
 }
 
 pub struct Shell {
@@ -1300,14 +998,6 @@ impl Shell {
 
     // ---- layout state ----
 
-    fn sidebar_target(&self) -> f32 {
-        if self.settings.sidebar_collapsed {
-            0.0
-        } else {
-            self.settings.sidebar_width
-        }
-    }
-
     /// Does the selected space's folder have git? Owner-stamped and synced —
     /// gates the Changes pane, its toggle, and Cmd-B with zero RPCs.
     fn space_git_detected(&self, cx: &App) -> bool {
@@ -1330,82 +1020,6 @@ impl Shell {
         }
     }
 
-    /// Whether the right pane shows. NOT gated on git any more: the pane is
-    /// a surface HOST now (terminals work in any space), so only the Git
-    /// surface rows check `space_git_detected`. The new-session canvas keys
-    /// its own flag per space: the pane never pops open there by itself, but
-    /// an explicit surface open — a file open from the tree, or a File /
-    /// Terminal / Git choice in the surface picker — reveals it.
-    fn right_pane_open(&self, cx: &App) -> bool {
-        self.panels.get(&self.panel_key(cx)).changes_open
-    }
-
-    /// The current chat's terminal flag (per-session, in-memory).
-    fn terminal_open(&self, cx: &App) -> bool {
-        self.panels.get(&self.panel_key(cx)).terminal_open
-    }
-
-    fn right_target(&self, cx: &App) -> f32 {
-        if !self.right_pane_open(cx) {
-            0.0
-        } else {
-            // Manual sizing preserves a usable conversation column. Takeover
-            // intentionally consumes it completely. Both ride the sidebar
-            // tween so toggling it remains seamless.
-            let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-            // The tree column keeps its own budget beside the pane — the tree
-            // hides independently, never as a side effect of the contents
-            // pane growing (decision 8).
-            if self.right_pane_expanded {
-                right_pane_takeover_width(self.viewport_width, sidebar_now)
-            } else {
-                self.settings
-                    .right_pane_width
-                    .min(right_pane_max_width(self.viewport_width, sidebar_now))
-            }
-        }
-    }
-
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        let from = self.sidebar_target();
-        self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
-        self.sidebar_tween = Some(WidthTween::new(from, self.sidebar_target()));
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
-        // No git gate: the pane hosts terminals too (see `right_pane_open`).
-        let from = self.right_target(cx);
-        let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
-        let from_main = conversation_width(self.viewport_width, sidebar_now, from);
-        let was_expanded = self.right_pane_expanded;
-        let key = self.panel_key(cx);
-        let open = self.panels.toggle_changes(&key);
-        if !open {
-            // Closing always leaves takeover mode — reopening at full bleed
-            // with the conversation gone read as a broken chat.
-            self.right_pane_expanded = false;
-        }
-        let to = self.right_target(cx);
-        self.right_tween = Some(WidthTween::new(from, to));
-        self.right_takeover_content_tween = None;
-        self.main_takeover_tween = was_expanded.then(|| {
-            WidthTween::new(
-                from_main,
-                conversation_width(self.viewport_width, sidebar_now, to),
-            )
-        });
-        if open
-            && let RightSurface::Diff(id) = self.resolved_right_active(cx)
-            && let Some(changes) = self.diffs.get(&id).cloned()
-        {
-            // Reopening onto a diff tab revalidates its watch.
-            changes.update(cx, |changes, cx| changes.ensure_content(cx));
-        }
-        cx.notify();
-    }
-
     fn terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {
         if let Some(terminal) = &self.terminal {
             return terminal.clone();
@@ -1413,110 +1027,6 @@ impl Shell {
         let terminal = cx.new(|cx| TerminalPanel::new(self.state.clone(), cx));
         self.terminal = Some(terminal.clone());
         terminal
-    }
-
-    fn terminal_target(&self, cx: &App) -> f32 {
-        if self.terminal_open(cx) {
-            self.settings.terminal_height
-        } else {
-            0.0
-        }
-    }
-
-    /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
-    /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
-    /// The flag is per chat (holt `sessionPanels`).
-    fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from = self.terminal_target(cx);
-        let key = self.panel_key(cx);
-        let open = self.panels.toggle_terminal(&key);
-        self.terminal_tween = Some(WidthTween::new(from, self.terminal_target(cx)));
-        let panel = self.terminal_panel(cx);
-        panel.update(cx, |panel, cx| {
-            panel.set_resize_suspended(false);
-            panel.set_open(open, cx);
-        });
-        if open {
-            // Opening lands keyboard focus IN the shell — typing goes straight
-            // to the prompt, no click needed (holt terminal-panel.tsx: the
-            // visible+active effect calls `terminal.focus()` on every open).
-            // The handle is focusable before the panel's first paint; once the
-            // terminal body mounts with `track_focus` it receives the keys.
-            window.focus(&panel.read(cx).focus_handle(), cx);
-        } else {
-            // Hiding the panel removes the (likely focused) terminal view;
-            // with nothing focused, window key bindings stop dispatching, so
-            // hand focus to the composer. (Cmd+J is a pure toggle — a second
-            // press closes even while the terminal is focused, as in holt's
-            // `useHotkey(toggleShortcut, ... setOpenScoped(!open))`.)
-            window.focus(&self.composer.focus_handle(cx), cx);
-        }
-        self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(RESIZE.total().mul_f32(motion::speed_scale()) + Duration::from_millis(30))
-                .await;
-            this.update(cx, |shell, cx| {
-                shell.terminal_tween = None;
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn on_terminal_drag(
-        &mut self,
-        event: &gpui::DragMoveEvent<TerminalResize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((anchor_y, anchor_h)) = self.terminal_drag_anchor else {
-            return;
-        };
-        let dy = anchor_y - f32::from(event.event.position.y);
-        let viewport_h = f32::from(window.viewport_size().height);
-        self.settings.terminal_height = clamp_terminal_height(anchor_h + dy, viewport_h);
-        self.terminal_tween = None; // live drag tracks the pointer
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    fn on_sidebar_drag(
-        &mut self,
-        event: &gpui::DragMoveEvent<SidebarResize>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let x = f32::from(event.event.position.x);
-        self.settings.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-        self.settings.sidebar_collapsed = false;
-        self.sidebar_tween = None; // live drag tracks the pointer directly
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    fn on_right_pane_drag(
-        &mut self,
-        event: &gpui::DragMoveEvent<RightPaneResize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let viewport = f32::from(window.viewport_size().width);
-        let width = viewport - f32::from(event.event.position.x);
-        // No arbitrary percentage ceiling, but retain the chat's usable 300px
-        // floor instead of allowing the conversation to collapse to zero.
-        // The tree column keeps its own budget beside the pane.
-        let max = right_pane_max_width(viewport, self.sidebar_target()) - self.file_tree_target(cx);
-        self.settings.right_pane_width = if max >= RIGHT_PANE_MIN {
-            width.clamp(RIGHT_PANE_MIN, max)
-        } else {
-            max
-        };
-        self.right_tween = None;
-        self.right_takeover_content_tween = None;
-        self.main_takeover_tween = None;
-        self.schedule_save(cx);
-        cx.notify();
     }
 
     /// Publish this view's working copy to the central settings store. The
@@ -1619,83 +1129,6 @@ impl Shell {
         }
     }
 
-    /// Push a top-right holt notice and arm its 2s auto-dismiss timer.
-    /// Multiple notices stack vertically and coexist; each owns its own
-    /// timer. Replaces the inline `sidebar_notice` strip.
-    fn push_holt_notice(
-        &mut self,
-        kind: HoltNoticeKind,
-        message: SharedString,
-        cx: &mut Context<Self>,
-    ) {
-        let id = self.next_holt_notice_id;
-        self.next_holt_notice_id += 1;
-        self.holt_notices.push(HoltNotice {
-            id,
-            kind,
-            message,
-            hovered: false,
-            timer: None,
-        });
-        self.arm_holt_notice_timer(id, cx);
-        cx.notify();
-    }
-
-    /// (Re)arm the auto-dismiss timer for a single notice. The task
-    /// captures the notice id; on fire it removes that exact entry — other
-    /// stacked notices are left alone.
-    fn arm_holt_notice_timer(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(notice) = self.holt_notices.iter_mut().find(|n| n.id == id) {
-            notice.timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(2000))
-                    .await;
-                this.update(cx, |this, cx| {
-                    if let Some(pos) = this.holt_notices.iter().position(|n| n.id == id) {
-                        this.holt_notices.remove(pos);
-                        cx.notify();
-                    }
-                })
-                .ok();
-            }));
-        }
-    }
-
-    /// Hover state flip for one chip — pauses its timer while hovered
-    /// and rearms it once the pointer leaves. `false` is delivered when
-    /// the element goes away (including via timer fire); the lookup is
-    /// guarded so a missing entry is a no-op.
-    fn set_holt_notice_hover(&mut self, id: u64, hovered: bool, cx: &mut Context<Self>) {
-        let needs_rearm = if let Some(notice) = self.holt_notices.iter_mut().find(|n| n.id == id) {
-            if notice.hovered == hovered {
-                return;
-            }
-            notice.hovered = hovered;
-            if hovered {
-                // Drop the task to cancel it (no epoch guard needed).
-                notice.timer = None;
-                false
-            } else {
-                true
-            }
-        } else {
-            return;
-        };
-        if needs_rearm {
-            self.arm_holt_notice_timer(id, cx);
-        }
-        cx.notify();
-    }
-
-    /// Manual dismiss for one chip (the × button). Removes the entry and
-    /// drops its timer; other notices are untouched.
-    fn dismiss_holt_notice(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(pos) = self.holt_notices.iter().position(|n| n.id == id) {
-            self.holt_notices.remove(pos);
-            cx.notify();
-        }
-    }
-
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         if section != SettingsSection::Providers
             && let Some(page) = self.providers_page.as_ref()
@@ -1774,54 +1207,6 @@ impl Shell {
         }
         self.route = Route::Chat;
         self.nav.push(NavEntry::Chat(self.active_chat.clone()));
-        cx.notify();
-    }
-
-    // ---- back/forward (route history) ----
-
-    fn navigate_back(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.nav.back() {
-            self.apply_nav(entry, cx);
-        }
-    }
-
-    fn navigate_forward(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.nav.forward() {
-            self.apply_nav(entry, cx);
-        }
-    }
-
-    /// Land on a history entry WITHOUT recording a new one: the stack already
-    /// points at `entry` (back/forward moved the index); the selection change
-    /// this triggers dedups against `current()` in [`Self::on_state_changed`].
-    fn apply_nav(&mut self, entry: NavEntry, cx: &mut Context<Self>) {
-        if !matches!(entry, NavEntry::Settings(SettingsSection::Providers))
-            && let Some(page) = self.providers_page.as_ref()
-        {
-            page.update(cx, |page, cx| page.clear_revealed(cx));
-        }
-        match entry {
-            NavEntry::Chat(chat_id) => {
-                self.route = Route::Chat;
-                let target = (!chat_id.is_empty()).then_some(chat_id);
-                if self.state.read(cx).selected_chat != target {
-                    self.state.update(cx, |s, cx| s.select_chat(target, cx));
-                }
-            }
-            NavEntry::Settings(section) => {
-                if section != SettingsSection::Providers
-                    && let Some(page) = self.providers_page.as_ref()
-                {
-                    page.update(cx, |page, cx| page.clear_revealed(cx));
-                }
-                self.route = Route::Settings(section);
-            }
-            NavEntry::ChatManager => {
-                self.route = Route::ChatManager;
-                self.reveal_chat_manager(cx);
-            }
-        }
-        self.close_chat_menu(cx);
         cx.notify();
     }
 
@@ -2132,93 +1517,6 @@ impl Shell {
 
     // ---- render pieces ----
 
-    /// Evaluate a width tween at "now" (manual drive — see [`WidthTween`]).
-    /// Mid-flight: eased 200ms lerp, and `motion_active` is flagged so render
-    /// schedules the next animation frame. Finished, stale, absent, or under
-    /// reduced motion: exactly `target`. Honors `HOLT_MOTION_SCALE`.
-    fn eval_tween(&self, tween: Option<WidthTween>, target: f32) -> f32 {
-        let Some(WidthTween { from, to, started }) = tween else {
-            return target;
-        };
-        if self.reduced_motion {
-            return target;
-        }
-        let total = RESIZE.total().mul_f32(motion::speed_scale());
-        let raw = started.elapsed().as_secs_f32() / total.as_secs_f32();
-        if raw >= 1.0 {
-            return target;
-        }
-        self.motion_active.set(true);
-        motion::lerp(from, to, RESIZE.progress(raw))
-    }
-
-    fn tween_active(&self, tween: Option<WidthTween>) -> bool {
-        tween.is_some_and(|tween| {
-            !self.reduced_motion
-                && tween.started.elapsed() < RESIZE.total().mul_f32(motion::speed_scale())
-        })
-    }
-
-    fn active_tween_endpoints(&self, tween: Option<WidthTween>) -> Option<(f32, f32)> {
-        tween
-            .filter(|transition| {
-                !self.reduced_motion
-                    && transition.started.elapsed() < RESIZE.total().mul_f32(motion::speed_scale())
-            })
-            .map(|transition| (transition.from, transition.to))
-    }
-
-    /// Animated width container: tweens 200ms ease-out on collapse/expand, and
-    /// clips a fixed-width inner so content never reflows mid-transition.
-    fn pane_container(
-        &self,
-        tween: Option<WidthTween>,
-        target: f32,
-        inner: AnyElement,
-    ) -> AnyElement {
-        div()
-            .h_full()
-            .flex_none()
-            .overflow_hidden()
-            .w(px(self.eval_tween(tween, target)))
-            .child(inner)
-            .into_any_element()
-    }
-
-    /// Right-anchored variant for the changes pane. The outer width follows the
-    /// existing shell tween, while descendants retain the larger endpoint's
-    /// geometry for that 200ms transition. This mirrors the sidebar's stable
-    /// inner/clipped outer behavior without changing the center column's
-    /// upstream flex layout.
-    fn right_pane_container(
-        &self,
-        tween: Option<WidthTween>,
-        target: f32,
-        inner: AnyElement,
-    ) -> AnyElement {
-        let takeover_width = self
-            .active_tween_endpoints(self.right_takeover_content_tween)
-            .map(|_| self.eval_tween(self.right_takeover_content_tween, target));
-        let content_width =
-            right_panel_content_width(target, self.active_tween_endpoints(tween), takeover_width);
-        div()
-            .h_full()
-            .flex_none()
-            .relative()
-            .overflow_hidden()
-            .w(px(self.eval_tween(tween, target)))
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .h_full()
-                    .w(px(content_width))
-                    .child(inner),
-            )
-            .into_any_element()
-    }
-
     /// Floating layers owned by the shell: context menus and edit dialogs.
     fn render_overlays(
         &mut self,
@@ -2519,136 +1817,6 @@ impl Shell {
         }
 
         overlays
-    }
-
-    /// Render one stacked top-right notice chip. Color and icon are
-    /// driven by `notice.kind` so success / error / etc. read at a glance.
-    /// Returns `AnyElement` — the outer caller wraps it in
-    /// `motion::dialog_in` for the per-chip entrance animation.
-    fn render_holt_notice(
-        &self,
-        notice: &HoltNotice,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = notice.id;
-        let (accent, text) = holt_notice_palette(notice.kind, theme);
-        let glyph = holt_notice_icon(notice.kind);
-        div()
-            .id(("holt-notice-card", id))
-            .occlude()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.0))
-            .max_w(px(420.0))
-            .pl(px(14.0))
-            .pr(px(8.0))
-            .py(px(8.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(accent.opacity(0.35))
-            .bg(theme.surface_dialog)
-            .shadow_lg()
-            .text_size(crate::typography::ui_rems(12.5))
-            .text_color(text)
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.set_holt_notice_hover(id, *hovered, cx);
-            }))
-            .child(icon(glyph).size(px(15.0)).flex_none().text_color(accent))
-            // min_w(0) beats flex `min-width: auto` — gpui measures text
-            // min-content as the full unwrapped width, so without it a long
-            // unbreakable URL cannot shrink and overflows past the chip.
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .overflow_hidden()
-                    .child(notice.message.clone()),
-            )
-            .child(
-                div()
-                    .id(("holt-notice-dismiss", id))
-                    .flex_none()
-                    .cursor_pointer()
-                    .p(px(4.0))
-                    .rounded(px(6.0))
-                    .hover(|style| style.bg(crate::theme::ink(0.08)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dismiss_holt_notice(id, cx);
-                    }))
-                    .child(
-                        icon(icons::CLOSE)
-                            .size(px(12.0))
-                            .text_color(theme.text_muted),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn resize_handle<T>(
-        &self,
-        id: &'static str,
-        marker: fn() -> T,
-        reset: fn(&mut Shell, &mut Context<Shell>),
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div>
-    where
-        T: 'static,
-    {
-        let theme = Theme::of(cx);
-        let fade_key = format!("pane-resize-{id}");
-        let highlight = motion::hover_blend(
-            &fade_key,
-            theme.border_strong.opacity(0.0),
-            theme.border_strong,
-        );
-        let clear = highlight.opacity(0.0);
-        div()
-            .id(id)
-            .absolute()
-            .top(px(PANE_RESIZE_HITBOX_TOP))
-            .bottom_0()
-            .w(px(12.0))
-            .flex_none()
-            .cursor_col_resize()
-            .on_hover(motion::hover_listener(fade_key))
-            // Codex-style seam feedback: the existing 1px panel border stays
-            // visible at rest; hover adds a stronger center highlight that
-            // fades back into that border toward both ends.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(6.0))
-                    .w(px(1.0))
-                    .flex()
-                    .flex_col()
-                    .child(div().flex_1().bg(gpui::linear_gradient(
-                        180.0,
-                        gpui::linear_color_stop(clear, 0.0),
-                        gpui::linear_color_stop(highlight, 1.0),
-                    )))
-                    .child(div().flex_1().bg(gpui::linear_gradient(
-                        180.0,
-                        gpui::linear_color_stop(highlight, 0.0),
-                        gpui::linear_color_stop(clear, 1.0),
-                    ))),
-            )
-            .on_drag(marker(), |_, _point: Point<gpui::Pixels>, _, cx| {
-                cx.stop_propagation();
-                cx.new(|_| DragGhost)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseUpEvent, _, cx| {
-                    if event.click_count == 2 {
-                        reset(this, cx);
-                        this.schedule_save(cx);
-                        cx.notify();
-                    }
-                }),
-            )
     }
 
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
