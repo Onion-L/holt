@@ -315,6 +315,8 @@ impl RpcService for EngineService {
             methods::LIST_ROUTINES => RpcReply::value(&self.routines.views()),
             methods::WATCH_ROUTINES => Ok(Self::watch_value(self.routines.subscribe())),
             methods::CREATE_ROUTINE => self.create_routine(params),
+            methods::UPDATE_ROUTINE => self.update_routine(params),
+            methods::PREVIEW_ROUTINE_SCHEDULE => self.preview_routine_schedule(params),
             methods::DELETE_ROUTINE => self.delete_routine(params),
             methods::SET_ROUTINE_PAUSED => self.set_routine_paused(params),
             methods::RUN_ROUTINE_NOW => self.run_routine_now(params),

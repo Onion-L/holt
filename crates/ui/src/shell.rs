@@ -3303,6 +3303,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn editing_a_routine_prefills_the_form(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("succeeded"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        let page = shell.update(cx, |shell, cx| {
+            shell.open_scheduled(cx);
+            shell.scheduled_page(cx)
+        });
+        page.update(cx, |page, cx| page.edit_routine("r1", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            page.read_with(cx, |page, cx| page.form_snapshot(cx)),
+            Some((
+                Some("r1".to_string()),
+                "Daily digest".to_string(),
+                "0 9 * * *".to_string()
+            ))
+        );
+        assert!(cx.debug_bounds("routine-form-preview").is_some());
+    }
+
+    #[gpui::test]
     fn a_live_run_marks_the_nav_row_and_the_drawer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("waiting"));

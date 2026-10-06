@@ -1,6 +1,6 @@
 //! The Scheduled page (glossary: Routine, ADR-0042): a card grid of the
 //! user's Routines with Run now and delete on hover, the Routine drawer with
-//! its configuration, runs, and pause/resume, and the create modal. Reads come from the
+//! its configuration, runs, and pause/resume, and the create/edit modal. Reads come from the
 //! AppState Routines watch; writes are RPCs from here.
 
 use std::cell::Cell;
@@ -10,18 +10,19 @@ use std::time::Duration;
 use chrono::{DateTime, Local, Utc};
 
 use gpui::{
-    AnyElement, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task, Window,
-    div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 
 use holt_proto::{
-    PermissionMode, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineView, RunOutcome,
+    ChatConfig, Model, PermissionMode, ProviderId, Routine, RoutineCheckout, RoutinePause,
+    RoutineRun, RoutineView, RunOutcome,
 };
 use holt_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::icons::{self, icon};
-use crate::pickers::{MODE_TIERS, Pickers, mode_label};
+use crate::pickers::{MODE_TIERS, Pickers, default_reasoning, mode_label};
 use crate::popover;
 use crate::settings::widgets;
 use crate::state::AppState;
@@ -44,25 +45,162 @@ pub enum ScheduledEvent {
     Drawer(Option<String>),
 }
 
-/// The open create modal.
-struct CreateForm {
-    name: Entity<ComposerInput>,
-    prompt: Entity<ComposerInput>,
-    cron: Entity<ComposerInput>,
+/// How long schedule edits settle before the preview is re-read.
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Rows the form's model list shows at most; search narrows the rest.
+const MODEL_ROWS: usize = 40;
+
+/// The schedule shapes the form spells for the user; anything else is a
+/// custom cron.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Preset {
+    Hourly,
+    Daily,
+    Weekdays,
+    Weekly,
+    Custom,
+}
+
+const PRESETS: [(Preset, &str); 5] = [
+    (Preset::Hourly, "Hourly"),
+    (Preset::Daily, "Daily"),
+    (Preset::Weekdays, "Weekdays"),
+    (Preset::Weekly, "Weekly"),
+    (Preset::Custom, "Custom"),
+];
+
+/// Cron weekday numbers (0 = Sunday) in display order.
+const WEEKDAYS: [(u8, &str); 7] = [
+    (1, "Mon"),
+    (2, "Tue"),
+    (3, "Wed"),
+    (4, "Thu"),
+    (5, "Fri"),
+    (6, "Sat"),
+    (0, "Sun"),
+];
+
+/// A starting point the empty page offers.
+struct Template {
+    name: &'static str,
+    prompt: &'static str,
+    cron: &'static str,
+    caption: &'static str,
+}
+
+const TEMPLATES: [Template; 3] = [
+    Template {
+        name: "Morning triage",
+        prompt: "Review issues and pull requests opened since yesterday and list what needs my attention, most urgent first.",
+        cron: "0 9 * * 1-5",
+        caption: "Weekdays at 09:00",
+    },
+    Template {
+        name: "Nightly test sweep",
+        prompt: "Run the test suite. Report any failures with their likely cause; change nothing.",
+        cron: "0 2 * * *",
+        caption: "Daily at 02:00",
+    },
+    Template {
+        name: "Weekly dependency check",
+        prompt: "Check for outdated dependencies and summarize which upgrades are worth doing and why.",
+        cron: "0 10 * * 1",
+        caption: "Mondays at 10:00",
+    },
+];
+
+/// What the form opens with: blank, a template, or a Routine to edit.
+struct Prefill {
+    editing: Option<String>,
+    name: String,
+    prompt: String,
+    cron: String,
+    time_zone: String,
     space_id: Option<String>,
+    config: Option<ChatConfig>,
     mode: PermissionMode,
     checkout: RoutineCheckout,
+}
+
+impl Default for Prefill {
+    fn default() -> Self {
+        Self {
+            editing: None,
+            name: String::new(),
+            prompt: String::new(),
+            cron: "0 9 * * 1-5".into(),
+            time_zone: String::new(),
+            space_id: None,
+            config: None,
+            mode: PermissionMode::AutoReview,
+            checkout: RoutineCheckout::MainCheckout,
+        }
+    }
+}
+
+/// `PreviewRoutineSchedule`'s reply.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchedulePreview {
+    time_zone: String,
+    fires: Vec<DateTime<Utc>>,
+}
+
+enum Preview {
+    Pending,
+    Fires(SchedulePreview),
+    Invalid(SharedString),
+}
+
+/// The open create/edit modal.
+struct RoutineForm {
+    /// The Routine being edited; `None` creates one.
+    editing: Option<String>,
+    name: Entity<ComposerInput>,
+    prompt: Entity<ComposerInput>,
+    preset: Preset,
+    /// "HH:MM" for the daily, weekdays, and weekly presets.
+    time: Entity<ComposerInput>,
+    weekday: u8,
+    /// The custom preset's cron.
+    cron: Entity<ComposerInput>,
+    /// Empty reads as the device's zone.
+    time_zone: Entity<ComposerInput>,
+    preview: Preview,
+    preview_task: Option<Task<()>>,
+    space_id: Option<String>,
+    /// The picked model; `None` takes the composer's.
+    config: Option<ChatConfig>,
+    mode: PermissionMode,
+    checkout: RoutineCheckout,
+    model_open: bool,
+    model_query: Entity<ComposerInput>,
     error: Option<SharedString>,
     saving: bool,
     focus_pending: bool,
     _events: Vec<Subscription>,
 }
 
+impl RoutineForm {
+    /// The cron the form spells, or what is wrong with it.
+    fn schedule(&self, cx: &App) -> Result<String, SharedString> {
+        if self.preset == Preset::Custom {
+            let cron = self.cron.read(cx).text().trim();
+            if cron.is_empty() {
+                return Err("Set a cron schedule.".into());
+            }
+            return Ok(cron.to_string());
+        }
+        preset_cron(self.preset, self.time.read(cx).text(), self.weekday)
+            .ok_or_else(|| "Use a 24-hour time like 09:00.".into())
+    }
+}
+
 pub struct ScheduledPage {
     state: Entity<AppState>,
     /// The composer's pickers: a new Routine takes their resolved model.
     pickers: Entity<Pickers>,
-    create: Option<CreateForm>,
+    form: Option<RoutineForm>,
     /// The Routine the open delete confirmation targets.
     confirm: Option<String>,
     /// The Routine whose drawer is open.
@@ -93,7 +231,7 @@ impl ScheduledPage {
         Self {
             state,
             pickers,
-            create: None,
+            form: None,
             confirm: None,
             drawer: None,
             error: None,
@@ -144,60 +282,277 @@ impl ScheduledPage {
     }
 
     fn open_create(&mut self, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| ComposerInput::new("Morning triage", cx));
-        let prompt = cx.new(|cx| ComposerInput::new("What should the agent do each run?", cx));
-        let cron = cx.new(|cx| ComposerInput::new("0 9 * * 1-5", cx));
+        self.open_form(Prefill::default(), cx);
+    }
+
+    fn open_template(&mut self, template: &Template, cx: &mut Context<Self>) {
+        self.open_form(
+            Prefill {
+                name: template.name.into(),
+                prompt: template.prompt.into(),
+                cron: template.cron.into(),
+                ..Prefill::default()
+            },
+            cx,
+        );
+    }
+
+    /// Open the form on `routine_id`'s configuration; saving updates it.
+    pub(crate) fn edit_routine(&mut self, routine_id: &str, cx: &mut Context<Self>) {
+        let Some(routine) = self
+            .state
+            .read(cx)
+            .routines
+            .iter()
+            .find(|view| view.routine.id == routine_id)
+            .map(|view| view.routine.clone())
+        else {
+            return;
+        };
+        self.open_form(
+            Prefill {
+                editing: Some(routine.id),
+                name: routine.name,
+                prompt: routine.prompt,
+                cron: routine.cron,
+                time_zone: routine.time_zone,
+                space_id: Some(routine.space_id),
+                mode: routine.config.permission_mode,
+                config: Some(routine.config),
+                checkout: routine.checkout,
+            },
+            cx,
+        );
+    }
+
+    fn open_form(&mut self, prefill: Prefill, cx: &mut Context<Self>) {
+        let input = |placeholder: &'static str, text: &str, cx: &mut Context<Self>| {
+            let text = text.to_string();
+            cx.new(|cx| {
+                let mut input = ComposerInput::new(placeholder, cx);
+                input.set_text(text, cx);
+                input
+            })
+        };
+        let (preset, time, weekday) =
+            cron_preset(&prefill.cron).unwrap_or((Preset::Custom, "09:00".into(), 1));
+        let name = input("Morning triage", &prefill.name, cx);
+        let prompt = input("What should the agent do each run?", &prefill.prompt, cx);
+        let time = input("09:00", &time, cx);
+        let cron = input("0 9 * * 1-5", &prefill.cron, cx);
+        let time_zone = input("Device time zone", &prefill.time_zone, cx);
+        let model_query = input("Search models", "", cx);
         prompt.update(cx, |input, _| input.set_max_display_height(160.0));
-        let events = [&name, &prompt, &cron]
+        let mut events: Vec<Subscription> = [&name, &prompt]
             .into_iter()
             .map(|input| {
-                cx.subscribe(input, |this: &mut Self, _, event, cx| match event {
-                    ComposerInputEvent::Submitted => this.submit_create(cx),
-                    ComposerInputEvent::Edited => {
-                        if let Some(form) = this.create.as_mut() {
-                            form.error = None;
-                        }
-                        cx.notify();
-                    }
-                    _ => {}
+                cx.subscribe(input, |this: &mut Self, _, event, cx| {
+                    this.on_form_input(event, false, cx)
                 })
             })
             .collect();
-        let space_id = {
+        events.extend([&time, &cron, &time_zone].into_iter().map(|input| {
+            cx.subscribe(input, |this: &mut Self, _, event, cx| {
+                this.on_form_input(event, true, cx)
+            })
+        }));
+        events.push(
+            cx.subscribe(&model_query, |this: &mut Self, _, event, cx| match event {
+                ComposerInputEvent::Submitted => {
+                    let first = this.model_matches(cx).into_iter().next().cloned();
+                    if let Some(model) = first {
+                        this.pick_model(&model, cx);
+                    }
+                }
+                ComposerInputEvent::Edited => cx.notify(),
+                _ => {}
+            }),
+        );
+        let space_id = prefill.space_id.or_else(|| {
             let state = self.state.read(cx);
             state
                 .selected_space
                 .clone()
                 .filter(|id| state.space_row(id).is_some())
                 .or_else(|| state.spaces_sorted().first().map(|space| space.id.clone()))
-        };
-        self.create = Some(CreateForm {
+        });
+        self.form = Some(RoutineForm {
+            editing: prefill.editing,
             name,
             prompt,
+            preset,
+            time,
+            weekday,
             cron,
+            time_zone,
+            preview: Preview::Pending,
+            preview_task: None,
             space_id,
-            mode: PermissionMode::AutoReview,
-            checkout: RoutineCheckout::MainCheckout,
+            config: prefill.config,
+            mode: prefill.mode,
+            checkout: prefill.checkout,
+            model_open: false,
+            model_query,
             error: None,
             saving: false,
             focus_pending: true,
             _events: events,
         });
+        self.refresh_preview(cx);
         cx.notify();
     }
 
-    fn close_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.create = None;
+    fn on_form_input(
+        &mut self,
+        event: &ComposerInputEvent,
+        schedule: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ComposerInputEvent::Submitted => self.submit_form(cx),
+            ComposerInputEvent::Edited => {
+                if let Some(form) = self.form.as_mut() {
+                    form.error = None;
+                }
+                if schedule {
+                    self.refresh_preview(cx);
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.form = None;
         window.focus(&self.focus, cx);
         cx.notify();
     }
 
-    fn submit_create(&mut self, cx: &mut Context<Self>) {
-        let config = self.pickers.read(cx).resolved(cx).chat_config();
+    fn set_preset(&mut self, preset: Preset, cx: &mut Context<Self>) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        if preset == Preset::Custom
+            && form.preset != Preset::Custom
+            && let Ok(cron) = form.schedule(cx)
+        {
+            // Custom starts from the schedule the preset spelled.
+            form.cron.update(cx, |input, cx| input.set_text(cron, cx));
+        }
+        form.preset = preset;
+        form.error = None;
+        self.refresh_preview(cx);
+        cx.notify();
+    }
+
+    fn set_weekday(&mut self, weekday: u8, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.weekday = weekday;
+        }
+        self.refresh_preview(cx);
+        cx.notify();
+    }
+
+    /// Re-read the schedule's next fires, debounced so typing a cron does
+    /// not call per keystroke. A dropped task cancels a stale preview.
+    fn refresh_preview(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        let Some(form) = self.create.as_mut() else {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let cron = match form.schedule(cx) {
+            Ok(cron) => cron,
+            Err(problem) => {
+                form.preview = Preview::Invalid(problem);
+                form.preview_task = None;
+                return;
+            }
+        };
+        let time_zone = form.time_zone.read(cx).text().trim().to_string();
+        let mut params = serde_json::json!({ "cron": cron });
+        if !time_zone.is_empty() {
+            params["timeZone"] = time_zone.into();
+        }
+        form.preview_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
+            let result = engine
+                .client()
+                .call(methods::PREVIEW_ROUTINE_SCHEDULE, params)
+                .await;
+            this.update(cx, |page, cx| {
+                let Some(form) = page.form.as_mut() else {
+                    return;
+                };
+                form.preview = match result {
+                    Ok(value) => serde_json::from_value::<SchedulePreview>(value)
+                        .map(Preview::Fires)
+                        .unwrap_or_else(|err| Preview::Invalid(err.to_string().into())),
+                    Err(err) => Preview::Invalid(rpc_problem(&err).into()),
+                };
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Catalog models matching the open model list's search, capped.
+    fn model_matches<'a>(&self, cx: &'a App) -> Vec<&'a Model> {
+        let Some(form) = self.form.as_ref() else {
+            return Vec::new();
+        };
+        let query = form.model_query.read(cx).text().trim().to_lowercase();
+        self.pickers
+            .read(cx)
+            .offered_models()
+            .into_iter()
+            .filter(|model| {
+                query.is_empty()
+                    || model.label.to_lowercase().contains(&query)
+                    || model.id.to_lowercase().contains(&query)
+            })
+            .take(MODEL_ROWS)
+            .collect()
+    }
+
+    fn pick_model(&mut self, model: &Model, cx: &mut Context<Self>) {
+        let config = ChatConfig {
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            reasoning: default_reasoning(&model.reasoning_levels),
+            model_options: Default::default(),
+            permission_mode: PermissionMode::default(),
+            scope: Default::default(),
+        };
+        if let Some(form) = self.form.as_mut() {
+            form.config = Some(config);
+            form.model_open = false;
+            form.error = None;
+        }
+        cx.notify();
+    }
+
+    fn toggle_model_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        form.model_open = !form.model_open;
+        if form.model_open {
+            form.model_query
+                .update(cx, |input, cx| input.set_text("", cx));
+            window.focus(&form.model_query.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    fn submit_form(&mut self, cx: &mut Context<Self>) {
+        let resolved = self.pickers.read(cx).resolved(cx).chat_config();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(form) = self.form.as_mut() else {
             return;
         };
         if form.saving {
@@ -205,30 +560,34 @@ impl ScheduledPage {
         }
         let name = form.name.read(cx).text().trim().to_string();
         let prompt = form.prompt.read(cx).text().trim().to_string();
-        let cron = form.cron.read(cx).text().trim().to_string();
-        let problem = if name.is_empty() {
-            Some("Give the routine a name.")
+        let time_zone = form.time_zone.read(cx).text().trim().to_string();
+        let schedule = form.schedule(cx);
+        let config = form.config.clone().or(resolved);
+        let problem: Option<SharedString> = if name.is_empty() {
+            Some("Give the routine a name.".into())
         } else if prompt.is_empty() {
-            Some("Write the prompt each run starts with.")
-        } else if cron.is_empty() {
-            Some("Set a cron schedule.")
+            Some("Write the prompt each run starts with.".into())
+        } else if let Err(problem) = &schedule {
+            Some(problem.clone())
+        } else if let Preview::Invalid(problem) = &form.preview {
+            Some(problem.clone())
         } else if form.space_id.is_none() {
-            Some("Pick a project.")
+            Some("Pick a project.".into())
         } else if config.is_none() {
-            Some("Pick a model in the composer first.")
+            Some("Pick a model.".into())
         } else {
             None
         };
         if let Some(problem) = problem {
-            form.error = Some(problem.into());
+            form.error = Some(problem);
             cx.notify();
             return;
         }
-        let Some(mut config) = config else {
+        let (Ok(cron), Some(mut config)) = (schedule, config) else {
             return;
         };
         config.permission_mode = form.mode;
-        let params = serde_json::json!({
+        let mut params = serde_json::json!({
             "name": name,
             "spaceId": form.space_id,
             "prompt": prompt,
@@ -236,20 +595,30 @@ impl ScheduledPage {
             "config": config,
             "checkout": form.checkout,
         });
+        if !time_zone.is_empty() {
+            params["timeZone"] = time_zone.into();
+        }
+        let method = match &form.editing {
+            Some(id) => {
+                params["routineId"] = id.clone().into();
+                methods::UPDATE_ROUTINE
+            }
+            None => methods::CREATE_ROUTINE,
+        };
         form.saving = true;
         form.error = None;
         self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::CREATE_ROUTINE, params).await;
+            let result = engine.client().call(method, params).await;
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
-                        page.create = None;
+                        page.form = None;
                         page.focus_pending = true;
                     }
                     Err(err) => {
-                        if let Some(form) = page.create.as_mut() {
+                        if let Some(form) = page.form.as_mut() {
                             form.saving = false;
-                            form.error = Some(err.to_string().into());
+                            form.error = Some(rpc_problem(&err).into());
                         }
                     }
                 }
@@ -258,6 +627,17 @@ impl ScheduledPage {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// The open form's editing target, name, and schedule, for tests.
+    #[cfg(test)]
+    pub(crate) fn form_snapshot(&self, cx: &App) -> Option<(Option<String>, String, String)> {
+        let form = self.form.as_ref()?;
+        Some((
+            form.editing.clone(),
+            form.name.read(cx).text().to_string(),
+            form.schedule(cx).ok()?,
+        ))
     }
 
     fn run_now(&mut self, routine_id: String, cx: &mut Context<Self>) {
@@ -357,8 +737,8 @@ impl ScheduledPage {
                 "enter" => self.delete(cx),
                 _ => return,
             }
-        } else if self.create.is_some() && key == "escape" {
-            self.close_create(window, cx);
+        } else if self.form.is_some() && key == "escape" {
+            self.close_form(window, cx);
         } else if self.drawer.is_some() && key == "escape" {
             self.close_drawer(cx);
         } else {
@@ -579,6 +959,7 @@ impl ScheduledPage {
         let run_id = routine.id.clone();
         let pause_id = routine.id.clone();
         let paused = routine.paused.is_some();
+        let edit_id = routine.id.clone();
         let delete_id = routine.id.clone();
         let banner = routine.paused.map(|pause| {
             div()
@@ -646,7 +1027,7 @@ impl ScheduledPage {
             .flex_col()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 // Clicks inside a dialog this drawer opened stay put.
-                if this.confirm.is_none() && this.create.is_none() {
+                if this.confirm.is_none() && this.form.is_none() {
                     this.close_drawer(cx);
                 }
             }))
@@ -706,6 +1087,13 @@ impl ScheduledPage {
                                         this.set_paused(pause_id.clone(), !paused, cx)
                                     },
                                 )),
+                            )
+                            .child(
+                                popover::btn_ghost(theme, "Edit", "routine-drawer-edit")
+                                    .id("routine-drawer-edit")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.edit_routine(&edit_id, cx)
+                                    })),
                             )
                             .child(
                                 popover::btn_ghost(theme, "Delete", "routine-drawer-delete")
@@ -891,19 +1279,29 @@ impl ScheduledPage {
             )
     }
 
-    fn render_create(
+    fn render_form(
         &mut self,
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let form = self.create.as_mut()?;
+        let form = self.form.as_mut()?;
         if std::mem::take(&mut form.focus_pending) {
             window.focus(&form.name.focus_handle(cx), cx);
         }
-        let (name, prompt, cron) = (form.name.clone(), form.prompt.clone(), form.cron.clone());
+        let (name, prompt) = (form.name.clone(), form.prompt.clone());
+        let (time, cron, time_zone) =
+            (form.time.clone(), form.cron.clone(), form.time_zone.clone());
+        let (preset, weekday) = (form.preset, form.weekday);
         let (space_id, mode, checkout) = (form.space_id.clone(), form.mode, form.checkout);
-        let (error, saving) = (form.error.clone(), form.saving);
+        let (error, saving, editing) = (form.error.clone(), form.saving, form.editing.is_some());
+        let (model_open, model_query) = (form.model_open, form.model_query.clone());
+        let picked = form.config.clone();
+        let preview = match &form.preview {
+            Preview::Pending => None,
+            Preview::Fires(preview) => Some(Ok(preview.clone())),
+            Preview::Invalid(problem) => Some(Err(problem.clone())),
+        };
         let spaces: Vec<(String, SharedString)> = self
             .state
             .read(cx)
@@ -913,15 +1311,37 @@ impl ScheduledPage {
             .collect();
         let model: SharedString = {
             let pickers = self.pickers.read(cx);
-            let resolved = pickers.resolved(cx);
-            match (&resolved.provider, &resolved.model) {
+            let (provider, model) = match &picked {
+                Some(config) => (Some(config.provider.clone()), Some(config.model.clone())),
+                None => {
+                    let resolved = pickers.resolved(cx);
+                    (resolved.provider, resolved.model)
+                }
+            };
+            match (provider, model) {
                 (Some(provider), Some(model)) => pickers
-                    .model_label(provider, model)
+                    .model_label(&provider, &model)
                     .map(str::to_string)
-                    .unwrap_or_else(|| short_model(model).to_string())
+                    .unwrap_or_else(|| short_model(&model).to_string())
                     .into(),
-                _ => "No model picked".into(),
+                _ => "Pick a model".into(),
             }
+        };
+        let model_rows: Vec<(String, ProviderId, SharedString, bool)> = if model_open {
+            let current = picked.as_ref().map(|config| config.model.as_str());
+            self.model_matches(cx)
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.id.clone(),
+                        row.provider.clone(),
+                        row.label.clone().into(),
+                        current == Some(row.id.as_str()),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
 
         let space_chips = div().flex().flex_row().flex_wrap().gap(px(6.0)).children(
@@ -930,7 +1350,7 @@ impl ScheduledPage {
                 chip(theme, active)
                     .id(("routine-space", ix))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.create.as_mut() {
+                        if let Some(form) = this.form.as_mut() {
                             form.space_id = Some(id.clone());
                             form.error = None;
                         }
@@ -942,24 +1362,16 @@ impl ScheduledPage {
         let checkout_seg = segmented(
             theme,
             [
-                (
-                    "Main checkout",
-                    checkout == RoutineCheckout::MainCheckout,
-                    RoutineCheckout::MainCheckout,
-                ),
-                (
-                    "New worktree",
-                    checkout == RoutineCheckout::NewWorktree,
-                    RoutineCheckout::NewWorktree,
-                ),
+                ("Main checkout", RoutineCheckout::MainCheckout),
+                ("New worktree", RoutineCheckout::NewWorktree),
             ]
             .into_iter()
             .enumerate()
-            .map(|(ix, (label, active, value))| {
-                seg_item(theme, active)
+            .map(|(ix, (label, value))| {
+                seg_item(theme, checkout == value)
                     .id(("routine-checkout", ix))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.create.as_mut() {
+                        if let Some(form) = this.form.as_mut() {
                             form.checkout = value;
                         }
                         cx.notify();
@@ -973,7 +1385,7 @@ impl ScheduledPage {
                 seg_item(theme, tier == mode)
                     .id(("routine-mode", ix))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.create.as_mut() {
+                        if let Some(form) = this.form.as_mut() {
                             form.mode = tier;
                         }
                         cx.notify();
@@ -981,16 +1393,190 @@ impl ScheduledPage {
                     .child(mode_label(tier))
             }),
         );
+        let preset_seg = segmented(
+            theme,
+            PRESETS.into_iter().enumerate().map(|(ix, (value, label))| {
+                seg_item(theme, preset == value)
+                    .id(("routine-preset", ix))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_preset(value, cx)))
+                    .child(label)
+            }),
+        );
+        let schedule_detail =
+            match preset {
+                Preset::Hourly => div()
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .text_color(theme.text_muted)
+                    .child("On the hour, every hour."),
+                Preset::Custom => div().child(popover::dialog_field(cron.into_any_element())),
+                _ => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(12.5))
+                            .text_color(theme.text_muted)
+                            .child("At"),
+                    )
+                    .child(
+                        div()
+                            .w(px(84.0))
+                            .child(popover::dialog_field(time.into_any_element())),
+                    )
+                    .when(preset == Preset::Weekly, |row| {
+                        row.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .text_color(theme.text_muted)
+                                .child("on"),
+                        )
+                        .child(
+                            div().flex().flex_row().gap(px(4.0)).children(
+                                WEEKDAYS.into_iter().map(|(day, label)| {
+                                    chip(theme, day == weekday)
+                                        .id(("routine-weekday", day as usize))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_weekday(day, cx)
+                                        }))
+                                        .child(label)
+                                }),
+                            ),
+                        )
+                    }),
+            };
+        let preview_line = div()
+            .id("routine-form-preview")
+            .debug_selector(|| "routine-form-preview".into())
+            .min_h(px(16.0))
+            .text_size(crate::typography::ui_rems(12.0))
+            .map(|line| match preview {
+                None => line.text_color(theme.text_muted).child("\u{2026}"),
+                Some(Ok(preview)) => line.text_color(theme.text_muted).child(format!(
+                    "Next: {} \u{00b7} {}",
+                    preview
+                        .fires
+                        .iter()
+                        .map(|fire| local_time(*fire))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    preview.time_zone
+                )),
+                Some(Err(problem)) => line.text_color(theme.danger).child(problem),
+            });
+        let model_field = div()
+            .id("routine-model")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(hairline(if model_open { 0.18 } else { 0.08 }))
+            .cursor_pointer()
+            .hover(|s| s.bg(ink(0.03)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_model_list(window, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(14.0))
+                    .child(model),
+            )
+            .child(
+                icon(icons::ALT_ARROW_DOWN)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted),
+            );
+        let model_list = model_open.then(|| {
+            let empty = model_rows.is_empty();
+            div()
+                .mt(px(8.0))
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(popover::dialog_field(model_query.into_any_element()))
+                .child(
+                    div()
+                        .id("routine-model-list")
+                        .max_h(px(200.0))
+                        .overflow_y_scroll()
+                        .occlude()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(hairline(0.08))
+                        .when(empty, |list| {
+                            list.child(
+                                div()
+                                    .px(px(12.0))
+                                    .py(px(8.0))
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .text_color(theme.text_muted)
+                                    .child("No matching models"),
+                            )
+                        })
+                        .children(model_rows.into_iter().enumerate().map(
+                            |(ix, (id, provider, label, active))| {
+                                div()
+                                    .id(("routine-model-row", ix))
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(8.0))
+                                    .cursor_pointer()
+                                    .text_size(crate::typography::ui_rems(13.0))
+                                    .when(active, |row| row.bg(ink(0.06)))
+                                    .hover(|row| row.bg(ink(0.08)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let model = this
+                                            .pickers
+                                            .read(cx)
+                                            .offered_models()
+                                            .into_iter()
+                                            .find(|model| {
+                                                model.id == id && model.provider == provider
+                                            })
+                                            .cloned();
+                                        if let Some(model) = model {
+                                            this.pick_model(&model, cx);
+                                        }
+                                    }))
+                                    .child(div().flex_1().min_w_0().truncate().child(label))
+                            },
+                        )),
+                )
+        });
 
         let card = popover::dialog_card(theme)
+            .id("routine-form-card")
             .w(px(620.0))
+            .max_h(window.viewport_size().height - px(64.0))
+            .overflow_y_scroll()
             .px(px(22.0))
             .py(px(18.0))
             .rounded(px(14.0))
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "escape" {
+                let keystroke = &ev.keystroke;
+                if keystroke.key == "escape" {
                     cx.stop_propagation();
-                    this.close_create(window, cx);
+                    let model_open = this.form.as_ref().is_some_and(|form| form.model_open);
+                    if model_open {
+                        if let Some(form) = this.form.as_mut() {
+                            form.model_open = false;
+                        }
+                        cx.notify();
+                    } else {
+                        this.close_form(window, cx);
+                    }
+                } else if keystroke.key == "enter" && keystroke.modifiers.platform {
+                    cx.stop_propagation();
+                    this.submit_form(cx);
                 }
             }))
             .child(
@@ -999,11 +1585,18 @@ impl ScheduledPage {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .child(popover::dialog_title(theme, "New routine"))
+                    .child(popover::dialog_title(
+                        theme,
+                        if editing {
+                            "Edit routine"
+                        } else {
+                            "New routine"
+                        },
+                    ))
                     .child(
-                        icon_button(theme, "routine-create-close".into(), icons::CLOSE, false)
+                        icon_button(theme, "routine-form-close".into(), icons::CLOSE, false)
                             .on_click(
-                                cx.listener(|this, _, window, cx| this.close_create(window, cx)),
+                                cx.listener(|this, _, window, cx| this.close_form(window, cx)),
                             ),
                     ),
             )
@@ -1017,6 +1610,17 @@ impl ScheduledPage {
                 "Prompt",
                 popover::dialog_field(prompt.into_any_element()).min_h(px(72.0)),
             ))
+            .child(field(
+                theme,
+                "Schedule",
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(preset_seg)
+                    .child(schedule_detail)
+                    .child(preview_line),
+            ))
             .child(
                 div()
                     .flex()
@@ -1024,26 +1628,17 @@ impl ScheduledPage {
                     .gap(px(14.0))
                     .child(div().flex_1().min_w_0().child(field(
                         theme,
-                        "Schedule (cron)",
-                        popover::dialog_field(cron.into_any_element()),
+                        "Time zone",
+                        popover::dialog_field(time_zone.into_any_element()),
                     )))
                     .child(
-                        div().flex_1().min_w_0().child(field(
-                            theme,
-                            "Model",
-                            div()
-                                .px(px(12.0))
-                                .py(px(8.0))
-                                .rounded(px(8.0))
-                                .border_1()
-                                .border_color(hairline(0.08))
-                                .truncate()
-                                .text_size(crate::typography::ui_rems(14.0))
-                                .text_color(theme.text_muted)
-                                .child(model),
-                        )),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(field(theme, "Model", model_field)),
                     ),
             )
+            .children(model_list)
             .child(field(theme, "Project", space_chips))
             .child(field(theme, "Checkout", checkout_seg))
             .child(field(theme, "Permission mode", mode_seg))
@@ -1059,28 +1654,99 @@ impl ScheduledPage {
                     .mt(px(18.0))
                     .flex()
                     .flex_row()
+                    .items_center()
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(theme, "Cancel", "routine-create-cancel")
-                            .id("routine-create-cancel")
+                        div()
+                            .flex_1()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child("\u{2318}\u{21a9} to save"),
+                    )
+                    .child(
+                        popover::btn_ghost(theme, "Cancel", "routine-form-cancel")
+                            .id("routine-form-cancel")
                             .on_click(
-                                cx.listener(|this, _, window, cx| this.close_create(window, cx)),
+                                cx.listener(|this, _, window, cx| this.close_form(window, cx)),
                             ),
                     )
                     .child(
-                        popover::btn_primary(theme, if saving { "Creating…" } else { "Create" })
-                            .id("routine-create-save")
-                            .when(saving, |el| el.opacity(0.6))
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_create(cx))),
+                        popover::btn_primary(
+                            theme,
+                            match (saving, editing) {
+                                (true, _) => "Saving…",
+                                (false, true) => "Save",
+                                (false, false) => "Create",
+                            },
+                        )
+                        .id("routine-form-save")
+                        .when(saving, |el| el.opacity(0.6))
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_form(cx))),
                     ),
             )
             .into_any_element();
         Some(popover::modal(
-            "routine-create-dialog",
+            "routine-form-dialog",
             window.viewport_size(),
             card,
         ))
+    }
+
+    /// Starting points on the empty page; one click opens the form on it.
+    fn render_templates(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
+                    .child("Start from a template"),
+            )
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(TEMPLATES.len() as u16)
+                    .gap(px(GRID_GAP))
+                    .children(TEMPLATES.iter().enumerate().map(|(ix, template)| {
+                        div()
+                            .id(("routine-template", ix))
+                            .p(px(14.0))
+                            .rounded(px(12.0))
+                            .border_1()
+                            .border_color(hairline(0.08))
+                            .bg(ink(0.02))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(ink(0.05)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_template(&TEMPLATES[ix], cx)
+                            }))
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(13.5))
+                                    .text_color(theme.text)
+                                    .child(template.name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .text_color(theme.text_muted)
+                                    .child(template.caption),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .text_color(theme.text_muted)
+                                    .line_clamp(3)
+                                    .child(template.prompt),
+                            )
+                    })),
+            )
     }
 
     fn render_confirm(
@@ -1199,7 +1865,7 @@ impl Render for ScheduledPage {
             .confirm
             .clone()
             .and_then(|id| self.render_confirm(&theme, &id, window, cx));
-        let create = self.render_create(&theme, window, cx);
+        let form = self.render_form(&theme, window, cx);
         // A Routine deleted elsewhere takes its drawer with it.
         if self
             .drawer
@@ -1247,12 +1913,15 @@ impl Render for ScheduledPage {
                                         })),
                                 )
                             })
+                            .when(routines.is_empty(), |el| {
+                                el.child(self.render_templates(&theme, cx))
+                            })
                             .child(grid),
                     ),
             )
             .children(drawer)
             .children(confirm)
-            .children(create)
+            .children(form)
     }
 }
 
@@ -1413,7 +2082,76 @@ fn short_model(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
 }
 
-/// A labeled form row in the create modal.
+/// "HH:MM" on a 24-hour clock.
+fn parse_time(text: &str) -> Option<(u8, u8)> {
+    let (hour, minute) = text.trim().split_once(':')?;
+    let digits = |part: &str, max: u8| {
+        (!part.is_empty() && part.len() <= 2 && part.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| part.parse::<u8>().ok())
+            .flatten()
+            .filter(|value| *value <= max)
+    };
+    Some((digits(hour, 23)?, digits(minute, 59)?))
+}
+
+/// The cron a preset spells at `time` on `weekday` (0 = Sunday). `None`
+/// for an unreadable time, and for the custom preset, which has no
+/// spelling of its own.
+fn preset_cron(preset: Preset, time: &str, weekday: u8) -> Option<String> {
+    if preset == Preset::Hourly {
+        return Some("0 * * * *".into());
+    }
+    let (hour, minute) = parse_time(time)?;
+    let days = match preset {
+        Preset::Daily => "*".to_string(),
+        Preset::Weekdays => "1-5".to_string(),
+        Preset::Weekly => weekday.to_string(),
+        Preset::Hourly | Preset::Custom => return None,
+    };
+    Some(format!("{minute} {hour} * * {days}"))
+}
+
+/// The preset a stored cron reads as, with its "HH:MM" and weekday; `None`
+/// when only a custom cron says it.
+fn cron_preset(cron: &str) -> Option<(Preset, String, u8)> {
+    let fields: Vec<&str> = cron.split_whitespace().collect();
+    let [minute, hour, "*", "*", days] = fields[..] else {
+        return None;
+    };
+    if [minute, hour, days] == ["0", "*", "*"] {
+        return Some((Preset::Hourly, "09:00".into(), 1));
+    }
+    let (hour, minute) = parse_time(&format!("{hour}:{minute}"))?;
+    let time = format!("{hour:02}:{minute:02}");
+    match days {
+        "*" => Some((Preset::Daily, time, 1)),
+        "1-5" => Some((Preset::Weekdays, time, 1)),
+        day => {
+            let day = day
+                .parse::<u8>()
+                .ok()
+                .filter(|d| *d <= 6 && d.to_string() == day)?;
+            Some((Preset::Weekly, time, day))
+        }
+    }
+}
+
+/// An RPC failure as the form shows it: the engine's message without the
+/// transport's "bad params:" framing.
+fn rpc_problem(error: &holt_rpc::RpcError) -> String {
+    match error {
+        holt_rpc::RpcError::BadParams(message) => {
+            let mut message = message.clone();
+            if let Some(first) = message.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            message
+        }
+        other => other.to_string(),
+    }
+}
+
+/// A labeled form row in the create/edit modal.
 fn field(theme: &Theme, label: &'static str, control: impl IntoElement) -> gpui::Div {
     div()
         .mt(px(14.0))
@@ -1569,6 +2307,54 @@ mod tests {
             Some(&(RunOutcome::Failed, true)),
             "a Catch-up run is marked"
         );
+    }
+
+    #[test]
+    fn presets_round_trip_through_cron() {
+        for (cron, preset, time, weekday) in [
+            ("0 * * * *", Preset::Hourly, "09:00", 1),
+            ("30 7 * * *", Preset::Daily, "07:30", 1),
+            ("0 9 * * 1-5", Preset::Weekdays, "09:00", 1),
+            ("15 18 * * 0", Preset::Weekly, "18:15", 0),
+        ] {
+            assert_eq!(
+                cron_preset(cron),
+                Some((preset, time.to_string(), weekday)),
+                "{cron}"
+            );
+            assert_eq!(preset_cron(preset, time, weekday).as_deref(), Some(cron));
+        }
+        for custom in [
+            "*/15 * * * *",
+            "0 9 1 * *",
+            "0 9 * * 1,3",
+            "0 24 * * *",
+            "0 9 * * 7",
+        ] {
+            assert_eq!(cron_preset(custom), None, "{custom}");
+        }
+    }
+
+    #[test]
+    fn preset_time_must_be_a_24_hour_clock() {
+        assert_eq!(
+            preset_cron(Preset::Daily, " 9:05 ", 1).as_deref(),
+            Some("5 9 * * *")
+        );
+        for bad in ["", "9", "24:00", "09:60", "9:5:0", "a:00", "-1:00"] {
+            assert_eq!(preset_cron(Preset::Daily, bad, 1), None, "{bad:?}");
+        }
+        assert_eq!(preset_cron(Preset::Custom, "09:00", 1), None);
+        assert_eq!(
+            preset_cron(Preset::Hourly, "", 1).as_deref(),
+            Some("0 * * * *")
+        );
+    }
+
+    #[test]
+    fn form_problems_drop_the_transport_prefix() {
+        let bad = holt_rpc::RpcError::BadParams("invalid cron: expected 5 fields".into());
+        assert_eq!(rpc_problem(&bad), "Invalid cron: expected 5 fields");
     }
 
     #[test]

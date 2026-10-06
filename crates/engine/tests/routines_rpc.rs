@@ -839,3 +839,111 @@ async fn new_worktree_routines_run_in_a_session_worktree() {
             .exists()
     );
 }
+
+#[tokio::test]
+async fn update_changes_future_runs_only() {
+    const NEW_PROMPT: &str = "List open pull requests.";
+    let fixture = Fixture::new();
+    let provider = provider().with_chat_script(NEW_PROMPT, vec![ScriptedReply::text("Two open.")]);
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    let first_chat = run_now(&engine, id).await;
+    wait_for_requests(&provider, 1).await;
+
+    let mut params = create_params(json!({
+        "routineId": id,
+        "name": "PR sweep",
+        "prompt": NEW_PROMPT,
+        "cron": "30 18 * * *",
+    }));
+    params["config"]["permissionMode"] = json!("full-access");
+    let RpcReply::Value(updated) = engine
+        .handle(methods::UPDATE_ROUTINE, params)
+        .await
+        .unwrap()
+    else {
+        panic!("UpdateRoutine did not reply a value");
+    };
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["prompt"], NEW_PROMPT);
+    assert_eq!(updated["createdAt"], routine["createdAt"]);
+
+    let listed = list(&engine).await.remove(0);
+    assert_eq!(listed["name"], "PR sweep");
+    assert_eq!(listed["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["runs"][0]["chatId"], first_chat);
+    // The new schedule plans from the edit: 18:30 Shanghai today.
+    assert_eq!(listed["nextFireAt"], "2026-10-07T10:30:00Z");
+
+    let second_chat = run_now(&engine, id).await;
+    wait_for_requests(&provider, 2).await;
+    assert!(
+        common::summarize(&provider.requests()[1].messages)
+            .first()
+            .is_some_and(|first| first.contains(NEW_PROMPT)),
+        "the next run uses the edited prompt"
+    );
+    let row = chat_row(&engine, &second_chat)
+        .await
+        .expect("run chat listed");
+    assert_eq!(row["title"], "PR sweep");
+    assert_eq!(row["config"]["permissionMode"], "full-access");
+    let old = chat_row(&engine, &first_chat).await.expect("old run kept");
+    assert_eq!(old["title"], "Daily digest");
+
+    let error = engine
+        .handle(
+            methods::UPDATE_ROUTINE,
+            create_params(json!({ "routineId": id, "cron": "not a cron" })),
+        )
+        .await
+        .err()
+        .expect("rejected");
+    assert!(matches!(error, RpcError::BadParams(message) if message.starts_with("invalid cron")));
+    assert_eq!(list(&engine).await[0]["cron"], "30 18 * * *");
+}
+
+#[tokio::test]
+async fn preview_lists_the_next_three_fires() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    // Now is Wednesday 17:00 in Shanghai: today's 09:00 has passed.
+    let RpcReply::Value(preview) = engine
+        .handle(
+            methods::PREVIEW_ROUTINE_SCHEDULE,
+            json!({ "cron": "0 9 * * 1-5", "timeZone": "Asia/Shanghai" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("PreviewRoutineSchedule did not reply a value");
+    };
+    assert_eq!(
+        preview,
+        json!({
+            "timeZone": "Asia/Shanghai",
+            "fires": [
+                "2026-10-08T01:00:00Z",
+                "2026-10-09T01:00:00Z",
+                "2026-10-12T01:00:00Z",
+            ],
+        })
+    );
+
+    for (params, prefix) in [
+        (json!({ "cron": "61 * * * *" }), "invalid cron"),
+        (
+            json!({ "cron": "0 9 * * *", "timeZone": "Mars/Base" }),
+            "unknown time zone",
+        ),
+    ] {
+        let error = engine
+            .handle(methods::PREVIEW_ROUTINE_SCHEDULE, params)
+            .await
+            .err()
+            .expect("rejected");
+        assert!(matches!(error, RpcError::BadParams(message) if message.starts_with(prefix)));
+    }
+}

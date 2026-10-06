@@ -279,6 +279,13 @@ pub mod methods {
     /// Params `{name, spaceId, prompt, cron, timeZone?, config, checkout?}`
     /// → the new `Routine`. `timeZone` defaults to the device's zone.
     pub const CREATE_ROUTINE: &str = "CreateRoutine";
+    /// Params `{routineId, name, spaceId, prompt, cron, timeZone?, config,
+    /// checkout?}` → the updated `Routine`. Configuration only: run records
+    /// and pause state stay, and a changed schedule plans from now.
+    pub const UPDATE_ROUTINE: &str = "UpdateRoutine";
+    /// Params `{cron, timeZone?}` → `{timeZone, fires}`: the next three fires
+    /// from now, or `BadParams` naming the invalid cron or zone.
+    pub const PREVIEW_ROUTINE_SCHEDULE: &str = "PreviewRoutineSchedule";
     /// Params `{routineId}`. Run chats stay as ordinary Chats.
     pub const DELETE_ROUTINE: &str = "DeleteRoutine";
     /// Params `{routineId, paused}`: pause (reason "user") or resume.

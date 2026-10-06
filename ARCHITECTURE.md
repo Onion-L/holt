@@ -405,7 +405,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   the UI surfaces as an error notice — and `QueueCommand`.
 - Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
   — the Routine plus its computed next fire), `CreateRoutine` (the time zone
-  defaults to the device's), `DeleteRoutine` (run chats stay as ordinary
+  defaults to the device's), `UpdateRoutine` (`{routineId, …}` with the
+  create fields; replaces the config only — runs and pause state stay, and a
+  changed cron or time zone moves the schedule's anchor to now so the edit
+  never triggers a Catch-up run), `PreviewRoutineSchedule` (`{cron,
+  timeZone?}` → `{timeZone, fires}`, the next three fires; a bad cron or
+  zone is `BadParams`), `DeleteRoutine` (run chats stay as ordinary
   Chats), `SetRoutinePaused` (`{routineId, paused}`; resuming moves the
   schedule's anchor to now, so fires passed while paused are not made up),
   and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running
