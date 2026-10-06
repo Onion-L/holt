@@ -264,9 +264,9 @@ pub enum RowKind {
     },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
-    /// carries.
+    /// carries, rendered as Markdown.
     CompactionDivider {
-        summary: SharedString,
+        summary: Arc<BlockTree>,
     },
     /// The Plan Mode approval card (ADR-0025): one per plan submission,
     /// carrying the document pointer and its resolution state. Pending
@@ -1113,13 +1113,13 @@ pub fn rows_for_entry(
                         summary,
                         ..
                     } => {
+                        let key = format!("{}#{}", entry.id, part_id);
+                        let tree = parse(&key, summary);
                         rows.push(Row {
-                            id: format!("{}#{}", entry.id, part_id).into(),
+                            id: key.into(),
                             version: fnv1a(summary.as_bytes()),
                             turn_start: false,
-                            kind: RowKind::CompactionDivider {
-                                summary: summary.clone().into(),
-                            },
+                            kind: RowKind::CompactionDivider { summary: tree },
                             entry_id: entry_id.clone(),
                             timestamp: None,
                             copy_text: None,
@@ -1202,6 +1202,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
             | RowKind::QuestionCard { .. }
             | RowKind::KeyRequest { .. }
             | RowKind::TurnChangeCard { .. }
+            | RowKind::CompactionDivider { .. }
     ) || prev.is_some_and(|row| {
         matches!(
             row.kind,
@@ -1212,6 +1213,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
                 | RowKind::QuestionCard { .. }
                 | RowKind::KeyRequest { .. }
                 | RowKind::TurnChangeCard { .. }
+                | RowKind::CompactionDivider { .. }
         )
     }) {
         Theme::SPACE_MD
@@ -2096,7 +2098,11 @@ mod tests {
         assert_eq!(rows.len(), 1);
         match &rows[0].kind {
             RowKind::CompactionDivider { summary } => {
-                assert!(summary.contains("ship the compaction slice"));
+                assert!(matches!(
+                    summary.blocks.first().map(|top| &top.block),
+                    Some(crate::markdown::parser::Block::Heading { level: 2, .. })
+                ));
+                assert_eq!(summary.blocks.len(), 2);
             }
             _other => panic!("expected a compaction divider row"),
         }

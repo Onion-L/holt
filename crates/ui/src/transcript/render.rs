@@ -615,7 +615,7 @@ impl Transcript {
             } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
             RowKind::CompactionDivider { summary } => {
-                self.render_compaction_divider(&row.id, summary, &theme, cx)
+                self.render_compaction_divider(&row.id, summary, &theme, window, cx)
             }
             RowKind::PlanApproval { content, state } => {
                 self.render_plan_approval_card(&row.id, content, state, &theme)

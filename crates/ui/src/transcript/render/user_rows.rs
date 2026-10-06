@@ -184,7 +184,7 @@ impl Transcript {
             1.0
         };
         div()
-            .min_w_0()
+            .flex_none()
             .flex()
             .items_center()
             .gap_2()
@@ -194,7 +194,7 @@ impl Transcript {
                 crate::icons::icon(crate::icons::CONTEXT_COMPACT)
                     .size_4()
                     .flex_none()
-                    .opacity(opacity),
+                    .text_color(theme.text_muted.opacity(opacity)),
             )
             .when(compacting, |el| {
                 el.child(crate::loaders::mini_mono_spinner(
@@ -206,67 +206,98 @@ impl Transcript {
                 ))
             })
             .child(if compacting {
-                "Compacting context"
+                "Compacting Context"
             } else {
-                "Context compacted"
+                "Context Compacted"
             })
     }
 
-    /// A quiet completion row that expands to the summary the model carries.
+    /// The compaction rule: hairlines either side of a centered label.
+    pub(super) fn compaction_rule(center: impl IntoElement, theme: &Theme) -> gpui::Div {
+        let line = || div().flex_1().h(px(1.0)).bg(theme.hairline(0.12));
+        div()
+            .h(px(CHIP_HEIGHT))
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .child(line())
+            .child(center)
+            .child(line())
+    }
+
+    /// A divider rule marking where the model's verbatim memory begins; the
+    /// label folds open to the summary the model carries.
     pub(super) fn render_compaction_divider(
         &mut self,
         row_id: &SharedString,
-        summary: &SharedString,
+        summary: &Arc<BlockTree>,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let fold = self.folds.get(row_id).copied().unwrap_or_default();
         let open = fold.open.unwrap_or(false);
         let toggle_row_id = row_id.clone();
-        let header =
+        let toggle =
             div()
                 .id(SharedString::from(format!("{row_id}#divider-toggle")))
-                .h(px(CHIP_HEIGHT))
-                .w_full()
                 .flex_none()
                 .flex()
                 .flex_row()
                 .items_center()
+                .gap(px(8.0))
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(6.0))
                 .cursor_pointer()
+                .hover(|el| el.bg(theme.ink(0.04)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_skill_fold(toggle_row_id.clone(), cx)
                 }))
+                .child(self.compaction_label(false, theme, cx))
                 .child(
                     div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.0))
-                        .text_size(px(12.0))
-                        .line_height(px(18.0))
-                        .child(self.compaction_label(false, theme, cx))
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .text_color(theme.text_muted.opacity(0.8))
-                                .child(SharedString::from(if open { "▾" } else { "▸" })),
-                        ),
+                        .flex_none()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted.opacity(0.8))
+                        .child(SharedString::from(if open { "▾" } else { "▸" })),
                 );
-        let mut column = div().w_full().flex().flex_col().child(header);
+        let mut column = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(Self::compaction_rule(toggle, theme));
         if open {
+            let opts = RenderOptions {
+                row_key: row_id.clone(),
+                veil: None,
+                cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
+                now: Instant::now(),
+                copy: Some(self.copy_ui_for(row_id, cx)),
+                mermaid_ui: Some(self.mermaid_ui_for(row_id, summary, cx)),
+            };
+            let highlight = self.code_highlight_for(row_id, summary, None, cx);
+            let mermaid = self.mermaid_for(row_id, summary, None, cx);
+            let body = render::render_tree(
+                summary,
+                &opts,
+                theme,
+                window,
+                &|ix| highlight.get(&ix).cloned().flatten(),
+                &|ix, _| mermaid.get(&ix).cloned().flatten(),
+            );
             let scroll = self.nested_scroll_handle(row_id);
             column = column.child(
                 div()
                     .w_full()
-                    .mt(px(2.0))
+                    .mt(px(6.0))
                     .mb(px(6.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
+                    .px(px(14.0))
+                    .py(px(12.0))
                     .rounded(px(8.0))
-                    .bg(crate::theme::ink(0.03))
+                    .bg(theme.ink(0.03))
                     .id(SharedString::from(format!("{row_id}#divider-body")))
                     .max_h(px(320.0))
                     .overflow_y_scroll()
@@ -280,10 +311,7 @@ impl Transcript {
                     .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
                         this.chain_nested_scroll(&scroll, cx);
                     }))
-                    .text_size(px(12.0))
-                    .line_height(px(17.0))
-                    .text_color(theme.text.opacity(0.85))
-                    .child(summary.clone()),
+                    .child(body),
             );
         }
         column.into_any_element()
@@ -450,10 +478,11 @@ impl Transcript {
                 .is_some_and(|session| session.status == holt_proto::SessionStatus::Compacting)
             {
                 let theme = Theme::of(cx).clone();
+                let label = self.compaction_label(true, &theme, cx).px(px(8.0));
                 return Some(
                     div()
                         .pt(px(Theme::SPACE_LG))
-                        .child(self.compaction_label(true, &theme, cx))
+                        .child(Self::compaction_rule(label, &theme))
                         .into_any_element(),
                 );
             }
