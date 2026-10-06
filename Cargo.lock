@@ -3272,6 +3272,7 @@ dependencies = [
  "holt-proto",
  "holt-rpc",
  "htmd",
+ "iana-time-zone",
  "ignore",
  "image",
  "libc",

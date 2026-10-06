@@ -272,6 +272,17 @@ pub mod methods {
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
+    /// Routines (ADR-0042) → `Vec<RoutineView>`, the current list.
+    pub const LIST_ROUTINES: &str = "ListRoutines";
+    /// Pushed `Vec<RoutineView>`: current value first, then every change.
+    pub const WATCH_ROUTINES: &str = "WatchRoutines";
+    /// Params `{name, spaceId, prompt, cron, timeZone?, config, checkout?}`
+    /// → the new `Routine`. `timeZone` defaults to the device's zone.
+    pub const CREATE_ROUTINE: &str = "CreateRoutine";
+    /// Params `{routineId}`. Run chats stay as ordinary Chats.
+    pub const DELETE_ROUTINE: &str = "DeleteRoutine";
+    /// Fire a Routine once, off schedule. Params `{routineId}` → `{chatId}`.
+    pub const RUN_ROUTINE_NOW: &str = "RunRoutineNow";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
     /// Params are tagged `{op: createChat|createSpace|renameSpace|deleteSpace|
     /// renameChat|setChatArchived|setChatPinned|deleteChat|renameDevice|markChatSeen|

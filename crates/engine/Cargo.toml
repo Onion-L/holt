@@ -32,6 +32,9 @@ notify.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 chrono.workspace = true
+# Routines (ADR-0042): the local IANA zone a new Routine's cron is read
+# in. Already in the lockfile through chrono's clock feature.
+iana-time-zone = "0.1"
 tiktoken-rs = "0.7"
 reqwest.workspace = true
 htmd = "0.5"

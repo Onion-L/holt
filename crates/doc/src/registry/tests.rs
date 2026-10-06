@@ -279,6 +279,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         plan_mode: None,
         worktree: None,
         provider_mode: false,
+        routine_run: None,
     }
 }
 

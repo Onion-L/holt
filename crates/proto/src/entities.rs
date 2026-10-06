@@ -334,6 +334,10 @@ pub struct Chat {
     /// Mode; exiting keeps pending cards writable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub provider_mode: bool,
+    /// Set on Chats a Routine run created (ADR-0042); `None` for every
+    /// other chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routine_run: Option<crate::RoutineRunMarker>,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on

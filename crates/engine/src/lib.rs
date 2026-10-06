@@ -51,6 +51,7 @@ mod provider_store;
 pub mod providers;
 mod queue;
 mod retry_events;
+mod routines;
 mod rpc;
 mod shell_env;
 mod skills;
@@ -189,8 +190,9 @@ struct EngineService {
     /// in).
     search_backend_resolver: Option<SearchBackendResolver>,
     /// The engine wall clock (`EngineConfig::clock`, else the system time).
-    #[expect(dead_code, reason = "read by the Routine scheduler")]
     clock: Clock,
+    /// Persisted Routines (ADR-0042) and their pushed watch value.
+    routines: Arc<routines::Routines>,
     terminals: Arc<terminals::Terminals>,
     /// The Turn terminal event dispatcher (ADR-0019): fire-and-forget
     /// fan-out of durably settled main-chat Turn outcomes.
@@ -288,6 +290,7 @@ impl LocalEngine {
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
         let jev = jev_settings::JevStore::load(&config.data_dir)?;
+        let routines = Arc::new(routines::Routines::load(&config.data_dir)?);
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),
@@ -316,6 +319,7 @@ impl LocalEngine {
                 jev,
                 search_backend_resolver: config.search_backend_resolver.clone(),
                 clock: config.clock.clone().unwrap_or_default(),
+                routines,
                 terminals: Arc::new(terminals::Terminals::default()),
                 turn_events: turn_events::TurnEvents::new(),
                 updater: update::Updater::new(),
@@ -539,6 +543,7 @@ mod tests {
             plan_mode: None,
             provider_mode: false,
             worktree: None,
+            routine_run: None,
         }
     }
 

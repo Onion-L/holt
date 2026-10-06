@@ -271,6 +271,7 @@ impl EngineService {
             plan_mode: None,
             provider_mode: false,
             worktree: params.worktree,
+            routine_run: None,
         });
         drop(chats);
         self.runtime

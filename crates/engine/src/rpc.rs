@@ -19,6 +19,7 @@ mod git_surface;
 mod images;
 mod modes;
 mod providers;
+mod routines;
 mod run;
 mod settings;
 mod spaces;
@@ -311,6 +312,11 @@ impl RpcService for EngineService {
             methods::WATCH_CHATS => Ok(Self::watch_value(self.runtime.chats_tx.subscribe())),
             methods::WATCH_SESSIONS => Ok(Self::watch_value(self.runtime.sessions_tx.subscribe())),
             methods::WATCH_SPACES => Ok(self.watch_spaces()),
+            methods::LIST_ROUTINES => RpcReply::value(&self.routines.views()),
+            methods::WATCH_ROUTINES => Ok(Self::watch_value(self.routines.subscribe())),
+            methods::CREATE_ROUTINE => self.create_routine(params),
+            methods::DELETE_ROUTINE => self.delete_routine(params),
+            methods::RUN_ROUTINE_NOW => self.run_routine_now(params),
             methods::WATCH_CONNECTIVITY => {
                 // Default = state Disabled ("no edge transports on this
                 // profile — hide the pill"), no chat rooms.

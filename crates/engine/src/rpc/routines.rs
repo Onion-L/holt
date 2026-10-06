@@ -1,0 +1,191 @@
+//! The Routines surface (ADR-0042): list, create, delete, Run now, and the
+//! Routines watch. Every run creates its Chat through `start_routine_run`.
+
+use holt_proto::{
+    Chat, ChatConfig, Routine, RoutineCheckout, RoutineRun, RoutineRunMarker, RunOutcome,
+    TitleSource, WorktreeSpec,
+};
+use holt_rpc::{RpcError, RpcReply};
+use serde::Deserialize;
+
+use super::required_string;
+use crate::EngineService;
+use crate::routines::{local_time_zone, push_run};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRoutineParams {
+    name: String,
+    space_id: String,
+    prompt: String,
+    cron: String,
+    #[serde(default)]
+    time_zone: Option<String>,
+    config: ChatConfig,
+    #[serde(default)]
+    checkout: RoutineCheckout,
+}
+
+/// How a run came about; recorded on the run and on its Chat's marker.
+pub(crate) struct Fire {
+    pub missed_fires: u32,
+    pub manual: bool,
+}
+
+impl EngineService {
+    pub(super) fn create_routine(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let params: CreateRoutineParams = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        let name = params.name.trim();
+        if name.is_empty() {
+            return Err(RpcError::BadParams("name must not be empty".into()));
+        }
+        if params.prompt.trim().is_empty() {
+            return Err(RpcError::BadParams("prompt must not be empty".into()));
+        }
+        if params.cron.trim().is_empty() {
+            return Err(RpcError::BadParams("cron must not be empty".into()));
+        }
+        if !self.space_exists(&params.space_id) {
+            return Err(RpcError::BadParams("unknown space".into()));
+        }
+        let routine = Routine {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            space_id: params.space_id,
+            prompt: params.prompt,
+            cron: params.cron.trim().to_string(),
+            time_zone: params
+                .time_zone
+                .filter(|zone| !zone.trim().is_empty())
+                .unwrap_or_else(local_time_zone),
+            config: params.config,
+            checkout: params.checkout,
+            paused: None,
+            created_at: self.clock.now(),
+            last_fired_at: None,
+            runs: Vec::new(),
+        };
+        let reply = routine.clone();
+        self.routines.update(|routines| {
+            routines.push(routine);
+            Ok(())
+        })?;
+        RpcReply::value(&reply)
+    }
+
+    pub(super) fn delete_routine(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let id = required_string(&params, "routineId")?;
+        // Run chats keep their marker and become ordinary Chats.
+        self.routines.update(|routines| {
+            routines.retain(|routine| routine.id != id);
+            Ok(())
+        })?;
+        RpcReply::value(&serde_json::json!({}))
+    }
+
+    pub(super) fn run_routine_now(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let id = required_string(&params, "routineId")?;
+        let chat_id = self.start_routine_run(
+            id,
+            Fire {
+                missed_fires: 0,
+                manual: true,
+            },
+        )?;
+        RpcReply::value(&serde_json::json!({ "chatId": chat_id }))
+    }
+
+    /// Fire a Routine: create its run Chat (the Routine's name as a
+    /// user-owned title, its model and Permission mode, the run marker),
+    /// enqueue the prompt verbatim as the first message, and record the
+    /// run. Returns the new Chat's id.
+    pub(crate) fn start_routine_run(&self, id: &str, fire: Fire) -> Result<String, RpcError> {
+        let routine = self
+            .routines
+            .get(id)
+            .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+        let space = self
+            .spaces
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|space| space.id == routine.space_id)
+            .cloned()
+            .ok_or_else(|| RpcError::Failed("the Routine's Space was removed".into()))?;
+        let now = self.clock.now();
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        self.runtime
+            .chats
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Chat {
+                id: chat_id.clone(),
+                device_id: space.device_id.clone(),
+                title: Some(routine.name.clone()),
+                title_source: TitleSource::UserManual,
+                title_task_started: false,
+                archived: false,
+                pinned: false,
+                cwd: Some(space.path.clone()),
+                branch: None,
+                checkout_id: space.checkout_id.clone(),
+                source_context: None,
+                config: Some(routine.config.clone()),
+                last_message_preview: None,
+                last_message_at: None,
+                created_at: now,
+                space_id: Some(space.id.clone()),
+                last_seen_at: None,
+                room_gen: None,
+                compact_before_next_turn: false,
+                plan_mode: None,
+                provider_mode: false,
+                // The session worktree (ADR-0038) is cut from the repo's
+                // current checkout, like a composer send with no picked
+                // base.
+                worktree: (routine.checkout == RoutineCheckout::NewWorktree).then(|| {
+                    WorktreeSpec {
+                        repo_path: space.path.clone(),
+                        base: "HEAD".into(),
+                    }
+                }),
+                routine_run: Some(RoutineRunMarker {
+                    routine_id: routine.id.clone(),
+                    routine_name: routine.name.clone(),
+                    missed_fires: fire.missed_fires,
+                    manual: fire.manual,
+                }),
+            });
+        self.runtime
+            .persist_chats_locked()
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        let chat = self.runtime.chat(&chat_id);
+        self.runtime.publish_chats();
+        let request = Self::queued_run_request(&routine.config, &routine.prompt, space.path);
+        self.enqueue_run(chat, request, uuid::Uuid::new_v4().to_string())?;
+        let run = RoutineRun {
+            fired_at: now,
+            outcome: RunOutcome::Running,
+            note: None,
+            chat_id: Some(chat_id.clone()),
+            missed_fires: fire.missed_fires,
+            manual: fire.manual,
+        };
+        self.routines.update(|routines| {
+            if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
+                push_run(routine, run);
+            }
+            Ok(())
+        })?;
+        Ok(chat_id)
+    }
+
+    fn space_exists(&self, space_id: &str) -> bool {
+        self.spaces
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|space| space.id == space_id)
+    }
+}

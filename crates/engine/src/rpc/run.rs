@@ -148,6 +148,7 @@ impl EngineService {
                     plan_mode: None,
                     provider_mode: false,
                     worktree: Some(spec.clone()),
+                    routine_run: None,
                 }),
             }
         }

@@ -1337,6 +1337,7 @@ rename to new_name.rs
             plan_mode: None,
             worktree: None,
             provider_mode: false,
+            routine_run: None,
         }
     }
 

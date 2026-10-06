@@ -403,6 +403,15 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
   `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
   the UI surfaces as an error notice — and `QueueCommand`.
+- Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
+  — the Routine plus its computed next fire), `CreateRoutine` (the time zone
+  defaults to the device's), `DeleteRoutine` (run chats stay as ordinary
+  Chats), and `RunRoutineNow` (`{routineId}` → `{chatId}`). A run creates
+  its Chat engine-side — the Routine's name as a user-owned title, its
+  `ChatConfig` (Permission mode included, bypassing the sticky default),
+  the `Chat::routine_run` marker, and the new-worktree intent when the
+  Routine asks for one — then queues the prompt verbatim through the normal
+  run path.
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
   branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout
@@ -686,6 +695,8 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   pattern — 0600, atomic replace, malformed or unknown-key files fail
   startup loudly) — each with its own atomic-write and failure policy as
   described above.
+- `routines.json` — every Routine with its newest 200 run records, whole-file
+  atomic replace; a malformed file fails startup loudly.
 - `device-id` (plain text), `engine.lock` (the single-instance lock), `logs/`,
   and the child `results/*.txt` summaries — the only non-JSON artifacts.
 
