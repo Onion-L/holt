@@ -1135,6 +1135,25 @@ impl Shell {
                 this.open_chat_manager(cx);
             }
         }));
+        // A Routine run in flight shows on the row: amber while one waits
+        // on the user, the busy colour while one runs.
+        let live = {
+            let state = self.state.read(cx);
+            let outcomes = || {
+                state
+                    .routines
+                    .iter()
+                    .filter_map(|view| crate::scheduled::live_run(&view.routine))
+                    .map(|run| run.outcome)
+            };
+            if outcomes().any(|outcome| outcome == holt_proto::RunOutcome::Waiting) {
+                Some(theme.warning)
+            } else if outcomes().next().is_some() {
+                Some(theme.busy)
+            } else {
+                None
+            }
+        };
         let scheduled = nav_row(
             theme,
             "sidebar-nav-scheduled",
@@ -1142,6 +1161,17 @@ impl Shell {
             "Scheduled",
             matches!(self.route, Route::Scheduled),
         )
+        .when_some(live, |row, color| {
+            row.child(div().flex_1()).child(
+                div()
+                    .debug_selector(|| "sidebar-nav-scheduled-live".into())
+                    .flex_none()
+                    .mr(px(2.0))
+                    .size(px(6.0))
+                    .rounded_full()
+                    .bg(color),
+            )
+        })
         .on_click(cx.listener(|this, _, _, cx| {
             if !matches!(this.route, Route::Scheduled) {
                 this.open_scheduled(cx);

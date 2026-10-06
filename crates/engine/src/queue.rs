@@ -1042,9 +1042,18 @@ impl EngineService {
                                 (holt_rpc::turns::TurnOutcome::Interrupted, None)
                             }
                         };
+                        // A Turn that ends on an unanswered question
+                        // leaves its run waiting on the user.
                         service.settle_routine_run(
                             &worker_chat.chat_id,
                             match outcome {
+                                holt_rpc::turns::TurnOutcome::Succeeded
+                                    if crate::tools::ask_user::has_pending_question(
+                                        &worker_chat,
+                                    ) =>
+                                {
+                                    RunOutcome::Waiting
+                                }
                                 holt_rpc::turns::TurnOutcome::Succeeded => RunOutcome::Succeeded,
                                 holt_rpc::turns::TurnOutcome::Failed => RunOutcome::Failed,
                                 holt_rpc::turns::TurnOutcome::Interrupted => {

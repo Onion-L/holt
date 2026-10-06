@@ -3225,36 +3225,40 @@ mod tests {
         );
     }
 
+    /// A state holding one Routine whose only run (Chat "run-chat") has
+    /// `outcome`.
+    fn routine_state(outcome: &str) -> AppState {
+        let mut state = AppState::new();
+        state.chats.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "run-chat", "deviceId": "test-device", "archived": false,
+                "cwd": "/tmp", "createdAt": "2026-10-07T09:00:00Z"
+            }))
+            .unwrap(),
+        );
+        state.routines.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "r1", "name": "Daily digest", "spaceId": "space-1",
+                "prompt": "Summarize.", "cron": "0 9 * * *", "timeZone": "UTC",
+                "config": {
+                    "provider": "openai", "model": "openai/gpt-5.4",
+                    "reasoning": null, "permissionMode": "auto-review"
+                },
+                "checkout": "main-checkout", "createdAt": "2026-10-07T08:00:00Z",
+                "runs": [{
+                    "firedAt": "2026-10-07T09:00:00Z", "outcome": outcome,
+                    "chatId": "run-chat"
+                }],
+            }))
+            .unwrap(),
+        );
+        state
+    }
+
     #[gpui::test]
     fn back_from_a_run_chat_reopens_the_routine_drawer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| {
-            let mut state = AppState::new();
-            state.chats.push(
-                serde_json::from_value(serde_json::json!({
-                    "id": "run-chat", "deviceId": "test-device", "archived": false,
-                    "cwd": "/tmp", "createdAt": "2026-10-07T09:00:00Z"
-                }))
-                .unwrap(),
-            );
-            state.routines.push(
-                serde_json::from_value(serde_json::json!({
-                    "id": "r1", "name": "Daily digest", "spaceId": "space-1",
-                    "prompt": "Summarize.", "cron": "0 9 * * *", "timeZone": "UTC",
-                    "config": {
-                        "provider": "openai", "model": "openai/gpt-5.4",
-                        "reasoning": null, "permissionMode": "auto-review"
-                    },
-                    "checkout": "main-checkout", "createdAt": "2026-10-07T08:00:00Z",
-                    "runs": [{
-                        "firedAt": "2026-10-07T09:00:00Z", "outcome": "succeeded",
-                        "chatId": "run-chat"
-                    }],
-                }))
-                .unwrap(),
-            );
-            state
-        });
+        let state = cx.new(|_| routine_state("succeeded"));
         let (shell, cx) = cx.add_window_view(|_, cx| {
             let mut shell = Shell::new(
                 state,
@@ -3296,6 +3300,41 @@ mod tests {
             page.read_with(cx, |page, _| page.drawer()),
             Some("r1".into())
         );
+    }
+
+    #[gpui::test]
+    fn a_live_run_marks_the_nav_row_and_the_drawer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("waiting"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("sidebar-nav-scheduled-live").is_some());
+
+        let page = shell.update(cx, |shell, cx| {
+            shell.open_scheduled(cx);
+            shell.scheduled_page(cx)
+        });
+        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("routine-drawer-live").is_some());
+
+        state.update(cx, |state, cx| {
+            state.routines[0].routine.runs[0].outcome = holt_proto::RunOutcome::Succeeded;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("sidebar-nav-scheduled-live").is_none());
+        assert!(cx.debug_bounds("routine-drawer-live").is_none());
     }
 
     // ---- navigation history (titlebar back/forward) ----

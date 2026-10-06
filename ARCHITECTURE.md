@@ -420,7 +420,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   the `Chat::routine_run` marker, and the new-worktree intent when the
   Routine asks for one — then queues the prompt verbatim through the normal
   run path. A run record's outcome is its first Turn's, set where the queue
-  publishes `TurnTerminalEvent`; follow-up Turns leave it alone. Records
+  publishes `TurnTerminalEvent`; follow-up Turns leave a settled record
+  alone. A run waits on the user two ways: the gate moves it running →
+  waiting while an Approval is pending and back after the verdict, and a
+  Turn that succeeds with an unanswered question card settles it as
+  waiting — the next Turn start (the answer) moves it back to running and
+  that Turn settles it, while `DismissQuestion` settles it succeeded. The
+  UI posts a banner when a run enters waiting, even with a window active,
+  unless its Chat is the one in view. Records
   still running or waiting at launch become interrupted, and deleting a run
   Chat clears the record's `chatId` (note "chat deleted").
 - Git capability (ADR-0001/0002, all served on the git2 backend inside

@@ -705,6 +705,104 @@ async fn a_paused_routine_has_no_catch_up_run() {
     assert!(chats(&engine).await.is_empty());
 }
 
+fn first_outcome(routine: &Value) -> &str {
+    first_run(routine)
+        .and_then(|run| run["outcome"].as_str())
+        .unwrap_or("")
+}
+
+#[tokio::test]
+async fn a_pending_approval_moves_the_run_to_waiting_and_back() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![]).with_chat_script(
+        PROMPT,
+        vec![
+            ScriptedReply::tool_call("call-1", "bash", json!({ "command": "echo hi" })),
+            ScriptedReply::text("Done."),
+        ],
+    );
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(
+        &engine,
+        json!({ "config": {
+            "provider": "openai",
+            "model": "openai/gpt-5.4",
+            "reasoning": null,
+            "permissionMode": "confirm-changes",
+        } }),
+    )
+    .await;
+    let id = routine["id"].as_str().unwrap();
+    let chat_id = run_now(&engine, id).await;
+
+    let approval = common::wait_for_gate(&engine, &chat_id, "call-1", "pending").await;
+    wait_for_routine(&engine, id, |routine| first_outcome(routine) == "waiting").await;
+
+    common::resolve_approval(&engine, &approval, json!({ "kind": "allow" })).await;
+    let settled = wait_for_routine(&engine, id, |routine| {
+        !first_run(routine).unwrap()["outcome"]
+            .as_str()
+            .is_some_and(|outcome| outcome == "waiting" || outcome == "running")
+    })
+    .await;
+    assert_eq!(first_outcome(&settled), "succeeded");
+}
+
+#[tokio::test]
+async fn an_unanswered_question_leaves_the_run_waiting_until_answered() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![])
+        .with_chat_script(
+            PROMPT,
+            vec![
+                ScriptedReply::tool_call(
+                    "call-1",
+                    "ask_user",
+                    json!({ "questions": [
+                        { "question": "Which branch?", "options": ["main", "dev"] }
+                    ] }),
+                ),
+                ScriptedReply::text("Asked."),
+            ],
+        )
+        .with_chat_script(
+            "To your question \"Which branch?\": main",
+            vec![ScriptedReply::text("Summarized main.")],
+        );
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+    let chat_id = run_now(&engine, id).await;
+
+    wait_for_routine(&engine, id, |routine| first_outcome(routine) == "waiting").await;
+    let snapshot = common::transcript_snapshot(&engine, &chat_id).await;
+    let card_id = snapshot["reset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|entry| entry["parts"].as_array().unwrap())
+        .find(|part| part["questions"].is_array())
+        .and_then(|part| part["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    engine
+        .handle(
+            methods::SETTLE_QUESTION,
+            json!({ "chatId": chat_id, "cardId": card_id, "choices": ["main"] }),
+        )
+        .await
+        .unwrap();
+    let settled = wait_for_routine(&engine, id, |routine| {
+        !first_run(routine).unwrap()["outcome"]
+            .as_str()
+            .is_some_and(|outcome| outcome == "waiting" || outcome == "running")
+    })
+    .await;
+    assert_eq!(first_outcome(&settled), "succeeded");
+    assert_eq!(provider.requests().len(), 3);
+}
+
 fn init_repo(dir: &Path) {
     let repo = git2::Repository::init(dir).unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();

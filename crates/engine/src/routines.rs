@@ -95,6 +95,21 @@ impl Routines {
         Ok(out)
     }
 
+    /// Move the run of the run Chat `chat_id` from `from` to `to`; any other
+    /// outcome stays as it is. Best effort: a failed write is logged.
+    pub fn move_run(&self, chat_id: &str, from: RunOutcome, to: RunOutcome) {
+        let result = self.update_run(chat_id, |run| {
+            if run.outcome != from {
+                return false;
+            }
+            run.outcome = to;
+            true
+        });
+        if let Err(error) = result {
+            tracing::warn!(chat_id, %error, "could not move a Routine run's outcome");
+        }
+    }
+
     /// Mutate the run record of the run Chat `chat_id`, if any Routine has
     /// one. `f` returns whether it changed the record; nothing is written
     /// otherwise.

@@ -294,6 +294,7 @@ impl LocalEngine {
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
         let jev = jev_settings::JevStore::load(&config.data_dir)?;
         let routines = Arc::new(routines::Routines::load(&config.data_dir)?);
+        let _ = runtime.routines.set(routines.clone());
         let watch = Arc::new(git_watch::WatchHub::new(
             git.clone(),
             device_id.clone(),

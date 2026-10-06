@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use holt_proto::{
-    PermissionMode, RoutineCheckout, RoutinePause, RoutineRun, RoutineView, RunOutcome,
+    PermissionMode, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineView, RunOutcome,
 };
 use holt_rpc::methods;
 
@@ -481,9 +481,10 @@ impl ScheduledPage {
                     .items_center()
                     .justify_between()
                     .gap(px(8.0))
-                    .child(match routine.paused {
-                        Some(pause) => paused_pill(theme, pause).into_any_element(),
-                        None => div()
+                    .child(match (live_run(routine), routine.paused) {
+                        (Some(run), _) => live_pill(theme, run.outcome).into_any_element(),
+                        (None, Some(pause)) => paused_pill(theme, pause).into_any_element(),
+                        (None, None) => div()
                             .text_size(crate::typography::ui_rems(15.0))
                             .text_color(theme.text)
                             .children(view.next_fire_at.map(|next| countdown(next, Utc::now())))
@@ -591,6 +592,36 @@ impl ScheduledPage {
                 .text_color(theme.text_muted)
                 .child(pause_banner(pause))
         });
+        let live = live_run(routine).map(|run| {
+            let outcome = run.outcome;
+            let chat_id = run.chat_id.clone();
+            div()
+                .id("routine-drawer-live")
+                .debug_selector(|| "routine-drawer-live".into())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(ink(0.05))
+                .border_1()
+                .border_color(hairline(0.08))
+                .text_size(crate::typography::ui_rems(12.5))
+                .text_color(theme.text)
+                .child(live_dot(theme, outcome))
+                .child(div().flex_1().child(live_banner(outcome)))
+                .when_some(chat_id, |banner, chat_id| {
+                    banner
+                        .cursor_pointer()
+                        .hover(|banner| banner.bg(ink(0.08)))
+                        .child(div().text_color(theme.text_muted).child("Open"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.open_run(chat_id.clone(), cx)),
+                        )
+                })
+        });
         let rows: Vec<AnyElement> = routine
             .runs
             .iter()
@@ -684,6 +715,7 @@ impl ScheduledPage {
                                     })),
                             ),
                     )
+                    .children(live)
                     .children(banner)
                     .child(grid)
                     .child(
@@ -1302,6 +1334,40 @@ fn paused_pill(theme: &Theme, pause: RoutinePause) -> gpui::Div {
             RoutinePause::User => "Paused",
             RoutinePause::SpaceRemoved => "Paused \u{b7} Project removed",
         })
+}
+
+/// The Routine's run in flight, if any (at most one: a fire is skipped
+/// while a run is live).
+pub(crate) fn live_run(routine: &Routine) -> Option<&RoutineRun> {
+    routine.runs.iter().find(|run| run.outcome.is_live())
+}
+
+fn live_dot(theme: &Theme, outcome: RunOutcome) -> gpui::Div {
+    div()
+        .flex_none()
+        .size(px(7.0))
+        .rounded_full()
+        .bg(outcome_color(theme, outcome))
+}
+
+fn live_pill(theme: &Theme, outcome: RunOutcome) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .text_size(crate::typography::ui_rems(15.0))
+        .text_color(theme.text)
+        .child(live_dot(theme, outcome))
+        .child(outcome_label(outcome))
+}
+
+fn live_banner(outcome: RunOutcome) -> &'static str {
+    if outcome == RunOutcome::Waiting {
+        "Waiting for your input."
+    } else {
+        "Running now."
+    }
 }
 
 fn pause_banner(pause: RoutinePause) -> &'static str {
