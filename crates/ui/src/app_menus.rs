@@ -47,21 +47,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    // About: the native info alert (same dialog path as the close
-    // confirmations; macOS shows the app icon on info alerts), carrying the
-    // workspace version. Fire-and-forget like the notice prompts in
-    // terminal::lifecycle.
-    cx.on_action(|_: &About, cx| {
-        with_active_window(cx, |window, cx| {
-            drop(window.prompt(
-                gpui::PromptLevel::Info,
-                "Holt",
-                Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))),
-                &["OK"],
-                cx,
-            ));
-        });
-    });
+    // About is handled by the shell window (in-app dialog with the logo —
+    // see shell/about.rs), like OpenSettings: the menu item dispatches the
+    // action to the key window, no global handler here.
     // Window verbs route to the active window. holt is single-window, so a
     // global handler suffices where zed registers these per-workspace
     // (crates/zed/src/zed.rs `register_action(Minimize/Zoom)`).

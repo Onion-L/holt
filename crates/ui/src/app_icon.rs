@@ -6,6 +6,19 @@
 
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
 
+/// The bundled mark as a renderable gpui image (the About dialog). Bytes are
+/// copied and hashed once; the window's image cache decodes on first paint.
+pub(crate) fn logo_image() -> std::sync::Arc<gpui::Image> {
+    static LOGO: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            APP_ICON_PNG.to_vec(),
+        ))
+    })
+    .clone()
+}
+
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
 pub(crate) fn install() {

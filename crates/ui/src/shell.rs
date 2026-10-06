@@ -53,6 +53,7 @@ use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_heigh
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
+mod about;
 mod chat_list;
 mod chat_menu;
 mod right_pane;
@@ -725,6 +726,8 @@ pub struct Shell {
     restore_confirm: Option<(String, String)>,
     /// The app-update dialog is open (download confirm / progress / restart).
     update_dialog: bool,
+    /// The About Holt dialog (app menu) is open.
+    about_dialog: bool,
     /// Chat id awaiting archive confirmation.
     archive_confirm: Option<String>,
     /// Space-row context menu (dropdown rows): (space id, window position).
@@ -1097,6 +1100,7 @@ impl Shell {
             delete_confirm: None,
             restore_confirm: None,
             update_dialog: false,
+            about_dialog: false,
             archive_confirm: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
@@ -2323,6 +2327,10 @@ impl Shell {
             overlays.push(dialog);
         }
 
+        if let Some(dialog) = self.render_about_dialog(&theme, viewport, cx) {
+            overlays.push(dialog);
+        }
+
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(
                 &self
@@ -3389,6 +3397,12 @@ impl Render for Shell {
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::General, cx)
+            }))
+            // The native About menu item opens the in-app dialog (theme
+            // styling + the app logo) rather than a platform alert.
+            .on_action(cx.listener(|this, _: &crate::app_menus::About, _, cx| {
+                this.about_dialog = true;
+                cx.notify();
             }))
             // Chat-scoped, unlike new-session — `cycle_session` holds the guard
             // and says why.
