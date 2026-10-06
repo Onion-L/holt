@@ -45,12 +45,11 @@ pub const TITLEBAR_IDENTITY_GAP: f32 = Theme::SPACE_MD;
 /// shift lands 6px from the top; use the same inset at the trailing edge.
 pub const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
 /// Width of the persistent top-left button cluster itself: a 24px sidebar
-/// trigger, an 8px group gap, two 24px history buttons on a 2px rhythm, then
-/// the always-visible Chat manager button as its own 8px-gapped group.
-pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 4.0 + TITLEBAR_GROUP_GAP * 2.0 + TITLEBAR_CONTROL_GAP;
-/// Extra width consumed when the new-session `+` joins the cluster ahead of
-/// the Chat manager button (its own 24px button on the group's 2px rhythm).
-pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = 24.0 + TITLEBAR_CONTROL_GAP;
+/// trigger, an 8px group gap, then two 24px history buttons on a 2px rhythm.
+pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
+/// Extra width consumed when the new-session `+` joins the cluster: its own
+/// 24px button behind an 8px group gap.
+pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = 24.0 + TITLEBAR_GROUP_GAP;
 /// Horizontal inset owned by the titlebar control row itself. Keep this value
 /// paired with [`Self::titlebar_spacer`]: using a different number for the
 /// spacer shifts every control while leaving the declared cluster geometry
@@ -268,44 +267,19 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
                     )),
             )
-            // Session-action group: the new-session `+` (only while a
-            // session is selected) and the always-visible Chat manager entry
-            // (glossary "Chat manager") right of it. On the page itself the
-            // manager wears the active wash — clicking navigates back.
-            .child(
+            // The new-session `+`, only while a session is selected.
+            .children(show_plus.then(|| {
                 div()
                     .ml(px(TITLEBAR_GROUP_GAP))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(TITLEBAR_CONTROL_GAP))
-                    .children(show_plus.then(|| {
-                        div()
-                            .flex_none()
-                            .opacity(plus_alpha)
-                            .child(window_control_button(
-                                "titlebar-new-session",
-                                icons::PLUS,
-                                &theme,
-                                cx.listener(|this, _, _, cx| this.open_new_session(cx)),
-                            ))
-                    }))
-                    .child(
-                        window_control_button(
-                            "titlebar-chat-manager",
-                            icons::INBOX,
-                            &theme,
-                            cx.listener(|this, _, _, cx| this.open_chat_manager(cx)),
-                        )
-                        .when(matches!(self.route, Route::ChatManager), |el| {
-                            el.bg(theme.glass_hover())
-                        })
-                        .tooltip(|_, cx| {
-                            cx.new(|_| crate::popover::TextTooltip("Chat manager".into()))
-                                .into()
-                        }),
-                    ),
-            )
+                    .flex_none()
+                    .opacity(plus_alpha)
+                    .child(window_control_button(
+                        "titlebar-new-session",
+                        icons::PLUS,
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                    ))
+            }))
             .into_any_element()
     }
 
@@ -1037,8 +1011,8 @@ mod tests {
         assert_eq!(TITLEBAR_CONTROL_GAP, 2.0);
         assert_eq!(TITLEBAR_GROUP_GAP, Theme::SPACE_SM);
         assert_eq!(TITLEBAR_IDENTITY_GAP, Theme::SPACE_MD);
-        assert_eq!(CLUSTER_BUTTONS_WIDTH, 114.0);
-        assert_eq!(TITLEBAR_ACTION_SLOT_WIDTH, 26.0);
+        assert_eq!(CLUSTER_BUTTONS_WIDTH, 82.0);
+        assert_eq!(TITLEBAR_ACTION_SLOT_WIDTH, 32.0);
         assert_eq!(TITLEBAR_ACTION_EDGE_INSET, 6.0);
     }
 
@@ -1090,12 +1064,12 @@ mod tests {
 
     #[test]
     fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..124; a 16px-padded header needs 116 more px
-        // to put content at 124 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 116.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 122.0);
+        // Linux: buttons at 10..92; a 16px-padded header needs 84 more px
+        // to put content at 92 + 8 breathing room.
+        assert_eq!(cluster_clearance(false, false, 0, 16.0), 84.0);
+        assert_eq!(cluster_clearance(false, false, 0, 10.0), 90.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 116.0 + 26.0);
+        assert_eq!(cluster_clearance(false, false, 1, 16.0), 84.0 + 26.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
             cluster_clearance(true, false, 0, 16.0),

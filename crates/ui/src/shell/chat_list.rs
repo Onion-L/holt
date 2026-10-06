@@ -884,6 +884,7 @@ impl Shell {
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
         let filter_row = self.render_spaces_filter(theme, cx);
+        let nav = self.render_sidebar_nav(theme, cx);
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -892,6 +893,7 @@ impl Shell {
             .flex_col()
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
+            .child(nav)
             .child(filter_row)
             // The (filtered) Sessions list scrolls inside an EdgeFade scope —
             // a true per-glyph gradient at active overflow edges. Glass-safe
@@ -1114,6 +1116,65 @@ impl Shell {
     /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
     /// the settings page directly. Styled exactly like the settings sidebar's
     /// Back row — same padding, height, and hover.
+    /// The page nav pinned above the session list: one row per global page
+    /// (today the Chat manager), then the "Recent" label heading the list.
+    /// Rows share the settings sidebar's row recipe; the current page wears
+    /// the selected wash.
+    fn render_sidebar_nav(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let selected = matches!(self.route, Route::ChatManager);
+        let chats = div()
+            .id("sidebar-nav-chats")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .text_size(crate::typography::ui_rems(13.0))
+            .when(selected, |el| {
+                el.bg(crate::theme::glass_selected_bg())
+                    .font_weight(gpui::FontWeight::MEDIUM)
+            })
+            .text_color(if selected {
+                theme.text
+            } else {
+                theme.text_muted
+            })
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if !matches!(this.route, Route::ChatManager) {
+                    this.open_chat_manager(cx);
+                }
+            }))
+            .child(
+                icon(icons::INBOX)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(SharedString::from("Chats"));
+
+        // The spaces filter below brings its own 8px top pad.
+        div()
+            .flex_none()
+            .px(px(Theme::SPACE_SM))
+            .pt(px(8.0))
+            .flex()
+            .flex_col()
+            .child(chats)
+            .child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pt(px(12.0))
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from("Recent")),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_sidebar_settings_row(
         &mut self,
         theme: &Theme,

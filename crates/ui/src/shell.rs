@@ -1161,9 +1161,9 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open the Chat manager page (⌘⇧M / the titlebar's chat-bubbles
-    /// button). Pressing the shortcut again on the page walks back to
-    /// wherever the user came from.
+    /// Open the Chat manager page (⌘⇧M / the sidebar's Chats nav row).
+    /// Pressing the shortcut again on the page walks back to wherever the
+    /// user came from.
     fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
         if matches!(self.route, Route::ChatManager) {
             self.navigate_back(cx);
