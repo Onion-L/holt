@@ -1,7 +1,7 @@
 //! The Routines surface (ADR-0042): list, create, update, schedule preview,
 //! delete, pause, Run now, and the Routines watch. Every fire goes through `start_routine_run`.
 
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use holt_proto::{
     Chat, ChatConfig, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineRunMarker,
     RunOutcome, TitleSource, WorktreeSpec,
@@ -50,6 +50,8 @@ const PREVIEW_FIRES: usize = 3;
 pub(crate) struct Fire {
     pub missed_fires: u32,
     pub manual: bool,
+    /// A scheduled fire's time, recorded as `last_fired_at` with the run.
+    pub scheduled_at: Option<DateTime<Utc>>,
 }
 
 impl EngineService {
@@ -253,6 +255,7 @@ impl EngineService {
                 Fire {
                     missed_fires: 0,
                     manual: true,
+                    scheduled_at: None,
                 },
             )
             .await?;
@@ -278,56 +281,55 @@ impl EngineService {
             .routines
             .get(id)
             .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
-        let now = self.clock.now();
-        // Skipped records land on top of the live run, so look past them.
-        if routine.runs.iter().any(|run| run.outcome.is_live()) {
-            let run = RoutineRun {
-                fired_at: now,
-                outcome: RunOutcome::Skipped,
-                note: None,
-                chat_id: None,
-                missed_fires: fire.missed_fires,
-                manual: fire.manual,
-            };
-            self.routines.update(|routines| {
-                if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
-                    push_run(routine, run);
-                }
-                Ok(())
-            })?;
-            return Ok(None);
-        }
-        let space = self
-            .spaces
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .find(|space| space.id == routine.space_id)
-            .cloned();
-        let Some(space) = space else {
+        if self.routine_space(&routine.space_id).is_none() {
             self.pause_routines_in_space(&routine.space_id);
             return Err(RpcError::Failed(
                 "its project was removed; edit it to pick another".into(),
             ));
-        };
-        if let Some(reason) = self.model_unavailable(&routine.config).await {
+        }
+        let now = self.clock.now();
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        // Claim the fire in one write: the skip check, the run record (live
+        // from here, so a racing fire is skipped and a fast first Turn finds
+        // it to settle), and a scheduled fire's `last_fired_at`. A quit
+        // before the Chat exists leaves an interrupted run, not a lost fire.
+        let claimed = self.routines.update(|routines| {
+            let routine = routines
+                .iter_mut()
+                .find(|routine| routine.id == id)
+                .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+            if let Some(at) = fire.scheduled_at {
+                routine.last_fired_at = Some(at);
+            }
+            // Skipped records land on top of the live run, so look past them.
+            let live = routine.runs.iter().any(|run| run.outcome.is_live());
             let run = RoutineRun {
                 fired_at: now,
-                outcome: RunOutcome::Failed,
-                note: Some(reason.clone()),
-                chat_id: None,
+                outcome: if live {
+                    RunOutcome::Skipped
+                } else {
+                    RunOutcome::Running
+                },
+                note: None,
+                chat_id: (!live).then(|| chat_id.clone()),
                 missed_fires: fire.missed_fires,
                 manual: fire.manual,
             };
-            self.routines.update(|routines| {
-                if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
-                    push_run(routine, run);
-                }
-                Ok(())
-            })?;
+            push_run(routine, run);
+            Ok((!live).then(|| routine.clone()))
+        })?;
+        let Some(routine) = claimed else {
+            return Ok(None);
+        };
+        let Some(space) = self.routine_space(&routine.space_id) else {
+            let reason = "its project was removed; edit it to pick another";
+            self.fail_routine_run(&chat_id, reason, false);
+            return Err(RpcError::Failed(reason.into()));
+        };
+        if let Some(reason) = self.model_unavailable(&routine.config).await {
+            self.fail_routine_run(&chat_id, &reason, false);
             return Err(RpcError::Failed(reason));
         }
-        let chat_id = uuid::Uuid::new_v4().to_string();
         self.runtime
             .chats
             .write()
@@ -370,28 +372,47 @@ impl EngineService {
                     manual: fire.manual,
                 }),
             });
-        self.runtime
+        let started = self
+            .runtime
             .persist_chats_locked()
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
-        let chat = self.runtime.chat(&chat_id);
-        self.runtime.publish_chats();
-        let request = Self::queued_run_request(&routine.config, &routine.prompt, space.path);
-        self.enqueue_run(chat, request, uuid::Uuid::new_v4().to_string())?;
-        let run = RoutineRun {
-            fired_at: now,
-            outcome: RunOutcome::Running,
-            note: None,
-            chat_id: Some(chat_id.clone()),
-            missed_fires: fire.missed_fires,
-            manual: fire.manual,
-        };
-        self.routines.update(|routines| {
-            if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
-                push_run(routine, run);
-            }
-            Ok(())
-        })?;
+            .map_err(|error| RpcError::Failed(error.to_string()))
+            .and_then(|()| {
+                let chat = self.runtime.chat(&chat_id);
+                self.runtime.publish_chats();
+                let request =
+                    Self::queued_run_request(&routine.config, &routine.prompt, space.path);
+                self.enqueue_run(chat, request, uuid::Uuid::new_v4().to_string())
+            });
+        if let Err(error) = started {
+            self.fail_routine_run(&chat_id, &error.to_string(), true);
+            return Err(error);
+        }
         Ok(Some(chat_id))
+    }
+
+    /// A claimed run could not start: record it failed with the reason.
+    /// `keep_chat` leaves the record pointing at its Chat, when one exists.
+    fn fail_routine_run(&self, chat_id: &str, reason: &str, keep_chat: bool) {
+        let result = self.routines.update_run(chat_id, |run| {
+            run.outcome = RunOutcome::Failed;
+            run.note = Some(reason.to_string());
+            if !keep_chat {
+                run.chat_id = None;
+            }
+            true
+        });
+        if let Err(error) = result {
+            tracing::warn!(chat_id, %error, "could not record a Routine run failure");
+        }
+    }
+
+    fn routine_space(&self, space_id: &str) -> Option<holt_proto::Space> {
+        self.spaces
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|space| space.id == space_id)
+            .cloned()
     }
 
     /// A run Chat's Turn settled: the first one decides the run's outcome.
@@ -461,11 +482,7 @@ impl EngineService {
     }
 
     fn space_exists(&self, space_id: &str) -> bool {
-        self.spaces
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|space| space.id == space_id)
+        self.routine_space(space_id).is_some()
     }
 }
 

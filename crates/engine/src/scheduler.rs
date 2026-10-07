@@ -57,27 +57,21 @@ impl EngineService {
         }
     }
 
-    /// Record `due.at` as the Routine's `last_fired_at`, then start its run.
-    /// The fire is recorded first so a run that cannot start is not retried
-    /// on every pass. Returns whether the fire was recorded.
+    /// Start the due run; the run claims the fire by recording `due.at` as
+    /// `last_fired_at` with its run record, so a run that then cannot start
+    /// is not retried on every pass. Returns whether the fire was claimed
+    /// (or no longer needs to be: the Routine is gone or paused).
     async fn fire_scheduled(&self, id: &str, due: Due) -> bool {
-        let recorded = self.routines.update(|routines| {
-            if let Some(routine) = routines.iter_mut().find(|routine| routine.id == id) {
-                routine.last_fired_at = Some(due.at);
-            }
-            Ok(())
-        });
-        if let Err(error) = recorded {
-            tracing::warn!(routine = id, %error, "could not record a Routine fire");
-            return false;
-        }
         let fire = Fire {
             missed_fires: due.missed_fires,
             manual: false,
+            scheduled_at: Some(due.at),
         };
         if let Err(error) = self.start_routine_run(id, fire).await {
             tracing::warn!(routine = id, %error, "a scheduled Routine run did not start");
         }
-        true
+        self.routines
+            .get(id)
+            .is_none_or(|routine| routine.paused.is_some() || routine.last_fired_at >= Some(due.at))
     }
 }

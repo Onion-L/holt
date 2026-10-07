@@ -595,6 +595,47 @@ async fn fires_while_a_run_is_live_are_skipped() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_fires_start_one_run() {
+    const FIRES: usize = 8;
+    let fixture = Fixture::new();
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![])
+        .with_chat_script(PROMPT, vec![ScriptedReply::gated(gate.clone(), "Done.")]);
+    let engine = std::sync::Arc::new(setup(&fixture, &provider).await);
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap().to_string();
+
+    let fires: Vec<_> = (0..FIRES)
+        .map(|_| {
+            let (engine, id) = (engine.clone(), id.clone());
+            tokio::spawn(async move {
+                engine
+                    .handle(methods::RUN_ROUTINE_NOW, json!({ "routineId": id }))
+                    .await
+            })
+        })
+        .collect();
+    let mut started = 0;
+    for fire in fires {
+        if let RpcReply::Value(value) = fire.await.unwrap().unwrap()
+            && value.get("chatId").is_some()
+        {
+            started += 1;
+        }
+    }
+    assert_eq!(started, 1);
+    let runs = list(&engine).await[0]["runs"].clone();
+    let live = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|run| run["outcome"] != "skipped")
+        .count();
+    assert_eq!((live, runs.as_array().unwrap().len()), (1, FIRES));
+    gate.notify_one();
+}
+
 #[tokio::test]
 async fn a_paused_routine_does_not_fire_and_resume_does_not_make_up() {
     let fixture = Fixture::new();
