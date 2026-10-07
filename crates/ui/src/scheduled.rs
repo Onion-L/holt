@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, Utc};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task,
@@ -74,9 +74,6 @@ const PRESETS: [(Preset, &str); 5] = [
     (Preset::Weekly, "Weekly"),
     (Preset::Custom, "Custom"),
 ];
-
-/// Days the one-time date picker offers, today first.
-const DATE_DAYS: i64 = 60;
 
 /// Cron weekday numbers (0 = Sunday) in display order.
 const WEEKDAYS: [(u8, &str); 7] = [
@@ -157,8 +154,9 @@ struct RoutineForm {
     weekday: u8,
     /// The custom preset's day.
     date: NaiveDate,
-    /// The date picker's list and the time picker's hour and minute columns.
-    date_scroll: gpui::ScrollHandle,
+    /// The first day of the month the date picker shows.
+    date_month: NaiveDate,
+    /// The time picker's hour and minute columns.
     hour_scroll: gpui::ScrollHandle,
     minute_scroll: gpui::ScrollHandle,
     /// A stored cron no preset spells, kept as is.
@@ -410,7 +408,7 @@ impl ScheduledPage {
             time,
             weekday,
             date,
-            date_scroll: gpui::ScrollHandle::new(),
+            date_month: month_start(date),
             hour_scroll: gpui::ScrollHandle::new(),
             minute_scroll: gpui::ScrollHandle::new(),
             cron,
@@ -495,6 +493,23 @@ impl ScheduledPage {
         }
         self.refresh_preview(cx);
         cx.notify();
+    }
+
+    /// Page the date picker a month back or forward, never before this month.
+    fn shift_date_month(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let month = chrono::Months::new(1);
+        let next = if forward {
+            form.date_month.checked_add_months(month)
+        } else {
+            form.date_month.checked_sub_months(month)
+        };
+        if let Some(next) = next.filter(|next| *next >= month_start(Local::now().date_naive())) {
+            form.date_month = next;
+            cx.notify();
+        }
     }
 
     fn set_weekday(&mut self, weekday: u8, cx: &mut Context<Self>) {
@@ -598,11 +613,9 @@ impl ScheduledPage {
                 .scroll_to_top_of_item((minute as usize).saturating_sub(above));
         }
         if menu == FormMenu::Date
-            && let Some(form) = self.form.as_ref()
+            && let Some(form) = self.form.as_mut()
         {
-            let day = (form.date - Local::now().date_naive()).num_days();
-            form.date_scroll
-                .scroll_to_top_of_item(day.clamp(0, DATE_DAYS - 1).saturating_sub(3) as usize);
+            form.date_month = month_start(form.date);
         }
         if menu == FormMenu::Model
             && let Some(form) = self.form.as_mut()
@@ -1909,39 +1922,122 @@ impl ScheduledPage {
             .into_any_element()
     }
 
-    /// The Custom preset's day: the next `DATE_DAYS` days, today first.
+    /// The Custom preset's day: a month calendar, Monday first. Days before
+    /// today are not offered.
     fn form_date_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(form) = self.form.as_ref() else {
             return div().into_any_element();
         };
-        let (picked, today) = (form.date, Local::now().date_naive());
+        let (picked, month, today) = (form.date, form.date_month, Local::now().date_naive());
+        let lead = month.weekday().num_days_from_monday() as usize;
+        let days = month
+            .checked_add_months(chrono::Months::new(1))
+            .map_or(31, |next| (next - month).num_days()) as usize;
+        let at_first_month = month <= month_start(today);
+        let (hover, selected) = (theme.element_hover, crate::theme::card_selected_bg());
+        let arrow = |id: &'static str, path: &'static str, enabled: bool, forward: bool| {
+            div()
+                .id(id)
+                .size(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .child(icon(path).size(px(14.0)).text_color(theme.text_muted))
+                .when(!enabled, |el| el.opacity(0.35))
+                .when(enabled, |el| {
+                    el.cursor_pointer().hover(move |s| s.bg(hover)).on_click(
+                        cx.listener(move |this, _, _, cx| this.shift_date_month(forward, cx)),
+                    )
+                })
+        };
+        let cell = || {
+            div()
+                .w(px(32.0))
+                .h(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .text_size(crate::typography::ui_rems(12.5))
+        };
+        let mut grid = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .w(px(7.0 * 32.0))
+            .children(WEEKDAYS.iter().map(|(_, label)| {
+                cell()
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text_faint)
+                    .child(&label[..2])
+            }))
+            .children((0..lead).map(|_| cell()));
+        for day in 0..days {
+            let date = month + chrono::Days::new(day as u64);
+            let label = (day + 1).to_string();
+            grid = grid.child(
+                if date < today {
+                    cell()
+                        .text_color(theme.text_faint.opacity(0.5))
+                        .child(label)
+                        .into_any_element()
+                } else {
+                    cell()
+                        .id(("routine-date-day", day))
+                        .cursor_pointer()
+                        .when(date == today, |el| {
+                            el.font_weight(gpui::FontWeight::SEMIBOLD)
+                        })
+                        .map(|el| {
+                            if date == picked {
+                                el.bg(selected).text_color(theme.text)
+                            } else {
+                                el.text_color(theme.text_muted).hover(move |s| s.bg(hover))
+                            }
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_date(date, cx);
+                            this.close_form_menu(cx);
+                        }))
+                        .child(label)
+                        .into_any_element()
+                }
+                .into_any_element(),
+            );
+        }
         popover::popover_card(theme)
-            .p_0()
+            .p(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
             .child(
                 div()
-                    .id("routine-date-days")
-                    .w(px(160.0))
-                    .h(px(TIME_MENU_H))
-                    .p(px(4.0))
                     .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .overflow_y_scroll()
-                    .track_scroll(&form.date_scroll)
-                    .occlude()
-                    .children((0..DATE_DAYS).map(|day| {
-                        let date = today + chrono::Days::new(day as u64);
-                        popover::menu_row(theme, date == picked, format!("routine-date-fade-{day}"))
-                            .id(("routine-date-row", day as usize))
-                            .flex_none()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_date(date, cx);
-                                this.close_form_menu(cx);
-                            }))
-                            .child(date_label(date, today))
-                    })),
+                    .flex_row()
+                    .items_center()
+                    .pl(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(month.format("%B %Y").to_string()),
+                    )
+                    .child(arrow(
+                        "routine-date-prev",
+                        icons::ALT_ARROW_LEFT,
+                        !at_first_month,
+                        false,
+                    ))
+                    .child(arrow(
+                        "routine-date-next",
+                        icons::ALT_ARROW_RIGHT,
+                        true,
+                        true,
+                    )),
             )
+            .child(grid)
             .into_any_element()
     }
 
@@ -2036,6 +2132,7 @@ impl ScheduledPage {
                 .track_scroll(scroll)
                 .occlude()
         };
+        let (hover, text) = (theme.element_hover, theme.text);
         let cell = |active: bool| {
             div()
                 .flex_none()
@@ -2046,10 +2143,13 @@ impl ScheduledPage {
                 .rounded(px(6.0))
                 .cursor_pointer()
                 .text_size(crate::typography::ui_rems(13.0))
-                .when(active, |el| el.bg(ink(0.09)).text_color(theme.text))
+                .when(active, |el| {
+                    el.bg(crate::theme::card_selected_bg())
+                        .text_color(theme.text)
+                })
                 .when(!active, |el| {
                     el.text_color(theme.text_muted)
-                        .hover(|s| s.bg(ink(0.05)).text_color(theme.text))
+                        .hover(move |s| s.bg(hover).text_color(text))
                 })
         };
         popover::popover_card(theme)
@@ -2588,8 +2688,8 @@ fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
         }))
 }
 
-/// A schedule-bar dropdown trigger: the value with a trailing chevron on a
-/// soft fill, no border (the bar draws the frame).
+/// A schedule-bar dropdown trigger: the prompt toolbar's ghost chip (no fill
+/// until hovered or open) at the bar's size; the bar draws the frame.
 fn select_chip(
     theme: &Theme,
     id: &'static str,
@@ -2607,10 +2707,14 @@ fn select_chip(
         .pl(px(10.0))
         .pr(px(8.0))
         .rounded(px(8.0))
-        .bg(ink(if open { 0.1 } else { 0.06 }))
-        .hover(|s| s.bg(ink(0.09)))
         .text_size(crate::typography::ui_rems(13.0))
         .text_color(theme.text)
+        .bg(if open {
+            theme.element_hover
+        } else {
+            crate::motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
+        })
+        .on_hover(crate::motion::hover_listener(id))
         .cursor_pointer()
         .child(label)
         .child(
@@ -2622,6 +2726,10 @@ fn select_chip(
 
 /// "Mon" → "Monday".
 /// A picked day: "Today", "Tomorrow", else "Fri, Oct 9".
+fn month_start(date: NaiveDate) -> NaiveDate {
+    date.with_day(1).unwrap_or(date)
+}
+
 fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     match (date - today).num_days() {
         0 => "Today".into(),
