@@ -1084,7 +1084,7 @@ impl EngineService {
                     }
                 });
                 if let Err(payload) = iteration.catch_unwind().await {
-                    let detail = panic_detail(&payload);
+                    let detail = panic_detail(&*payload);
                     tracing::error!(
                         target: "holt::queue",
                         chat_id = %worker_chat.chat_id,
