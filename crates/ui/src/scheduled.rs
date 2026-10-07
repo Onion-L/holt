@@ -29,9 +29,6 @@ use crate::state::AppState;
 use crate::theme::{Theme, hairline, ink};
 
 const PAGE_MAX_W: f32 = 960.0;
-/// The create/edit form's column; fields read better narrower than the
-/// card grid's page width.
-const FORM_MAX_W: f32 = 640.0;
 const CARD_MIN_W: f32 = 240.0;
 const GRID_GAP: f32 = 12.0;
 /// How often the cards' countdowns repaint.
@@ -1496,7 +1493,6 @@ impl ScheduledPage {
         let card = div()
             .id("routine-form-page")
             .w_full()
-            .max_w(px(FORM_MAX_W))
             .flex()
             .flex_col()
             .text_color(theme.text)
