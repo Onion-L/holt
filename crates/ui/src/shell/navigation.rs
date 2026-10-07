@@ -12,8 +12,7 @@ pub enum NavEntry {
     Chat(String),
     Settings(SettingsSection),
     ChatManager,
-    /// The Scheduled page; the Routine whose drawer is open, if any.
-    Scheduled(Option<String>),
+    Scheduled,
 }
 
 /// Browser-style navigation history for the titlebar back/forward buttons
@@ -136,10 +135,8 @@ impl Shell {
                 self.route = Route::ChatManager;
                 self.reveal_chat_manager(cx);
             }
-            NavEntry::Scheduled(drawer) => {
+            NavEntry::Scheduled => {
                 self.route = Route::Scheduled;
-                self.scheduled_page(cx)
-                    .update(cx, |page, cx| page.set_drawer(drawer, cx));
                 self.reveal_scheduled(cx);
             }
         }

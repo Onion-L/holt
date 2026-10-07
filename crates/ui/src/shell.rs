@@ -733,7 +733,7 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
             Route::ChatManager => NavEntry::ChatManager,
-            Route::Scheduled => NavEntry::Scheduled(None),
+            Route::Scheduled => NavEntry::Scheduled,
         });
         Self {
             state,
@@ -1213,21 +1213,17 @@ impl Shell {
     /// Show the Scheduled page from the titlebar cluster.
     pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Scheduled;
-        let drawer = self
-            .scheduled_page
-            .as_ref()
-            .and_then(|page| page.read(cx).drawer());
-        self.nav.push(NavEntry::Scheduled(drawer));
+        self.nav.push(NavEntry::Scheduled);
         self.reveal_scheduled(cx);
         self.close_chat_menu(cx);
         cx.notify();
     }
 
-    /// The Scheduled page with `routine_id`'s drawer open.
+    /// The Scheduled page editing `routine_id`.
     pub(super) fn open_routine(&mut self, routine_id: String, cx: &mut Context<Self>) {
         self.open_scheduled(cx);
         let page = self.scheduled_page(cx);
-        page.update(cx, |page, cx| page.open_drawer(routine_id, cx));
+        page.update(cx, |page, cx| page.edit_routine(&routine_id, cx));
     }
 
     /// Re-land keyboard focus on a cached Scheduled page.
@@ -1238,8 +1234,7 @@ impl Shell {
     }
 
     /// The Scheduled page, created on first use. Run now lands on the run
-    /// Chat via the page's OpenChat event; the open drawer rides on the
-    /// current history entry.
+    /// Chat via the page's OpenChat event.
     fn scheduled_page(&mut self, cx: &mut Context<Self>) -> Entity<ScheduledPage> {
         if let Some(page) = &self.scheduled_page {
             return page.clone();
@@ -1251,11 +1246,6 @@ impl Shell {
             &page,
             |this: &mut Shell, _, event: &ScheduledEvent, cx| match event {
                 ScheduledEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
-                ScheduledEvent::Drawer(drawer) => {
-                    if matches!(this.nav.current(), NavEntry::Scheduled(_)) {
-                        this.nav.replace(NavEntry::Scheduled(drawer.clone()));
-                    }
-                }
             },
         ));
         self.scheduled_page = Some(page.clone());
@@ -3262,56 +3252,9 @@ mod tests {
         state
     }
 
+    /// The run caption's click lands on the Routine's edit form.
     #[gpui::test]
-    fn back_from_a_run_chat_reopens_the_routine_drawer(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| routine_state("succeeded"));
-        let (shell, cx) = cx.add_window_view(|_, cx| {
-            let mut shell = Shell::new(
-                state,
-                EngineBootConfig {
-                    data_dir: std::env::temp_dir(),
-                },
-                cx,
-            );
-            shell.debug_gate = Some(GatePhase::Ready);
-            shell
-        });
-        let page = shell.update(cx, |shell, cx| {
-            shell.open_scheduled(cx);
-            shell.scheduled_page(cx)
-        });
-        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
-        cx.run_until_parked();
-        assert_eq!(
-            shell.read_with(cx, |shell, _| shell.nav.current().clone()),
-            NavEntry::Scheduled(Some("r1".into()))
-        );
-
-        page.update(cx, |page, cx| page.open_run("run-chat".into(), cx));
-        cx.run_until_parked();
-        shell.read_with(cx, |shell, cx| {
-            assert!(matches!(shell.route, Route::Chat));
-            assert_eq!(
-                shell.state.read(cx).selected_chat.as_deref(),
-                Some("run-chat")
-            );
-        });
-
-        shell.update(cx, |shell, cx| shell.navigate_back(cx));
-        cx.run_until_parked();
-        shell.read_with(cx, |shell, _| {
-            assert!(matches!(shell.route, Route::Scheduled))
-        });
-        assert_eq!(
-            page.read_with(cx, |page, _| page.drawer()),
-            Some("r1".into())
-        );
-    }
-
-    /// The run caption's click lands on the Routine's drawer.
-    #[gpui::test]
-    fn open_routine_shows_its_drawer(cx: &mut gpui::TestAppContext) {
+    fn open_routine_edits_it(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("succeeded"));
         let (shell, cx) = cx.add_window_view(|_, cx| {
@@ -3327,13 +3270,16 @@ mod tests {
         });
         shell.update(cx, |shell, cx| shell.open_routine("r1".into(), cx));
         cx.run_until_parked();
-        shell.read_with(cx, |shell, _| {
+        let page = shell.update(cx, |shell, cx| {
             assert!(matches!(shell.route, Route::Scheduled));
-            assert_eq!(
-                shell.nav.current().clone(),
-                NavEntry::Scheduled(Some("r1".into()))
-            );
+            assert_eq!(shell.nav.current().clone(), NavEntry::Scheduled);
+            shell.scheduled_page(cx)
         });
+        assert_eq!(
+            page.read_with(cx, |page, cx| page.form_snapshot(cx))
+                .and_then(|(id, _, _)| id),
+            Some("r1".to_string())
+        );
     }
 
     #[gpui::test]
@@ -3369,35 +3315,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_routine_whose_space_was_removed_cannot_run_now(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.set_global(Theme::default()));
-        let state = cx.new(|_| {
-            let mut state = routine_state("succeeded");
-            state.routines[0].routine.paused = Some(holt_proto::RoutinePause::SpaceRemoved);
-            state
-        });
-        let (shell, cx) = cx.add_window_view(|_, cx| {
-            let mut shell = Shell::new(
-                state,
-                EngineBootConfig {
-                    data_dir: std::env::temp_dir(),
-                },
-                cx,
-            );
-            shell.debug_gate = Some(GatePhase::Ready);
-            shell
-        });
-        let page = shell.update(cx, |shell, cx| {
-            shell.open_scheduled(cx);
-            shell.scheduled_page(cx)
-        });
-        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("routine-drawer-run-disabled").is_some());
-    }
-
-    #[gpui::test]
-    fn a_live_run_marks_the_titlebar_button_and_the_drawer(cx: &mut gpui::TestAppContext) {
+    fn a_live_run_marks_the_titlebar_button_and_the_card(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("waiting"));
         let (shell, cx) = cx.add_window_view(|_, cx| {
@@ -3414,13 +3332,9 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.debug_bounds("titlebar-scheduled-live").is_some());
 
-        let page = shell.update(cx, |shell, cx| {
-            shell.open_scheduled(cx);
-            shell.scheduled_page(cx)
-        });
-        page.update(cx, |page, cx| page.open_drawer("r1".into(), cx));
+        shell.update(cx, |shell, cx| shell.open_scheduled(cx));
         cx.run_until_parked();
-        assert!(cx.debug_bounds("routine-drawer-live").is_some());
+        assert!(cx.debug_bounds("routine-live-r1").is_some());
 
         state.update(cx, |state, cx| {
             state.routines[0].routine.runs[0].outcome = holt_proto::RunOutcome::Succeeded;
@@ -3428,7 +3342,7 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("titlebar-scheduled-live").is_none());
-        assert!(cx.debug_bounds("routine-drawer-live").is_none());
+        assert!(cx.debug_bounds("routine-live-r1").is_none());
     }
 
     // ---- navigation history (titlebar back/forward) ----
