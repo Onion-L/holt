@@ -202,7 +202,11 @@ fn parse_pi_messages_error_body(body: &str) -> Option<Value> {
 fn truncate_diagnostic_string(value: &str) -> String {
     const MAX_LENGTH: usize = 8192;
     if value.len() > MAX_LENGTH {
-        format!("{}…", &value[..MAX_LENGTH])
+        let mut end = MAX_LENGTH;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &value[..end])
     } else {
         value.to_string()
     }

@@ -97,10 +97,14 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    let truncated_chars = text.len() - max_chars;
+    let mut end = max_chars;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncated_chars = text.len() - end;
     format!(
         "{}\n\n[... {truncated_chars} more characters truncated]",
-        &text[..max_chars]
+        &text[..end]
     )
 }
 
@@ -178,4 +182,18 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
     }
 
     parts.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_for_summary_backs_off_to_char_boundary() {
+        // "参" is 3 bytes; byte 2000 falls inside the 667th one.
+        let text = "参".repeat(700);
+        let out = truncate_for_summary(&text, TOOL_RESULT_MAX_CHARS);
+        assert!(out.starts_with(&"参".repeat(666)));
+        assert!(out.contains("[... 102 more characters truncated]"));
+    }
 }
