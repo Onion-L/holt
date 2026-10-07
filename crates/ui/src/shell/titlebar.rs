@@ -4,14 +4,6 @@
 
 use super::*;
 
-fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
-    if is_chat_route && has_selected_chat {
-        1.0
-    } else {
-        0.0
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Traffic-light-aware titlebar layout (feature-inventory §1.1)
 // ---------------------------------------------------------------------------
@@ -216,11 +208,8 @@ impl Shell {
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
         // The titlebar is the single owner of the new-session action in both
-        // sidebar states. Hide it on the new-session canvas: opening another
-        // blank canvas from an already blank canvas has no effect and used to
-        // leave two competing + placements across the responsive variants.
-        let plus_alpha = self.titlebar_plus_alpha(cx);
-        let show_plus = plus_alpha > 0.01;
+        // sidebar states. It renders on every route — on the new-session
+        // canvas a press is a harmless no-op.
         div()
             .absolute()
             .top_0()
@@ -269,19 +258,18 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
                     )),
             )
-            // The new-session `+`, only while a session is selected.
-            .children(show_plus.then(|| {
+            // The new-session `+`, on every route.
+            .child(
                 div()
                     .ml(px(TITLEBAR_GROUP_GAP))
                     .flex_none()
-                    .opacity(plus_alpha)
                     .child(window_control_button(
                         "titlebar-new-session",
                         icons::PLUS,
                         &theme,
                         cx.listener(|this, _, _, cx| this.open_new_session(cx)),
-                    ))
-            }))
+                    )),
+            )
             // The Scheduled page entry, right of the new-session slot (it
             // slides into the `+` position when the canvas hides the plus).
             // A Routine run in flight shows on the button: amber while one
@@ -332,15 +320,6 @@ impl Shell {
                     })
             })
             .into_any_element()
-    }
-
-    /// The titlebar owns new-session creation regardless of sidebar state. It
-    /// is useful only while an existing session is selected.
-    pub(super) fn titlebar_plus_alpha(&self, cx: &App) -> f32 {
-        titlebar_new_session_alpha(
-            matches!(self.route, Route::Chat),
-            self.state.read(cx).selected_chat.is_some(),
-        )
     }
 
     fn selected_external_app(&self) -> ExternalApp {
@@ -1043,14 +1022,6 @@ pub(super) fn header_icon_button(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn new_session_action_lives_in_the_titlebar_only_when_useful() {
-        assert_eq!(titlebar_new_session_alpha(true, true), 1.0);
-        assert_eq!(titlebar_new_session_alpha(true, false), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, true), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, false), 0.0);
-    }
 
     #[test]
     fn titlebar_cluster_matches_holt_window_controls() {
