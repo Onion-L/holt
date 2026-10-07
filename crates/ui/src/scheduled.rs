@@ -1,7 +1,7 @@
 //! The Scheduled page (glossary: Routine, ADR-0042): a card grid of the
-//! user's Routines with Run now, pause/resume, edit, and delete on hover,
-//! and the create/edit modal; clicking a card edits it. Reads come from the
-//! AppState Routines watch; writes are RPCs from here.
+//! user's Routines — name, prompt, and a status chip, with Run now, pause,
+//! edit, and delete in the card's kebab menu; clicking a card edits it.
+//! Reads come from the AppState Routines watch; writes are RPCs from here.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -33,8 +33,6 @@ const CARD_MIN_W: f32 = 240.0;
 const GRID_GAP: f32 = 12.0;
 /// How often the cards' countdowns repaint.
 const TICK: Duration = Duration::from_secs(30);
-/// Outcomes the card strip shows, oldest left.
-const STRIP_RUNS: usize = 14;
 
 pub enum ScheduledEvent {
     /// A run Chat to show (Run now landed, or a card's live run).
@@ -234,6 +232,8 @@ pub struct ScheduledPage {
     form: Option<RoutineForm>,
     /// The prompt-box toolbar's open dropdown; one at a time.
     form_menu: popover::Popup<FormMenu>,
+    /// The open card menu's Routine; one at a time.
+    card_menu: popover::Popup<String>,
     /// The Routine the open delete confirmation targets.
     confirm: Option<String>,
     error: Option<SharedString>,
@@ -264,6 +264,7 @@ impl ScheduledPage {
             pickers,
             form: None,
             form_menu: popover::Popup::default(),
+            card_menu: popover::Popup::default(),
             confirm: None,
             error: None,
             columns: Rc::new(Cell::new(3)),
@@ -612,6 +613,13 @@ impl ScheduledPage {
         }
     }
 
+    fn close_card_menu(&mut self, cx: &mut Context<Self>) {
+        if self.card_menu.begin_close() {
+            popover::reap_popup(cx, |this: &mut Self| &mut this.card_menu);
+            cx.notify();
+        }
+    }
+
     fn submit_form(&mut self, cx: &mut Context<Self>) {
         let resolved = self.pickers.read(cx).resolved(cx).chat_config();
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -803,6 +811,8 @@ impl ScheduledPage {
                 "enter" => self.delete(cx),
                 _ => return,
             }
+        } else if self.card_menu.is_open() && key == "escape" {
+            self.close_card_menu(cx);
         } else if self.form.is_some() && key == "escape" {
             self.close_form(window, cx);
         } else {
@@ -814,204 +824,257 @@ impl ScheduledPage {
 
     // ---- render pieces ----
 
-    fn model_label(&self, routine: &RoutineView, cx: &Context<Self>) -> SharedString {
-        let config = &routine.routine.config;
-        self.pickers
-            .read(cx)
-            .model_label(&config.provider, &config.model)
-            .map(str::to_string)
-            .unwrap_or_else(|| short_model(&config.model).to_string())
-            .into()
-    }
-
     fn render_card(&self, theme: &Theme, view: &RoutineView, cx: &mut Context<Self>) -> AnyElement {
         let routine = &view.routine;
-        let group: SharedString = format!("routine-card-{}", routine.id).into();
-        let space = self
-            .state
-            .read(cx)
-            .space_row(&routine.space_id)
-            .map(|space| space.display_name().to_string())
-            .unwrap_or_else(|| "Missing project".into());
+        let card_id: SharedString = format!("routine-card-{}", routine.id).into();
+        let open_id = routine.id.clone();
+        let faint = theme.text_muted.opacity(0.75);
+
+        // The chip spells schedule plus state. Like the app's badges and
+        // notices, the fill/icon carry the strong tone and the label the
+        // softer muted variant (success → success_muted, etc.).
+        let schedule = schedule_label(&routine.cron, routine.at);
+        let live = live_run(routine);
+        let (label, tone, text_tone) = match (live, routine.paused) {
+            (Some(run), _) => {
+                let tone = outcome_color(theme, run.outcome);
+                let text = match run.outcome {
+                    RunOutcome::Waiting => theme.warning_muted,
+                    _ => tone,
+                };
+                (
+                    format!("{schedule} \u{b7} {}", outcome_label(run.outcome)),
+                    tone,
+                    text,
+                )
+            }
+            (None, Some(_)) => (
+                format!("{schedule} \u{b7} Paused"),
+                theme.text_faint,
+                theme.text_muted,
+            ),
+            (None, None) => match view.next_fire_at {
+                Some(next) => (
+                    format!("{schedule} \u{b7} {}", countdown(next, Utc::now())),
+                    theme.success,
+                    theme.success_muted.opacity(0.9),
+                ),
+                // A one-time Routine that has fired.
+                None if routine.at.is_some() => (
+                    format!("{schedule} \u{b7} Done"),
+                    theme.text_faint,
+                    theme.text_muted,
+                ),
+                None => (
+                    schedule.clone(),
+                    theme.success,
+                    theme.success_muted.opacity(0.9),
+                ),
+            },
+        };
+        let chip = div()
+            .flex_none()
+            .max_w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(5.0))
+            .py(px(3.0))
+            .pl(px(7.0))
+            .pr(px(9.0))
+            .rounded_full()
+            .bg(tone.opacity(0.12))
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(text_tone)
+            .child(
+                icon(icons::CLOCK_CIRCLE)
+                    .size(px(12.0))
+                    .flex_none()
+                    .text_color(tone),
+            )
+            .child(div().min_w_0().truncate().child(SharedString::from(label)));
+        // The live run's Chat is one click away.
+        let chip = match live.and_then(|run| run.chat_id.clone()) {
+            Some(chat_id) => chip
+                .id(format!("routine-live-{}", routine.id))
+                .debug_selector({
+                    let selector = format!("routine-live-{}", routine.id);
+                    move || selector
+                })
+                .cursor_pointer()
+                .hover(move |s| s.bg(tone.opacity(0.2)))
+                .tooltip(text_tooltip("Open run"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_run(chat_id.clone(), cx);
+                }))
+                .into_any_element(),
+            None => chip.into_any_element(),
+        };
+
+        // The kebab toggles this card's menu; another card's gives way.
+        let press_id = routine.id.clone();
+        let toggle_id = routine.id.clone();
+        let kebab = icon_button(
+            theme,
+            format!("routine-menu-{}", routine.id).into(),
+            icons::MENU_DOTS,
+            false,
+        )
+        .tooltip(text_tooltip("More"))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this, _, _, _| {
+                this.card_menu
+                    .note_trigger_press_matching(|open| *open == press_id);
+            }),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            if this.card_menu.take_press_was_open() {
+                this.close_card_menu(cx);
+            } else {
+                this.card_menu.open(toggle_id.clone());
+                cx.notify();
+            }
+        }));
+        let kebab = match self.card_menu.get() == Some(&routine.id) {
+            true => kebab
+                .relative()
+                .child(popover::anchored_menu_below_end(
+                    format!("routine-card-menu-{}", routine.id),
+                    self.render_card_menu(theme, routine, cx),
+                    self.card_menu.closing_since(),
+                ))
+                .into_any_element(),
+            false => kebab.into_any_element(),
+        };
+
+        div()
+            .id(card_id)
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| this.edit_routine(&open_id, cx)))
+            .min_w_0()
+            .min_h(px(128.0))
+            .p(px(16.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(hairline(0.08))
+            .bg(ink(0.04))
+            .hover(|s| s.bg(ink(0.06)).border_color(hairline(0.14)))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(13.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(routine.name.clone())),
+                            )
+                            .child(kebab),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(faint)
+                            .child(SharedString::from(prompt_excerpt(&routine.prompt))),
+                    ),
+            )
+            .child(div().flex().flex_row().items_center().child(chip))
+            .into_any_element()
+    }
+
+    /// The kebab's dropdown: the card's actions, Delete sectioned off.
+    fn render_card_menu(
+        &self,
+        theme: &Theme,
+        routine: &Routine,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let paused = routine.paused.is_some();
+        // Only an edit to another Space brings it back.
+        let space_removed = routine.paused == Some(RoutinePause::SpaceRemoved);
         let run_id = routine.id.clone();
         let pause_id = routine.id.clone();
         let edit_id = routine.id.clone();
         let delete_id = routine.id.clone();
-        let paused = routine.paused.is_some();
-        // Only an edit to another Space brings it back.
-        let space_removed = routine.paused == Some(RoutinePause::SpaceRemoved);
-        let actions = div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .gap(px(2.0))
-            .invisible()
-            .group_hover(group.clone(), |s| s.visible())
-            .when(!space_removed, |actions| {
-                actions
-                    .child(
-                        icon_button(
-                            theme,
-                            format!("routine-run-{}", routine.id).into(),
-                            icons::PLAY,
-                            false,
-                        )
-                        .tooltip(text_tooltip("Run now"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.run_now(run_id.clone(), cx);
-                        })),
-                    )
-                    .child(
-                        icon_button(
-                            theme,
-                            format!("routine-pause-{}", routine.id).into(),
-                            icons::PAUSE,
-                            false,
-                        )
-                        .tooltip(text_tooltip(if paused { "Resume" } else { "Pause" }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_paused(pause_id.clone(), !paused, cx);
-                        })),
-                    )
-            })
-            .child(
-                icon_button(
-                    theme,
-                    format!("routine-edit-{}", routine.id).into(),
-                    icons::PEN,
-                    false,
-                )
-                .tooltip(text_tooltip("Edit"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.edit_routine(&edit_id, cx);
-                })),
-            )
-            .child(
-                icon_button(
-                    theme,
-                    format!("routine-delete-{}", routine.id).into(),
-                    icons::TRASH_BIN_MINIMALISTIC,
-                    true,
-                )
-                .tooltip(text_tooltip("Delete"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.ask_delete(delete_id.clone(), window, cx);
-                })),
-            );
-        let faint = theme.text_muted.opacity(0.75);
-        let open_id = routine.id.clone();
-        let status = match (live_run(routine), routine.paused) {
-            (Some(run), _) => {
-                let pill = live_pill(theme, run.outcome);
-                match run.chat_id.clone() {
-                    // The live run's Chat is one click away.
-                    Some(chat_id) => pill
-                        .id(format!("routine-live-{}", routine.id))
-                        .debug_selector({
-                            let selector = format!("routine-live-{}", routine.id);
-                            move || selector
-                        })
-                        .px(px(6.0))
-                        .mx(px(-6.0))
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.element_hover))
-                        .tooltip(text_tooltip("Open run"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.open_run(chat_id.clone(), cx);
-                        }))
-                        .into_any_element(),
-                    None => pill.into_any_element(),
-                }
-            }
-            (None, Some(pause)) => paused_pill(theme, pause).into_any_element(),
-            (None, None) => div()
-                .text_size(crate::typography::ui_rems(15.0))
-                .text_color(theme.text)
-                .child(match view.next_fire_at {
-                    Some(next) => countdown(next, Utc::now()),
-                    // A one-time Routine that has fired.
-                    None if routine.at.is_some() => "Done".into(),
-                    None => String::new(),
-                })
-                .into_any_element(),
+        let fade = |key: &str| format!("routine-card-menu-{}-{key}", routine.id);
+        let row = |icon_path: &'static str, label: &'static str, key: &str| {
+            popover::menu_row(theme, false, fade(key))
+                .child(icon(icon_path).size(px(14.0)).text_color(theme.text_muted))
+                .child(label)
         };
-        div()
-            .id(group.clone())
-            .group(group)
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.edit_routine(&open_id, cx)))
-            .min_w_0()
-            .min_h(px(176.0))
-            .p(px(14.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(hairline(0.08))
-            .bg(ink(0.025))
-            .hover(|s| s.bg(ink(0.045)))
+        popover::popover_card(theme)
+            .w(px(180.0))
             .flex()
             .flex_col()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .h(px(26.0))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(13.5))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(SharedString::from(routine.name.clone())),
+            .gap(px(2.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_card_menu(cx)))
+            .when(!space_removed, |card| {
+                card.child(
+                    row(icons::PLAY, "Run now", "run")
+                        .id("routine-menu-run")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.close_card_menu(cx);
+                            this.run_now(run_id.clone(), cx);
+                        })),
+                )
+                .child(
+                    row(
+                        icons::PAUSE,
+                        if paused { "Resume" } else { "Pause" },
+                        "pause",
                     )
-                    .child(actions),
-            )
+                    .id("routine-menu-pause")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_card_menu(cx);
+                        this.set_paused(pause_id.clone(), !paused, cx);
+                    })),
+                )
+            })
             .child(
-                div()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(faint)
-                    .child(SharedString::from(format!(
-                        "{} \u{b7} {space}",
-                        schedule_label(&routine.cron, routine.at)
-                    ))),
+                row(icons::PEN, "Edit routine", "edit")
+                    .id("routine-menu-edit")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_card_menu(cx);
+                        this.edit_routine(&edit_id, cx);
+                    })),
             )
-            .child(div().flex_1())
+            .child(popover::menu_separator())
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .child(status)
-                    .child(run_strip(theme, &routine.runs)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .text_color(faint)
-                    .child(div().min_w_0().truncate().child(self.model_label(view, cx)))
+                popover::menu_row(theme, false, fade("delete"))
+                    .id("routine-menu-delete")
+                    .text_color(theme.danger)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_card_menu(cx);
+                        this.ask_delete(delete_id.clone(), window, cx);
+                    }))
                     .child(
-                        div()
-                            .flex_none()
-                            .child(mode_label(routine.config.permission_mode)),
-                    ),
+                        icon(icons::TRASH_BIN_MINIMALISTIC)
+                            .size(px(14.0))
+                            .text_color(theme.danger.opacity(0.8)),
+                    )
+                    .child("Delete"),
             )
             .into_any_element()
     }
@@ -2256,85 +2319,10 @@ fn outcome_color(theme: &Theme, outcome: RunOutcome) -> gpui::Hsla {
     }
 }
 
-/// Fill `mark` with the outcome's colour; a skipped fire is only outlined.
-fn outcome_mark(theme: &Theme, outcome: RunOutcome, mark: gpui::Div) -> gpui::Div {
-    let color = outcome_color(theme, outcome);
-    if outcome == RunOutcome::Skipped {
-        mark.border_1().border_color(color)
-    } else {
-        mark.bg(color)
-    }
-}
-
-fn paused_pill(theme: &Theme, pause: RoutinePause) -> gpui::Div {
-    div()
-        .px(px(8.0))
-        .py(px(2.0))
-        .rounded_full()
-        .bg(ink(0.06))
-        .text_size(crate::typography::ui_rems(11.5))
-        .text_color(theme.text_muted)
-        .child(match pause {
-            RoutinePause::User => "Paused",
-            RoutinePause::SpaceRemoved => "Paused \u{b7} Project removed",
-        })
-}
-
 /// The Routine's run in flight, if any (at most one: a fire is skipped
 /// while a run is live).
 pub(crate) fn live_run(routine: &Routine) -> Option<&RoutineRun> {
     routine.runs.iter().find(|run| run.outcome.is_live())
-}
-
-fn live_dot(theme: &Theme, outcome: RunOutcome) -> gpui::Div {
-    div()
-        .flex_none()
-        .size(px(7.0))
-        .rounded_full()
-        .bg(outcome_color(theme, outcome))
-}
-
-fn live_pill(theme: &Theme, outcome: RunOutcome) -> gpui::Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(6.0))
-        .text_size(crate::typography::ui_rems(15.0))
-        .text_color(theme.text)
-        .child(live_dot(theme, outcome))
-        .child(outcome_label(outcome))
-}
-
-/// The newest runs as the strip shows them, oldest left (`runs` is newest
-/// first): each outcome, and whether it was a Catch-up run.
-fn strip_outcomes(runs: &[RoutineRun]) -> Vec<(RunOutcome, bool)> {
-    let mut outcomes: Vec<(RunOutcome, bool)> = runs
-        .iter()
-        .take(STRIP_RUNS)
-        .map(|run| (run.outcome, run.missed_fires > 0))
-        .collect();
-    outcomes.reverse();
-    outcomes
-}
-
-fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
-    div()
-        .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(2.0))
-        .children(strip_outcomes(runs).into_iter().map(|(outcome, catch_up)| {
-            let mark = div().w(px(4.0)).h(px(12.0)).rounded(px(1.5));
-            // A Catch-up run is ringed; a skipped one stays hollow.
-            let mark = if catch_up && outcome != RunOutcome::Skipped {
-                mark.border_1().border_color(theme.text)
-            } else {
-                mark
-            };
-            outcome_mark(theme, outcome, mark)
-        }))
 }
 
 /// A schedule-bar dropdown trigger: the prompt toolbar's ghost chip (no fill
@@ -2455,6 +2443,11 @@ fn cron_preset(cron: &str) -> Option<(Preset, String, u8)> {
             Some((Preset::Weekly, time, day))
         }
     }
+}
+
+/// The prompt as the card shows it: one line, whitespace collapsed.
+fn prompt_excerpt(prompt: &str) -> String {
+    prompt.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A stored cron in words ("Weekdays at 09:00"); a cron no preset spells
@@ -2660,35 +2653,6 @@ mod tests {
         );
         assert_eq!(preview_fires(&[at(8, 9)]), "Oct 8, 09:00");
         assert_eq!(preview_fires(&[]), "");
-    }
-
-    #[test]
-    fn strip_shows_the_newest_fourteen_oldest_first_and_marks_catch_up() {
-        let at = DateTime::parse_from_rfc3339("2026-10-07T09:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        // Newest first: one failure on top of twenty successes.
-        let mut runs: Vec<RoutineRun> = std::iter::once(RunOutcome::Failed)
-            .chain(std::iter::repeat_n(RunOutcome::Succeeded, 20))
-            .map(|outcome| RoutineRun {
-                fired_at: at,
-                outcome,
-                note: None,
-                chat_id: None,
-                missed_fires: 0,
-                manual: false,
-            })
-            .collect();
-        let strip = strip_outcomes(&runs);
-        assert_eq!(strip.len(), STRIP_RUNS);
-        assert_eq!(strip.last(), Some(&(RunOutcome::Failed, false)));
-        assert_eq!(strip_outcomes(&runs[..3]).len(), 3);
-        runs[0].missed_fires = 3;
-        assert_eq!(
-            strip_outcomes(&runs).last(),
-            Some(&(RunOutcome::Failed, true)),
-            "a Catch-up run is marked"
-        );
     }
 
     #[test]
