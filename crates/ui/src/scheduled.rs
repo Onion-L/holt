@@ -45,13 +45,18 @@ pub enum ScheduledEvent {
     Drawer(Option<String>),
 }
 
+/// The time picker's column height and row height.
+const TIME_MENU_H: f32 = 232.0;
+const TIME_ROW_H: f32 = 28.0;
+
 /// How long schedule edits settle before the preview is re-read.
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Rows the form's model list shows at most; search narrows the rest.
 const MODEL_ROWS: usize = 40;
 
-/// The schedule shapes the form spells for the user; anything else is a
-/// custom cron.
+/// The schedule shapes the form spells for the user. `Custom` is only a
+/// routine whose stored cron reads as none of them; the form keeps it as is
+/// but never offers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Preset {
     Hourly,
@@ -61,12 +66,11 @@ enum Preset {
     Custom,
 }
 
-const PRESETS: [(Preset, &str); 5] = [
+const PRESETS: [(Preset, &str); 4] = [
     (Preset::Hourly, "Hourly"),
     (Preset::Daily, "Daily"),
     (Preset::Weekdays, "Weekdays"),
     (Preset::Weekly, "Weekly"),
-    (Preset::Custom, "Custom"),
 ];
 
 /// Cron weekday numbers (0 = Sunday) in display order.
@@ -87,6 +91,9 @@ enum FormMenu {
     Mode,
     Checkout,
     Model,
+    Preset,
+    Weekday,
+    Time,
 }
 
 /// What the form opens with: blank, or a Routine to edit.
@@ -140,6 +147,9 @@ struct RoutineForm {
     /// "HH:MM" for the daily, weekdays, and weekly presets.
     time: Entity<ComposerInput>,
     weekday: u8,
+    /// The time picker's hour and minute columns.
+    hour_scroll: gpui::ScrollHandle,
+    minute_scroll: gpui::ScrollHandle,
     /// The custom preset's cron.
     cron: Entity<ComposerInput>,
     preview: Preview,
@@ -357,6 +367,8 @@ impl ScheduledPage {
             preset,
             time,
             weekday,
+            hour_scroll: gpui::ScrollHandle::new(),
+            minute_scroll: gpui::ScrollHandle::new(),
             cron,
             preview: Preview::Pending,
             preview_task: None,
@@ -406,14 +418,20 @@ impl ScheduledPage {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        if preset == Preset::Custom
-            && form.preset != Preset::Custom
-            && let Ok(cron) = form.schedule(cx)
-        {
-            // Custom starts from the schedule the preset spelled.
-            form.cron.update(cx, |input, cx| input.set_text(cron, cx));
-        }
         form.preset = preset;
+        form.error = None;
+        self.refresh_preview(cx);
+        cx.notify();
+    }
+
+    /// Replace the hour and/or minute of the form's time.
+    fn set_time(&mut self, hour: Option<u8>, minute: Option<u8>, cx: &mut Context<Self>) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let (h, m) = parse_time(form.time.read(cx).text()).unwrap_or((9, 0));
+        let text = format!("{:02}:{:02}", hour.unwrap_or(h), minute.unwrap_or(m));
+        form.time.update(cx, |input, cx| input.set_text(&text, cx));
         form.error = None;
         self.refresh_preview(cx);
         cx.notify();
@@ -509,6 +527,17 @@ impl ScheduledPage {
     /// focused search.
     fn open_form_menu(&mut self, menu: FormMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.form_menu.open(menu);
+        if menu == FormMenu::Time
+            && let Some(form) = self.form.as_ref()
+        {
+            let (hour, minute) = parse_time(form.time.read(cx).text()).unwrap_or((9, 0));
+            // Land the pick in the column's middle row.
+            let above = (TIME_MENU_H / (TIME_ROW_H + 2.0) / 2.0) as usize;
+            form.hour_scroll
+                .scroll_to_top_of_item((hour as usize).saturating_sub(above));
+            form.minute_scroll
+                .scroll_to_top_of_item((minute as usize).saturating_sub(above));
+        }
         if menu == FormMenu::Model
             && let Some(form) = self.form.as_mut()
         {
@@ -829,7 +858,7 @@ impl ScheduledPage {
                     .text_color(faint)
                     .child(SharedString::from(format!(
                         "{} \u{b7} {space}",
-                        routine.cron
+                        schedule_label(&routine.cron)
                     ))),
             )
             .child(div().flex_1())
@@ -898,7 +927,7 @@ impl ScheduledPage {
             RoutineCheckout::NewWorktree => "New worktree",
         };
         let config: [(&'static str, SharedString); 7] = [
-            ("Schedule", routine.cron.clone().into()),
+            ("Schedule", schedule_label(&routine.cron).into()),
             ("Time zone", routine.time_zone.clone().into()),
             ("Next run", next.into()),
             ("Project", space.into()),
@@ -1287,7 +1316,7 @@ impl ScheduledPage {
             window.focus(&form.name.focus_handle(cx), cx);
         }
         let (name, prompt) = (form.name.clone(), form.prompt.clone());
-        let (time, cron) = (form.time.clone(), form.cron.clone());
+        let time = form.time.clone();
         let (preset, weekday) = (form.preset, form.weekday);
         let (space_id, mode, checkout) = (form.space_id.clone(), form.mode, form.checkout);
         let (error, saving, editing) = (form.error.clone(), form.saving, form.editing.is_some());
@@ -1356,90 +1385,112 @@ impl ScheduledPage {
         let space_card =
             (form_menu == Some(FormMenu::Space)).then(|| self.form_space_menu(theme, cx));
         let mode_card = (form_menu == Some(FormMenu::Mode)).then(|| self.form_mode_menu(theme, cx));
+        let time_card = (form_menu == Some(FormMenu::Time)).then(|| self.form_time_menu(theme, cx));
         let checkout_card =
             (form_menu == Some(FormMenu::Checkout)).then(|| self.form_checkout_menu(theme, cx));
         let model_card = (form_menu == Some(FormMenu::Model))
             .then(|| self.form_model_menu(theme, model_query, model_rows, cx));
-        let preset_seg = segmented(
-            theme,
-            PRESETS.into_iter().enumerate().map(|(ix, (value, label))| {
-                seg_item(theme, preset == value)
-                    .id(("routine-preset", ix))
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_preset(value, cx)))
-                    .child(label)
-            }),
+        let preset_card =
+            (form_menu == Some(FormMenu::Preset)).then(|| self.form_preset_menu(theme, cx));
+        let weekday_card =
+            (form_menu == Some(FormMenu::Weekday)).then(|| self.form_weekday_menu(theme, cx));
+        let preset_label = PRESETS
+            .iter()
+            .find(|(value, _)| *value == preset)
+            .map_or("Custom", |(_, label)| label);
+        let preset_chip = self.form_menu_trigger(
+            select_chip(
+                theme,
+                "routine-preset",
+                preset_label.into(),
+                self.form_menu.as_open().copied() == Some(FormMenu::Preset),
+            )
+            .min_w(px(112.0))
+            .justify_between(),
+            FormMenu::Preset,
+            "routine-preset",
+            false,
+            preset_card,
+            cx,
         );
-        let schedule_detail =
-            match preset {
-                Preset::Hourly => div()
-                    .text_size(crate::typography::ui_rems(12.5))
-                    .text_color(theme.text_muted)
-                    .child("On the hour, every hour."),
-                Preset::Custom => div().child(popover::dialog_field(cron.into_any_element())),
-                _ => div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .flex_wrap()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(12.5))
-                            .text_color(theme.text_muted)
-                            .child("at"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                icon(icons::CLOCK_CIRCLE)
-                                    .size(px(12.0))
-                                    .text_color(theme.text_muted.opacity(0.6)),
-                            )
-                            .child(
-                                div()
-                                    .w(px(96.0))
-                                    .child(popover::dialog_field(time.into_any_element())),
-                            ),
-                    )
-                    .when(preset == Preset::Weekly, |row| {
-                        row.child(
-                            div()
-                                .text_size(crate::typography::ui_rems(12.5))
-                                .text_color(theme.text_muted)
-                                .child("on"),
-                        )
-                        .child(
-                            div().flex().flex_row().gap(px(4.0)).children(
-                                WEEKDAYS.into_iter().map(|(day, label)| {
-                                    chip(theme, day == weekday)
-                                        .id(("routine-weekday", day as usize))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.set_weekday(day, cx)
-                                        }))
-                                        .child(label)
-                                }),
-                            ),
-                        )
-                    }),
-            };
+        let connective = |word: &'static str| {
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(13.0))
+                .text_color(theme.text_muted)
+                .child(word)
+        };
+        let weekday_chip = (preset == Preset::Weekly).then(|| {
+            let label = WEEKDAYS
+                .iter()
+                .find(|(day, _)| *day == weekday)
+                .map_or("Mon", |(_, label)| label);
+            self.form_menu_trigger(
+                select_chip(
+                    theme,
+                    "routine-weekday",
+                    label.into(),
+                    self.form_menu.as_open().copied() == Some(FormMenu::Weekday),
+                ),
+                FormMenu::Weekday,
+                "routine-weekday",
+                false,
+                weekday_card,
+                cx,
+            )
+        });
+        let time_chip =
+            matches!(preset, Preset::Daily | Preset::Weekdays | Preset::Weekly).then(|| {
+                let text = time.read(cx).text().trim();
+                let label = if text.is_empty() { "09:00" } else { text }.to_string();
+                self.form_menu_trigger(
+                    select_chip(
+                        theme,
+                        "routine-time",
+                        label.into(),
+                        self.form_menu.as_open().copied() == Some(FormMenu::Time),
+                    ),
+                    FormMenu::Time,
+                    "routine-time",
+                    false,
+                    time_card,
+                    cx,
+                )
+            });
+        // The schedule reads as one sentence: preset, (day,) "at" time, then
+        // the engine's preview of what it spells.
         let preview_line = div()
             .id("routine-form-preview")
             .debug_selector(|| "routine-form-preview".into())
-            .min_h(px(16.0))
-            .text_size(crate::typography::ui_rems(12.0))
+            .flex_1()
+            .min_w_0()
+            .pl(px(4.0))
+            .truncate()
+            .text_size(crate::typography::ui_rems(12.5))
             .map(|line| match preview {
                 None => line.text_color(theme.text_muted).child("\u{2026}"),
                 Some(Ok(preview)) => line.text_color(theme.text_muted).child(format!(
-                    "Next: {} ({})",
-                    preview_fires(&preview.fires),
-                    preview.time_zone
+                    "{} \u{b7} Next {}",
+                    preview.time_zone,
+                    preview_fires(&preview.fires)
                 )),
                 Some(Err(problem)) => line.text_color(theme.danger).child(problem),
             });
+        let schedule_bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .p(px(6.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(hairline(0.08))
+            .bg(ink(0.04))
+            .child(preset_chip)
+            .children(weekday_chip)
+            .when(time_chip.is_some(), |bar| bar.child(connective("at")))
+            .children(time_chip)
+            .child(preview_line);
         let space_chip = self.form_toolbar_chip(
             theme,
             FormMenu::Space,
@@ -1567,17 +1618,7 @@ impl ScheduledPage {
                 "Name",
                 popover::dialog_field(name.into_any_element()),
             ))
-            .child(field(
-                theme,
-                "Schedule",
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .child(preset_seg)
-                    .child(schedule_detail)
-                    .child(preview_line),
-            ))
+            .child(field(theme, "Schedule", schedule_bar))
             // The prompt box wears the composer's shape: the input on top and
             // a toolbar of dropdown chips at the bottom (project + permission
             // mode left, checkout + model right).
@@ -1673,9 +1714,24 @@ impl ScheduledPage {
         card: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mounted = self.form_menu.get().copied() == Some(menu);
         let open = self.form_menu.as_open().copied() == Some(menu);
-        let chip = form_chip(theme, id, icon_path, label, open)
+        let chip = form_chip(theme, id, icon_path, label, open);
+        self.form_menu_trigger(chip, menu, id, align_end, card, cx)
+    }
+
+    /// Wire `chip` to toggle `menu`, with its dropdown mounted below it while
+    /// `menu` is up (or closing).
+    fn form_menu_trigger(
+        &self,
+        chip: gpui::Stateful<gpui::Div>,
+        menu: FormMenu,
+        id: &'static str,
+        align_end: bool,
+        card: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mounted = self.form_menu.get().copied() == Some(menu);
+        let chip = chip
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, _, _| {
@@ -1705,6 +1761,56 @@ impl ScheduledPage {
         }
     }
 
+    /// The schedule preset menu.
+    fn form_preset_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.form.as_ref().map(|form| form.preset);
+        popover::popover_card(theme)
+            .w(px(160.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .children(PRESETS.into_iter().enumerate().map(|(ix, (value, label))| {
+                popover::menu_row(
+                    theme,
+                    current == Some(value),
+                    format!("routine-preset-fade-{ix}"),
+                )
+                .id(("routine-preset-row", ix))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_preset(value, cx);
+                    this.close_form_menu(cx);
+                }))
+                .child(label)
+            }))
+            .into_any_element()
+    }
+
+    /// The weekly preset's day menu, Monday first.
+    fn form_weekday_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.form.as_ref().map(|form| form.weekday);
+        popover::popover_card(theme)
+            .w(px(140.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .children(WEEKDAYS.into_iter().map(|(day, label)| {
+                popover::menu_row(
+                    theme,
+                    current == Some(day),
+                    format!("routine-weekday-fade-{day}"),
+                )
+                .id(("routine-weekday-row", day as usize))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_weekday(day, cx);
+                    this.close_form_menu(cx);
+                }))
+                .child(weekday_name(label))
+            }))
+            .into_any_element()
+    }
+
     /// The Space menu: one row per project, the form's pick marked.
     fn form_space_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.form.as_ref().and_then(|form| form.space_id.clone());
@@ -1724,6 +1830,9 @@ impl ScheduledPage {
             .collect();
         popover::popover_card(theme)
             .w(px(200.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
             .children(
                 rows.into_iter()
@@ -1749,6 +1858,9 @@ impl ScheduledPage {
         let current = self.form.as_ref().map(|form| form.mode);
         popover::popover_card(theme)
             .w(px(200.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
             .children(MODE_TIERS.into_iter().enumerate().map(|(ix, tier)| {
                 popover::menu_row(
@@ -1768,11 +1880,82 @@ impl ScheduledPage {
             .into_any_element()
     }
 
+    /// The time picker: an hour column and a minute column, each scrolled to
+    /// the current pick when the menu opens. An hour keeps the menu open; a
+    /// minute completes the pick.
+    fn form_time_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(form) = self.form.as_ref() else {
+            return div().into_any_element();
+        };
+        let (hour, minute) = parse_time(form.time.read(cx).text()).unwrap_or((9, 0));
+        let (hour_scroll, minute_scroll) = (form.hour_scroll.clone(), form.minute_scroll.clone());
+        let column = |id: &'static str, scroll: &gpui::ScrollHandle| {
+            div()
+                .id(id)
+                .w(px(56.0))
+                .h(px(TIME_MENU_H))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .occlude()
+        };
+        let cell = |active: bool| {
+            div()
+                .flex_none()
+                .h(px(TIME_ROW_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(13.0))
+                .when(active, |el| el.bg(ink(0.09)).text_color(theme.text))
+                .when(!active, |el| {
+                    el.text_color(theme.text_muted)
+                        .hover(|s| s.bg(ink(0.05)).text_color(theme.text))
+                })
+        };
+        popover::popover_card(theme)
+            .p_0()
+            .flex()
+            .flex_row()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .child(
+                column("routine-time-hours", &hour_scroll).children((0..24u8).map(|h| {
+                    cell(h == hour)
+                        .id(("routine-time-hour", h as usize))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.set_time(Some(h), None, cx)),
+                        )
+                        .child(format!("{h:02}"))
+                })),
+            )
+            .child(div().w(px(1.0)).bg(hairline(0.08)))
+            .child(
+                column("routine-time-minutes", &minute_scroll).children((0..60u8).map(|m| {
+                    cell(m == minute)
+                        .id(("routine-time-minute", m as usize))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_time(None, Some(m), cx);
+                            this.close_form_menu(cx);
+                        }))
+                        .child(format!("{m:02}"))
+                })),
+            )
+            .into_any_element()
+    }
+
     /// The checkout-kind menu: the Space's main checkout or a new worktree.
     fn form_checkout_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let current = self.form.as_ref().map(|form| form.checkout);
         popover::popover_card(theme)
             .w(px(200.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
             .children(
                 [
@@ -2271,6 +2454,51 @@ fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
         }))
 }
 
+/// A schedule-bar dropdown trigger: the value with a trailing chevron on a
+/// soft fill, no border (the bar draws the frame).
+fn select_chip(
+    theme: &Theme,
+    id: &'static str,
+    label: SharedString,
+    open: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(28.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .pl(px(10.0))
+        .pr(px(8.0))
+        .rounded(px(8.0))
+        .bg(ink(if open { 0.1 } else { 0.06 }))
+        .hover(|s| s.bg(ink(0.09)))
+        .text_size(crate::typography::ui_rems(13.0))
+        .text_color(theme.text)
+        .cursor_pointer()
+        .child(label)
+        .child(
+            icon(icons::ALT_ARROW_DOWN)
+                .size(px(12.0))
+                .text_color(theme.text_muted.opacity(0.7)),
+        )
+}
+
+/// "Mon" → "Monday".
+fn weekday_name(short: &str) -> &'static str {
+    match short {
+        "Mon" => "Monday",
+        "Tue" => "Tuesday",
+        "Wed" => "Wednesday",
+        "Thu" => "Thursday",
+        "Fri" => "Friday",
+        "Sat" => "Saturday",
+        _ => "Sunday",
+    }
+}
+
 /// `openai/gpt-5.4` → `gpt-5.4` when the catalog hasn't named the model.
 fn short_model(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
@@ -2330,6 +2558,27 @@ fn cron_preset(cron: &str) -> Option<(Preset, String, u8)> {
     }
 }
 
+/// A stored cron in words ("Weekdays at 09:00"); a cron no preset spells
+/// shows as itself.
+fn schedule_label(cron: &str) -> String {
+    let Some((preset, time, weekday)) = cron_preset(cron) else {
+        return cron.to_string();
+    };
+    match preset {
+        Preset::Hourly => "Hourly".into(),
+        Preset::Daily => format!("Daily at {time}"),
+        Preset::Weekdays => format!("Weekdays at {time}"),
+        Preset::Weekly => {
+            let day = WEEKDAYS
+                .iter()
+                .find(|(day, _)| *day == weekday)
+                .map_or("Sun", |(_, label)| label);
+            format!("{}s at {time}", weekday_name(day))
+        }
+        Preset::Custom => cron.to_string(),
+    }
+}
+
 /// An RPC failure as the form shows it: the engine's message without the
 /// transport's "bad params:" framing.
 fn rpc_problem(error: &holt_rpc::RpcError) -> String {
@@ -2359,52 +2608,6 @@ fn field(theme: &Theme, label: &'static str, control: impl IntoElement) -> gpui:
                 .child(label),
         )
         .child(control)
-}
-
-fn segmented(theme: &Theme, items: impl IntoIterator<Item = impl IntoElement>) -> gpui::Div {
-    div()
-        .flex()
-        .flex_row()
-        .self_start()
-        .p(px(2.0))
-        .gap(px(2.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(hairline(0.08))
-        .bg(ink(0.03))
-        .text_color(theme.text_muted)
-        .children(items)
-}
-
-fn seg_item(theme: &Theme, active: bool) -> gpui::Div {
-    div()
-        .px(px(10.0))
-        .py(px(4.0))
-        .rounded(px(6.0))
-        .text_size(crate::typography::ui_rems(12.5))
-        .cursor_pointer()
-        .when(active, |el| el.bg(ink(0.09)).text_color(theme.text))
-        .when(!active, |el| el.hover(|s| s.text_color(theme.text)))
-}
-
-fn chip(theme: &Theme, active: bool) -> gpui::Div {
-    div()
-        .px(px(10.0))
-        .py(px(4.0))
-        .rounded(px(999.0))
-        .border_1()
-        .text_size(crate::typography::ui_rems(12.5))
-        .cursor_pointer()
-        .when(active, |el| {
-            el.border_color(hairline(0.18))
-                .bg(ink(0.08))
-                .text_color(theme.text)
-        })
-        .when(!active, |el| {
-            el.border_color(hairline(0.08))
-                .text_color(theme.text_muted)
-                .hover(|s| s.text_color(theme.text))
-        })
 }
 
 /// One prompt-box toolbar chip: the composer footer's ghost-button recipe
