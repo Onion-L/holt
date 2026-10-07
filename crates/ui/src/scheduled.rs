@@ -80,42 +80,21 @@ const WEEKDAYS: [(u8, &str); 7] = [
     (0, "Sun"),
 ];
 
-/// A starting point the empty page offers.
-struct Template {
-    name: &'static str,
-    prompt: &'static str,
-    cron: &'static str,
-    caption: &'static str,
+/// Which dropdown the prompt box's toolbar has open; one at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormMenu {
+    Space,
+    Mode,
+    Checkout,
+    Model,
 }
 
-const TEMPLATES: [Template; 3] = [
-    Template {
-        name: "Morning triage",
-        prompt: "Review issues and pull requests opened since yesterday and list what needs my attention, most urgent first.",
-        cron: "0 9 * * 1-5",
-        caption: "Weekdays at 09:00",
-    },
-    Template {
-        name: "Nightly test sweep",
-        prompt: "Run the test suite. Report any failures with their likely cause; change nothing.",
-        cron: "0 2 * * *",
-        caption: "Daily at 02:00",
-    },
-    Template {
-        name: "Weekly dependency check",
-        prompt: "Check for outdated dependencies and summarize which upgrades are worth doing and why.",
-        cron: "0 10 * * 1",
-        caption: "Mondays at 10:00",
-    },
-];
-
-/// What the form opens with: blank, a template, or a Routine to edit.
+/// What the form opens with: blank, or a Routine to edit.
 struct Prefill {
     editing: Option<String>,
     name: String,
     prompt: String,
     cron: String,
-    time_zone: String,
     space_id: Option<String>,
     config: Option<ChatConfig>,
     mode: PermissionMode,
@@ -129,7 +108,6 @@ impl Default for Prefill {
             name: String::new(),
             prompt: String::new(),
             cron: "0 9 * * 1-5".into(),
-            time_zone: String::new(),
             space_id: None,
             config: None,
             mode: PermissionMode::AutoReview,
@@ -164,8 +142,6 @@ struct RoutineForm {
     weekday: u8,
     /// The custom preset's cron.
     cron: Entity<ComposerInput>,
-    /// Empty reads as the device's zone.
-    time_zone: Entity<ComposerInput>,
     preview: Preview,
     preview_task: Option<Task<()>>,
     space_id: Option<String>,
@@ -173,7 +149,6 @@ struct RoutineForm {
     config: Option<ChatConfig>,
     mode: PermissionMode,
     checkout: RoutineCheckout,
-    model_open: bool,
     model_query: Entity<ComposerInput>,
     error: Option<SharedString>,
     saving: bool,
@@ -201,6 +176,8 @@ pub struct ScheduledPage {
     /// The composer's pickers: a new Routine takes their resolved model.
     pickers: Entity<Pickers>,
     form: Option<RoutineForm>,
+    /// The prompt-box toolbar's open dropdown; one at a time.
+    form_menu: popover::Popup<FormMenu>,
     /// The Routine the open delete confirmation targets.
     confirm: Option<String>,
     /// The Routine whose drawer is open.
@@ -232,6 +209,7 @@ impl ScheduledPage {
             state,
             pickers,
             form: None,
+            form_menu: popover::Popup::default(),
             confirm: None,
             drawer: None,
             error: None,
@@ -285,18 +263,6 @@ impl ScheduledPage {
         self.open_form(Prefill::default(), cx);
     }
 
-    fn open_template(&mut self, template: &Template, cx: &mut Context<Self>) {
-        self.open_form(
-            Prefill {
-                name: template.name.into(),
-                prompt: template.prompt.into(),
-                cron: template.cron.into(),
-                ..Prefill::default()
-            },
-            cx,
-        );
-    }
-
     /// Open the form on `routine_id`'s configuration; saving updates it.
     pub(crate) fn edit_routine(&mut self, routine_id: &str, cx: &mut Context<Self>) {
         let Some(routine) = self
@@ -315,7 +281,6 @@ impl ScheduledPage {
                 name: routine.name,
                 prompt: routine.prompt,
                 cron: routine.cron,
-                time_zone: routine.time_zone,
                 // A removed Space is not offered; the form picks another.
                 space_id: self
                     .state
@@ -331,6 +296,11 @@ impl ScheduledPage {
     }
 
     fn open_form(&mut self, prefill: Prefill, cx: &mut Context<Self>) {
+        // The form owns the page area, so an open drawer gives way and Back
+        // lands on the grid.
+        if self.drawer.take().is_some() {
+            cx.emit(ScheduledEvent::Drawer(None));
+        }
         let input = |placeholder: &'static str, text: &str, cx: &mut Context<Self>| {
             let text = text.to_string();
             cx.new(|cx| {
@@ -345,7 +315,6 @@ impl ScheduledPage {
         let prompt = input("What should the agent do each run?", &prefill.prompt, cx);
         let time = input("09:00", &time, cx);
         let cron = input("0 9 * * 1-5", &prefill.cron, cx);
-        let time_zone = input("Device time zone", &prefill.time_zone, cx);
         let model_query = input("Search models", "", cx);
         prompt.update(cx, |input, _| input.set_max_display_height(160.0));
         let mut events: Vec<Subscription> = [&name, &prompt]
@@ -356,7 +325,7 @@ impl ScheduledPage {
                 })
             })
             .collect();
-        events.extend([&time, &cron, &time_zone].into_iter().map(|input| {
+        events.extend([&time, &cron].into_iter().map(|input| {
             cx.subscribe(input, |this: &mut Self, _, event, cx| {
                 this.on_form_input(event, true, cx)
             })
@@ -389,14 +358,12 @@ impl ScheduledPage {
             time,
             weekday,
             cron,
-            time_zone,
             preview: Preview::Pending,
             preview_task: None,
             space_id,
             config: prefill.config,
             mode: prefill.mode,
             checkout: prefill.checkout,
-            model_open: false,
             model_query,
             error: None,
             saving: false,
@@ -430,6 +397,7 @@ impl ScheduledPage {
 
     fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
+        self.form_menu = popover::Popup::default();
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -476,11 +444,8 @@ impl ScheduledPage {
                 return;
             }
         };
-        let time_zone = form.time_zone.read(cx).text().trim().to_string();
-        let mut params = serde_json::json!({ "cron": cron });
-        if !time_zone.is_empty() {
-            params["timeZone"] = time_zone.into();
-        }
+        // No timeZone param: the engine reads the device's zone.
+        let params = serde_json::json!({ "cron": cron });
         form.preview_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
             let result = engine
@@ -533,23 +498,32 @@ impl ScheduledPage {
         };
         if let Some(form) = self.form.as_mut() {
             form.config = Some(config);
-            form.model_open = false;
             form.error = None;
         }
+        self.close_form_menu(cx);
         cx.notify();
     }
 
-    fn toggle_model_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.form.as_mut() else {
-            return;
-        };
-        form.model_open = !form.model_open;
-        if form.model_open {
+    /// Open one prompt-box toolbar menu; the others give way (one card at a
+    /// time, the sidebar menus' rule). The Model menu starts with a fresh,
+    /// focused search.
+    fn open_form_menu(&mut self, menu: FormMenu, window: &mut Window, cx: &mut Context<Self>) {
+        self.form_menu.open(menu);
+        if menu == FormMenu::Model
+            && let Some(form) = self.form.as_mut()
+        {
             form.model_query
                 .update(cx, |input, cx| input.set_text("", cx));
             window.focus(&form.model_query.focus_handle(cx), cx);
         }
         cx.notify();
+    }
+
+    fn close_form_menu(&mut self, cx: &mut Context<Self>) {
+        if self.form_menu.begin_close() {
+            popover::reap_popup(cx, |this: &mut Self| &mut this.form_menu);
+            cx.notify();
+        }
     }
 
     fn submit_form(&mut self, cx: &mut Context<Self>) {
@@ -565,7 +539,6 @@ impl ScheduledPage {
         }
         let name = form.name.read(cx).text().trim().to_string();
         let prompt = form.prompt.read(cx).text().trim().to_string();
-        let time_zone = form.time_zone.read(cx).text().trim().to_string();
         let schedule = form.schedule(cx);
         let config = form.config.clone().or(resolved);
         let problem: Option<SharedString> = if name.is_empty() {
@@ -592,6 +565,7 @@ impl ScheduledPage {
             return;
         };
         config.permission_mode = form.mode;
+        // No timeZone param: runs fire in the device's zone.
         let mut params = serde_json::json!({
             "name": name,
             "spaceId": form.space_id,
@@ -600,9 +574,6 @@ impl ScheduledPage {
             "config": config,
             "checkout": form.checkout,
         });
-        if !time_zone.is_empty() {
-            params["timeZone"] = time_zone.into();
-        }
         let method = match &form.editing {
             Some(id) => {
                 params["routineId"] = id.clone().into();
@@ -1240,36 +1211,42 @@ impl ScheduledPage {
             .into_any_element()
     }
 
-    fn render_add_card(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The no-routines body (holt settings.archived.tsx's centered icon +
+    /// headline + hint); creating happens in the header's New routine button.
+    fn render_empty(theme: &Theme) -> AnyElement {
         div()
-            .id("routine-add-card")
-            .min_h(px(176.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_dashed()
-            .border_color(hairline(0.12))
+            .mt(px(96.0))
             .flex()
-            .flex_row()
+            .flex_col()
             .items_center()
-            .justify_center()
-            .gap(px(6.0))
-            .text_size(crate::typography::ui_rems(13.0))
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|s| s.bg(ink(0.03)).text_color(theme.text))
-            .on_click(cx.listener(|this, _, _, cx| this.open_create(cx)))
+            .text_center()
+            .text_color(theme.text_muted.opacity(0.5))
             .child(
-                icon(icons::PLUS)
-                    .size(px(14.0))
-                    .text_color(theme.text_muted),
+                icon(icons::CLOCK_CIRCLE)
+                    .size(px(28.0))
+                    .text_color(theme.text_muted.opacity(0.2)),
             )
-            .child("New routine")
+            .child(
+                div()
+                    .mt(px(12.0))
+                    .text_size(crate::typography::ui_rems(14.0))
+                    .child(SharedString::from("No routines yet")),
+            )
+            .child(
+                div()
+                    .mt(px(4.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted.opacity(0.4))
+                    .child(SharedString::from(
+                        "Run a prompt on a schedule, in a fresh chat each time.",
+                    )),
+            )
             .into_any_element()
     }
 
     fn render_header(&self, theme: &Theme, count: usize, cx: &mut Context<Self>) -> gpui::Div {
         let summary = match count {
-            0 => "Run a prompt on a schedule, in a fresh chat each time.".to_string(),
+            0 => "No routines".to_string(),
             1 => "1 routine".to_string(),
             n => format!("{n} routines"),
         };
@@ -1310,12 +1287,11 @@ impl ScheduledPage {
             window.focus(&form.name.focus_handle(cx), cx);
         }
         let (name, prompt) = (form.name.clone(), form.prompt.clone());
-        let (time, cron, time_zone) =
-            (form.time.clone(), form.cron.clone(), form.time_zone.clone());
+        let (time, cron) = (form.time.clone(), form.cron.clone());
         let (preset, weekday) = (form.preset, form.weekday);
         let (space_id, mode, checkout) = (form.space_id.clone(), form.mode, form.checkout);
         let (error, saving, editing) = (form.error.clone(), form.saving, form.editing.is_some());
-        let (model_open, model_query) = (form.model_open, form.model_query.clone());
+        let model_query = form.model_query.clone();
         let picked = form.config.clone();
         let preview = match &form.preview {
             Preview::Pending => None,
@@ -1347,72 +1323,43 @@ impl ScheduledPage {
                 _ => "Pick a model".into(),
             }
         };
-        let model_rows: Vec<(String, ProviderId, SharedString, bool)> = if model_open {
-            let current = picked.as_ref().map(|config| config.model.as_str());
-            self.model_matches(cx)
-                .into_iter()
-                .map(|row| {
-                    (
-                        row.id.clone(),
-                        row.provider.clone(),
-                        row.label.clone().into(),
-                        current == Some(row.id.as_str()),
-                    )
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // The prompt box's toolbar: each chip opens a dropdown menu, one at
+        // a time; the model rows exist only while the Model menu is up.
+        let form_menu = self.form_menu.get().copied();
+        let model_rows: Vec<(String, ProviderId, SharedString, bool)> =
+            if form_menu == Some(FormMenu::Model) {
+                let current = picked.as_ref().map(|config| config.model.as_str());
+                self.model_matches(cx)
+                    .into_iter()
+                    .map(|row| {
+                        (
+                            row.id.clone(),
+                            row.provider.clone(),
+                            row.label.clone().into(),
+                            current == Some(row.id.as_str()),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
-        let space_chips = div().flex().flex_row().flex_wrap().gap(px(6.0)).children(
-            spaces.into_iter().enumerate().map(|(ix, (id, label))| {
-                let active = space_id.as_deref() == Some(id.as_str());
-                chip(theme, active)
-                    .id(("routine-space", ix))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.form.as_mut() {
-                            form.space_id = Some(id.clone());
-                            form.error = None;
-                        }
-                        cx.notify();
-                    }))
-                    .child(label)
-            }),
-        );
-        let checkout_seg = segmented(
-            theme,
-            [
-                ("Main checkout", RoutineCheckout::MainCheckout),
-                ("New worktree", RoutineCheckout::NewWorktree),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(ix, (label, value))| {
-                seg_item(theme, checkout == value)
-                    .id(("routine-checkout", ix))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.form.as_mut() {
-                            form.checkout = value;
-                        }
-                        cx.notify();
-                    }))
-                    .child(label)
-            }),
-        );
-        let mode_seg = segmented(
-            theme,
-            MODE_TIERS.into_iter().enumerate().map(|(ix, tier)| {
-                seg_item(theme, tier == mode)
-                    .id(("routine-mode", ix))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(form) = this.form.as_mut() {
-                            form.mode = tier;
-                        }
-                        cx.notify();
-                    }))
-                    .child(mode_label(tier))
-            }),
-        );
+        let space_label: SharedString = space_id
+            .as_deref()
+            .and_then(|id| {
+                spaces
+                    .iter()
+                    .find(|(space, _)| space == id)
+                    .map(|(_, label)| label.clone())
+            })
+            .unwrap_or_else(|| "Pick a project".into());
+        let space_card =
+            (form_menu == Some(FormMenu::Space)).then(|| self.form_space_menu(theme, cx));
+        let mode_card = (form_menu == Some(FormMenu::Mode)).then(|| self.form_mode_menu(theme, cx));
+        let checkout_card =
+            (form_menu == Some(FormMenu::Checkout)).then(|| self.form_checkout_menu(theme, cx));
+        let model_card = (form_menu == Some(FormMenu::Model))
+            .then(|| self.form_model_menu(theme, model_query, model_rows, cx));
         let preset_seg = segmented(
             theme,
             PRESETS.into_iter().enumerate().map(|(ix, (value, label))| {
@@ -1486,111 +1433,68 @@ impl ScheduledPage {
                 )),
                 Some(Err(problem)) => line.text_color(theme.danger).child(problem),
             });
-        let model_field = div()
-            .id("routine-model")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(hairline(if model_open { 0.18 } else { 0.08 }))
-            .cursor_pointer()
-            .hover(|s| s.bg(ink(0.03)))
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_model_list(window, cx)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(14.0))
-                    .child(model),
-            )
-            .child(
-                icon(icons::ALT_ARROW_DOWN)
-                    .size(px(12.0))
-                    .text_color(theme.text_muted),
-            );
-        let model_list = model_open.then(|| {
-            let empty = model_rows.is_empty();
-            div()
-                .mt(px(8.0))
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(popover::dialog_field(model_query.into_any_element()))
-                .child(
-                    div()
-                        .id("routine-model-list")
-                        .max_h(px(200.0))
-                        .overflow_y_scroll()
-                        .occlude()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(hairline(0.08))
-                        .when(empty, |list| {
-                            list.child(
-                                div()
-                                    .px(px(12.0))
-                                    .py(px(8.0))
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .text_color(theme.text_muted)
-                                    .child("No matching models"),
-                            )
-                        })
-                        .children(model_rows.into_iter().enumerate().map(
-                            |(ix, (id, provider, label, active))| {
-                                div()
-                                    .id(("routine-model-row", ix))
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .flex()
-                                    .flex_row()
-                                    .gap(px(8.0))
-                                    .cursor_pointer()
-                                    .text_size(crate::typography::ui_rems(13.0))
-                                    .when(active, |row| row.bg(ink(0.06)))
-                                    .hover(|row| row.bg(ink(0.08)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let model = this
-                                            .pickers
-                                            .read(cx)
-                                            .offered_models()
-                                            .into_iter()
-                                            .find(|model| {
-                                                model.id == id && model.provider == provider
-                                            })
-                                            .cloned();
-                                        if let Some(model) = model {
-                                            this.pick_model(&model, cx);
-                                        }
-                                    }))
-                                    .child(div().flex_1().min_w_0().truncate().child(label))
-                            },
-                        )),
-                )
-        });
+        let space_chip = self.form_toolbar_chip(
+            theme,
+            FormMenu::Space,
+            "routine-space",
+            Some(icons::FOLDER),
+            space_label,
+            false,
+            space_card,
+            cx,
+        );
+        let mode_chip = self.form_toolbar_chip(
+            theme,
+            FormMenu::Mode,
+            "routine-mode",
+            Some(icons::SHIELD),
+            mode_label(mode).into(),
+            false,
+            mode_card,
+            cx,
+        );
+        let checkout_chip = self.form_toolbar_chip(
+            theme,
+            FormMenu::Checkout,
+            "routine-checkout",
+            Some(match checkout {
+                RoutineCheckout::MainCheckout => icons::FOLDER,
+                RoutineCheckout::NewWorktree => icons::FOLDER_WITH_FILES,
+            }),
+            match checkout {
+                RoutineCheckout::MainCheckout => "Main checkout",
+                RoutineCheckout::NewWorktree => "New worktree",
+            }
+            .into(),
+            true,
+            checkout_card,
+            cx,
+        );
+        let model_chip = self.form_toolbar_chip(
+            theme,
+            FormMenu::Model,
+            "routine-model",
+            None,
+            model,
+            true,
+            model_card,
+            cx,
+        );
 
-        let card = popover::dialog_card(theme)
-            .id("routine-form-card")
-            .w(px(620.0))
-            .max_h(window.viewport_size().height - px(64.0))
-            .overflow_y_scroll()
-            .px(px(22.0))
-            .py(px(18.0))
-            .rounded(px(14.0))
+        // The form owns the page area (a navigation, not an overlay); the
+        // page's scroll container handles overflow.
+        let card = div()
+            .id("routine-form-page")
+            .w_full()
+            .flex()
+            .flex_col()
+            .text_color(theme.text)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let keystroke = &ev.keystroke;
                 if keystroke.key == "escape" {
                     cx.stop_propagation();
-                    let model_open = this.form.as_ref().is_some_and(|form| form.model_open);
-                    if model_open {
-                        if let Some(form) = this.form.as_mut() {
-                            form.model_open = false;
-                        }
-                        cx.notify();
+                    if this.form_menu.is_open() {
+                        this.close_form_menu(cx);
                     } else {
                         this.close_form(window, cx);
                     }
@@ -1603,18 +1507,31 @@ impl ScheduledPage {
                 div()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .items_start()
                     .justify_between()
-                    .child(popover::dialog_title(
-                        theme,
-                        if editing {
-                            "Edit routine"
-                        } else {
-                            "New routine"
-                        },
-                    ))
                     .child(
-                        icon_button(theme, "routine-form-close".into(), icons::CLOSE, false)
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .child(widgets::page_header(
+                                theme,
+                                if editing {
+                                    "Edit routine"
+                                } else {
+                                    "New routine"
+                                },
+                                None,
+                            ))
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.5))
+                                    .text_color(theme.text_muted)
+                                    .child("When it fires, what it runs, and how."),
+                            ),
+                    )
+                    .child(
+                        icon_button(theme, "routine-form-back".into(), icons::ARROW_LEFT, false)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_form(window, cx)),
                             ),
@@ -1627,11 +1544,6 @@ impl ScheduledPage {
             ))
             .child(field(
                 theme,
-                "Prompt",
-                popover::dialog_field(prompt.into_any_element()).min_h(px(72.0)),
-            ))
-            .child(field(
-                theme,
                 "Schedule",
                 div()
                     .flex()
@@ -1641,27 +1553,46 @@ impl ScheduledPage {
                     .child(schedule_detail)
                     .child(preview_line),
             ))
-            .child(
+            // The prompt box wears the composer's shape: the input on top and
+            // a toolbar of dropdown chips at the bottom (project + permission
+            // mode left, checkout + model right).
+            .child(field(
+                theme,
+                "Prompt",
                 div()
                     .flex()
-                    .flex_row()
-                    .gap(px(14.0))
-                    .child(div().flex_1().min_w_0().child(field(
-                        theme,
-                        "Time zone",
-                        popover::dialog_field(time_zone.into_any_element()),
-                    )))
+                    .flex_col()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(hairline(0.08))
+                    .bg(ink(0.04))
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(field(theme, "Model", model_field)),
+                            .w_full()
+                            .px(px(12.0))
+                            .pt(px(10.0))
+                            .min_h(px(96.0))
+                            .text_size(crate::typography::ui_rems(14.0))
+                            .child(prompt.into_any_element()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .border_t_1()
+                            .border_color(hairline(0.06))
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .child(space_chip)
+                            .child(mode_chip)
+                            .child(div().flex_1())
+                            .child(checkout_chip)
+                            .child(model_chip),
                     ),
-            )
-            .children(model_list)
-            .child(field(theme, "Project", space_chips))
-            .child(field(theme, "Checkout", checkout_seg))
-            .child(field(theme, "Permission mode", mode_seg))
+            ))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -1706,67 +1637,207 @@ impl ScheduledPage {
                     ),
             )
             .into_any_element();
-        Some(popover::modal(
-            "routine-form-dialog",
-            window.viewport_size(),
-            card,
-        ))
+        Some(card)
     }
 
-    /// Starting points on the empty page; one click opens the form on it.
-    fn render_templates(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted)
-                    .child("Start from a template"),
+    /// A prompt-box toolbar chip with its dropdown mounted while `menu` is
+    /// the open one. `align_end` right-aligns the card to the chip (trailing
+    /// chips open leftward, staying inside the page).
+    #[allow(clippy::too_many_arguments)]
+    fn form_toolbar_chip(
+        &self,
+        theme: &Theme,
+        menu: FormMenu,
+        id: &'static str,
+        icon_path: Option<&'static str>,
+        label: SharedString,
+        align_end: bool,
+        card: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mounted = self.form_menu.get().copied() == Some(menu);
+        let open = self.form_menu.as_open().copied() == Some(menu);
+        let chip = form_chip(theme, id, icon_path, label, open)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, _| {
+                    this.form_menu
+                        .note_trigger_press_matching(|kind| *kind == menu);
+                }),
             )
-            .child(
-                div()
-                    .grid()
-                    .grid_cols(TEMPLATES.len() as u16)
-                    .gap(px(GRID_GAP))
-                    .children(TEMPLATES.iter().enumerate().map(|(ix, template)| {
-                        div()
-                            .id(("routine-template", ix))
-                            .p(px(14.0))
-                            .rounded(px(12.0))
-                            .border_1()
-                            .border_color(hairline(0.08))
-                            .bg(ink(0.02))
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(ink(0.05)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.form_menu.take_press_was_open() {
+                    this.close_form_menu(cx);
+                } else {
+                    this.open_form_menu(menu, window, cx);
+                }
+            }));
+        match (mounted, card) {
+            (true, Some(card)) => {
+                let closing = self.form_menu.closing_since();
+                let menu_id: SharedString = format!("{id}-menu").into();
+                let anchored = if align_end {
+                    popover::anchored_menu_below_end(menu_id, card, closing)
+                } else {
+                    popover::anchored_menu_below(menu_id, card, closing)
+                };
+                chip.relative().child(anchored).into_any_element()
+            }
+            _ => chip.into_any_element(),
+        }
+    }
+
+    /// The Space menu: one row per project, the form's pick marked.
+    fn form_space_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.form.as_ref().and_then(|form| form.space_id.clone());
+        let rows: Vec<(String, SharedString, bool)> = self
+            .state
+            .read(cx)
+            .spaces_sorted()
+            .into_iter()
+            .map(|space| {
+                let active = selected.as_deref() == Some(space.id.as_str());
+                (
+                    space.id.clone(),
+                    space.display_name().to_string().into(),
+                    active,
+                )
+            })
+            .collect();
+        popover::popover_card(theme)
+            .w(px(200.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(ix, (id, label, active))| {
+                        popover::menu_row(theme, active, format!("routine-space-fade-{ix}"))
+                            .id(("routine-space-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_template(&TEMPLATES[ix], cx)
+                                if let Some(form) = this.form.as_mut() {
+                                    form.space_id = Some(id.clone());
+                                    form.error = None;
+                                }
+                                this.close_form_menu(cx);
                             }))
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(13.5))
-                                    .text_color(theme.text)
-                                    .child(template.name),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(12.0))
-                                    .text_color(theme.text_muted)
-                                    .child(template.caption),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(12.0))
-                                    .text_color(theme.text_muted)
-                                    .line_clamp(3)
-                                    .child(template.prompt),
-                            )
-                    })),
+                            .child(label)
+                    }),
             )
+            .into_any_element()
+    }
+
+    /// The permission-mode menu: the three tiers, the form's pick marked.
+    fn form_mode_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.form.as_ref().map(|form| form.mode);
+        popover::popover_card(theme)
+            .w(px(200.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .children(MODE_TIERS.into_iter().enumerate().map(|(ix, tier)| {
+                popover::menu_row(
+                    theme,
+                    current == Some(tier),
+                    format!("routine-mode-fade-{ix}"),
+                )
+                .id(("routine-mode-row", ix))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.form.as_mut() {
+                        form.mode = tier;
+                    }
+                    this.close_form_menu(cx);
+                }))
+                .child(mode_label(tier))
+            }))
+            .into_any_element()
+    }
+
+    /// The checkout-kind menu: the Space's main checkout or a new worktree.
+    fn form_checkout_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.form.as_ref().map(|form| form.checkout);
+        popover::popover_card(theme)
+            .w(px(200.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .children(
+                [
+                    ("Main checkout", RoutineCheckout::MainCheckout),
+                    ("New worktree", RoutineCheckout::NewWorktree),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (label, value))| {
+                    popover::menu_row(
+                        theme,
+                        current == Some(value),
+                        format!("routine-checkout-fade-{ix}"),
+                    )
+                    .id(("routine-checkout-row", ix))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(form) = this.form.as_mut() {
+                            form.checkout = value;
+                        }
+                        this.close_form_menu(cx);
+                    }))
+                    .child(label)
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// The model menu: the old inline panel (search + matches) re-homed in a
+    /// dropdown card.
+    fn form_model_menu(
+        &self,
+        theme: &Theme,
+        model_query: Entity<ComposerInput>,
+        rows: Vec<(String, ProviderId, SharedString, bool)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let empty = rows.is_empty();
+        popover::popover_card(theme)
+            .w(px(260.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .child(popover::search_input_frame(
+                theme,
+                model_query.into_any_element(),
+            ))
+            .child(
+                div()
+                    .id("routine-model-list")
+                    .max_h(px(220.0))
+                    .overflow_y_scroll()
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .when(empty, |list| {
+                        list.child(
+                            div()
+                                .px(px(8.0))
+                                .py(px(6.0))
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .text_color(theme.text_muted)
+                                .child("No matching models"),
+                        )
+                    })
+                    .children(rows.into_iter().enumerate().map(
+                        |(ix, (id, provider, label, active))| {
+                            popover::menu_row(theme, active, format!("routine-model-fade-{ix}"))
+                                .id(("routine-model-row", ix))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let model = this
+                                        .pickers
+                                        .read(cx)
+                                        .offered_models()
+                                        .into_iter()
+                                        .find(|model| model.id == id && model.provider == provider)
+                                        .cloned();
+                                    if let Some(model) = model {
+                                        this.pick_model(&model, cx);
+                                    }
+                                }))
+                                .child(div().flex_1().min_w_0().truncate().child(label))
+                        },
+                    )),
+            )
+            .into_any_element()
     }
 
     fn render_confirm(
@@ -1854,38 +1925,60 @@ impl Render for ScheduledPage {
             self.confirm = None;
         }
 
-        let mut cards: Vec<AnyElement> = routines
-            .iter()
-            .map(|view| self.render_card(&theme, view, cx))
-            .collect();
-        cards.push(self.render_add_card(&theme, cx));
-        let columns = self.columns.clone();
-        let grid = div()
-            .relative()
-            .grid()
-            .grid_cols(self.columns.get())
-            .gap(px(GRID_GAP))
-            .child(
-                gpui::canvas(
-                    move |bounds, window, _| {
-                        let fit = grid_columns(f32::from(bounds.size.width));
-                        if fit != columns.get() {
-                            columns.set(fit);
-                            window.refresh();
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .children(cards);
-
-        let confirm = self
-            .confirm
-            .clone()
-            .and_then(|id| self.render_confirm(&theme, &id, window, cx));
         let form = self.render_form(&theme, window, cx);
+        // The form owns the page area (a navigation, not an overlay):
+        // header, grid, drawer, and dialogs stand down while it is open.
+        let form_open = form.is_some();
+        let body: AnyElement = match form {
+            Some(form) => form,
+            None => {
+                let area: AnyElement = if routines.is_empty() {
+                    Self::render_empty(&theme)
+                } else {
+                    let cards: Vec<AnyElement> = routines
+                        .iter()
+                        .map(|view| self.render_card(&theme, view, cx))
+                        .collect();
+                    let columns = self.columns.clone();
+                    div()
+                        .relative()
+                        .grid()
+                        .grid_cols(self.columns.get())
+                        .gap(px(GRID_GAP))
+                        .child(
+                            gpui::canvas(
+                                move |bounds, window, _| {
+                                    let fit = grid_columns(f32::from(bounds.size.width));
+                                    if fit != columns.get() {
+                                        columns.set(fit);
+                                        window.refresh();
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
+                        .children(cards)
+                        .into_any_element()
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(20.0))
+                    .child(self.render_header(&theme, routines.len(), cx))
+                    .child(area)
+                    .into_any_element()
+            }
+        };
+
+        let confirm = if form_open {
+            None
+        } else {
+            self.confirm
+                .clone()
+                .and_then(|id| self.render_confirm(&theme, &id, window, cx))
+        };
         // A Routine deleted elsewhere takes its drawer with it.
         if self
             .drawer
@@ -1894,7 +1987,11 @@ impl Render for ScheduledPage {
         {
             self.drawer = None;
         }
-        let drawer = self.render_drawer(&theme, cx);
+        let drawer = if form_open {
+            None
+        } else {
+            self.render_drawer(&theme, cx)
+        };
 
         div()
             .id("scheduled-page")
@@ -1921,7 +2018,6 @@ impl Render for ScheduledPage {
                             .flex()
                             .flex_col()
                             .gap(px(20.0))
-                            .child(self.render_header(&theme, routines.len(), cx))
                             .when_some(self.error.clone(), |el, message| {
                                 el.child(
                                     widgets::error_strip(&theme, message)
@@ -1933,15 +2029,11 @@ impl Render for ScheduledPage {
                                         })),
                                 )
                             })
-                            .when(routines.is_empty(), |el| {
-                                el.child(self.render_templates(&theme, cx))
-                            })
-                            .child(grid),
+                            .child(body),
                     ),
             )
             .children(drawer)
             .children(confirm)
-            .children(form)
     }
 }
 
@@ -2173,7 +2265,7 @@ fn rpc_problem(error: &holt_rpc::RpcError) -> String {
     }
 }
 
-/// A labeled form row in the create/edit modal.
+/// A labeled form row in the create/edit form.
 fn field(theme: &Theme, label: &'static str, control: impl IntoElement) -> gpui::Div {
     div()
         .mt(px(14.0))
@@ -2233,6 +2325,54 @@ fn chip(theme: &Theme, active: bool) -> gpui::Div {
                 .text_color(theme.text_muted)
                 .hover(|s| s.text_color(theme.text))
         })
+}
+
+/// One prompt-box toolbar chip: the composer footer's ghost-button recipe
+/// (pickers/common.rs `footer_chip`), the leading icon optional.
+fn form_chip(
+    theme: &Theme,
+    id: &'static str,
+    icon_path: Option<&'static str>,
+    label: SharedString,
+    open: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(20.0))
+        .max_w(px(200.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(8.0))
+        .rounded(px(6.0))
+        .text_size(crate::typography::ui_rems(12.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(crate::motion::hover_blend(
+            id,
+            theme.text_muted.opacity(0.7),
+            theme.text.opacity(0.8),
+        ))
+        .bg(if open {
+            theme.element_hover
+        } else {
+            crate::motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
+        })
+        .on_hover(crate::motion::hover_listener(id))
+        .cursor_pointer()
+        .when_some(icon_path, |el, path| {
+            el.child(
+                icon(path)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted.opacity(0.7)),
+            )
+        })
+        .child(div().min_w_0().truncate().child(label))
+        .child(
+            icon(icons::ALT_ARROW_DOWN)
+                .size(px(12.0))
+                .text_color(theme.text_muted.opacity(0.5)),
+        )
 }
 
 /// A 26px square icon button; the name doubles as id and hover group so
