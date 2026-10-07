@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
 use holt_proto::{ROUTINE_RUN_LIMIT, Routine, RoutineRun, RoutineView, RunOutcome};
@@ -171,35 +171,68 @@ pub(crate) fn local_time_zone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string())
 }
 
-/// Parse a Routine's schedule: a cron expression read in an IANA zone.
-pub(crate) fn parse_schedule(cron: &str, time_zone: &str) -> Result<(Cron, Tz), RpcError> {
-    let cron = Cron::from_str(cron.trim())
-        .map_err(|error| RpcError::BadParams(format!("invalid cron: {error}")))?;
+/// A Routine's schedule, read in its zone.
+pub(crate) enum Schedule {
+    Cron(Box<Cron>, Tz),
+    /// A one-time Routine's single fire.
+    Once(DateTime<Utc>),
+}
+
+/// Parse a Routine's schedule: a cron expression, or one wall-clock time
+/// (`at`), read in an IANA zone. Exactly one of the two must be given.
+pub(crate) fn parse_schedule(
+    cron: &str,
+    at: Option<NaiveDateTime>,
+    time_zone: &str,
+) -> Result<Schedule, RpcError> {
     let zone = Tz::from_str(time_zone.trim())
         .map_err(|_| RpcError::BadParams(format!("unknown time zone: {time_zone}")))?;
-    Ok((cron, zone))
+    match (cron.trim(), at) {
+        ("", None) => Err(RpcError::BadParams("cron must not be empty".into())),
+        ("", Some(at)) => zone
+            .from_local_datetime(&at)
+            .earliest()
+            .map(|at| Schedule::Once(at.with_timezone(&Utc)))
+            .ok_or_else(|| RpcError::BadParams(format!("{at} does not exist in {zone}"))),
+        (cron, None) => Cron::from_str(cron)
+            .map(|cron| Schedule::Cron(Box::new(cron), zone))
+            .map_err(|error| RpcError::BadParams(format!("invalid cron: {error}"))),
+        (_, Some(_)) => Err(RpcError::BadParams(
+            "give a cron or a time, not both".into(),
+        )),
+    }
+}
+
+/// The routine's own schedule.
+pub(crate) fn schedule_of(routine: &Routine) -> Result<Schedule, RpcError> {
+    parse_schedule(&routine.cron, routine.at, &routine.time_zone)
 }
 
 /// The first scheduled fire strictly after `after`. A local time skipped by
 /// a DST jump fires at the next valid time; a repeated one fires once.
-pub(crate) fn next_after(cron: &Cron, zone: Tz, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    cron.find_next_occurrence(&after.with_timezone(&zone), false)
-        .ok()
-        .map(|next| next.with_timezone(&Utc))
+pub(crate) fn next_after(schedule: &Schedule, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    match schedule {
+        Schedule::Cron(cron, zone) => cron
+            .find_next_occurrence(&after.with_timezone(zone), false)
+            .ok()
+            .map(|next| next.with_timezone(&Utc)),
+        Schedule::Once(at) => (*at > after).then_some(*at),
+    }
 }
 
 /// A Routine's next fire: the first scheduled time after it last fired (or
-/// was created). `None` while paused or when the schedule cannot be read.
-/// It can lie in the past until the scheduler catches up.
+/// was created). `None` while paused, once a one-time Routine has fired, or
+/// when the schedule cannot be read. It can lie in the past until the
+/// scheduler catches up.
 pub(crate) fn next_fire(routine: &Routine) -> Option<DateTime<Utc>> {
     if routine.paused.is_some() {
         return None;
     }
-    let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
+    let schedule = schedule_of(routine).ok()?;
     let after = routine
         .last_fired_at
         .map_or(routine.created_at, |last| last.max(routine.created_at));
-    next_after(&cron, zone, after)
+    next_after(&schedule, after)
 }
 
 /// A fire later than this behind its scheduled time was missed (Holt was
@@ -220,9 +253,9 @@ pub(crate) struct Due {
 /// into one Catch-up run. Never while paused.
 pub(crate) fn due_at(routine: &Routine, now: DateTime<Utc>) -> Option<Due> {
     let mut at = next_fire(routine).filter(|next| *next <= now)?;
-    let (cron, zone) = parse_schedule(&routine.cron, &routine.time_zone).ok()?;
+    let schedule = schedule_of(routine).ok()?;
     let mut fires: u32 = 1;
-    while let Some(next) = next_after(&cron, zone, at).filter(|next| *next <= now) {
+    while let Some(next) = next_after(&schedule, at).filter(|next| *next <= now) {
         at = next;
         fires = fires.saturating_add(1);
     }
@@ -285,6 +318,29 @@ mod tests {
         let mut paused = hourly.clone();
         paused.paused = Some(holt_proto::RoutinePause::User);
         assert_eq!(due_at(&paused, at("2026-10-07T13:00:00Z")), None);
+    }
+
+    #[test]
+    fn a_one_time_routine_fires_once() {
+        let mut once = routine("");
+        once.at = Some("2026-10-07T21:00:00".parse().unwrap());
+        assert_eq!(next_fire(&once), Some(at("2026-10-07T21:00:00Z")));
+        assert_eq!(due_at(&once, at("2026-10-07T20:59:00Z")), None);
+        assert_eq!(
+            due_at(&once, at("2026-10-07T21:00:30Z")),
+            Some(Due {
+                at: at("2026-10-07T21:00:00Z"),
+                missed_fires: 0
+            })
+        );
+        // Holt was quit through it: one Catch-up run.
+        assert_eq!(
+            due_at(&once, at("2026-10-08T08:00:00Z")).map(|due| due.missed_fires),
+            Some(1)
+        );
+        once.last_fired_at = Some(at("2026-10-07T21:00:00Z"));
+        assert_eq!(next_fire(&once), None);
+        assert_eq!(due_at(&once, at("2026-10-09T00:00:00Z")), None);
     }
 
     #[test]

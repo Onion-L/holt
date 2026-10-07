@@ -1,8 +1,8 @@
-//! Routines (ADR-0042): a saved prompt the engine runs on a cron schedule
-//! in a fresh Chat. The engine owns the schedule; these are the shapes the
+//! Routines (ADR-0042): a saved prompt the engine runs on a cron schedule,
+//! or once at a set time, in a fresh Chat. The engine owns the schedule; these are the shapes the
 //! Routines watch and mutations carry.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ChatConfig;
@@ -18,9 +18,14 @@ pub struct Routine {
     pub space_id: String,
     /// Sent verbatim as each run's first message.
     pub prompt: String,
-    /// Five-field cron expression.
+    /// Five-field cron expression; empty for a one-time Routine.
+    #[serde(default)]
     pub cron: String,
-    /// IANA time zone the cron is read in.
+    /// A one-time Routine's wall-clock time: it fires once, then has no
+    /// next fire. Exclusive with `cron`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<NaiveDateTime>,
+    /// IANA time zone the schedule is read in.
     pub time_zone: String,
     /// Model, reasoning, and Permission mode every run starts with.
     pub config: ChatConfig,

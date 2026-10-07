@@ -404,13 +404,14 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
   the UI surfaces as an error notice — and `QueueCommand`.
 - Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
-  — the Routine plus its computed next fire), `CreateRoutine` (the time zone
-  defaults to the device's), `UpdateRoutine` (`{routineId, …}` with the
+  — the Routine plus its computed next fire), `CreateRoutine` (a cron, or
+  `at` for a one-time Routine that fires once and then has no next fire;
+  the time zone defaults to the device's), `UpdateRoutine` (`{routineId, …}` with the
   create fields; replaces the config only — runs and pause state stay, and a
-  changed cron or time zone moves the schedule's anchor to now so the edit
-  never triggers a Catch-up run), `PreviewRoutineSchedule` (`{cron,
+  changed schedule or time zone moves the schedule's anchor to now so the edit
+  never triggers a Catch-up run), `PreviewRoutineSchedule` (`{cron | at,
   timeZone?}` → `{timeZone, fires}`, the next three fires; a bad cron or
-  zone is `BadParams`), `DeleteRoutine` (run chats stay as ordinary
+  zone, or an `at` already passed, is `BadParams`), `DeleteRoutine` (run chats stay as ordinary
   Chats), `SetRoutinePaused` (`{routineId, paused}`; resuming moves the
   schedule's anchor to now, so fires passed while paused are not made up),
   and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running

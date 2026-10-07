@@ -1,6 +1,7 @@
 //! The Routines surface (ADR-0042): list, create, update, schedule preview,
 //! delete, pause, Run now, and the Routines watch. Every fire goes through `start_routine_run`.
 
+use chrono::NaiveDateTime;
 use holt_proto::{
     Chat, ChatConfig, Routine, RoutineCheckout, RoutinePause, RoutineRun, RoutineRunMarker,
     RunOutcome, TitleSource, WorktreeSpec,
@@ -10,7 +11,7 @@ use serde::Deserialize;
 
 use super::required_string;
 use crate::EngineService;
-use crate::routines::{local_time_zone, next_after, parse_schedule, push_run};
+use crate::routines::{Schedule, local_time_zone, next_after, parse_schedule, push_run};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +19,10 @@ struct RoutineParams {
     name: String,
     space_id: String,
     prompt: String,
+    #[serde(default)]
     cron: String,
+    #[serde(default)]
+    at: Option<NaiveDateTime>,
     #[serde(default)]
     time_zone: Option<String>,
     config: ChatConfig,
@@ -33,6 +37,7 @@ struct RoutineConfig {
     space_id: String,
     prompt: String,
     cron: String,
+    at: Option<NaiveDateTime>,
     time_zone: String,
     config: ChatConfig,
     checkout: RoutineCheckout,
@@ -56,6 +61,7 @@ impl EngineService {
             space_id: config.space_id,
             prompt: config.prompt,
             cron: config.cron,
+            at: config.at,
             time_zone: config.time_zone,
             config: config.config,
             checkout: config.checkout,
@@ -90,7 +96,11 @@ impl EngineService {
             if resumed {
                 routine.paused = None;
             }
-            if resumed || routine.cron != config.cron || routine.time_zone != config.time_zone {
+            if resumed
+                || routine.cron != config.cron
+                || routine.at != config.at
+                || routine.time_zone != config.time_zone
+            {
                 routine.last_fired_at =
                     Some(routine.last_fired_at.map_or(now, |last| last.max(now)));
             }
@@ -98,6 +108,7 @@ impl EngineService {
             routine.space_id = config.space_id;
             routine.prompt = config.prompt;
             routine.cron = config.cron;
+            routine.at = config.at;
             routine.time_zone = config.time_zone;
             routine.config = config.config;
             routine.checkout = config.checkout;
@@ -106,8 +117,9 @@ impl EngineService {
         RpcReply::value(&reply)
     }
 
-    /// Params `{cron, timeZone?}` → `{timeZone, fires}`: the zone the
-    /// schedule is read in and its next fires from now, or `BadParams`
+    /// Params `{cron | at, timeZone?}` → `{timeZone, fires}`: the zone the
+    /// schedule is read in and its next fires from now (a one-time `at`
+    /// has just the one), or `BadParams`
     /// naming what is wrong.
     pub(super) fn preview_routine_schedule(
         &self,
@@ -117,20 +129,30 @@ impl EngineService {
             .get("cron")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        if cron.trim().is_empty() {
-            return Err(RpcError::BadParams("cron must not be empty".into()));
-        }
+        let at = match params.get("at") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(at) => Some(
+                serde_json::from_value::<NaiveDateTime>(at.clone())
+                    .map_err(|error| RpcError::BadParams(format!("invalid time: {error}")))?,
+            ),
+        };
         let time_zone = time_zone_or_local(
             params
                 .get("timeZone")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         );
-        let (cron, zone) = parse_schedule(cron, &time_zone)?;
+        let schedule = parse_schedule(cron, at, &time_zone)?;
+        let now = self.clock.now();
+        if let Schedule::Once(at) = schedule
+            && at <= now
+        {
+            return Err(RpcError::BadParams("that time has passed".into()));
+        }
         let mut fires = Vec::with_capacity(PREVIEW_FIRES);
-        let mut after = self.clock.now();
+        let mut after = now;
         while fires.len() < PREVIEW_FIRES {
-            let Some(next) = next_after(&cron, zone, after) else {
+            let Some(next) = next_after(&schedule, after) else {
                 break;
             };
             fires.push(next);
@@ -149,11 +171,12 @@ impl EngineService {
         if params.prompt.trim().is_empty() {
             return Err(RpcError::BadParams("prompt must not be empty".into()));
         }
-        if params.cron.trim().is_empty() {
-            return Err(RpcError::BadParams("cron must not be empty".into()));
-        }
         let time_zone = time_zone_or_local(params.time_zone);
-        parse_schedule(&params.cron, &time_zone)?;
+        if let Schedule::Once(at) = parse_schedule(&params.cron, params.at, &time_zone)?
+            && at <= self.clock.now()
+        {
+            return Err(RpcError::BadParams("that time has passed".into()));
+        }
         if !self.space_exists(&params.space_id) {
             return Err(RpcError::BadParams("unknown space".into()));
         }
@@ -162,6 +185,7 @@ impl EngineService {
             space_id: params.space_id,
             prompt: params.prompt,
             cron: params.cron.trim().to_string(),
+            at: params.at,
             time_zone,
             config: params.config,
             checkout: params.checkout,

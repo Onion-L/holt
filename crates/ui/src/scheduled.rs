@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task,
@@ -54,9 +54,9 @@ const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Rows the form's model list shows at most; search narrows the rest.
 const MODEL_ROWS: usize = 40;
 
-/// The schedule shapes the form spells for the user. `Custom` is only a
-/// routine whose stored cron reads as none of them; the form keeps it as is
-/// but never offers it.
+/// The schedule shapes the form spells for the user. `Custom` is a single
+/// run at a picked date and time. `Cron` is only a Routine whose stored cron
+/// reads as no preset; the form keeps it as is but never offers it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Preset {
     Hourly,
@@ -64,14 +64,19 @@ enum Preset {
     Weekdays,
     Weekly,
     Custom,
+    Cron,
 }
 
-const PRESETS: [(Preset, &str); 4] = [
+const PRESETS: [(Preset, &str); 5] = [
     (Preset::Hourly, "Hourly"),
     (Preset::Daily, "Daily"),
     (Preset::Weekdays, "Weekdays"),
     (Preset::Weekly, "Weekly"),
+    (Preset::Custom, "Custom"),
 ];
+
+/// Days the one-time date picker offers, today first.
+const DATE_DAYS: i64 = 60;
 
 /// Cron weekday numbers (0 = Sunday) in display order.
 const WEEKDAYS: [(u8, &str); 7] = [
@@ -93,6 +98,7 @@ enum FormMenu {
     Model,
     Preset,
     Weekday,
+    Date,
     Time,
 }
 
@@ -102,6 +108,7 @@ struct Prefill {
     name: String,
     prompt: String,
     cron: String,
+    at: Option<NaiveDateTime>,
     space_id: Option<String>,
     config: Option<ChatConfig>,
     mode: PermissionMode,
@@ -115,6 +122,7 @@ impl Default for Prefill {
             name: String::new(),
             prompt: String::new(),
             cron: "0 9 * * 1-5".into(),
+            at: None,
             space_id: None,
             config: None,
             mode: PermissionMode::AutoReview,
@@ -147,10 +155,13 @@ struct RoutineForm {
     /// "HH:MM" for the daily, weekdays, and weekly presets.
     time: Entity<ComposerInput>,
     weekday: u8,
-    /// The time picker's hour and minute columns.
+    /// The custom preset's day.
+    date: NaiveDate,
+    /// The date picker's list and the time picker's hour and minute columns.
+    date_scroll: gpui::ScrollHandle,
     hour_scroll: gpui::ScrollHandle,
     minute_scroll: gpui::ScrollHandle,
-    /// The custom preset's cron.
+    /// A stored cron no preset spells, kept as is.
     cron: Entity<ComposerInput>,
     preview: Preview,
     preview_task: Option<Task<()>>,
@@ -166,18 +177,43 @@ struct RoutineForm {
     _events: Vec<Subscription>,
 }
 
-impl RoutineForm {
-    /// The cron the form spells, or what is wrong with it.
-    fn schedule(&self, cx: &App) -> Result<String, SharedString> {
-        if self.preset == Preset::Custom {
-            let cron = self.cron.read(cx).text().trim();
-            if cron.is_empty() {
-                return Err("Set a cron schedule.".into());
-            }
-            return Ok(cron.to_string());
+/// The schedule the form spells.
+#[derive(Clone, Debug, PartialEq)]
+enum Schedule {
+    Cron(String),
+    Once(NaiveDateTime),
+}
+
+impl Schedule {
+    /// The `{cron}` or `{at}` params the Routine RPCs take.
+    fn params(&self) -> serde_json::Value {
+        match self {
+            Self::Cron(cron) => serde_json::json!({ "cron": cron }),
+            Self::Once(at) => serde_json::json!({ "cron": "", "at": at }),
         }
-        preset_cron(self.preset, self.time.read(cx).text(), self.weekday)
-            .ok_or_else(|| "Use a 24-hour time like 09:00.".into())
+    }
+}
+
+impl RoutineForm {
+    /// The schedule the form spells, or what is wrong with it.
+    fn schedule(&self, cx: &App) -> Result<Schedule, SharedString> {
+        let time = self.time.read(cx).text();
+        match self.preset {
+            Preset::Cron => {
+                let cron = self.cron.read(cx).text().trim();
+                if cron.is_empty() {
+                    return Err("Set a cron schedule.".into());
+                }
+                Ok(Schedule::Cron(cron.to_string()))
+            }
+            Preset::Custom => parse_time(time)
+                .and_then(|(hour, minute)| self.date.and_hms_opt(hour.into(), minute.into(), 0))
+                .map(Schedule::Once)
+                .ok_or_else(|| "Use a 24-hour time like 09:00.".into()),
+            preset => preset_cron(preset, time, self.weekday)
+                .map(Schedule::Cron)
+                .ok_or_else(|| "Use a 24-hour time like 09:00.".into()),
+        }
     }
 }
 
@@ -291,6 +327,7 @@ impl ScheduledPage {
                 name: routine.name,
                 prompt: routine.prompt,
                 cron: routine.cron,
+                at: routine.at,
                 // A removed Space is not offered; the form picks another.
                 space_id: self
                     .state
@@ -319,8 +356,13 @@ impl ScheduledPage {
                 input
             })
         };
-        let (preset, time, weekday) =
-            cron_preset(&prefill.cron).unwrap_or((Preset::Custom, "09:00".into(), 1));
+        let (preset, time, weekday) = match prefill.at {
+            Some(at) => (Preset::Custom, at.format("%H:%M").to_string(), 1),
+            None => cron_preset(&prefill.cron).unwrap_or((Preset::Cron, "09:00".into(), 1)),
+        };
+        let date = prefill
+            .at
+            .map_or_else(|| Local::now().date_naive(), |at| at.date());
         let name = input("Morning triage", &prefill.name, cx);
         let prompt = input("What should the agent do each run?", &prefill.prompt, cx);
         let time = input("09:00", &time, cx);
@@ -367,6 +409,8 @@ impl ScheduledPage {
             preset,
             time,
             weekday,
+            date,
+            date_scroll: gpui::ScrollHandle::new(),
             hour_scroll: gpui::ScrollHandle::new(),
             minute_scroll: gpui::ScrollHandle::new(),
             cron,
@@ -419,6 +463,13 @@ impl ScheduledPage {
             return;
         };
         form.preset = preset;
+        if preset == Preset::Custom
+            && let Ok(Schedule::Once(at)) = form.schedule(cx)
+            && at <= Local::now().naive_local()
+        {
+            // A single run starts out in the future: tomorrow, same time.
+            form.date = Local::now().date_naive() + chrono::Days::new(1);
+        }
         form.error = None;
         self.refresh_preview(cx);
         cx.notify();
@@ -433,6 +484,15 @@ impl ScheduledPage {
         let text = format!("{:02}:{:02}", hour.unwrap_or(h), minute.unwrap_or(m));
         form.time.update(cx, |input, cx| input.set_text(&text, cx));
         form.error = None;
+        self.refresh_preview(cx);
+        cx.notify();
+    }
+
+    fn set_date(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.date = date;
+            form.error = None;
+        }
         self.refresh_preview(cx);
         cx.notify();
     }
@@ -454,16 +514,15 @@ impl ScheduledPage {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        let cron = match form.schedule(cx) {
-            Ok(cron) => cron,
+        // No timeZone param: the engine reads the device's zone.
+        let params = match form.schedule(cx) {
+            Ok(schedule) => schedule.params(),
             Err(problem) => {
                 form.preview = Preview::Invalid(problem);
                 form.preview_task = None;
                 return;
             }
         };
-        // No timeZone param: the engine reads the device's zone.
-        let params = serde_json::json!({ "cron": cron });
         form.preview_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
             let result = engine
@@ -538,6 +597,13 @@ impl ScheduledPage {
             form.minute_scroll
                 .scroll_to_top_of_item((minute as usize).saturating_sub(above));
         }
+        if menu == FormMenu::Date
+            && let Some(form) = self.form.as_ref()
+        {
+            let day = (form.date - Local::now().date_naive()).num_days();
+            form.date_scroll
+                .scroll_to_top_of_item(day.clamp(0, DATE_DAYS - 1).saturating_sub(3) as usize);
+        }
         if menu == FormMenu::Model
             && let Some(form) = self.form.as_mut()
         {
@@ -590,7 +656,7 @@ impl ScheduledPage {
             cx.notify();
             return;
         }
-        let (Ok(cron), Some(mut config)) = (schedule, config) else {
+        let (Ok(schedule), Some(mut config)) = (schedule, config) else {
             return;
         };
         config.permission_mode = form.mode;
@@ -599,10 +665,14 @@ impl ScheduledPage {
             "name": name,
             "spaceId": form.space_id,
             "prompt": prompt,
-            "cron": cron,
             "config": config,
             "checkout": form.checkout,
         });
+        if let (Some(params), serde_json::Value::Object(schedule)) =
+            (params.as_object_mut(), schedule.params())
+        {
+            params.extend(schedule);
+        }
         let method = match &form.editing {
             Some(id) => {
                 params["routineId"] = id.clone().into();
@@ -641,7 +711,10 @@ impl ScheduledPage {
         Some((
             form.editing.clone(),
             form.name.read(cx).text().to_string(),
-            form.schedule(cx).ok()?,
+            match form.schedule(cx).ok()? {
+                Schedule::Cron(cron) => cron,
+                Schedule::Once(at) => at.format("%Y-%m-%dT%H:%M").to_string(),
+            },
         ))
     }
 
@@ -858,7 +931,7 @@ impl ScheduledPage {
                     .text_color(faint)
                     .child(SharedString::from(format!(
                         "{} \u{b7} {space}",
-                        schedule_label(&routine.cron)
+                        schedule_label(&routine.cron, routine.at)
                     ))),
             )
             .child(div().flex_1())
@@ -875,7 +948,12 @@ impl ScheduledPage {
                         (None, None) => div()
                             .text_size(crate::typography::ui_rems(15.0))
                             .text_color(theme.text)
-                            .children(view.next_fire_at.map(|next| countdown(next, Utc::now())))
+                            .child(match view.next_fire_at {
+                                Some(next) => countdown(next, Utc::now()),
+                                // A one-time Routine that has fired.
+                                None if routine.at.is_some() => "Done".into(),
+                                None => String::new(),
+                            })
                             .into_any_element(),
                     })
                     .child(run_strip(theme, &routine.runs)),
@@ -927,7 +1005,7 @@ impl ScheduledPage {
             RoutineCheckout::NewWorktree => "New worktree",
         };
         let config: [(&'static str, SharedString); 7] = [
-            ("Schedule", schedule_label(&routine.cron).into()),
+            ("Schedule", schedule_label(&routine.cron, routine.at).into()),
             ("Time zone", routine.time_zone.clone().into()),
             ("Next run", next.into()),
             ("Project", space.into()),
@@ -1317,7 +1395,7 @@ impl ScheduledPage {
         }
         let (name, prompt) = (form.name.clone(), form.prompt.clone());
         let time = form.time.clone();
-        let (preset, weekday) = (form.preset, form.weekday);
+        let (preset, weekday, form_date) = (form.preset, form.weekday, form.date);
         let (space_id, mode, checkout) = (form.space_id.clone(), form.mode, form.checkout);
         let (error, saving, editing) = (form.error.clone(), form.saving, form.editing.is_some());
         let model_query = form.model_query.clone();
@@ -1397,7 +1475,7 @@ impl ScheduledPage {
         let preset_label = PRESETS
             .iter()
             .find(|(value, _)| *value == preset)
-            .map_or("Custom", |(_, label)| label);
+            .map_or("Cron", |(_, label)| label);
         let preset_chip = self.form_menu_trigger(
             select_chip(
                 theme,
@@ -1439,24 +1517,43 @@ impl ScheduledPage {
                 cx,
             )
         });
-        let time_chip =
-            matches!(preset, Preset::Daily | Preset::Weekdays | Preset::Weekly).then(|| {
-                let text = time.read(cx).text().trim();
-                let label = if text.is_empty() { "09:00" } else { text }.to_string();
-                self.form_menu_trigger(
-                    select_chip(
-                        theme,
-                        "routine-time",
-                        label.into(),
-                        self.form_menu.as_open().copied() == Some(FormMenu::Time),
-                    ),
-                    FormMenu::Time,
+        let date_card = (form_menu == Some(FormMenu::Date)).then(|| self.form_date_menu(theme, cx));
+        let date_chip = (preset == Preset::Custom).then(|| {
+            self.form_menu_trigger(
+                select_chip(
+                    theme,
+                    "routine-date",
+                    date_label(form_date, Local::now().date_naive()).into(),
+                    self.form_menu.as_open().copied() == Some(FormMenu::Date),
+                ),
+                FormMenu::Date,
+                "routine-date",
+                false,
+                date_card,
+                cx,
+            )
+        });
+        let time_chip = matches!(
+            preset,
+            Preset::Daily | Preset::Weekdays | Preset::Weekly | Preset::Custom
+        )
+        .then(|| {
+            let text = time.read(cx).text().trim();
+            let label = if text.is_empty() { "09:00" } else { text }.to_string();
+            self.form_menu_trigger(
+                select_chip(
+                    theme,
                     "routine-time",
-                    false,
-                    time_card,
-                    cx,
-                )
-            });
+                    label.into(),
+                    self.form_menu.as_open().copied() == Some(FormMenu::Time),
+                ),
+                FormMenu::Time,
+                "routine-time",
+                false,
+                time_card,
+                cx,
+            )
+        });
         // The schedule reads as one sentence: preset, (day,) "at" time, then
         // the engine's preview of what it spells.
         let preview_line = div()
@@ -1488,6 +1585,7 @@ impl ScheduledPage {
             .bg(ink(0.04))
             .child(preset_chip)
             .children(weekday_chip)
+            .children(date_chip)
             .when(time_chip.is_some(), |bar| bar.child(connective("at")))
             .children(time_chip)
             .child(preview_line);
@@ -1808,6 +1906,42 @@ impl ScheduledPage {
                 }))
                 .child(weekday_name(label))
             }))
+            .into_any_element()
+    }
+
+    /// The Custom preset's day: the next `DATE_DAYS` days, today first.
+    fn form_date_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(form) = self.form.as_ref() else {
+            return div().into_any_element();
+        };
+        let (picked, today) = (form.date, Local::now().date_naive());
+        popover::popover_card(theme)
+            .p_0()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_form_menu(cx)))
+            .child(
+                div()
+                    .id("routine-date-days")
+                    .w(px(160.0))
+                    .h(px(TIME_MENU_H))
+                    .p(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .overflow_y_scroll()
+                    .track_scroll(&form.date_scroll)
+                    .occlude()
+                    .children((0..DATE_DAYS).map(|day| {
+                        let date = today + chrono::Days::new(day as u64);
+                        popover::menu_row(theme, date == picked, format!("routine-date-fade-{day}"))
+                            .id(("routine-date-row", day as usize))
+                            .flex_none()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_date(date, cx);
+                                this.close_form_menu(cx);
+                            }))
+                            .child(date_label(date, today))
+                    })),
+            )
             .into_any_element()
     }
 
@@ -2487,6 +2621,15 @@ fn select_chip(
 }
 
 /// "Mon" → "Monday".
+/// A picked day: "Today", "Tomorrow", else "Fri, Oct 9".
+fn date_label(date: NaiveDate, today: NaiveDate) -> String {
+    match (date - today).num_days() {
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        _ => date.format("%a, %b %-d").to_string(),
+    }
+}
+
 fn weekday_name(short: &str) -> &'static str {
     match short {
         "Mon" => "Monday",
@@ -2528,7 +2671,7 @@ fn preset_cron(preset: Preset, time: &str, weekday: u8) -> Option<String> {
         Preset::Daily => "*".to_string(),
         Preset::Weekdays => "1-5".to_string(),
         Preset::Weekly => weekday.to_string(),
-        Preset::Hourly | Preset::Custom => return None,
+        Preset::Hourly | Preset::Custom | Preset::Cron => return None,
     };
     Some(format!("{minute} {hour} * * {days}"))
 }
@@ -2560,7 +2703,10 @@ fn cron_preset(cron: &str) -> Option<(Preset, String, u8)> {
 
 /// A stored cron in words ("Weekdays at 09:00"); a cron no preset spells
 /// shows as itself.
-fn schedule_label(cron: &str) -> String {
+fn schedule_label(cron: &str, at: Option<NaiveDateTime>) -> String {
+    if let Some(at) = at {
+        return at.format("Once on %b %-d at %H:%M").to_string();
+    }
     let Some((preset, time, weekday)) = cron_preset(cron) else {
         return cron.to_string();
     };
@@ -2575,7 +2721,7 @@ fn schedule_label(cron: &str) -> String {
                 .map_or("Sun", |(_, label)| label);
             format!("{}s at {time}", weekday_name(day))
         }
-        Preset::Custom => cron.to_string(),
+        Preset::Custom | Preset::Cron => cron.to_string(),
     }
 }
 
@@ -2818,6 +2964,7 @@ mod tests {
             assert_eq!(preset_cron(Preset::Daily, bad, 1), None, "{bad:?}");
         }
         assert_eq!(preset_cron(Preset::Custom, "09:00", 1), None);
+        assert_eq!(preset_cron(Preset::Cron, "09:00", 1), None);
         assert_eq!(
             preset_cron(Preset::Hourly, "", 1).as_deref(),
             Some("0 * * * *")

@@ -1049,3 +1049,47 @@ async fn an_unavailable_model_fails_the_run_and_keeps_the_routine_active() {
     assert!(run["chatId"].is_null(), "no run Chat is created");
     assert!(provider.requests().is_empty());
 }
+
+#[tokio::test]
+async fn a_one_time_routine_fires_once_then_has_no_next_fire() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let clock = clock();
+    let engine = setup_at(&fixture, &provider, clock.clone()).await;
+    // Now is 17:00 in Shanghai; 21:00 tonight is 13:00 UTC.
+    let RpcReply::Value(preview) = engine
+        .handle(
+            methods::PREVIEW_ROUTINE_SCHEDULE,
+            json!({ "at": "2026-10-07T21:00:00", "timeZone": "Asia/Shanghai" }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("PreviewRoutineSchedule did not reply a value");
+    };
+    assert_eq!(preview["fires"], json!(["2026-10-07T13:00:00Z"]));
+    for at in ["2026-10-07T16:00:00", "2026-10-07T17:00:00"] {
+        let error = engine
+            .handle(
+                methods::CREATE_ROUTINE,
+                create_params(json!({ "cron": "", "at": at })),
+            )
+            .await
+            .err()
+            .expect("a past time is rejected");
+        assert!(matches!(error, RpcError::BadParams(message) if message == "that time has passed"));
+    }
+
+    let routine = create(&engine, json!({ "cron": "", "at": "2026-10-07T21:00:00" })).await;
+    let id = routine["id"].as_str().unwrap();
+    assert_eq!(list(&engine).await[0]["nextFireAt"], "2026-10-07T13:00:00Z");
+
+    clock.set(Utc.with_ymd_and_hms(2026, 10, 7, 13, 0, 0).unwrap());
+    let fired = wait_for_routine(&engine, id, |routine| {
+        !routine["runs"].as_array().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(fired["lastFiredAt"], "2026-10-07T13:00:00Z");
+    assert!(fired["nextFireAt"].is_null());
+    assert_eq!(fired["runs"][0]["missedFires"], 0);
+}

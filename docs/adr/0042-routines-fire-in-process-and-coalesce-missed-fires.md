@@ -26,6 +26,9 @@ what happens when an unattended run blocks on a human.
   notification even when a window is active (unless that run's Chat is in
   view). It stays waiting until answered or interrupted, and later fires are
   skipped meanwhile. New Routines default to Auto review to make this rare.
+- **A one-time Routine is the same Routine with one fire.** Its schedule is a
+  local date-time instead of a cron; a missed one becomes a catch-up run like
+  any other, and after it fires the Routine has no next fire.
 - **The Run outcome is the first Turn's outcome.** Follow-up Turns in the
   run's Chat do not rewrite it.
 
