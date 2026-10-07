@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task,
@@ -29,6 +29,9 @@ use crate::state::AppState;
 use crate::theme::{Theme, hairline, ink};
 
 const PAGE_MAX_W: f32 = 960.0;
+/// The create/edit form's column; fields read better narrower than the
+/// card grid's page width.
+const FORM_MAX_W: f32 = 640.0;
 const CARD_MIN_W: f32 = 240.0;
 const GRID_GAP: f32 = 12.0;
 /// How often the cards' countdowns repaint.
@@ -1386,12 +1389,24 @@ impl ScheduledPage {
                         div()
                             .text_size(crate::typography::ui_rems(12.5))
                             .text_color(theme.text_muted)
-                            .child("At"),
+                            .child("at"),
                     )
                     .child(
                         div()
-                            .w(px(84.0))
-                            .child(popover::dialog_field(time.into_any_element())),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                icon(icons::CLOCK_CIRCLE)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted.opacity(0.6)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(96.0))
+                                    .child(popover::dialog_field(time.into_any_element())),
+                            ),
                     )
                     .when(preset == Preset::Weekly, |row| {
                         row.child(
@@ -1422,13 +1437,8 @@ impl ScheduledPage {
             .map(|line| match preview {
                 None => line.text_color(theme.text_muted).child("\u{2026}"),
                 Some(Ok(preview)) => line.text_color(theme.text_muted).child(format!(
-                    "Next: {} \u{00b7} {}",
-                    preview
-                        .fires
-                        .iter()
-                        .map(|fire| local_time(*fire))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    "Next: {} ({})",
+                    preview_fires(&preview.fires),
                     preview.time_zone
                 )),
                 Some(Err(problem)) => line.text_color(theme.danger).child(problem),
@@ -1486,6 +1496,7 @@ impl ScheduledPage {
         let card = div()
             .id("routine-form-page")
             .w_full()
+            .max_w(px(FORM_MAX_W))
             .flex()
             .flex_col()
             .text_color(theme.text)
@@ -1507,34 +1518,52 @@ impl ScheduledPage {
                 div()
                     .flex()
                     .flex_row()
-                    .items_start()
+                    .items_center()
                     .justify_between()
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(widgets::page_header(
-                                theme,
-                                if editing {
-                                    "Edit routine"
-                                } else {
-                                    "New routine"
-                                },
-                                None,
-                            ))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                icon_button(
+                                    theme,
+                                    "routine-form-back".into(),
+                                    icons::ARROW_LEFT,
+                                    false,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.close_form(window, cx)),
+                                ),
+                            )
                             .child(
                                 div()
-                                    .text_size(crate::typography::ui_rems(12.5))
-                                    .text_color(theme.text_muted)
-                                    .child("When it fires, what it runs, and how."),
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(widgets::page_header(
+                                        theme,
+                                        if editing {
+                                            "Edit routine"
+                                        } else {
+                                            "New routine"
+                                        },
+                                        None,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(crate::typography::ui_rems(12.5))
+                                            .text_color(theme.text_muted)
+                                            .child("When it fires, what it runs, and how."),
+                                    ),
                             ),
                     )
                     .child(
-                        icon_button(theme, "routine-form-back".into(), icons::ARROW_LEFT, false)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_form(window, cx)),
-                            ),
+                        div()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child("\u{2318}\u{21a9} to save"),
                     ),
             )
             .child(field(
@@ -1608,13 +1637,6 @@ impl ScheduledPage {
                     .items_center()
                     .justify_end()
                     .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .text_color(theme.text_muted)
-                            .child("\u{2318}\u{21a9} to save"),
-                    )
                     .child(
                         popover::btn_ghost(theme, "Cancel", "routine-form-cancel")
                             .id("routine-form-cancel")
@@ -2071,6 +2093,68 @@ fn local_time(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%b %-d, %H:%M").to_string()
 }
 
+/// The form preview's fire list, deduplicated: one time-of-day across all
+/// fires collapses to the date span ("Oct 8 – Oct 10 at 09:00"); same-day
+/// fires share the date ("Oct 7, 17:00 · 18:00 · 19:00"); anything else
+/// lists each fire.
+fn preview_fires(fires: &[DateTime<Utc>]) -> String {
+    let local: Vec<DateTime<Local>> = fires
+        .iter()
+        .map(|fire| fire.with_timezone(&Local))
+        .collect();
+    match local.as_slice() {
+        [] => String::new(),
+        [only] => only.format("%b %-d, %H:%M").to_string(),
+        many => {
+            let times: Vec<String> = many
+                .iter()
+                .map(|at| at.format("%H:%M").to_string())
+                .collect();
+            let one_time = times.iter().all(|time| *time == times[0]);
+            if one_time {
+                let days: Vec<NaiveDate> = many.iter().map(|at| at.date_naive()).collect();
+                let consecutive = days
+                    .windows(2)
+                    .all(|pair| (pair[1] - pair[0]).num_days() == 1);
+                let dates = if consecutive {
+                    format!(
+                        "{} \u{2013} {}",
+                        days[0].format("%b %-d"),
+                        days[days.len() - 1].format("%b %-d")
+                    )
+                } else {
+                    let mut seen: Vec<NaiveDate> = Vec::new();
+                    for day in days {
+                        if seen.last() != Some(&day) {
+                            seen.push(day);
+                        }
+                    }
+                    seen.iter()
+                        .map(|day| day.format("%b %-d").to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                format!("{dates} at {}", times[0])
+            } else {
+                let first_date = many[0].date_naive();
+                let same_day = many.iter().all(|at| at.date_naive() == first_date);
+                if same_day {
+                    format!(
+                        "{}, {}",
+                        first_date.format("%b %-d"),
+                        times.join(" \u{b7} ")
+                    )
+                } else {
+                    many.iter()
+                        .map(|at| at.format("%b %-d, %H:%M").to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            }
+        }
+    }
+}
+
 fn outcome_label(outcome: RunOutcome) -> &'static str {
     match outcome {
         RunOutcome::Running => "Running",
@@ -2440,6 +2524,34 @@ mod tests {
         assert_eq!(delete_body(0), "It stops firing.");
         assert!(delete_body(1).contains("Its run chat stays"));
         assert!(delete_body(4).contains("Its 4 run chats stay"));
+    }
+
+    #[test]
+    fn preview_fires_deduplicates_repeated_dates_and_times() {
+        use chrono::TimeZone;
+        let at = |day: u32, hour: u32| {
+            Local
+                .with_ymd_and_hms(2026, 10, day, hour, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        // Daily: consecutive days, one time — the span carries the dates.
+        assert_eq!(
+            preview_fires(&[at(8, 9), at(9, 9), at(10, 9)]),
+            "Oct 8 \u{2013} Oct 10 at 09:00"
+        );
+        // Weekly: one time, spread out — dates listed.
+        assert_eq!(
+            preview_fires(&[at(9, 18), at(16, 18), at(23, 18)]),
+            "Oct 9, Oct 16, Oct 23 at 18:00"
+        );
+        // Hourly: one day, many times — the date carries the times.
+        assert_eq!(
+            preview_fires(&[at(7, 17), at(7, 18), at(7, 19)]),
+            "Oct 7, 17:00 \u{b7} 18:00 \u{b7} 19:00"
+        );
+        assert_eq!(preview_fires(&[at(8, 9)]), "Oct 8, 09:00");
+        assert_eq!(preview_fires(&[]), "");
     }
 
     #[test]
