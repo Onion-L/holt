@@ -106,6 +106,8 @@ struct Prefill {
     prompt: String,
     cron: String,
     at: Option<NaiveDateTime>,
+    /// The edited Routine's zone; `None` takes the device's.
+    time_zone: Option<String>,
     space_id: Option<String>,
     config: Option<ChatConfig>,
     mode: PermissionMode,
@@ -120,6 +122,7 @@ impl Default for Prefill {
             prompt: String::new(),
             cron: "0 9 * * 1-5".into(),
             at: None,
+            time_zone: None,
             space_id: None,
             config: None,
             mode: PermissionMode::AutoReview,
@@ -161,6 +164,9 @@ struct RoutineForm {
     minute_scroll: gpui::ScrollHandle,
     /// A stored cron no preset spells, kept as is.
     cron: Entity<ComposerInput>,
+    /// The edited Routine's zone, kept so an edit never moves its fires;
+    /// `None` (a new Routine) takes the device's.
+    time_zone: Option<String>,
     preview: Preview,
     preview_task: Option<Task<()>>,
     space_id: Option<String>,
@@ -193,6 +199,16 @@ impl Schedule {
 }
 
 impl RoutineForm {
+    /// `schedule`'s params plus the zone it is read in, when the form
+    /// keeps one.
+    fn schedule_params(&self, schedule: &Schedule) -> serde_json::Value {
+        let mut params = schedule.params();
+        if let Some(zone) = &self.time_zone {
+            params["timeZone"] = zone.clone().into();
+        }
+        params
+    }
+
     /// The schedule the form spells, or what is wrong with it.
     fn schedule(&self, cx: &App) -> Result<Schedule, SharedString> {
         let time = self.time.read(cx).text();
@@ -326,6 +342,7 @@ impl ScheduledPage {
                 prompt: routine.prompt,
                 cron: routine.cron,
                 at: routine.at,
+                time_zone: Some(routine.time_zone),
                 // A removed Space is not offered; the form picks another.
                 space_id: self
                     .state
@@ -402,6 +419,7 @@ impl ScheduledPage {
         });
         self.form = Some(RoutineForm {
             editing: prefill.editing,
+            time_zone: prefill.time_zone,
             name,
             prompt,
             preset,
@@ -529,9 +547,8 @@ impl ScheduledPage {
         let Some(form) = self.form.as_mut() else {
             return;
         };
-        // No timeZone param: the engine reads the device's zone.
         let params = match form.schedule(cx) {
-            Ok(schedule) => schedule.params(),
+            Ok(schedule) => form.schedule_params(&schedule),
             Err(problem) => {
                 form.preview = Preview::Invalid(problem);
                 form.preview_task = None;
@@ -646,12 +663,13 @@ impl ScheduledPage {
             return;
         }
         let name = form.name.read(cx).text().trim().to_string();
-        let prompt = form.prompt.read(cx).text().trim().to_string();
+        // The prompt is stored verbatim; only the check ignores whitespace.
+        let prompt = form.prompt.read(cx).text().to_string();
         let schedule = form.schedule(cx);
         let config = form.config.clone().or(resolved);
         let problem: Option<SharedString> = if name.is_empty() {
             Some("Give the routine a name.".into())
-        } else if prompt.is_empty() {
+        } else if prompt.trim().is_empty() {
             Some("Write the prompt each run starts with.".into())
         } else if let Err(problem) = &schedule {
             Some(problem.clone())
@@ -673,7 +691,6 @@ impl ScheduledPage {
             return;
         };
         config.permission_mode = form.mode;
-        // No timeZone param: runs fire in the device's zone.
         let mut params = serde_json::json!({
             "name": name,
             "spaceId": form.space_id,
@@ -682,7 +699,7 @@ impl ScheduledPage {
             "checkout": form.checkout,
         });
         if let (Some(params), serde_json::Value::Object(schedule)) =
-            (params.as_object_mut(), schedule.params())
+            (params.as_object_mut(), form.schedule_params(&schedule))
         {
             params.extend(schedule);
         }
