@@ -34,6 +34,10 @@ const GRID_GAP: f32 = 12.0;
 /// How often the cards' countdowns repaint.
 const TICK: Duration = Duration::from_secs(30);
 const DRAWER_W: f32 = 420.0;
+/// The run list's time column, wide enough for "Oct 17, 22:25".
+const RUN_TIME_W: f32 = 100.0;
+/// The drawer card's gap to the page's top, right, and bottom edges.
+const DRAWER_INSET: f32 = 10.0;
 /// Outcomes the card strip shows, oldest left.
 const STRIP_RUNS: usize = 14;
 
@@ -1084,9 +1088,7 @@ impl ScheduledPage {
                 .px(px(12.0))
                 .py(px(8.0))
                 .rounded(px(8.0))
-                .bg(ink(0.05))
-                .border_1()
-                .border_color(hairline(0.08))
+                .bg(theme.element_hover)
                 .text_size(crate::typography::ui_rems(12.5))
                 .text_color(theme.text_muted)
                 .child(pause_banner(pause))
@@ -1104,9 +1106,7 @@ impl ScheduledPage {
                 .px(px(12.0))
                 .py(px(8.0))
                 .rounded(px(8.0))
-                .bg(ink(0.05))
-                .border_1()
-                .border_color(hairline(0.08))
+                .bg(theme.element_hover)
                 .text_size(crate::typography::ui_rems(12.5))
                 .text_color(theme.text)
                 .child(live_dot(theme, outcome))
@@ -1114,7 +1114,7 @@ impl ScheduledPage {
                 .when_some(chat_id, |banner, chat_id| {
                     banner
                         .cursor_pointer()
-                        .hover(|banner| banner.bg(ink(0.08)))
+                        .hover(|banner| banner.bg(crate::theme::card_selected_bg()))
                         .child(div().text_color(theme.text_muted).child("Open"))
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.open_run(chat_id.clone(), cx)),
@@ -1128,19 +1128,18 @@ impl ScheduledPage {
             .map(|(ix, run)| self.render_run_row(theme, ix, run, &chats, cx))
             .collect();
         let empty = rows.is_empty();
-        let panel = div()
+        // A floating glass card like the app's popovers, inset from the
+        // page edges, not a solid slab glued to the window edge.
+        let panel = popover::popover_card(theme)
+            .p_0()
             .id("routine-drawer")
             .debug_selector(|| "routine-drawer".into())
             .occlude()
             .absolute()
-            .top_0()
-            .right_0()
-            .h_full()
+            .top(px(DRAWER_INSET))
+            .right(px(DRAWER_INSET))
+            .bottom(px(DRAWER_INSET))
             .w(px(DRAWER_W))
-            .bg(theme.surface_dialog)
-            .border_l_1()
-            .border_color(hairline(0.10))
-            .shadow_lg()
             .flex()
             .flex_col()
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -1187,8 +1186,7 @@ impl ScheduledPage {
                             .flex_row()
                             .gap(px(8.0))
                             .child(
-                                popover::btn_primary(theme, "Run now")
-                                    .id("routine-drawer-run")
+                                action_chip(theme, "routine-drawer-run", "Run now", true)
                                     .when(space_removed, |button| {
                                         button
                                             .debug_selector(|| "routine-drawer-run-disabled".into())
@@ -1203,12 +1201,12 @@ impl ScheduledPage {
                             )
                             .when(!space_removed, |row| {
                                 row.child(
-                                    popover::btn_ghost(
+                                    action_chip(
                                         theme,
-                                        if paused { "Resume" } else { "Pause" },
                                         "routine-drawer-pause",
+                                        if paused { "Resume" } else { "Pause" },
+                                        false,
                                     )
-                                    .id("routine-drawer-pause")
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| {
                                             this.set_paused(pause_id.clone(), !paused, cx)
@@ -1217,15 +1215,15 @@ impl ScheduledPage {
                                 )
                             })
                             .child(
-                                popover::btn_ghost(theme, "Edit", "routine-drawer-edit")
-                                    .id("routine-drawer-edit")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                action_chip(theme, "routine-drawer-edit", "Edit", false).on_click(
+                                    cx.listener(move |this, _, _, cx| {
                                         this.edit_routine(&edit_id, cx)
-                                    })),
+                                    }),
+                                ),
                             )
+                            .child(div().flex_1())
                             .child(
-                                popover::btn_ghost(theme, "Delete", "routine-drawer-delete")
-                                    .id("routine-drawer-delete")
+                                action_chip(theme, "routine-drawer-delete", "Delete", false)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.ask_delete(delete_id.clone(), window, cx)
                                     })),
@@ -1249,9 +1247,8 @@ impl ScheduledPage {
                                     .px(px(12.0))
                                     .py(px(10.0))
                                     .rounded(px(8.0))
-                                    .bg(ink(0.03))
                                     .border_1()
-                                    .border_color(hairline(0.06))
+                                    .border_color(hairline(0.08))
                                     .text_size(crate::typography::ui_rems(13.0))
                                     .text_color(theme.text)
                                     .child(SharedString::from(routine.prompt.clone())),
@@ -1281,7 +1278,10 @@ impl ScheduledPage {
                     })
                     .children(rows),
             );
-        Some(panel.into_any_element())
+        Some(
+            crate::frost::frosted(popover::CARD_RADIUS, crate::frost::MENU_BLUR, panel)
+                .into_any_element(),
+        )
     }
 
     fn render_run_row(
@@ -1327,22 +1327,32 @@ impl ScheduledPage {
             )
             .child(
                 div()
+                    .flex_none()
+                    .w(px(RUN_TIME_W))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(local_time(run.fired_at))),
+            )
+            .child(
+                div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(theme.text_muted)
+                    .text_color(theme.text_faint)
                     .child(SharedString::from(
-                        std::iter::once(local_time(run.fired_at))
-                            .chain(marks)
+                        marks
+                            .into_iter()
                             .chain(detail)
                             .collect::<Vec<_>>()
                             .join(" \u{b7} "),
                     )),
             )
             .map(|row| match chat_id {
-                Some(chat_id) => row.cursor_pointer().hover(|s| s.bg(ink(0.05))).on_click(
-                    cx.listener(move |this, _, _, cx| this.open_run(chat_id.clone(), cx)),
-                ),
+                Some(chat_id) => row
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.element_hover))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_run(chat_id.clone(), cx)),
+                    ),
                 None => row.opacity(0.7),
             })
             .into_any_element()
@@ -2659,9 +2669,9 @@ fn live_pill(theme: &Theme, outcome: RunOutcome) -> gpui::Div {
 
 fn live_banner(outcome: RunOutcome) -> &'static str {
     if outcome == RunOutcome::Waiting {
-        "Waiting for your input."
+        "Waiting for your input"
     } else {
-        "Running now."
+        "Running"
     }
 }
 
@@ -2707,6 +2717,43 @@ fn run_strip(theme: &Theme, runs: &[RoutineRun]) -> gpui::Div {
 
 /// A schedule-bar dropdown trigger: the prompt toolbar's ghost chip (no fill
 /// until hovered or open) at the bar's size; the bar draws the frame.
+/// A drawer action: a quiet text chip; `primary` gives it a resting fill.
+fn action_chip(
+    theme: &Theme,
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let rest = if primary {
+        theme.element_hover
+    } else {
+        gpui::transparent_black()
+    };
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .h(px(28.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .rounded(px(8.0))
+        .text_size(crate::typography::ui_rems(13.0))
+        .text_color(if primary {
+            theme.text
+        } else {
+            crate::motion::hover_blend(id, theme.text_muted, theme.text)
+        })
+        .bg(crate::motion::hover_blend(
+            id,
+            rest,
+            crate::theme::card_selected_bg(),
+        ))
+        .on_hover(crate::motion::hover_listener(id))
+        .cursor_pointer()
+        .child(label)
+}
+
 fn select_chip(
     theme: &Theme,
     id: &'static str,
@@ -2741,12 +2788,11 @@ fn select_chip(
         )
 }
 
-/// "Mon" → "Monday".
-/// A picked day: "Today", "Tomorrow", else "Fri, Oct 9".
 fn month_start(date: NaiveDate) -> NaiveDate {
     date.with_day(1).unwrap_or(date)
 }
 
+/// A picked day: "Today", "Tomorrow", else "Fri, Oct 9".
 fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     match (date - today).num_days() {
         0 => "Today".into(),
