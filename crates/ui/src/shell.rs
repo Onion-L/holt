@@ -1170,7 +1170,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open the Chat manager page (⌘⇧M / the sidebar's Chats nav row).
+    /// Open the Chat manager page (⌘⇧M / the sidebar's inbox button).
     /// Pressing the shortcut again on the page walks back to wherever the
     /// user came from.
     fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
@@ -1210,7 +1210,7 @@ impl Shell {
         page
     }
 
-    /// Show the Scheduled page from the sidebar nav.
+    /// Show the Scheduled page from the titlebar cluster.
     pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Scheduled;
         let drawer = self
@@ -3397,7 +3397,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_live_run_marks_the_nav_row_and_the_drawer(cx: &mut gpui::TestAppContext) {
+    fn a_live_run_marks_the_titlebar_button_and_the_drawer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| cx.set_global(Theme::default()));
         let state = cx.new(|_| routine_state("waiting"));
         let (shell, cx) = cx.add_window_view(|_, cx| {
@@ -3412,7 +3412,7 @@ mod tests {
             shell
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-nav-scheduled-live").is_some());
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_some());
 
         let page = shell.update(cx, |shell, cx| {
             shell.open_scheduled(cx);
@@ -3427,7 +3427,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("sidebar-nav-scheduled-live").is_none());
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_none());
         assert!(cx.debug_bounds("routine-drawer-live").is_none());
     }
 

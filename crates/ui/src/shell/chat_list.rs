@@ -913,7 +913,6 @@ impl Shell {
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
         let filter_row = self.render_spaces_filter(theme, cx);
-        let nav = self.render_sidebar_nav(theme, cx);
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -922,7 +921,6 @@ impl Shell {
             .flex_col()
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
-            .child(nav)
             .child(filter_row)
             // The (filtered) Sessions list scrolls inside an EdgeFade scope —
             // a true per-glyph gradient at active overflow edges. Glass-safe
@@ -1035,6 +1033,7 @@ impl Shell {
                     .items_center()
                     .gap(px(Theme::SPACE_SM))
                     .child(div().flex_1().child(settings_row))
+                    .child(self.render_chat_manager_button(theme, cx))
                     .when_some(self.render_update_button(theme, cx), |el, button| {
                         el.child(button)
                     }),
@@ -1142,90 +1141,43 @@ impl Shell {
         self.schedule_save(cx);
     }
 
-    /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
-    /// the settings page directly. Styled exactly like the settings sidebar's
-    /// Back row — same padding, height, and hover.
-    /// The page nav pinned above the session list: one row per global page
-    /// (the Chat manager and Scheduled), then the "Recent" label heading the list.
-    /// Rows share the settings sidebar's row recipe; the current page wears
-    /// the selected wash.
-    fn render_sidebar_nav(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let chats = nav_row(
-            theme,
-            "sidebar-nav-chats",
-            icons::INBOX,
-            "Chats",
-            matches!(self.route, Route::ChatManager),
-        )
-        .on_click(cx.listener(|this, _, _, cx| {
-            if !matches!(this.route, Route::ChatManager) {
-                this.open_chat_manager(cx);
-            }
-        }));
-        // A Routine run in flight shows on the row: amber while one waits
-        // on the user, the busy colour while one runs.
-        let live = {
-            let state = self.state.read(cx);
-            let outcomes = || {
-                state
-                    .routines
-                    .iter()
-                    .filter_map(|view| crate::scheduled::live_run(&view.routine))
-                    .map(|run| run.outcome)
-            };
-            if outcomes().any(|outcome| outcome == holt_proto::RunOutcome::Waiting) {
-                Some(theme.warning)
-            } else if outcomes().next().is_some() {
-                Some(theme.busy)
-            } else {
-                None
-            }
-        };
-        let scheduled = nav_row(
-            theme,
-            "sidebar-nav-scheduled",
-            icons::CLOCK_CIRCLE,
-            "Scheduled",
-            matches!(self.route, Route::Scheduled),
-        )
-        .when_some(live, |row, color| {
-            row.child(div().flex_1()).child(
-                div()
-                    .debug_selector(|| "sidebar-nav-scheduled-live".into())
-                    .flex_none()
-                    .mr(px(2.0))
-                    .size(px(6.0))
-                    .rounded_full()
-                    .bg(color),
-            )
-        })
-        .on_click(cx.listener(|this, _, _, cx| {
-            if !matches!(this.route, Route::Scheduled) {
-                this.open_scheduled(cx);
-            }
-        }));
-
-        // The spaces filter below brings its own 8px top pad.
+    /// The Chat manager entry, sitting right of the settings row: an icon
+    /// button wearing the selected wash while the manager page is up.
+    pub(super) fn render_chat_manager_button(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = matches!(self.route, Route::ChatManager);
         div()
+            .id("sidebar-chat-manager")
             .flex_none()
-            .px(px(Theme::SPACE_SM))
-            .pt(px(8.0))
+            .size(px(24.0))
             .flex()
-            .flex_col()
-            .child(chats)
-            .child(scheduled)
-            .child(
-                div()
-                    .px(px(Theme::SPACE_SM))
-                    .pt(px(12.0))
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from("Recent")),
-            )
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .when(selected, |el| el.bg(crate::theme::glass_selected_bg()))
+            .hover(|style| style.bg(theme.glass_hover()))
+            .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
+            .tooltip(|_, cx| {
+                cx.new(|_| crate::popover::TextTooltip("Chat manager".into()))
+                    .into()
+            })
+            .tooltip_show_delay(std::time::Duration::from_millis(350))
+            // gpui's Svg paints only with its OWN text color, never inherits.
+            .child(icon(icons::INBOX).size(px(15.0)).text_color(if selected {
+                theme.text
+            } else {
+                theme.text_muted
+            }))
             .into_any_element()
     }
 
+    /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
+    /// the settings page directly. Styled exactly like the settings sidebar's
+    /// Back row — same padding, height, and hover.
     pub(super) fn render_sidebar_settings_row(
         &mut self,
         theme: &Theme,
@@ -1255,40 +1207,6 @@ impl Shell {
             .child(SharedString::from("Settings"))
             .into_any_element()
     }
-}
-
-/// One page row in the sidebar nav — the settings sidebar's row recipe;
-/// the current page wears the selected wash.
-fn nav_row(
-    theme: &Theme,
-    id: &'static str,
-    path: &'static str,
-    label: &'static str,
-    selected: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(8.0))
-        .rounded(px(8.0))
-        .px(px(Theme::SPACE_SM))
-        .py(px(6.0))
-        .text_size(crate::typography::ui_rems(13.0))
-        .when(selected, |el| {
-            el.bg(crate::theme::glass_selected_bg())
-                .font_weight(gpui::FontWeight::MEDIUM)
-        })
-        .text_color(if selected {
-            theme.text
-        } else {
-            theme.text_muted
-        })
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
-        .child(icon(path).size(px(16.0)).text_color(theme.text_muted))
-        .child(SharedString::from(label))
 }
 
 #[cfg(test)]
