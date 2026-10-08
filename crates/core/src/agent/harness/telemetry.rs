@@ -1,8 +1,7 @@
 //! Port of `pi-core/agent/src/harness/telemetry.ts`.
 //!
-//! The schema constants are embedded verbatim from the TypeScript oracle
-//! (`scripts/oracle/export-agent-telemetry-schemas.mts` writes
-//! `data/telemetry-schemas.json`), so the span vocabularies match exactly.
+//! The schema constants are embedded verbatim from the TypeScript package's
+//! `data/telemetry-schemas.json`, so the span vocabularies match exactly.
 //! TypeScript's compile-time conditional types (exact start-attribute
 //! inference, event-name unions) have no Rust equivalent — the runtime
 //! helpers bind contexts and forward names and attributes like the

@@ -16,8 +16,8 @@
 //!
 //! The TS suites read the generated catalogs (`getModel`/`getModels`/
 //! `getBuiltinModel`); the Rust port reads the same data through the
-//! embedded catalog (`src/ai/data/models.generated.json`, exported by the
-//! TypeScript oracle via `scripts/oracle/export-model-catalog.mts`). The
+//! embedded catalog (`src/ai/data/models.generated.json`, exported from the
+//! TypeScript oracle during the port). The
 //! env cases set `process.env` in TS; the port injects a scoped
 //! `ProviderEnv` instead of mutating process env. The two Fireworks payload
 //! assertions (`prompt_cache_retention`, `reasoning_effort`) capture the

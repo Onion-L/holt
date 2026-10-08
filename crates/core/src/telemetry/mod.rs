@@ -1,8 +1,7 @@
 //! Port of `@earendil-works/pi-telemetry` v0.84.4
 //! (`pi-core/telemetry/src`).
 //!
-//! Status and per-module mapping live in `MIGRATION.md` at the repository
-//! root. The implementation is ported in this module's children; the public
+//! The implementation is ported in this module's children; the public
 //! surface mirrors the TypeScript package's `index.ts` and `testing` entry
 //! point.
 //!

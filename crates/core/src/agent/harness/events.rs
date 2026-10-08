@@ -3,7 +3,7 @@
 //! `result.ts` collapses onto `std::result::Result` in the Rust port (the
 //! `ok`/`err`/`isOk`/`isErr` helpers and the `TaggedError` factory have no
 //! counterpart — the concrete error structs and `match` on their codes
-//! serve the same purpose, documented in `MIGRATION.md`).
+//! serve the same purpose).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

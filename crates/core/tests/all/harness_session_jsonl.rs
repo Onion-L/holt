@@ -1,7 +1,7 @@
 //! Golden and behavior tests for the JSONL v4 session port
 //! (`jsonl-codec.test.ts`, the durable-persistence cases from
-//! `jsonl.test.ts`, and byte parity against the TypeScript oracle goldens
-//! produced by `scripts/oracle/export-session-jsonl.mts`).
+//! `jsonl.test.ts`, and byte parity against goldens the TypeScript oracle
+//! produced — frozen since the port tooling was dropped, ADR-0043).
 
 use crate::common;
 

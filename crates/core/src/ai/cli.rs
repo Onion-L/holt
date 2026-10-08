@@ -8,8 +8,8 @@
 //!
 //! Observable strings (usage text, menu numbering, prompt/notify formats,
 //! error messages) are copied verbatim from cli.ts; the goldens under
-//! `tests/goldens/ai/cli-*.txt` are produced by
-//! `scripts/oracle/generate-cli-goldens.mts`.
+//! `tests/goldens/ai/cli-*.txt` were produced by the TypeScript oracle and
+//! are frozen (ADR-0043).
 //!
 //! Known deviations, kept as small as possible:
 //! - On stdin EOF mid-prompt the readline `question` callback resolves with

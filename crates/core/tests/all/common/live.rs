@@ -526,11 +526,14 @@ pub fn empty_object_schema() -> serde_json::Value {
     serde_json::json!({ "type": "object", "properties": {} })
 }
 
-/// The shared red-circle test image (`pi-core/ai/test/data/red-circle.png`)
-/// as base64, matching `readFileSync(imagePath).toString("base64")`.
+/// The shared red-circle test image as base64, matching
+/// `readFileSync(imagePath).toString("base64")`. The fixture is the
+/// upstream `pi-core/ai/test/data/red-circle.png`, committed at
+/// `tests/all/common/data/red-circle.png` when the oracle checkout left the
+/// repository (ADR-0043).
 pub fn red_circle_base64() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("pi-core/ai/test/data/red-circle.png");
+        .join("tests/all/common/data/red-circle.png");
     let bytes =
         std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     use base64::Engine as _;

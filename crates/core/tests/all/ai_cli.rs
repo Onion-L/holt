@@ -1,8 +1,8 @@
 //! Port of the observable behavior of `pi-core/ai/src/cli.ts` — the
 //! `pi-ai` bin entry. There is no TypeScript test suite for cli.ts, so the
-//! expected bytes come from the oracle goldens produced by
-//! `scripts/oracle/generate-cli-goldens.mts`, which drives the real cli.ts
-//! (with a scripted `fetch` for the network-free GitHub Copilot login).
+//! expected bytes come from goldens the TypeScript oracle produced by
+//! driving the real cli.ts (with a scripted `fetch` for the network-free
+//! GitHub Copilot login); the goldens are frozen (ADR-0043).
 //!
 //! TS case → Rust test mapping:
 //! - `main()` no args / `help` / `--help` / `-h` usage →

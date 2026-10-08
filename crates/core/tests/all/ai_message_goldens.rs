@@ -1,5 +1,5 @@
-//! Serialization-parity tests against TypeScript oracle goldens produced by
-//! `scripts/oracle/generate-message-goldens.mts` (see tests/goldens/ai/).
+//! Serialization-parity tests against TypeScript oracle goldens (see
+//! tests/goldens/ai/; frozen since the port tooling was dropped, ADR-0043).
 //!
 //! The goldens are `JSON.stringify` output of objects shaped by
 //! `pi-core/ai/src/types.ts`. Each test parses the golden into the Rust type,

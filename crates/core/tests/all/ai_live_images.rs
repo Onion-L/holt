@@ -10,12 +10,11 @@
 //! Gate translated verbatim: `describe.skipIf(!process.env.OPENROUTER_API_KEY)`.
 //! Without the key the suite prints `SKIP: ...` and the test passes.
 //!
-//! Faithfulness note: the TS suite never passes an `apiKey` in the options,
-//! so `generateImages` throws "No API key for provider: openrouter" (and the
-//! live run fails after retries) even though the gate checks
-//! `OPENROUTER_API_KEY`. The Rust port reproduces this exactly — the same
-//! error surfaces as `stopReason: "error"` in the returned
-//! `AssistantImages` — rather than silently injecting the key.
+//! Deviation: the TS suite never passes an `apiKey` in the options, so its
+//! live run fails with "No API key for provider: openrouter" even though the
+//! gate checks `OPENROUTER_API_KEY`. With upstream no longer tracked
+//! (ADR-0043), the port threads the gated env key into `ImagesOptions`
+//! instead of reproducing the broken call.
 //!
 //! Deviation: vitest `{ retry: 3 }` has no Rust equivalent.
 
@@ -25,13 +24,23 @@ use common::live::{live_env, red_circle_base64, skip};
 use pi_core::ai::images::generate_images;
 use pi_core::ai::providers::builtin::builtin_images_models;
 use pi_core::ai::types::{
-    BlockContent, ImagesContext, ImagesModel, ImagesStopReason, ModelInput, TextContent,
+    BlockContent, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, ModelInput,
+    TextContent,
 };
 
 fn images_model() -> ImagesModel {
     builtin_images_models(Default::default())
         .get_model("openrouter", "google/gemini-2.5-flash-image")
         .expect("images model not found: openrouter/google/gemini-2.5-flash-image")
+}
+
+/// The gated env key threaded into the request options (see the header's
+/// deviation note).
+fn images_options() -> ImagesOptions {
+    ImagesOptions {
+        api_key: live_env("OPENROUTER_API_KEY"),
+        ..Default::default()
+    }
 }
 
 fn text_input(text: &str) -> BlockContent {
@@ -49,7 +58,7 @@ async fn basic_image_generation(model: &ImagesModel, case: &str) {
         )],
     };
 
-    let response = generate_images(model, &context, None)
+    let response = generate_images(model, &context, Some(&images_options()))
         .await
         .unwrap_or_else(|error| panic!("{case}: generateImages rejected: {error}"));
 
@@ -90,7 +99,7 @@ async fn handle_text_and_image_output(model: &ImagesModel, case: &str) {
         )],
     };
 
-    let response = generate_images(model, &context, None)
+    let response = generate_images(model, &context, Some(&images_options()))
         .await
         .unwrap_or_else(|error| panic!("{case}: generateImages rejected: {error}"));
 
@@ -139,7 +148,7 @@ async fn handle_image_input(model: &ImagesModel, case: &str) {
         ],
     };
 
-    let response = generate_images(model, &context, None)
+    let response = generate_images(model, &context, Some(&images_options()))
         .await
         .unwrap_or_else(|error| panic!("{case}: generateImages rejected: {error}"));
 
