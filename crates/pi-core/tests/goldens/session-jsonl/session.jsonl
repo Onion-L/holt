@@ -1,0 +1,15 @@
+{"kind":"header","version":4,"id":"golden-session","createdAt":1700000000000,"cwd":"/workspace/project"}
+{"kind":"entry","lane":"main","type":"message","id":"entry-1","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1700000000000},"parentId":null,"seq":1,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"message","id":"entry-2","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","thinkingSignature":"sig"},{"type":"text","text":"hi there"},{"type":"toolCall","id":"call-1","name":"bash","arguments":{"command":"ls"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":10,"output":20,"cacheRead":5,"cacheWrite":0,"totalTokens":35,"cost":{"input":0.1,"output":0.2,"cacheRead":0.05,"cacheWrite":0,"total":0.35}},"stopReason":"toolUse","timestamp":1700000000000},"parentId":"entry-1","seq":2,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"message","id":"entry-3","message":{"role":"toolResult","toolCallId":"call-1","toolName":"bash","content":[{"type":"text","text":"files"}],"details":{"exitCode":0},"isError":false,"timestamp":1700000000000},"parentId":"entry-2","seq":3,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"custom","id":"entry-4","customType":"note","data":{"text":"a custom note"},"parentId":"entry-3","seq":4,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"model_change","id":"model-1","provider":"openai","modelId":"gpt-5","parentId":"entry-4","seq":5,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"thinking_level_change","id":"thinking-1","thinkingLevel":"high","parentId":"model-1","seq":6,"timestamp":1700000000000}
+{"kind":"entry","lane":"main","type":"active_tools_change","id":"tools-1","activeToolNames":["bash","read"],"parentId":"thinking-1","seq":7,"timestamp":1700000000000}
+{"kind":"record","type":"operation_started","id":"run-1","lane":"main","sourceLeafId":null,"intent":{"kind":"run","originalPrompt":[],"initialMessages":[]},"seq":8,"timestamp":1700000000000}
+{"kind":"record","type":"usage","id":"usage-1","lane":"main","usage":{"input":10,"output":20,"cacheRead":5,"cacheWrite":0,"totalTokens":35,"cost":{"input":0.1,"output":0.2,"cacheRead":0.05,"cacheWrite":0,"total":0.35}},"cause":"assistant","runId":"run-1","entryId":"entry-2","attempt":1,"stopReason":"toolUse","seq":9,"timestamp":1700000000000}
+{"kind":"record","type":"operation_finished","id":"finish-1","lane":"main","runId":"run-1","outcome":"completed","seq":10,"timestamp":1700000000000}
+{"kind":"lane","seq":11,"lane":"thread","leafId":"entry-1"}
+{"kind":"entry","lane":"thread","type":"custom","id":"thread-note","customType":"thread","parentId":"entry-1","seq":12,"timestamp":1700000000000}
+{"kind":"fact","seq":13,"fact":"name","name":"Golden session"}
+{"kind":"fact","seq":14,"fact":"label","targetId":"entry-1","label":"checkpoint"}

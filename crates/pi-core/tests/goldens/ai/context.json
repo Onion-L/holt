@@ -1,0 +1,77 @@
+{
+	"systemPrompt": "You are pi.",
+	"messages": [
+		{
+			"role": "user",
+			"content": "Plain text prompt",
+			"timestamp": 1735689600002
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Done"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "openai",
+			"model": "gpt-5",
+			"usage": {
+				"input": 1,
+				"output": 2,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 3,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"timestamp": 1735689600001
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_1",
+			"toolName": "read_file",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello world"
+				},
+				{
+					"type": "image",
+					"data": "aGVsbG8=",
+					"mimeType": "image/png"
+				}
+			],
+			"isError": false,
+			"timestamp": 1735689600004
+		}
+	],
+	"tools": [
+		{
+			"name": "read_file",
+			"description": "Read a file",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "Path"
+					},
+					"limit": {
+						"type": "number"
+					}
+				},
+				"required": [
+					"path"
+				]
+			}
+		}
+	]
+}

@@ -1,0 +1,6 @@
+GitHub Enterprise URL/domain (blank for github.com) (company.ghe.com): 
+Open this URL in your browser:
+https://github.com/login/device
+Enter code: ABCD-EFGH
+
+Credentials saved to auth.json

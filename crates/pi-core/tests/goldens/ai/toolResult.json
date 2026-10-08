@@ -1,0 +1,18 @@
+{
+	"role": "toolResult",
+	"toolCallId": "call_1",
+	"toolName": "read_file",
+	"content": [
+		{
+			"type": "text",
+			"text": "Hello world"
+		},
+		{
+			"type": "image",
+			"data": "aGVsbG8=",
+			"mimeType": "image/png"
+		}
+	],
+	"isError": false,
+	"timestamp": 1735689600004
+}

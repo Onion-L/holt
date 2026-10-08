@@ -1,0 +1,6730 @@
+{
+  "version": 1,
+  "entries": {
+    "telemetry": {
+      "AttributeValue": {
+        "status": "mapped",
+        "rust": "AttributeValue",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "SpanAttributes": {
+        "status": "mapped",
+        "files": [
+          "index.ts"
+        ],
+        "rust": "SpanAttributes"
+      },
+      "SpanOptions": {
+        "status": "mapped",
+        "rust": "SpanOptions",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "SpanStatus": {
+        "status": "mapped",
+        "rust": "SpanStatus",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryContext": {
+        "status": "mapped",
+        "rust": "TelemetryContext",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetrySpan": {
+        "status": "mapped",
+        "rust": "TelemetrySpan",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "NOOP_TELEMETRY_CONTEXT": {
+        "status": "mapped",
+        "files": [
+          "index.ts",
+          "noop.ts"
+        ],
+        "rust": "noop_telemetry_context"
+      },
+      "TelemetryAttributeType": {
+        "status": "mapped",
+        "rust": "TelemetryAttributeType",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryAttributeMetadata": {
+        "status": "mapped",
+        "files": [
+          "index.ts"
+        ],
+        "rust": "TelemetryAttributeDefinition",
+        "note": "Attribute metadata fields are folded into the attribute definition."
+      },
+      "TelemetryAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryAttributeDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryStartAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryStartAttributeDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryEventAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryEventAttributeDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryEventDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryEventDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetryParentDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryParentDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetrySpanDefinition": {
+        "status": "mapped",
+        "rust": "TelemetrySpanDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetrySchemaDefinition": {
+        "status": "mapped",
+        "rust": "TelemetrySchemaDefinition",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "defineTelemetrySchema": {
+        "status": "mapped",
+        "rust": "define_telemetry_schema",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "InferRequiredAndOptionalAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferStartAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferOptionalAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "ExactTelemetryAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferEventAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanName": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanStartAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanEndAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanEventName": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanEventAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "SchemaTelemetrySpan": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanUnion": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TypedSpanStarter": {
+        "status": "mapped",
+        "rust": "TypedSpanStarter",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "createTypedSpanStarter": {
+        "status": "mapped",
+        "rust": "create_typed_span_starter",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "RecordedTelemetryEvent": {
+        "status": "mapped",
+        "rust": "RecordedTelemetryEvent",
+        "files": [
+          "index.ts",
+          "memory.ts"
+        ]
+      },
+      "RecordedTelemetrySpan": {
+        "status": "mapped",
+        "rust": "RecordedTelemetrySpan",
+        "files": [
+          "index.ts",
+          "memory.ts"
+        ]
+      },
+      "InMemoryTelemetryContext": {
+        "status": "mapped",
+        "rust": "InMemoryTelemetryContext",
+        "files": [
+          "index.ts",
+          "memory.ts"
+        ]
+      },
+      "createTelemetryAdapterConformance": {
+        "status": "mapped",
+        "rust": "create_telemetry_adapter_conformance",
+        "files": [
+          "testing/conformance.ts",
+          "testing/index.ts"
+        ]
+      },
+      "TelemetryAdapterConformanceCase": {
+        "status": "mapped",
+        "rust": "TelemetryAdapterConformanceCase",
+        "files": [
+          "testing/index.ts",
+          "testing/types.ts"
+        ]
+      },
+      "TelemetryAdapterFixture": {
+        "status": "mapped",
+        "rust": "TelemetryAdapterFixture",
+        "files": [
+          "testing/index.ts",
+          "testing/types.ts"
+        ]
+      },
+      "TelemetryAdapterFixtureFactory": {
+        "status": "mapped",
+        "rust": "TelemetryAdapterFixtureFactory",
+        "files": [
+          "testing/index.ts",
+          "testing/types.ts"
+        ]
+      }
+    },
+    "ai": {
+      "anthropicMessagesApi": {
+        "status": "mapped",
+        "rust": "anthropic_messages_api",
+        "files": [
+          "api/anthropic-messages.lazy.ts"
+        ]
+      },
+      "AnthropicEffort": {
+        "status": "mapped",
+        "rust": "AnthropicEffort",
+        "files": [
+          "api/anthropic-messages.ts",
+          "index.ts"
+        ]
+      },
+      "AnthropicThinkingDisplay": {
+        "status": "mapped",
+        "rust": "AnthropicThinkingDisplay",
+        "files": [
+          "api/anthropic-messages.ts",
+          "index.ts"
+        ]
+      },
+      "AnthropicOptions": {
+        "status": "mapped",
+        "rust": "AnthropicOptions",
+        "files": [
+          "api/anthropic-messages.ts",
+          "index.ts"
+        ]
+      },
+      "stream": {
+        "status": "mapped",
+        "rust": "stream",
+        "files": [
+          "api/anthropic-messages.ts",
+          "api/azure-openai-responses.ts",
+          "api/bedrock-converse-stream.ts",
+          "api/google-generative-ai.ts",
+          "api/google-vertex.ts",
+          "api/mistral-conversations.ts",
+          "api/openai-codex-responses.ts",
+          "api/openai-completions.ts",
+          "api/openai-responses.ts",
+          "api/pi-messages.ts",
+          "compat.ts"
+        ]
+      },
+      "streamSimple": {
+        "status": "mapped",
+        "rust": "stream_simple",
+        "files": [
+          "api/anthropic-messages.ts",
+          "api/azure-openai-responses.ts",
+          "api/bedrock-converse-stream.ts",
+          "api/google-generative-ai.ts",
+          "api/google-vertex.ts",
+          "api/mistral-conversations.ts",
+          "api/openai-codex-responses.ts",
+          "api/openai-completions.ts",
+          "api/openai-responses.ts",
+          "api/pi-messages.ts",
+          "compat.ts"
+        ]
+      },
+      "azureOpenAIResponsesApi": {
+        "status": "mapped",
+        "rust": "azure_openai_responses_api",
+        "files": [
+          "api/azure-openai-responses.lazy.ts"
+        ]
+      },
+      "AzureOpenAIResponsesOptions": {
+        "status": "mapped",
+        "rust": "AzureOpenAIResponsesOptions",
+        "files": [
+          "api/azure-openai-responses.ts",
+          "index.ts"
+        ]
+      },
+      "setBedrockProviderModule": {
+        "status": "exception",
+        "files": [
+          "api/bedrock-converse-stream.lazy.ts"
+        ],
+        "reason": "Setter for the Bun static-embed Bedrock module; not applicable with Rust static linking."
+      },
+      "bedrockConverseStreamApi": {
+        "status": "mapped",
+        "rust": "bedrock_converse_stream_api",
+        "files": [
+          "api/bedrock-converse-stream.lazy.ts"
+        ]
+      },
+      "BedrockThinkingDisplay": {
+        "status": "mapped",
+        "rust": "BedrockThinkingDisplay",
+        "files": [
+          "api/bedrock-converse-stream.ts",
+          "index.ts"
+        ]
+      },
+      "BedrockOptions": {
+        "status": "mapped",
+        "rust": "BedrockOptions",
+        "files": [
+          "api/bedrock-converse-stream.ts",
+          "index.ts"
+        ]
+      },
+      "AiGatewayBinding": {
+        "status": "mapped",
+        "rust": "AiGatewayBinding",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ]
+      },
+      "AiGatewayBindingGateway": {
+        "status": "mapped",
+        "rust": "AiGatewayBindingGateway",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ]
+      },
+      "AiGatewayUniversalRequestLike": {
+        "status": "mapped",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ],
+        "rust": "AiGatewayUniversalRequest",
+        "note": "The structural `Like` type collapses to the concrete struct."
+      },
+      "CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL": {
+        "status": "mapped",
+        "rust": "CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ]
+      },
+      "GatewayBindingFetchOptions": {
+        "status": "mapped",
+        "rust": "GatewayBindingFetchOptions",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ]
+      },
+      "createGatewayBindingFetch": {
+        "status": "mapped",
+        "rust": "create_gateway_binding_fetch",
+        "files": [
+          "api/cloudflare-gateway-binding.ts"
+        ]
+      },
+      "CLOUDFLARE_WORKERS_AI_BASE_URL": {
+        "status": "mapped",
+        "rust": "CLOUDFLARE_WORKERS_AI_BASE_URL",
+        "files": [
+          "api/cloudflare.ts"
+        ]
+      },
+      "CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL": {
+        "status": "mapped",
+        "rust": "CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL",
+        "files": [
+          "api/cloudflare.ts"
+        ]
+      },
+      "CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL": {
+        "status": "mapped",
+        "rust": "CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL",
+        "files": [
+          "api/cloudflare.ts"
+        ]
+      },
+      "CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL": {
+        "status": "mapped",
+        "rust": "CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL",
+        "files": [
+          "api/cloudflare.ts"
+        ]
+      },
+      "makeStrictJsonSchema": {
+        "status": "mapped",
+        "rust": "make_strict_json_schema",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "getJsonSchemaToolParameters": {
+        "status": "mapped",
+        "rust": "get_json_schema_tool_parameters",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "GrammarConstrainedSampling": {
+        "status": "mapped",
+        "rust": "GrammarConstrainedSampling",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "GrammarToolInputJsonBuffer": {
+        "status": "mapped",
+        "rust": "GrammarToolInputJsonBuffer",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "getGrammarToolInput": {
+        "status": "mapped",
+        "rust": "get_grammar_tool_input",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "appendGrammarToolInputJsonDelta": {
+        "status": "mapped",
+        "rust": "append_grammar_tool_input_json_delta",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "resolveJsonSchemaStrictSampling": {
+        "status": "mapped",
+        "rust": "resolve_json_schema_strict_sampling",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "resolveGrammarConstrainedSampling": {
+        "status": "mapped",
+        "rust": "resolve_grammar_constrained_sampling",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "createGrammarToolInputProperties": {
+        "status": "mapped",
+        "rust": "create_grammar_tool_input_properties",
+        "files": [
+          "api/constrained-sampling.ts"
+        ]
+      },
+      "inferCopilotInitiator": {
+        "status": "mapped",
+        "rust": "infer_copilot_initiator",
+        "files": [
+          "api/github-copilot-headers.ts"
+        ]
+      },
+      "hasCopilotVisionInput": {
+        "status": "mapped",
+        "rust": "has_copilot_vision_input",
+        "files": [
+          "api/github-copilot-headers.ts"
+        ]
+      },
+      "buildCopilotDynamicHeaders": {
+        "status": "mapped",
+        "rust": "build_copilot_dynamic_headers",
+        "files": [
+          "api/github-copilot-headers.ts"
+        ]
+      },
+      "googleGenerativeAIApi": {
+        "status": "mapped",
+        "rust": "google_generative_ai_api",
+        "files": [
+          "api/google-generative-ai.lazy.ts"
+        ]
+      },
+      "GoogleOptions": {
+        "status": "mapped",
+        "rust": "GoogleOptions",
+        "files": [
+          "api/google-generative-ai.ts",
+          "index.ts"
+        ]
+      },
+      "GoogleApiThinkingLevel": {
+        "status": "mapped",
+        "rust": "GoogleApiThinkingLevel",
+        "files": [
+          "api/google-shared.ts",
+          "index.ts"
+        ]
+      },
+      "ResolvedGoogleThinkingLevel": {
+        "status": "mapped",
+        "files": [
+          "api/google-shared.ts",
+          "index.ts"
+        ],
+        "rust": "resolve_google_thinking_level",
+        "note": "The TS Exclude<> subset is enforced at runtime by resolve_google_thinking_level."
+      },
+      "resolveGoogleThinkingLevel": {
+        "status": "mapped",
+        "rust": "resolve_google_thinking_level",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "isThinkingPart": {
+        "status": "mapped",
+        "rust": "is_thinking_part",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "retainThoughtSignature": {
+        "status": "mapped",
+        "rust": "retain_thought_signature",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "requiresToolCallId": {
+        "status": "mapped",
+        "rust": "requires_tool_call_id",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "convertMessages": {
+        "status": "mapped",
+        "rust": "convert_messages",
+        "files": [
+          "api/google-shared.ts",
+          "api/openai-completions.ts"
+        ]
+      },
+      "convertTools": {
+        "status": "mapped",
+        "rust": "convert_tools",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "supportsGoogleStrictToolSampling": {
+        "status": "mapped",
+        "rust": "supports_google_strict_tool_sampling",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "mapToolChoice": {
+        "status": "mapped",
+        "rust": "map_tool_choice",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "resolveGoogleFunctionCallingMode": {
+        "status": "mapped",
+        "rust": "resolve_google_function_calling_mode",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "mapStopReason": {
+        "status": "mapped",
+        "files": [
+          "api/google-shared.ts"
+        ],
+        "rust": "map_stop_reason_string",
+        "note": "The SDK FinishReason enum collapses to the raw string form in the raw-HTTP port; the mapping (STOP->stop, MAX_TOKENS->length, else error) is identical."
+      },
+      "mapStopReasonString": {
+        "status": "mapped",
+        "rust": "map_stop_reason_string",
+        "files": [
+          "api/google-shared.ts"
+        ]
+      },
+      "retryGoogleRequest": {
+        "status": "mapped",
+        "files": [
+          "api/google-shared.ts"
+        ],
+        "rust": "retry_provider_request",
+        "note": "Equivalent public facade: the TS ApiError header-normalization shim is inherent because the Rust google adapters construct ProviderHttpError (headers included) before retrying."
+      },
+      "googleVertexApi": {
+        "status": "mapped",
+        "rust": "google_vertex_api",
+        "files": [
+          "api/google-vertex.lazy.ts"
+        ]
+      },
+      "GoogleVertexOptions": {
+        "status": "mapped",
+        "rust": "GoogleVertexOptions",
+        "files": [
+          "api/google-vertex.ts",
+          "index.ts"
+        ]
+      },
+      "lazyStream": {
+        "status": "mapped",
+        "rust": "lazy_stream",
+        "files": [
+          "api/lazy.ts"
+        ]
+      },
+      "LazyApiCapabilities": {
+        "status": "exception",
+        "files": [
+          "api/lazy.ts"
+        ],
+        "reason": "Compile-time capabilities type of the lazy api wrapper; the statically linked adapters expose the same surface directly."
+      },
+      "lazyApi": {
+        "status": "exception",
+        "files": [
+          "api/lazy.ts"
+        ],
+        "reason": "Defers loading an api adapter module at runtime; Rust links api adapters statically, so the lazy seam is a compile-time no-op."
+      },
+      "mistralConversationsApi": {
+        "status": "mapped",
+        "rust": "mistral_conversations_api",
+        "files": [
+          "api/mistral-conversations.lazy.ts"
+        ]
+      },
+      "MistralOptions": {
+        "status": "mapped",
+        "rust": "MistralOptions",
+        "files": [
+          "api/mistral-conversations.ts",
+          "index.ts"
+        ]
+      },
+      "openAICodexResponsesApi": {
+        "status": "mapped",
+        "rust": "openai_codex_responses_api",
+        "files": [
+          "api/openai-codex-responses.lazy.ts"
+        ]
+      },
+      "OpenAICodexResponsesOptions": {
+        "status": "mapped",
+        "rust": "OpenAICodexResponsesOptions",
+        "files": [
+          "api/openai-codex-responses.ts",
+          "index.ts"
+        ]
+      },
+      "OpenAICodexWebSocketDebugStats": {
+        "status": "mapped",
+        "rust": "OpenAICodexWebSocketDebugStats",
+        "files": [
+          "api/openai-codex-responses.ts",
+          "index.ts"
+        ]
+      },
+      "getOpenAICodexWebSocketDebugStats": {
+        "status": "mapped",
+        "rust": "get_openai_codex_websocket_debug_stats",
+        "files": [
+          "api/openai-codex-responses.ts"
+        ]
+      },
+      "resetOpenAICodexWebSocketDebugStats": {
+        "status": "mapped",
+        "rust": "reset_openai_codex_websocket_debug_stats",
+        "files": [
+          "api/openai-codex-responses.ts"
+        ]
+      },
+      "closeOpenAICodexWebSocketSessions": {
+        "status": "mapped",
+        "rust": "close_openai_codex_websocket_sessions",
+        "files": [
+          "api/openai-codex-responses.ts"
+        ]
+      },
+      "openAICompletionsApi": {
+        "status": "mapped",
+        "rust": "openai_completions_api",
+        "files": [
+          "api/openai-completions.lazy.ts"
+        ]
+      },
+      "OpenAICompletionsOptions": {
+        "status": "mapped",
+        "rust": "OpenAICompletionsOptions",
+        "files": [
+          "api/openai-completions.ts",
+          "index.ts"
+        ]
+      },
+      "ConvertCompletionsMessagesOptions": {
+        "status": "mapped",
+        "files": [
+          "api/openai-completions.ts"
+        ],
+        "rust": "GrammarToolInputProperties",
+        "note": "The single-field options object rides as the positional grammar_tool_input_properties argument of the public convert_messages."
+      },
+      "OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH": {
+        "status": "mapped",
+        "rust": "OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH",
+        "files": [
+          "api/openai-prompt-cache.ts"
+        ]
+      },
+      "clampOpenAIPromptCacheKey": {
+        "status": "mapped",
+        "rust": "clamp_openai_prompt_cache_key",
+        "files": [
+          "api/openai-prompt-cache.ts"
+        ]
+      },
+      "OpenAIResponsesStreamOptions": {
+        "status": "mapped",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ],
+        "rust": "ResponsesStreamOptions"
+      },
+      "ConvertResponsesMessagesOptions": {
+        "status": "mapped",
+        "rust": "ConvertResponsesMessagesOptions",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ]
+      },
+      "ConvertResponsesToolsOptions": {
+        "status": "mapped",
+        "rust": "ConvertResponsesToolsOptions",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ]
+      },
+      "convertResponsesMessages": {
+        "status": "mapped",
+        "rust": "convert_responses_messages",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ]
+      },
+      "convertResponsesTools": {
+        "status": "mapped",
+        "rust": "convert_responses_tools",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ]
+      },
+      "processResponsesStream": {
+        "status": "mapped",
+        "rust": "process_responses_stream",
+        "files": [
+          "api/openai-responses-shared.ts"
+        ]
+      },
+      "openAIResponsesApi": {
+        "status": "mapped",
+        "rust": "openai_responses_api",
+        "files": [
+          "api/openai-responses.lazy.ts"
+        ]
+      },
+      "OpenAIResponsesOptions": {
+        "status": "mapped",
+        "rust": "OpenAIResponsesOptions",
+        "files": [
+          "api/openai-responses.ts",
+          "index.ts"
+        ]
+      },
+      "openrouterImagesApi": {
+        "status": "exception",
+        "files": [
+          "api/openrouter-images.lazy.ts"
+        ],
+        "rust": "generate_images",
+        "reason": "Lazy-load wrapper module for the openrouter-images api; Rust links the adapter statically (ai::api::openrouter_images::generate_images)."
+      },
+      "generateImages": {
+        "status": "mapped",
+        "rust": "generate_images",
+        "files": [
+          "api/openrouter-images.ts",
+          "images.ts"
+        ]
+      },
+      "piMessagesApi": {
+        "status": "mapped",
+        "rust": "pi_messages_api",
+        "files": [
+          "api/pi-messages.lazy.ts"
+        ]
+      },
+      "PiMessagesOptions": {
+        "status": "mapped",
+        "rust": "PiMessagesOptions",
+        "files": [
+          "api/pi-messages.ts",
+          "index.ts"
+        ]
+      },
+      "PiMessagesRewriteImpact": {
+        "status": "mapped",
+        "rust": "PiMessagesRewriteImpact",
+        "files": [
+          "api/pi-messages.ts",
+          "index.ts"
+        ]
+      },
+      "PiMessagesEvent": {
+        "status": "mapped",
+        "files": [
+          "api/pi-messages.ts",
+          "index.ts"
+        ],
+        "rust": "PiMessagesEvent"
+      },
+      "PiMessagesResponseError": {
+        "status": "mapped",
+        "files": [
+          "api/pi-messages.ts"
+        ],
+        "rust": "StreamFailure",
+        "note": "Made public; same message/code/diagnostic-details payload, threaded into the stream error event instead of thrown."
+      },
+      "clampMaxTokensToContext": {
+        "status": "mapped",
+        "rust": "clamp_max_tokens_to_context",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "buildBaseOptions": {
+        "status": "mapped",
+        "rust": "build_base_options",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "MIN_ANSWER_TOKENS": {
+        "status": "mapped",
+        "rust": "MIN_ANSWER_TOKENS",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "DEFAULT_THINKING_BUDGETS": {
+        "status": "mapped",
+        "rust": "default_thinking_budgets",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "clampReasoning": {
+        "status": "mapped",
+        "rust": "clamp_reasoning",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "thinkingBudgetForLevel": {
+        "status": "mapped",
+        "rust": "thinking_budget_for_level",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "clampThinkingBudgetToAnswerRoom": {
+        "status": "mapped",
+        "rust": "clamp_thinking_budget_to_answer_room",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "adjustMaxTokensForThinking": {
+        "status": "mapped",
+        "rust": "adjust_max_tokens_for_thinking",
+        "files": [
+          "api/simple-options.ts"
+        ]
+      },
+      "transformMessages": {
+        "status": "mapped",
+        "rust": "transform_messages",
+        "files": [
+          "api/transform-messages.ts"
+        ]
+      },
+      "defaultProviderAuthContext": {
+        "status": "mapped",
+        "rust": "default_provider_auth_context",
+        "files": [
+          "auth/context.ts"
+        ]
+      },
+      "InMemoryCredentialStore": {
+        "status": "mapped",
+        "rust": "InMemoryCredentialStore",
+        "files": [
+          "auth/credential-store.ts"
+        ]
+      },
+      "envApiKeyAuth": {
+        "status": "mapped",
+        "rust": "env_api_key_auth",
+        "files": [
+          "auth/helpers.ts"
+        ]
+      },
+      "lazyOAuth": {
+        "status": "exception",
+        "files": [
+          "auth/helpers.ts"
+        ],
+        "reason": "Defers loading an OAuth flow module; Rust links flows statically (create_*_oauth constructors)."
+      },
+      "anthropicOAuth": {
+        "status": "mapped",
+        "rust": "anthropic_oauth",
+        "files": [
+          "auth/oauth/anthropic.ts"
+        ]
+      },
+      "OAuthDeviceCodePollResult": {
+        "status": "mapped",
+        "rust": "OAuthDeviceCodePollResult",
+        "files": [
+          "auth/oauth/device-code.ts"
+        ]
+      },
+      "OAuthDeviceCodePollOptions": {
+        "status": "mapped",
+        "rust": "OAuthDeviceCodePollOptions",
+        "files": [
+          "auth/oauth/device-code.ts"
+        ]
+      },
+      "abortableSleep": {
+        "status": "mapped",
+        "rust": "abortable_sleep",
+        "files": [
+          "auth/oauth/device-code.ts"
+        ]
+      },
+      "pollOAuthDeviceCodeFlow": {
+        "status": "mapped",
+        "rust": "poll_oauth_device_code_flow",
+        "files": [
+          "auth/oauth/device-code.ts"
+        ]
+      },
+      "githubCopilotOAuth": {
+        "status": "mapped",
+        "rust": "github_copilot_oauth",
+        "files": [
+          "auth/oauth/github-copilot.ts"
+        ]
+      },
+      "kimiCodingOAuth": {
+        "status": "mapped",
+        "rust": "kimi_coding_oauth",
+        "files": [
+          "auth/oauth/kimi-coding.ts"
+        ]
+      },
+      "registerBundledOAuthFlowLoaders": {
+        "status": "exception",
+        "files": [
+          "auth/oauth/load.ts"
+        ],
+        "reason": "Bundler-only hook for embedding OAuth flow loaders; with static linking there is no dynamic loader layer (documented in src/ai/auth/oauth/load.rs)."
+      },
+      "loadAnthropicOAuth": {
+        "status": "mapped",
+        "rust": "load_anthropic_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadOpenAICodexOAuth": {
+        "status": "mapped",
+        "rust": "load_openai_codex_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadGitHubCopilotOAuth": {
+        "status": "mapped",
+        "rust": "load_github_copilot_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadOpenRouterOAuth": {
+        "status": "mapped",
+        "rust": "load_open_router_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadKimiCodingOAuth": {
+        "status": "mapped",
+        "rust": "load_kimi_coding_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadXaiOAuth": {
+        "status": "mapped",
+        "rust": "load_xai_oauth",
+        "files": [
+          "auth/oauth/load.ts"
+        ]
+      },
+      "loadRadiusOAuth": {
+        "status": "exception",
+        "files": [
+          "auth/oauth/load.ts"
+        ],
+        "rust": "create_radius_oauth",
+        "reason": "Per-flow lazy loader; Rust constructs the flow directly via create_radius_oauth (static linking)."
+      },
+      "oauthSuccessHtml": {
+        "status": "mapped",
+        "rust": "oauth_success_html",
+        "files": [
+          "auth/oauth/oauth-page.ts"
+        ]
+      },
+      "oauthErrorHtml": {
+        "status": "mapped",
+        "rust": "oauth_error_html",
+        "files": [
+          "auth/oauth/oauth-page.ts"
+        ]
+      },
+      "openaiCodexOAuth": {
+        "status": "mapped",
+        "rust": "openai_codex_oauth",
+        "files": [
+          "auth/oauth/openai-codex.ts"
+        ]
+      },
+      "openRouterOAuth": {
+        "status": "mapped",
+        "rust": "open_router_oauth",
+        "files": [
+          "auth/oauth/openrouter.ts"
+        ]
+      },
+      "generatePKCE": {
+        "status": "mapped",
+        "rust": "generate_pkce",
+        "files": [
+          "auth/oauth/pkce.ts"
+        ]
+      },
+      "RadiusOAuthOptions": {
+        "status": "mapped",
+        "rust": "RadiusOAuthOptions",
+        "files": [
+          "auth/oauth/radius.ts"
+        ]
+      },
+      "createRadiusOAuth": {
+        "status": "mapped",
+        "rust": "create_radius_oauth",
+        "files": [
+          "auth/oauth/radius.ts"
+        ]
+      },
+      "xaiOAuth": {
+        "status": "mapped",
+        "rust": "xai_oauth",
+        "files": [
+          "auth/oauth/xai.ts"
+        ]
+      },
+      "ModelsErrorCode": {
+        "status": "mapped",
+        "rust": "ModelsErrorCode",
+        "files": [
+          "auth/resolve.ts",
+          "models.ts"
+        ]
+      },
+      "AuthResolutionOverrides": {
+        "status": "mapped",
+        "rust": "AuthResolutionOverrides",
+        "files": [
+          "auth/resolve.ts"
+        ]
+      },
+      "ModelsError": {
+        "status": "mapped",
+        "rust": "ModelsError",
+        "files": [
+          "auth/resolve.ts",
+          "models.ts"
+        ]
+      },
+      "resolveProviderAuth": {
+        "status": "mapped",
+        "rust": "resolve_provider_auth",
+        "files": [
+          "auth/resolve.ts"
+        ]
+      },
+      "ModelAuth": {
+        "status": "mapped",
+        "rust": "ModelAuth",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "ApiKeyCredential": {
+        "status": "mapped",
+        "rust": "ApiKeyCredential",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "OAuthCredentials": {
+        "status": "mapped",
+        "rust": "OAuthCredentials",
+        "files": [
+          "auth/types.ts",
+          "compat/extension-oauth-types.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthCredential": {
+        "status": "mapped",
+        "rust": "OAuthCredential",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "Credential": {
+        "status": "mapped",
+        "rust": "Credential",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "CredentialInfo": {
+        "status": "mapped",
+        "rust": "CredentialInfo",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthOperationOptions": {
+        "status": "mapped",
+        "rust": "AuthOperationOptions",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "CredentialStore": {
+        "status": "mapped",
+        "files": [
+          "auth/types.ts"
+        ],
+        "rust": "CredentialStore"
+      },
+      "AuthContext": {
+        "status": "mapped",
+        "rust": "AuthContext",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthResult": {
+        "status": "mapped",
+        "rust": "AuthResult",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthCheck": {
+        "status": "mapped",
+        "rust": "AuthCheck",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthType": {
+        "status": "mapped",
+        "rust": "AuthType",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthPrompt": {
+        "status": "mapped",
+        "rust": "AuthPrompt",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthInfoLink": {
+        "status": "mapped",
+        "rust": "AuthInfoLink",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthEvent": {
+        "status": "mapped",
+        "rust": "AuthEvent",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "AuthInteraction": {
+        "status": "mapped",
+        "rust": "AuthInteraction",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "ProviderAuthInteraction": {
+        "status": "mapped",
+        "files": [
+          "auth/types.ts"
+        ],
+        "rust": "AuthInteraction",
+        "note": "The abort signal rides the async trait methods in Rust."
+      },
+      "ApiKeyAuth": {
+        "status": "mapped",
+        "rust": "ApiKeyAuth",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "OAuthAuth": {
+        "status": "mapped",
+        "rust": "OAuthAuth",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "ProviderAuth": {
+        "status": "mapped",
+        "rust": "ProviderAuth",
+        "files": [
+          "auth/types.ts"
+        ]
+      },
+      "bedrockProviderModule": {
+        "status": "exception",
+        "files": [
+          "bedrock-provider.ts"
+        ],
+        "rust": "bedrock_converse_stream_api",
+        "reason": "Bun static-embed module object for the Bedrock provider; the Rust adapter is ai::providers::apis::bedrock_converse_stream_api."
+      },
+      "registerBunOAuthFlows": {
+        "status": "exception",
+        "files": [
+          "bun-oauth.ts"
+        ],
+        "reason": "Bun-runtime loader registration; Rust links OAuth flows statically."
+      },
+      "OAuthPrompt": {
+        "status": "mapped",
+        "rust": "OAuthPrompt",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthAuthInfo": {
+        "status": "mapped",
+        "rust": "OAuthAuthInfo",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthDeviceCodeInfo": {
+        "status": "mapped",
+        "rust": "OAuthDeviceCodeInfo",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthSelectOption": {
+        "status": "mapped",
+        "rust": "OAuthSelectOption",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthSelectPrompt": {
+        "status": "mapped",
+        "rust": "OAuthSelectPrompt",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "OAuthLoginCallbacks": {
+        "status": "mapped",
+        "rust": "OAuthLoginCallbacks",
+        "files": [
+          "compat/extension-oauth-types.ts",
+          "index.ts",
+          "oauth.ts"
+        ]
+      },
+      "BuiltinProvider": {
+        "status": "exception",
+        "files": [
+          "compat.ts",
+          "providers/all.ts"
+        ],
+        "rust": "get_builtin_providers",
+        "reason": "keyof-MODELS string-literal union; Rust passes provider id strings (get_builtin_providers lists ids)."
+      },
+      "getModel": {
+        "status": "mapped",
+        "rust": "get_model",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "getModels": {
+        "status": "mapped",
+        "rust": "get_models",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "getProviders": {
+        "status": "mapped",
+        "rust": "get_providers",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "ApiStreamFunction": {
+        "status": "mapped",
+        "files": [
+          "compat.ts"
+        ],
+        "rust": "ApiStreamFn"
+      },
+      "ApiStreamSimpleFunction": {
+        "status": "mapped",
+        "files": [
+          "compat.ts"
+        ],
+        "rust": "ApiStreamSimpleFn"
+      },
+      "ApiProvider": {
+        "status": "mapped",
+        "rust": "ApiProvider",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "registerApiProvider": {
+        "status": "mapped",
+        "rust": "register_api_provider",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "getApiProvider": {
+        "status": "mapped",
+        "rust": "get_api_provider",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "getApiProviders": {
+        "status": "mapped",
+        "rust": "get_api_providers",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "unregisterApiProviders": {
+        "status": "mapped",
+        "rust": "unregister_api_providers",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "registerFauxProvider": {
+        "status": "mapped",
+        "rust": "register_faux_provider",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "registerBuiltInApiProviders": {
+        "status": "mapped",
+        "files": [
+          "compat.ts"
+        ],
+        "rust": "register_built_in_api_providers"
+      },
+      "resetApiProviders": {
+        "status": "mapped",
+        "rust": "reset_api_providers",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "complete": {
+        "status": "mapped",
+        "rust": "complete",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "completeSimple": {
+        "status": "mapped",
+        "rust": "complete_simple",
+        "files": [
+          "compat.ts"
+        ]
+      },
+      "ANTHROPIC_AUTH_TOKEN_ENV": {
+        "status": "mapped",
+        "rust": "ANTHROPIC_AUTH_TOKEN_ENV",
+        "files": [
+          "env-api-keys.ts"
+        ]
+      },
+      "ANTHROPIC_OAUTH_TOKEN_ENV": {
+        "status": "mapped",
+        "rust": "ANTHROPIC_OAUTH_TOKEN_ENV",
+        "files": [
+          "env-api-keys.ts"
+        ]
+      },
+      "ANTHROPIC_API_KEY_ENV": {
+        "status": "mapped",
+        "rust": "ANTHROPIC_API_KEY_ENV",
+        "files": [
+          "env-api-keys.ts"
+        ]
+      },
+      "findEnvKeys": {
+        "status": "mapped",
+        "rust": "find_env_keys",
+        "files": [
+          "env-api-keys.ts",
+          "env-api-keys.ts",
+          "env-api-keys.ts"
+        ]
+      },
+      "getEnvApiKey": {
+        "status": "mapped",
+        "rust": "get_env_api_key",
+        "files": [
+          "env-api-keys.ts",
+          "env-api-keys.ts",
+          "env-api-keys.ts"
+        ]
+      },
+      "IMAGE_MODELS": {
+        "status": "mapped",
+        "rust": "image_models",
+        "files": [
+          "image-models.generated.ts"
+        ]
+      },
+      "getImageModel": {
+        "status": "mapped",
+        "files": [
+          "image-models.ts"
+        ],
+        "rust": "image_model"
+      },
+      "getImageProviders": {
+        "status": "mapped",
+        "files": [
+          "image-models.ts"
+        ],
+        "rust": "image_provider_ids"
+      },
+      "getImageModels": {
+        "status": "mapped",
+        "files": [
+          "image-models.ts"
+        ],
+        "rust": "image_models_for_provider"
+      },
+      "ImagesApiFunction": {
+        "status": "mapped",
+        "files": [
+          "images-api-registry.ts"
+        ],
+        "rust": "ImagesApiFunction"
+      },
+      "ImagesApiProvider": {
+        "status": "mapped",
+        "files": [
+          "images-api-registry.ts"
+        ],
+        "rust": "ImagesApiProvider"
+      },
+      "registerImagesApiProvider": {
+        "status": "mapped",
+        "files": [
+          "images-api-registry.ts"
+        ],
+        "rust": "register_images_api_provider"
+      },
+      "getImagesApiProvider": {
+        "status": "mapped",
+        "files": [
+          "images-api-registry.ts"
+        ],
+        "rust": "get_images_api_provider"
+      },
+      "ImagesProvider": {
+        "status": "mapped",
+        "rust": "ImagesProvider",
+        "files": [
+          "images-models.ts"
+        ]
+      },
+      "ImagesModels": {
+        "status": "mapped",
+        "files": [
+          "images-models.ts"
+        ],
+        "rust": "ImagesModels"
+      },
+      "MutableImagesModels": {
+        "status": "mapped",
+        "files": [
+          "images-models.ts"
+        ],
+        "rust": "ImagesModels",
+        "note": "Single mutable collection type."
+      },
+      "createImagesModels": {
+        "status": "mapped",
+        "rust": "create_images_models",
+        "files": [
+          "images-models.ts"
+        ]
+      },
+      "CreateImagesProviderOptions": {
+        "status": "mapped",
+        "rust": "CreateImagesProviderOptions",
+        "files": [
+          "images-models.ts"
+        ]
+      },
+      "createImagesProvider": {
+        "status": "mapped",
+        "rust": "create_images_provider",
+        "files": [
+          "images-models.ts"
+        ]
+      },
+      "Static": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "rust": "serde_json::Value",
+        "reason": "TypeBox Static-type extractor; Rust schemas are serde-based by design."
+      },
+      "TSchema": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeBox schema representation; Rust uses serde/serde_json rather than emulating TypeBox."
+      },
+      "Type": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeBox schema builder; Rust uses serde and concrete struct/enum types by design."
+      },
+      "contentText": {
+        "status": "mapped",
+        "rust": "content_text",
+        "files": [
+          "index.ts",
+          "utils/text.ts"
+        ]
+      },
+      "uuidv7": {
+        "status": "mapped",
+        "rust": "uuidv7",
+        "files": [
+          "index.ts",
+          "utils/uuid.ts"
+        ]
+      },
+      "streamAnthropic": {
+        "status": "mapped",
+        "rust": "stream_anthropic",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleAnthropic": {
+        "status": "mapped",
+        "rust": "stream_simple_anthropic",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamAzureOpenAIResponses": {
+        "status": "mapped",
+        "rust": "stream_azure_openai_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleAzureOpenAIResponses": {
+        "status": "mapped",
+        "rust": "stream_simple_azure_openai_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamGoogle": {
+        "status": "mapped",
+        "rust": "stream_google",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleGoogle": {
+        "status": "mapped",
+        "rust": "stream_simple_google",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamGoogleVertex": {
+        "status": "mapped",
+        "rust": "stream_google_vertex",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleGoogleVertex": {
+        "status": "mapped",
+        "rust": "stream_simple_google_vertex",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamMistral": {
+        "status": "mapped",
+        "rust": "stream_mistral",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleMistral": {
+        "status": "mapped",
+        "rust": "stream_simple_mistral",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamOpenAICodexResponses": {
+        "status": "mapped",
+        "rust": "stream_openai_codex_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleOpenAICodexResponses": {
+        "status": "mapped",
+        "rust": "stream_simple_openai_codex_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamOpenAICompletions": {
+        "status": "mapped",
+        "rust": "stream_openai_completions",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleOpenAICompletions": {
+        "status": "mapped",
+        "rust": "stream_simple_openai_completions",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamOpenAIResponses": {
+        "status": "mapped",
+        "rust": "stream_openai_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "streamSimpleOpenAIResponses": {
+        "status": "mapped",
+        "rust": "stream_simple_openai_responses",
+        "files": [
+          "legacy-api-aliases.ts"
+        ]
+      },
+      "ModelGroups": {
+        "status": "exception",
+        "files": [
+          "model-catalog.ts"
+        ],
+        "reason": "Compile-time grouping helper over catalog keys (model-catalog.ts); runtime reads go through models_for_provider."
+      },
+      "ModelCatalog": {
+        "status": "mapped",
+        "rust": "model_catalog",
+        "files": [
+          "model-catalog.ts"
+        ]
+      },
+      "flattenModelCatalog": {
+        "status": "mapped",
+        "rust": "flatten_model_catalog",
+        "files": [
+          "model-catalog.ts"
+        ]
+      },
+      "ModelsStoreEntry": {
+        "status": "mapped",
+        "rust": "ModelsStoreEntry",
+        "files": [
+          "models-store.ts"
+        ]
+      },
+      "ModelsStoreOperationOptions": {
+        "status": "mapped",
+        "rust": "ModelsStoreOperationOptions",
+        "files": [
+          "models-store.ts"
+        ]
+      },
+      "ModelsStore": {
+        "status": "mapped",
+        "files": [
+          "models-store.ts"
+        ],
+        "rust": "ModelsStore"
+      },
+      "InMemoryModelsStore": {
+        "status": "mapped",
+        "rust": "InMemoryModelsStore",
+        "files": [
+          "models-store.ts"
+        ]
+      },
+      "MODELS": {
+        "status": "mapped",
+        "files": [
+          "models.generated.ts"
+        ],
+        "rust": "models",
+        "note": "models_generated::models() is the generated catalog accessor."
+      },
+      "ModelsPublication": {
+        "status": "mapped",
+        "rust": "ModelsPublication",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "RefreshModelsContext": {
+        "status": "mapped",
+        "rust": "RefreshModelsContext",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "ModelsRefreshOptions": {
+        "status": "mapped",
+        "rust": "ModelsRefreshOptions",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "ModelsRefreshResult": {
+        "status": "mapped",
+        "rust": "ModelsRefreshResult",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "ModelsRequestTransforms": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "TransformHeadersFn",
+        "note": "Mixin folded into each Rust options struct as transform_headers."
+      },
+      "ModelsApiStreamOptions": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "TransformHeadersFn",
+        "note": "Per-call transform_headers accompanies the Models stream options (applied in the Models::stream request path)."
+      },
+      "ModelsSimpleStreamOptions": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "TransformHeadersFn",
+        "note": "Same fold for the simple-stream path."
+      },
+      "ModelsDeferredFetchOptions": {
+        "status": "mapped",
+        "rust": "ModelsDeferredFetchOptions",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "ModelsDeferredCancelOptions": {
+        "status": "mapped",
+        "rust": "ModelsDeferredCancelOptions",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "Provider": {
+        "status": "mapped",
+        "rust": "Provider",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "Models": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "Models",
+        "note": "Single mutable collection type; the TS Models/MutableModels split collapses."
+      },
+      "MutableModels": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "Models"
+      },
+      "CreateModelsOptions": {
+        "status": "mapped",
+        "rust": "CreateModelsOptions",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "createModels": {
+        "status": "mapped",
+        "files": [
+          "models.ts"
+        ],
+        "rust": "Models",
+        "note": "Rust constructor is Models::new."
+      },
+      "CreateProviderOptions": {
+        "status": "mapped",
+        "rust": "CreateProviderOptions",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "createProvider": {
+        "status": "mapped",
+        "rust": "create_provider",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "hasApi": {
+        "status": "mapped",
+        "rust": "has_api",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "calculateCost": {
+        "status": "mapped",
+        "rust": "calculate_cost",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "getSupportedThinkingLevels": {
+        "status": "mapped",
+        "rust": "get_supported_thinking_levels",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "clampThinkingLevel": {
+        "status": "mapped",
+        "rust": "clamp_thinking_level",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "modelsAreEqual": {
+        "status": "mapped",
+        "rust": "models_are_equal",
+        "files": [
+          "models.ts"
+        ]
+      },
+      "radiusProvider": {
+        "status": "mapped",
+        "rust": "radius_provider",
+        "files": [
+          "providers/all.ts",
+          "providers/radius.ts"
+        ]
+      },
+      "getBuiltinModel": {
+        "status": "mapped",
+        "rust": "get_builtin_model",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "getBuiltinProviders": {
+        "status": "mapped",
+        "rust": "get_builtin_providers",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "getBuiltinModelDataGeneratedAt": {
+        "status": "mapped",
+        "rust": "get_builtin_model_data_generated_at",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "getBuiltinModels": {
+        "status": "mapped",
+        "rust": "get_builtin_models",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "builtinProviders": {
+        "status": "mapped",
+        "rust": "builtin_providers",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "builtinModels": {
+        "status": "mapped",
+        "rust": "builtin_models",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "builtinImagesProviders": {
+        "status": "mapped",
+        "rust": "builtin_images_providers",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "builtinImagesModels": {
+        "status": "mapped",
+        "rust": "builtin_images_models",
+        "files": [
+          "providers/all.ts"
+        ]
+      },
+      "AMAZON_BEDROCK_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/amazon-bedrock.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "amazonBedrockProvider": {
+        "status": "mapped",
+        "rust": "amazon_bedrock_provider",
+        "files": [
+          "providers/amazon-bedrock.ts"
+        ]
+      },
+      "ANT_LING_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/ant-ling.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "antLingProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/ant-ling.ts"
+        ],
+        "rust": "ant_ling_provider"
+      },
+      "ANTHROPIC_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/anthropic.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "anthropicProvider": {
+        "status": "mapped",
+        "rust": "anthropic_provider",
+        "files": [
+          "providers/anthropic.ts"
+        ]
+      },
+      "AZURE_OPENAI_RESPONSES_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/azure-openai-responses.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "azureOpenAIResponsesProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/azure-openai-responses.ts"
+        ],
+        "rust": "azure_openai_responses_provider"
+      },
+      "BASETEN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/baseten.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "basetenProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/baseten.ts"
+        ],
+        "rust": "baseten_provider"
+      },
+      "CEREBRAS_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/cerebras.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "cerebrasProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/cerebras.ts"
+        ],
+        "rust": "cerebras_provider"
+      },
+      "CLOUDFLARE_AI_GATEWAY_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/cloudflare-ai-gateway.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "cloudflareAIGatewayProvider": {
+        "status": "mapped",
+        "rust": "cloudflare_ai_gateway_provider",
+        "files": [
+          "providers/cloudflare-ai-gateway.ts"
+        ]
+      },
+      "cloudflareWorkersAIAuth": {
+        "status": "mapped",
+        "rust": "cloudflare_workers_ai_auth",
+        "files": [
+          "providers/cloudflare-auth.ts"
+        ]
+      },
+      "cloudflareAIGatewayAuth": {
+        "status": "mapped",
+        "rust": "cloudflare_ai_gateway_auth",
+        "files": [
+          "providers/cloudflare-auth.ts"
+        ]
+      },
+      "resolveCloudflareModel": {
+        "status": "mapped",
+        "files": [
+          "providers/cloudflare-stream.ts"
+        ],
+        "rust": "resolve_cloudflare_model"
+      },
+      "cloudflareStreams": {
+        "status": "mapped",
+        "rust": "cloudflare_streams",
+        "files": [
+          "providers/cloudflare-stream.ts"
+        ]
+      },
+      "CLOUDFLARE_WORKERS_AI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/cloudflare-workers-ai.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "cloudflareWorkersAIProvider": {
+        "status": "mapped",
+        "rust": "cloudflare_workers_ai_provider",
+        "files": [
+          "providers/cloudflare-workers-ai.ts"
+        ]
+      },
+      "DEEPSEEK_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/deepseek.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "deepseekProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/deepseek.ts"
+        ],
+        "rust": "deepseek_provider"
+      },
+      "FauxModelDefinition": {
+        "status": "mapped",
+        "rust": "FauxModelDefinition",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FauxContentBlock": {
+        "status": "mapped",
+        "files": [
+          "providers/faux.ts"
+        ],
+        "rust": "FauxContent",
+        "note": "Renamed in Rust."
+      },
+      "fauxText": {
+        "status": "mapped",
+        "rust": "faux_text",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "fauxThinking": {
+        "status": "mapped",
+        "rust": "faux_thinking",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "fauxToolCall": {
+        "status": "mapped",
+        "rust": "faux_tool_call",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "fauxAssistantMessage": {
+        "status": "mapped",
+        "rust": "faux_assistant_message",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FauxProviderState": {
+        "status": "mapped",
+        "rust": "FauxProviderState",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FauxResponseFactory": {
+        "status": "mapped",
+        "rust": "FauxResponseFactory",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FauxResponseStep": {
+        "status": "mapped",
+        "rust": "FauxResponseStep",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "RegisterFauxProviderOptions": {
+        "status": "mapped",
+        "rust": "RegisterFauxProviderOptions",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FauxProviderRegistration": {
+        "status": "mapped",
+        "files": [
+          "providers/faux.ts"
+        ],
+        "rust": "CompatFauxRegistration",
+        "note": "The registration-with-unregister envelope lives in compat.rs and derefs to FauxProviderHandle."
+      },
+      "FauxProviderHandle": {
+        "status": "mapped",
+        "rust": "FauxProviderHandle",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "createFauxCore": {
+        "status": "mapped",
+        "files": [
+          "providers/faux.ts"
+        ],
+        "rust": "faux_provider",
+        "note": "The faux core handle: faux_provider returns FauxProviderHandle with the getModel/state/setResponses/appendResponses/getPendingResponseCount surface."
+      },
+      "fauxProvider": {
+        "status": "mapped",
+        "rust": "faux_provider",
+        "files": [
+          "providers/faux.ts"
+        ]
+      },
+      "FIREWORKS_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/fireworks.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "fireworksProvider": {
+        "status": "mapped",
+        "rust": "fireworks_provider",
+        "files": [
+          "providers/fireworks.ts"
+        ]
+      },
+      "GITHUB_COPILOT_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/github-copilot.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "githubCopilotProvider": {
+        "status": "mapped",
+        "rust": "github_copilot_provider",
+        "files": [
+          "providers/github-copilot.ts"
+        ]
+      },
+      "GOOGLE_VERTEX_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/google-vertex.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "googleVertexProvider": {
+        "status": "mapped",
+        "rust": "google_vertex_provider",
+        "files": [
+          "providers/google-vertex.ts"
+        ]
+      },
+      "GOOGLE_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/google.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "googleProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/google.ts"
+        ],
+        "rust": "google_provider"
+      },
+      "GROQ_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/groq.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "groqProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/groq.ts"
+        ],
+        "rust": "groq_provider"
+      },
+      "HUGGINGFACE_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/huggingface.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "huggingfaceProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/huggingface.ts"
+        ],
+        "rust": "huggingface_provider"
+      },
+      "generateImagesOpenRouter": {
+        "status": "mapped",
+        "files": [
+          "providers/images/register-builtins.ts"
+        ],
+        "rust": "generate_images",
+        "note": "Statically linked (ai::api::openrouter_images); the TS lazy-load error path is unreachable in Rust."
+      },
+      "registerBuiltInImagesApiProviders": {
+        "status": "mapped",
+        "files": [
+          "providers/images/register-builtins.ts"
+        ],
+        "rust": "register_built_in_images_api_providers"
+      },
+      "KIMI_CODING_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/kimi-coding.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "kimiCodingProvider": {
+        "status": "mapped",
+        "rust": "kimi_coding_provider",
+        "files": [
+          "providers/kimi-coding.ts"
+        ]
+      },
+      "MINIMAX_CN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/minimax-cn.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "minimaxCnProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/minimax-cn.ts"
+        ],
+        "rust": "minimax_cn_provider"
+      },
+      "MINIMAX_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/minimax.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "minimaxProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/minimax.ts"
+        ],
+        "rust": "minimax_provider"
+      },
+      "MISTRAL_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/mistral.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "mistralProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/mistral.ts"
+        ],
+        "rust": "mistral_provider"
+      },
+      "MOONSHOTAI_CN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/moonshotai-cn.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "moonshotaiCnProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/moonshotai-cn.ts"
+        ],
+        "rust": "moonshotai_cn_provider"
+      },
+      "MOONSHOTAI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/moonshotai.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "moonshotaiProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/moonshotai.ts"
+        ],
+        "rust": "moonshotai_provider"
+      },
+      "NVIDIA_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/nvidia.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "nvidiaProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/nvidia.ts"
+        ],
+        "rust": "nvidia_provider"
+      },
+      "OPENAI_CODEX_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/openai-codex.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "openaiCodexProvider": {
+        "status": "mapped",
+        "rust": "openai_codex_provider",
+        "files": [
+          "providers/openai-codex.ts"
+        ]
+      },
+      "OPENAI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/openai.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "openaiProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/openai.ts"
+        ],
+        "rust": "openai_provider"
+      },
+      "OPENCODE_GO_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/opencode-go.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "opencodeGoProvider": {
+        "status": "mapped",
+        "rust": "opencode_go_provider",
+        "files": [
+          "providers/opencode-go.ts"
+        ]
+      },
+      "OPENCODE_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/opencode.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "opencodeProvider": {
+        "status": "mapped",
+        "rust": "opencode_provider",
+        "files": [
+          "providers/opencode.ts"
+        ]
+      },
+      "openrouterImagesProvider": {
+        "status": "mapped",
+        "rust": "openrouter_images_provider",
+        "files": [
+          "providers/openrouter-images.ts"
+        ]
+      },
+      "OPENROUTER_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/openrouter.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "openrouterProvider": {
+        "status": "mapped",
+        "rust": "openrouter_provider",
+        "files": [
+          "providers/openrouter.ts"
+        ]
+      },
+      "QWEN_TOKEN_PLAN_CN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/qwen-token-plan-cn.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "qwenTokenPlanCnProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/qwen-token-plan-cn.ts"
+        ],
+        "rust": "qwen_token_plan_cn_provider"
+      },
+      "QWEN_TOKEN_PLAN_INDIVIDUAL_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/qwen-token-plan-individual.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "qwenTokenPlanIndividualProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/qwen-token-plan-individual.ts"
+        ],
+        "rust": "qwen_token_plan_individual_provider"
+      },
+      "QWEN_TOKEN_PLAN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/qwen-token-plan.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "qwenTokenPlanProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/qwen-token-plan.ts"
+        ],
+        "rust": "qwen_token_plan_provider"
+      },
+      "DEFAULT_RADIUS_GATEWAY": {
+        "status": "mapped",
+        "rust": "DEFAULT_RADIUS_GATEWAY",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "RadiusGatewayModel": {
+        "status": "mapped",
+        "rust": "RadiusGatewayModel",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "RadiusGatewayConfig": {
+        "status": "mapped",
+        "rust": "RadiusGatewayConfig",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "RadiusOAuthCredential": {
+        "status": "exception",
+        "files": [
+          "providers/radius-config.ts"
+        ],
+        "rust": "RadiusGatewayConfig",
+        "reason": "Named OAuth-credential shape; the gateway config rides OAuthCredential extension data (radius_config.rs)."
+      },
+      "normalizeRadiusGatewayUrl": {
+        "status": "mapped",
+        "rust": "normalize_radius_gateway_url",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "getRadiusCredentialConfig": {
+        "status": "mapped",
+        "rust": "get_radius_credential_config",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "getRadiusModelsFromConfig": {
+        "status": "mapped",
+        "rust": "get_radius_models_from_config",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "getRadiusModels": {
+        "status": "mapped",
+        "rust": "get_radius_models",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "loadRadiusGatewayConfig": {
+        "status": "mapped",
+        "rust": "load_radius_gateway_config",
+        "files": [
+          "providers/radius-config.ts"
+        ]
+      },
+      "RadiusProviderOptions": {
+        "status": "mapped",
+        "rust": "RadiusProviderOptions",
+        "files": [
+          "providers/radius.ts"
+        ]
+      },
+      "TOGETHER_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/together.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "togetherProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/together.ts"
+        ],
+        "rust": "together_provider"
+      },
+      "VERCEL_AI_GATEWAY_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/vercel-ai-gateway.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "vercelAIGatewayProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/vercel-ai-gateway.ts"
+        ],
+        "rust": "vercel_ai_gateway_provider"
+      },
+      "XAI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/xai.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "xaiProvider": {
+        "status": "mapped",
+        "rust": "xai_provider",
+        "files": [
+          "providers/xai.ts"
+        ]
+      },
+      "XIAOMI_TOKEN_PLAN_AMS_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/xiaomi-token-plan-ams.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "xiaomiTokenPlanAmsProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/xiaomi-token-plan-ams.ts"
+        ],
+        "rust": "xiaomi_token_plan_ams_provider"
+      },
+      "XIAOMI_TOKEN_PLAN_CN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/xiaomi-token-plan-cn.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "xiaomiTokenPlanCnProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/xiaomi-token-plan-cn.ts"
+        ],
+        "rust": "xiaomi_token_plan_cn_provider"
+      },
+      "XIAOMI_TOKEN_PLAN_SGP_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/xiaomi-token-plan-sgp.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "xiaomiTokenPlanSgpProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/xiaomi-token-plan-sgp.ts"
+        ],
+        "rust": "xiaomi_token_plan_sgp_provider"
+      },
+      "XIAOMI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/xiaomi.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "xiaomiProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/xiaomi.ts"
+        ],
+        "rust": "xiaomi_provider"
+      },
+      "ZAI_CODING_CN_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/zai-coding-cn.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "zaiCodingCnProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/zai-coding-cn.ts"
+        ],
+        "rust": "zai_coding_cn_provider"
+      },
+      "ZAI_MODELS": {
+        "status": "exception",
+        "files": [
+          "providers/zai.models.ts"
+        ],
+        "reason": "Per-provider catalog constant; Rust exposes the aggregate generated catalog (models_generated::models, models_for_provider, get_builtin_models)."
+      },
+      "zaiProvider": {
+        "status": "mapped",
+        "files": [
+          "providers/zai.ts"
+        ],
+        "rust": "zai_provider"
+      },
+      "SessionResourceCleanup": {
+        "status": "mapped",
+        "rust": "SessionResourceCleanup",
+        "files": [
+          "session-resources.ts"
+        ]
+      },
+      "registerSessionResourceCleanup": {
+        "status": "mapped",
+        "rust": "register_session_resource_cleanup",
+        "files": [
+          "session-resources.ts"
+        ]
+      },
+      "cleanupSessionResources": {
+        "status": "mapped",
+        "rust": "cleanup_session_resources",
+        "files": [
+          "session-resources.ts"
+        ]
+      },
+      "AssistantMessageEventStream": {
+        "status": "mapped",
+        "rust": "AssistantMessageEventStream",
+        "files": [
+          "types.ts",
+          "utils/event-stream.ts"
+        ]
+      },
+      "KnownApi": {
+        "status": "mapped",
+        "rust": "known_api",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Api": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "Api"
+      },
+      "KnownImagesApi": {
+        "status": "mapped",
+        "rust": "known_images_api",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ImagesApi": {
+        "status": "mapped",
+        "rust": "ImagesApi",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "KnownProvider": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Catalog ids plus dynamic providers as a string union; Rust passes provider id strings."
+      },
+      "ProviderId": {
+        "status": "mapped",
+        "rust": "ProviderId",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "KnownImagesProvider": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Image-catalog id string union; Rust passes provider id strings."
+      },
+      "ImagesProviderId": {
+        "status": "mapped",
+        "rust": "ImagesProviderId",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ToolChoice": {
+        "status": "mapped",
+        "rust": "ToolChoice",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingLevel": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ThinkingLevel"
+      },
+      "ModelThinkingLevel": {
+        "status": "mapped",
+        "rust": "ModelThinkingLevel",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingLevelMap": {
+        "status": "mapped",
+        "rust": "ThinkingLevelMap",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ChatTemplateKwargValue": {
+        "status": "mapped",
+        "rust": "ChatTemplateKwargValue",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingTokenBudgetField": {
+        "status": "mapped",
+        "rust": "ThinkingTokenBudgetField",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingBudgets": {
+        "status": "mapped",
+        "rust": "ThinkingBudgets",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "CacheRetention": {
+        "status": "mapped",
+        "rust": "CacheRetention",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Transport": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "Transport"
+      },
+      "ProviderEnv": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ProviderEnv"
+      },
+      "ProviderHeaders": {
+        "status": "mapped",
+        "rust": "ProviderHeaders",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "FetchFunction": {
+        "status": "mapped",
+        "rust": "FetchFunction",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "SessionAffinityFormat": {
+        "status": "mapped",
+        "rust": "SessionAffinityFormat",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ProviderResponse": {
+        "status": "mapped",
+        "rust": "ProviderResponse",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ProviderRequestOptions": {
+        "status": "mapped",
+        "rust": "ProviderRequestOptions",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "StreamOptions": {
+        "status": "mapped",
+        "rust": "StreamOptions",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ProviderStreamOptions": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "StreamOptions",
+        "note": "The `& Record<string, unknown>` openness collapses into the concrete struct."
+      },
+      "DeferredFetchOptions": {
+        "status": "mapped",
+        "rust": "DeferredFetchOptions",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "DeferredCancelOptions": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ModelsDeferredCancelOptions"
+      },
+      "ApiOptionsMap": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Compile-time api-to-options mapping interface; the concrete per-api option structs are the Rust counterparts."
+      },
+      "ApiStreamOptions": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Conditional per-API options union; each Rust api adapter takes its concrete options struct."
+      },
+      "ProviderStreams": {
+        "status": "mapped",
+        "rust": "ProviderStreams",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ProviderImages": {
+        "status": "mapped",
+        "rust": "ProviderImages",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ImagesOptions": {
+        "status": "mapped",
+        "rust": "ImagesOptions",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ProviderImagesOptions": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ImagesOptions",
+        "note": "Same collapse for images options."
+      },
+      "AnthropicAllowedFallbackModel": {
+        "status": "mapped",
+        "rust": "AnthropicAllowedFallbackModel",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "SimpleStreamOptions": {
+        "status": "mapped",
+        "rust": "SimpleStreamOptions",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "StreamFunction": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ApiStreamFn",
+        "note": "The api-registry stream fn type."
+      },
+      "ImagesFunction": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ImagesApiFunction",
+        "note": "The images-registry fn type."
+      },
+      "TextSignatureV1": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "TextSignatureV1"
+      },
+      "TextContent": {
+        "status": "mapped",
+        "rust": "TextContent",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingContent": {
+        "status": "mapped",
+        "rust": "ThinkingContent",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ImageContent": {
+        "status": "mapped",
+        "rust": "ImageContent",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ToolCall": {
+        "status": "mapped",
+        "rust": "ToolCall",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Usage": {
+        "status": "mapped",
+        "rust": "Usage",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "StopReason": {
+        "status": "mapped",
+        "rust": "StopReason",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "JsonValue": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "serde_json::Value",
+        "reason": "serde_json::Value is the Rust counterpart."
+      },
+      "DeferredHandle": {
+        "status": "mapped",
+        "rust": "DeferredHandle",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "UserMessage": {
+        "status": "mapped",
+        "rust": "UserMessage",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AssistantMessage": {
+        "status": "mapped",
+        "rust": "AssistantMessage",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ToolResultMessage": {
+        "status": "mapped",
+        "rust": "ToolResultMessage",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Message": {
+        "status": "mapped",
+        "rust": "Message",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ImagesInputContent": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Text|Image union; Rust models user-side content as UserContent/ImageContent variants."
+      },
+      "ImagesOutputContent": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "reason": "Union of output content blocks; Rust models these as typed content enums (AssistantContent/AssistantImages)."
+      },
+      "ImagesContext": {
+        "status": "mapped",
+        "rust": "ImagesContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ImagesStopReason": {
+        "status": "mapped",
+        "rust": "ImagesStopReason",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AssistantImages": {
+        "status": "mapped",
+        "rust": "AssistantImages",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "GrammarFormat": {
+        "status": "mapped",
+        "rust": "GrammarFormat",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "GrammarVariants": {
+        "status": "mapped",
+        "rust": "GrammarVariants",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ConstrainedSamplingConfig": {
+        "status": "mapped",
+        "rust": "ConstrainedSamplingConfig",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Tool": {
+        "status": "mapped",
+        "rust": "Tool",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Context": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "Context"
+      },
+      "AssistantMessageEvent": {
+        "status": "mapped",
+        "rust": "AssistantMessageEvent",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "OpenAICompletionsCompat": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ModelCompat",
+        "note": "Per-API compat flags are consolidated in ModelCompat."
+      },
+      "OpenAIResponsesCompat": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ModelCompat",
+        "note": "Per-API compat flags are consolidated in ModelCompat."
+      },
+      "AnthropicMessagesCompat": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ModelCompat",
+        "note": "Per-API compat flags are consolidated in ModelCompat."
+      },
+      "BedrockCompat": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ModelCompat",
+        "note": "Per-API compat flags are consolidated in ModelCompat."
+      },
+      "OpenRouterRouting": {
+        "status": "mapped",
+        "rust": "OpenRouterRouting",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "VercelGatewayRouting": {
+        "status": "mapped",
+        "rust": "VercelGatewayRouting",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ModelCostRates": {
+        "status": "mapped",
+        "rust": "ModelCostRates",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ModelCostTier": {
+        "status": "mapped",
+        "rust": "ModelCostTier",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ModelCost": {
+        "status": "mapped",
+        "rust": "ModelCost",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "Model": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "Model"
+      },
+      "ImagesModel": {
+        "status": "mapped",
+        "rust": "ImagesModel",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "CombinedAbortSignal": {
+        "status": "mapped",
+        "rust": "CombinedAbortSignal",
+        "files": [
+          "utils/abort-signals.ts"
+        ]
+      },
+      "combineAbortSignals": {
+        "status": "mapped",
+        "rust": "combine_abort_signals",
+        "files": [
+          "utils/abort-signals.ts"
+        ]
+      },
+      "operationSignal": {
+        "status": "mapped",
+        "rust": "operation_signal",
+        "files": [
+          "utils/abort.ts"
+        ]
+      },
+      "raceWithAbortSignal": {
+        "status": "mapped",
+        "rust": "race_with_abort_signal",
+        "files": [
+          "utils/abort.ts"
+        ]
+      },
+      "splitDeferredTools": {
+        "status": "mapped",
+        "rust": "split_deferred_tools",
+        "files": [
+          "utils/deferred-tools.ts"
+        ]
+      },
+      "DiagnosticErrorInfo": {
+        "status": "mapped",
+        "rust": "DiagnosticErrorInfo",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "AssistantMessageDiagnostic": {
+        "status": "mapped",
+        "rust": "AssistantMessageDiagnostic",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "formatThrownValue": {
+        "status": "mapped",
+        "rust": "format_thrown_value",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "extractDiagnosticError": {
+        "status": "mapped",
+        "rust": "extract_diagnostic_error",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "createAssistantMessageDiagnostic": {
+        "status": "mapped",
+        "rust": "create_assistant_message_diagnostic",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "appendAssistantMessageDiagnostic": {
+        "status": "mapped",
+        "rust": "append_assistant_message_diagnostic",
+        "files": [
+          "utils/diagnostics.ts"
+        ]
+      },
+      "MAX_PROVIDER_ERROR_BODY_CHARS": {
+        "status": "mapped",
+        "rust": "MAX_PROVIDER_ERROR_BODY_CHARS",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "NormalizedProviderError": {
+        "status": "mapped",
+        "rust": "NormalizedProviderError",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "normalizeProviderError": {
+        "status": "mapped",
+        "rust": "normalize_provider_error",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "formatProviderError": {
+        "status": "mapped",
+        "rust": "format_provider_error",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "truncateErrorText": {
+        "status": "mapped",
+        "rust": "truncate_error_text",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "safeJsonStringify": {
+        "status": "mapped",
+        "rust": "safe_json_stringify",
+        "files": [
+          "utils/error-body.ts"
+        ]
+      },
+      "ContextUsageEstimate": {
+        "status": "mapped",
+        "rust": "ContextUsageEstimate",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "calculateContextTokens": {
+        "status": "mapped",
+        "rust": "calculate_context_tokens",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "estimateTextTokens": {
+        "status": "mapped",
+        "rust": "estimate_text_tokens",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "estimateTextAndImageContentTokens": {
+        "status": "mapped",
+        "rust": "estimate_text_and_image_content_tokens",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "estimateMessageTokens": {
+        "status": "mapped",
+        "rust": "estimate_message_tokens",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "estimateContextTokens": {
+        "status": "mapped",
+        "rust": "estimate_context_tokens",
+        "files": [
+          "utils/estimate.ts"
+        ]
+      },
+      "EventStream": {
+        "status": "mapped",
+        "files": [
+          "utils/event-stream.ts"
+        ],
+        "rust": "event_stream"
+      },
+      "createAssistantMessageEventStream": {
+        "status": "mapped",
+        "rust": "create_assistant_message_event_stream",
+        "files": [
+          "utils/event-stream.ts"
+        ]
+      },
+      "shortHash": {
+        "status": "mapped",
+        "rust": "short_hash",
+        "files": [
+          "utils/hash.ts"
+        ]
+      },
+      "headersToRecord": {
+        "status": "mapped",
+        "rust": "headers_to_record",
+        "files": [
+          "utils/headers.ts"
+        ]
+      },
+      "providerHeadersToRecord": {
+        "status": "mapped",
+        "rust": "provider_headers_to_record",
+        "files": [
+          "utils/headers.ts"
+        ]
+      },
+      "repairJson": {
+        "status": "mapped",
+        "rust": "repair_json",
+        "files": [
+          "utils/json-parse.ts"
+        ]
+      },
+      "parseJsonWithRepair": {
+        "status": "mapped",
+        "rust": "parse_json_with_repair",
+        "files": [
+          "utils/json-parse.ts"
+        ]
+      },
+      "parseStreamingJson": {
+        "status": "mapped",
+        "rust": "parse_streaming_json",
+        "files": [
+          "utils/json-parse.ts"
+        ]
+      },
+      "UNSUPPORTED_PROXY_PROTOCOL_MESSAGE": {
+        "status": "mapped",
+        "rust": "UNSUPPORTED_PROXY_PROTOCOL_MESSAGE",
+        "files": [
+          "utils/node-http-proxy.ts"
+        ]
+      },
+      "resolveHttpProxyUrlForTarget": {
+        "status": "mapped",
+        "rust": "resolve_http_proxy_url_for_target",
+        "files": [
+          "utils/node-http-proxy.ts"
+        ]
+      },
+      "isContextOverflow": {
+        "status": "mapped",
+        "rust": "is_context_overflow",
+        "files": [
+          "utils/overflow.ts"
+        ]
+      },
+      "isRecoverableLength": {
+        "status": "mapped",
+        "rust": "is_recoverable_length",
+        "files": [
+          "utils/overflow.ts"
+        ]
+      },
+      "getOverflowPatterns": {
+        "status": "mapped",
+        "rust": "get_overflow_patterns",
+        "files": [
+          "utils/overflow.ts"
+        ]
+      },
+      "getPiUserAgent": {
+        "status": "mapped",
+        "rust": "get_pi_user_agent",
+        "files": [
+          "utils/pi-user-agent.ts"
+        ]
+      },
+      "getProviderEnvValue": {
+        "status": "mapped",
+        "rust": "get_provider_env_value",
+        "files": [
+          "utils/provider-env.ts"
+        ]
+      },
+      "retryProviderRequest": {
+        "status": "mapped",
+        "rust": "retry_provider_request",
+        "files": [
+          "utils/provider-retry.ts"
+        ]
+      },
+      "RetryPolicy": {
+        "status": "mapped",
+        "rust": "RetryPolicy",
+        "files": [
+          "utils/retry.ts"
+        ]
+      },
+      "RetryCallbacks": {
+        "status": "mapped",
+        "rust": "RetryCallbacks",
+        "files": [
+          "utils/retry.ts"
+        ]
+      },
+      "retryAssistantCall": {
+        "status": "mapped",
+        "rust": "retry_assistant_call",
+        "files": [
+          "utils/retry.ts"
+        ]
+      },
+      "isRetryableAssistantError": {
+        "status": "mapped",
+        "rust": "is_retryable_assistant_error",
+        "files": [
+          "utils/retry.ts"
+        ]
+      },
+      "sanitizeSurrogates": {
+        "status": "mapped",
+        "rust": "sanitize_surrogates",
+        "files": [
+          "utils/sanitize-unicode.ts"
+        ]
+      },
+      "sleep": {
+        "status": "exception",
+        "files": [
+          "utils/sleep.ts"
+        ],
+        "reason": "Abortable timer; tokio::time::sleep is the idiomatic public Rust primitive."
+      },
+      "StringEnum": {
+        "status": "exception",
+        "files": [
+          "utils/typebox-helpers.ts"
+        ],
+        "reason": "TypeBox helper for string-literal schemas; Rust models these as enums with serde."
+      },
+      "validateToolCall": {
+        "status": "mapped",
+        "rust": "validate_tool_call",
+        "files": [
+          "utils/validation.ts"
+        ]
+      },
+      "validateToolArguments": {
+        "status": "mapped",
+        "rust": "validate_tool_arguments",
+        "files": [
+          "utils/validation.ts"
+        ]
+      }
+    },
+    "agent": {
+      "AgentEventSink": {
+        "status": "mapped",
+        "rust": "AgentEventSink",
+        "files": [
+          "agent-loop.ts"
+        ]
+      },
+      "agentLoop": {
+        "status": "mapped",
+        "rust": "agent_loop",
+        "files": [
+          "agent-loop.ts"
+        ]
+      },
+      "agentLoopContinue": {
+        "status": "mapped",
+        "rust": "agent_loop_continue",
+        "files": [
+          "agent-loop.ts"
+        ]
+      },
+      "runAgentLoop": {
+        "status": "mapped",
+        "rust": "run_agent_loop",
+        "files": [
+          "agent-loop.ts"
+        ]
+      },
+      "runAgentLoopContinue": {
+        "status": "mapped",
+        "rust": "run_agent_loop_continue",
+        "files": [
+          "agent-loop.ts"
+        ]
+      },
+      "QueueMode": {
+        "status": "mapped",
+        "rust": "QueueMode",
+        "files": [
+          "agent.ts",
+          "types.ts"
+        ]
+      },
+      "AgentOptions": {
+        "status": "mapped",
+        "rust": "AgentOptions",
+        "files": [
+          "agent.ts"
+        ]
+      },
+      "Agent": {
+        "status": "mapped",
+        "files": [
+          "agent.ts"
+        ],
+        "rust": "Agent"
+      },
+      "LaneBusy": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "MissingIdentities": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "NoActiveRun": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "NoActiveOperation": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "NothingToResume": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "InvalidMessage": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "UnknownSkill": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "UnknownTemplate": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "UnknownTarget": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "UnknownQueueItem": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "LaneExists": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "InvalidLane": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "NothingToCompact": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "note": "Rejection-reason variant of the HarnessRejection enum."
+      },
+      "Closed": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessClosed"
+      },
+      "HarnessFault": {
+        "status": "mapped",
+        "rust": "HarnessFault",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "HarnessClosed": {
+        "status": "mapped",
+        "rust": "HarnessClosed",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "HarnessNotImplemented": {
+        "status": "mapped",
+        "rust": "HarnessNotImplemented",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "OperationError": {
+        "status": "mapped",
+        "rust": "OperationError",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "RunOutcome": {
+        "status": "mapped",
+        "rust": "RunOutcome",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "CompactionOutcome": {
+        "status": "mapped",
+        "rust": "CompactionOutcome",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "NavigationOutcome": {
+        "status": "mapped",
+        "rust": "NavigationOutcome",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "RunRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "CompactionRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "NavigationRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "ResumeRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "QueueRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "CancelQueuedRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "AbortRejected": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HarnessRejection",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<Ok, HarnessRejection> carrying the same data."
+      },
+      "RunResult": {
+        "status": "mapped",
+        "rust": "RunResult",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "CompactionResult": {
+        "status": "mapped",
+        "rust": "CompactionResult",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "NavigationResult": {
+        "status": "mapped",
+        "rust": "NavigationResult",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "QueueResult": {
+        "status": "mapped",
+        "rust": "QueueResult",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "CancelQueuedResult": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "CancelQueuedOutcome",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<CancelQueuedOutcome, HarnessRejection> carrying the same data."
+      },
+      "RecordUsageResult": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "RecordUsageResult"
+      },
+      "AbortResult": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "AbortedRun",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<AbortedRun, HarnessRejection> carrying the same data."
+      },
+      "ResumeOutcome": {
+        "status": "mapped",
+        "rust": "ResumeOutcome",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "ResumeResult": {
+        "status": "exception",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "ResumeOutcome",
+        "reason": "TypeScript discriminated result envelope; Rust models this as Result<ResumeOutcome, HarnessRejection> carrying the same data."
+      },
+      "CreateLaneResult": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "CreateLaneResult"
+      },
+      "NavigateOptions": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "NavigateOptions"
+      },
+      "SuspendedOperation": {
+        "status": "mapped",
+        "rust": "SuspendedOperation",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "LaneInfo": {
+        "status": "mapped",
+        "rust": "LaneInfo",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "QueuedItem": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "QueuedEntry",
+        "note": "Same queued-message shape; renamed in Rust."
+      },
+      "LaneSnapshot": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "LaneSnapshot"
+      },
+      "SessionSnapshot": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "SessionSnapshot"
+      },
+      "ActionInfo": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "ActionInfo"
+      },
+      "HookName": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "HOOK_NAMES",
+        "note": "String-literal union; Rust mirrors it as the HOOK_NAMES constant list."
+      },
+      "Hooks": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "Hooks"
+      },
+      "Events": {
+        "status": "mapped",
+        "rust": "events",
+        "files": [
+          "harness/agent-harness.ts",
+          "harness/events.ts"
+        ]
+      },
+      "HarnessTool": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "AgentHarnessTool",
+        "note": "Renamed to AgentHarnessTool in Rust."
+      },
+      "Resources": {
+        "status": "mapped",
+        "rust": "Resources",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "StreamOptions": {
+        "status": "mapped",
+        "rust": "StreamOptions",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "StreamOptionsPatch": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "SimpleStreamOptions",
+        "note": "Rust option fields are Option<T>, covering TS Partial<> semantics."
+      },
+      "EntryProjector": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "EntryProjector"
+      },
+      "AgentHarnessOptions": {
+        "status": "mapped",
+        "rust": "AgentHarnessOptions",
+        "files": [
+          "harness/agent-harness.ts"
+        ]
+      },
+      "WatchHandle": {
+        "status": "mapped",
+        "rust": "WatchHandle",
+        "files": [
+          "harness/agent-harness.ts",
+          "harness/events.ts"
+        ]
+      },
+      "AgentLane": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "AgentLane"
+      },
+      "AgentHarness": {
+        "status": "mapped",
+        "files": [
+          "harness/agent-harness.ts"
+        ],
+        "rust": "AgentHarness"
+      },
+      "BranchSummaryResult": {
+        "status": "mapped",
+        "rust": "BranchSummaryResult",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "BranchSummaryDetails": {
+        "status": "mapped",
+        "rust": "BranchSummaryDetails",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "FileOperations": {
+        "status": "mapped",
+        "rust": "FileOperations",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "harness/compaction/utils.ts",
+          "index.ts"
+        ]
+      },
+      "BranchPreparation": {
+        "status": "mapped",
+        "rust": "BranchPreparation",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "CollectEntriesResult": {
+        "status": "mapped",
+        "rust": "CollectEntriesResult",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "GenerateBranchSummaryOptions": {
+        "status": "mapped",
+        "rust": "GenerateBranchSummaryOptions",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "collectEntriesForBranchSummary": {
+        "status": "mapped",
+        "rust": "collect_entries_for_branch_summary",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "prepareBranchEntries": {
+        "status": "mapped",
+        "rust": "prepare_branch_entries",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "generateBranchSummary": {
+        "status": "mapped",
+        "rust": "generate_branch_summary",
+        "files": [
+          "harness/compaction/branch-summarization.ts",
+          "index.ts"
+        ]
+      },
+      "CompactionDetails": {
+        "status": "mapped",
+        "rust": "CompactionDetails",
+        "files": [
+          "harness/compaction/compaction.ts"
+        ]
+      },
+      "CompactResult": {
+        "status": "mapped",
+        "rust": "CompactResult",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "completeSimpleWithRetries": {
+        "status": "mapped",
+        "rust": "complete_simple_with_retries",
+        "files": [
+          "harness/compaction/compaction.ts"
+        ]
+      },
+      "CompactionSettings": {
+        "status": "mapped",
+        "rust": "CompactionSettings",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "DEFAULT_COMPACTION_SETTINGS": {
+        "status": "mapped",
+        "rust": "DEFAULT_COMPACTION_SETTINGS",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "calculateContextTokens": {
+        "status": "mapped",
+        "rust": "calculate_context_tokens",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "getLastAssistantUsage": {
+        "status": "mapped",
+        "rust": "get_last_assistant_usage",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "ContextUsageEstimate": {
+        "status": "mapped",
+        "rust": "ContextUsageEstimate",
+        "files": [
+          "harness/compaction/compaction.ts"
+        ]
+      },
+      "estimateContextTokens": {
+        "status": "mapped",
+        "rust": "estimate_context_tokens",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "shouldCompact": {
+        "status": "mapped",
+        "rust": "should_compact",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "estimateTokens": {
+        "status": "mapped",
+        "rust": "estimate_tokens",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "findTurnStartIndex": {
+        "status": "mapped",
+        "rust": "find_turn_start_index",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "CutPointResult": {
+        "status": "mapped",
+        "rust": "CutPointResult",
+        "files": [
+          "harness/compaction/compaction.ts"
+        ]
+      },
+      "findCutPoint": {
+        "status": "mapped",
+        "rust": "find_cut_point",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "SUMMARIZATION_SYSTEM_PROMPT": {
+        "status": "mapped",
+        "rust": "SUMMARIZATION_SYSTEM_PROMPT",
+        "files": [
+          "harness/compaction/compaction.ts"
+        ]
+      },
+      "generateSummary": {
+        "status": "mapped",
+        "rust": "generate_summary",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "generateSummaryWithUsage": {
+        "status": "mapped",
+        "rust": "generate_summary_with_usage",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "CompactionPreparation": {
+        "status": "mapped",
+        "rust": "CompactionPreparation",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "prepareCompaction": {
+        "status": "mapped",
+        "rust": "prepare_compaction",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "serializeConversation": {
+        "status": "mapped",
+        "rust": "serialize_conversation",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "harness/compaction/utils.ts",
+          "index.ts"
+        ]
+      },
+      "compact": {
+        "status": "mapped",
+        "rust": "compact",
+        "files": [
+          "harness/compaction/compaction.ts",
+          "index.ts"
+        ]
+      },
+      "createFileOps": {
+        "status": "mapped",
+        "rust": "create_file_ops",
+        "files": [
+          "harness/compaction/utils.ts"
+        ]
+      },
+      "extractFileOpsFromMessage": {
+        "status": "mapped",
+        "rust": "extract_file_ops_from_message",
+        "files": [
+          "harness/compaction/utils.ts"
+        ]
+      },
+      "computeFileLists": {
+        "status": "mapped",
+        "rust": "compute_file_lists",
+        "files": [
+          "harness/compaction/utils.ts"
+        ]
+      },
+      "formatFileOperations": {
+        "status": "mapped",
+        "rust": "format_file_operations",
+        "files": [
+          "harness/compaction/utils.ts"
+        ]
+      },
+      "NodeExecutionEnv": {
+        "status": "mapped",
+        "rust": "NodeExecutionEnv",
+        "files": [
+          "harness/env/nodejs.ts",
+          "node.ts"
+        ]
+      },
+      "RunStartEvent": {
+        "status": "mapped",
+        "files": [
+          "harness/events.ts"
+        ],
+        "rust": "RunStartEvent"
+      },
+      "RunEndEvent": {
+        "status": "mapped",
+        "files": [
+          "harness/events.ts"
+        ],
+        "rust": "RunEndEvent"
+      },
+      "HarnessEvent": {
+        "status": "mapped",
+        "rust": "HarnessEvent",
+        "files": [
+          "harness/events.ts"
+        ]
+      },
+      "HarnessEventType": {
+        "status": "mapped",
+        "files": [
+          "harness/events.ts"
+        ],
+        "rust": "HarnessEventType"
+      },
+      "HarnessEventOfType": {
+        "status": "exception",
+        "files": [
+          "harness/events.ts"
+        ],
+        "rust": "HarnessEvent",
+        "reason": "Conditional event-type selector; Rust dispatches on the HarnessEvent enum."
+      },
+      "HarnessEventListener": {
+        "status": "mapped",
+        "rust": "HarnessEventListener",
+        "files": [
+          "harness/events.ts"
+        ]
+      },
+      "HarnessEventBus": {
+        "status": "mapped",
+        "rust": "HarnessEventBus",
+        "files": [
+          "harness/events.ts"
+        ]
+      },
+      "COMPACTION_SUMMARY_PREFIX": {
+        "status": "mapped",
+        "rust": "COMPACTION_SUMMARY_PREFIX",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "COMPACTION_SUMMARY_SUFFIX": {
+        "status": "mapped",
+        "rust": "COMPACTION_SUMMARY_SUFFIX",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "BRANCH_SUMMARY_PREFIX": {
+        "status": "mapped",
+        "rust": "BRANCH_SUMMARY_PREFIX",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "BRANCH_SUMMARY_SUFFIX": {
+        "status": "mapped",
+        "rust": "BRANCH_SUMMARY_SUFFIX",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "BashExecutionMessage": {
+        "status": "mapped",
+        "files": [
+          "harness/messages.ts"
+        ],
+        "rust": "BashExecutionMessage"
+      },
+      "CustomMessage": {
+        "status": "mapped",
+        "rust": "custom_message",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "BranchSummaryMessage": {
+        "status": "mapped",
+        "files": [
+          "harness/messages.ts"
+        ],
+        "rust": "CustomMessageContent",
+        "note": "Alias over the custom-message shape built by create_branch_summary_message."
+      },
+      "CompactionSummaryMessage": {
+        "status": "mapped",
+        "files": [
+          "harness/messages.ts"
+        ],
+        "rust": "CustomMessageContent",
+        "note": "Alias over the custom-message shape built by create_compaction_summary_message."
+      },
+      "bashExecutionToText": {
+        "status": "mapped",
+        "rust": "bash_execution_to_text",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "createBranchSummaryMessage": {
+        "status": "mapped",
+        "rust": "create_branch_summary_message",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "createCompactionSummaryMessage": {
+        "status": "mapped",
+        "rust": "create_compaction_summary_message",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "createCustomMessage": {
+        "status": "mapped",
+        "rust": "create_custom_message",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "convertToLlm": {
+        "status": "mapped",
+        "rust": "convert_to_llm",
+        "files": [
+          "harness/messages.ts"
+        ]
+      },
+      "PromptTemplateDiagnosticCode": {
+        "status": "mapped",
+        "rust": "PromptTemplateDiagnosticCode",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "PromptTemplateDiagnostic": {
+        "status": "mapped",
+        "rust": "PromptTemplateDiagnostic",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "loadPromptTemplates": {
+        "status": "mapped",
+        "rust": "load_prompt_templates",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "loadSourcedPromptTemplates": {
+        "status": "mapped",
+        "rust": "load_sourced_prompt_templates",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "parseCommandArgs": {
+        "status": "mapped",
+        "rust": "parse_command_args",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "substituteArgs": {
+        "status": "mapped",
+        "rust": "substitute_args",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "formatPromptTemplateInvocation": {
+        "status": "mapped",
+        "rust": "format_prompt_template_invocation",
+        "files": [
+          "harness/prompt-templates.ts"
+        ]
+      },
+      "RecordLogCorruptionReason": {
+        "status": "mapped",
+        "rust": "RecordLogCorruptionReason",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "RecordLogCorruption": {
+        "status": "mapped",
+        "rust": "RecordLogCorruption",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "RecordLogSlice": {
+        "status": "mapped",
+        "rust": "RecordLogSlice",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "EffectiveLaneConfiguration": {
+        "status": "mapped",
+        "rust": "EffectiveLaneConfiguration",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "TerminalFailureState": {
+        "status": "mapped",
+        "rust": "TerminalFailureState",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "ToolBatchState": {
+        "status": "mapped",
+        "rust": "ToolBatchState",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "LaneState": {
+        "status": "mapped",
+        "rust": "LaneState",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "LaneReductionInput": {
+        "status": "mapped",
+        "rust": "LaneReductionInput",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "LaneReductionResult": {
+        "status": "mapped",
+        "rust": "LaneReductionResult",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "validateRecordLog": {
+        "status": "mapped",
+        "rust": "validate_record_log",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "reduceLaneState": {
+        "status": "mapped",
+        "rust": "reduce_lane_state",
+        "files": [
+          "harness/reducer.ts"
+        ]
+      },
+      "Result": {
+        "status": "mapped",
+        "rust": "result",
+        "files": [
+          "harness/result.ts",
+          "harness/result.ts",
+          "harness/types.ts"
+        ]
+      },
+      "TaggedErrorValue": {
+        "status": "exception",
+        "files": [
+          "harness/result.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "TaggedErrorFactory": {
+        "status": "exception",
+        "files": [
+          "harness/result.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "TaggedError": {
+        "status": "exception",
+        "files": [
+          "harness/result.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "ErrorMatchers": {
+        "status": "exception",
+        "files": [
+          "harness/result.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "matchError": {
+        "status": "exception",
+        "files": [
+          "harness/result.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "SessionContext": {
+        "status": "mapped",
+        "rust": "SessionContext",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "ContextEntryTransform": {
+        "status": "mapped",
+        "rust": "ContextEntryTransform",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "CustomEntryContextMessageProjector": {
+        "status": "mapped",
+        "rust": "CustomEntryContextMessageProjector",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "SessionContextBuildOptions": {
+        "status": "mapped",
+        "rust": "SessionContextBuildOptions",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "defaultContextEntryTransform": {
+        "status": "mapped",
+        "rust": "default_context_entry_transform",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "buildContextEntries": {
+        "status": "mapped",
+        "rust": "build_context_entries",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "sessionEntryToContextMessages": {
+        "status": "mapped",
+        "rust": "session_entry_to_context_messages",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "buildSessionContext": {
+        "status": "mapped",
+        "rust": "build_session_context",
+        "files": [
+          "harness/session/context.ts"
+        ]
+      },
+      "JsonlSessionCreateOptions": {
+        "status": "mapped",
+        "rust": "JsonlSessionCreateOptions",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ]
+      },
+      "JsonlSessionListOptions": {
+        "status": "mapped",
+        "rust": "JsonlSessionListOptions",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ]
+      },
+      "JsonlSessionMetadata": {
+        "status": "mapped",
+        "rust": "JsonlSessionMetadata",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ]
+      },
+      "JsonlSessionRepoFileSystem": {
+        "status": "mapped",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ],
+        "rust": "JsonlSessionRepo",
+        "note": "The filesystem-backed repo implementation."
+      },
+      "JsonlSessionRepoOptions": {
+        "status": "mapped",
+        "rust": "JsonlSessionRepoOptions",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ]
+      },
+      "JsonlV4Header": {
+        "status": "mapped",
+        "rust": "JsonlV4Header",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/types.ts"
+        ]
+      },
+      "JsonlSessionRepo": {
+        "status": "mapped",
+        "rust": "JsonlSessionRepo",
+        "files": [
+          "harness/session/index.ts",
+          "harness/session/jsonl.ts",
+          "harness/session/jsonl/repo.ts"
+        ]
+      },
+      "parseHeader": {
+        "status": "mapped",
+        "rust": "parse_header",
+        "files": [
+          "harness/session/jsonl/codec.ts"
+        ]
+      },
+      "encodeHeader": {
+        "status": "mapped",
+        "rust": "encode_header",
+        "files": [
+          "harness/session/jsonl/codec.ts"
+        ]
+      },
+      "metadataFromHeader": {
+        "status": "mapped",
+        "rust": "metadata_from_header",
+        "files": [
+          "harness/session/jsonl/codec.ts"
+        ]
+      },
+      "parseMutation": {
+        "status": "mapped",
+        "rust": "parse_mutation",
+        "files": [
+          "harness/session/jsonl/codec.ts"
+        ]
+      },
+      "encodeMutation": {
+        "status": "mapped",
+        "rust": "encode_mutation",
+        "files": [
+          "harness/session/jsonl/codec.ts"
+        ]
+      },
+      "JsonlDecodeError": {
+        "status": "mapped",
+        "rust": "JsonlDecodeError",
+        "files": [
+          "harness/session/jsonl/errors.ts"
+        ]
+      },
+      "fileResult": {
+        "status": "mapped",
+        "rust": "file_result",
+        "files": [
+          "harness/session/jsonl/errors.ts"
+        ]
+      },
+      "invalidFile": {
+        "status": "mapped",
+        "rust": "invalid_file",
+        "files": [
+          "harness/session/jsonl/errors.ts"
+        ]
+      },
+      "listJsonlSessionMetadata": {
+        "status": "mapped",
+        "rust": "list_jsonl_session_metadata",
+        "files": [
+          "harness/session/jsonl/repo.ts"
+        ]
+      },
+      "loadJsonlSessionStorage": {
+        "status": "mapped",
+        "rust": "load_jsonl_session_storage",
+        "files": [
+          "harness/session/jsonl/repo.ts"
+        ]
+      },
+      "JsonlSessionStorage": {
+        "status": "mapped",
+        "rust": "JsonlSessionStorage",
+        "files": [
+          "harness/session/jsonl/storage.ts"
+        ]
+      },
+      "InMemorySessionStorage": {
+        "status": "mapped",
+        "rust": "InMemorySessionStorage",
+        "files": [
+          "harness/session/memory.ts"
+        ]
+      },
+      "InMemorySessionRepo": {
+        "status": "mapped",
+        "rust": "InMemorySessionRepo",
+        "files": [
+          "harness/session/memory.ts"
+        ]
+      },
+      "assertJsonSerializable": {
+        "status": "exception",
+        "files": [
+          "harness/session/session.ts"
+        ],
+        "reason": "serde serialization rejects non-serializable values when the JSONL codec writes; no separate runtime assertion needed."
+      },
+      "Session": {
+        "status": "mapped",
+        "files": [
+          "harness/session/session.ts"
+        ],
+        "rust": "Session"
+      },
+      "SessionMutation": {
+        "status": "mapped",
+        "rust": "SessionMutation",
+        "files": [
+          "harness/session/state.ts"
+        ]
+      },
+      "SessionState": {
+        "status": "mapped",
+        "rust": "SessionState",
+        "files": [
+          "harness/session/state.ts"
+        ]
+      },
+      "createSessionBackendConformance": {
+        "status": "mapped",
+        "rust": "create_session_backend_conformance",
+        "files": [
+          "harness/session/testing/conformance.ts",
+          "harness/session/testing/index.ts"
+        ]
+      },
+      "SessionBackendConformanceCase": {
+        "status": "mapped",
+        "rust": "SessionBackendConformanceCase",
+        "files": [
+          "harness/session/testing/index.ts",
+          "harness/session/testing/types.ts"
+        ]
+      },
+      "SessionBackendFixture": {
+        "status": "mapped",
+        "rust": "SessionBackendFixture",
+        "files": [
+          "harness/session/testing/index.ts",
+          "harness/session/testing/types.ts"
+        ]
+      },
+      "SessionBackendFixtureFactory": {
+        "status": "mapped",
+        "files": [
+          "harness/session/testing/index.ts",
+          "harness/session/testing/types.ts"
+        ],
+        "rust": "SessionBackendFixtureFactory"
+      },
+      "JsonValue": {
+        "status": "exception",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "serde_json::Value",
+        "reason": "serde_json::Value is the Rust counterpart."
+      },
+      "SessionStopReason": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "SessionStopReason"
+      },
+      "IdGenerator": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "id_generator"
+      },
+      "EntryBase": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "EntryBase",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "MessageEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "MessageEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "ModelChangeEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "ModelChangeEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "ThinkingLevelEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "ThinkingLevelEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "ActiveToolsEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "ActiveToolsEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "CompactionEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "CompactionEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "BranchSummaryEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "BranchSummaryEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "CustomEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "CustomEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "Entry": {
+        "status": "mapped",
+        "rust": "Entry",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "ProvisionedEntry": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "ProvisionedEntry",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "RecordBase": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "RecordBase",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "OperationStartedRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "OperationStartedRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "AbortRequestedRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "AbortRequestedRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "OperationFinishedRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "OperationFinishedRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "CompactionReason": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "CompactionReason"
+      },
+      "StepAttemptRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "StepAttemptRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "ToolStartedRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "ToolStartedRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "QueueEnqueuedRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "QueueEnqueuedRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "QueueCancelledRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "QueueCancelledRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "WriteDeferredRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "WriteDeferredRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "UsageRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "UsageRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "LaneRecord": {
+        "status": "mapped",
+        "rust": "LaneRecord",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "NewRecord": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "NewRecord",
+        "reason": "Session-entry/record discriminated-union member; the Rust Entry/LaneRecord enums carry the data. Public per-variant aliases and constructors land with the session-compat-types commit."
+      },
+      "EntryOrder": {
+        "status": "mapped",
+        "rust": "EntryOrder",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "EntryCursor": {
+        "status": "mapped",
+        "rust": "EntryCursor",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "EntryQuery": {
+        "status": "mapped",
+        "rust": "EntryQuery",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "BranchBounds": {
+        "status": "mapped",
+        "rust": "BranchBounds",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "RecordQuery": {
+        "status": "mapped",
+        "rust": "RecordQuery",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionMetadata": {
+        "status": "mapped",
+        "rust": "SessionMetadata",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionStats": {
+        "status": "mapped",
+        "rust": "SessionStats",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "LanePointer": {
+        "status": "mapped",
+        "rust": "LanePointer",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "LogItem": {
+        "status": "mapped",
+        "rust": "LogItem",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "LogOptions": {
+        "status": "mapped",
+        "rust": "LogOptions",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionStorage": {
+        "status": "mapped",
+        "rust": "SessionStorage",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionTree": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "Session",
+        "note": "The durable session tree is the Session type in Rust."
+      },
+      "SessionCreateOptions": {
+        "status": "mapped",
+        "rust": "SessionCreateOptions",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "ForkOptions": {
+        "status": "mapped",
+        "rust": "ForkOptions",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionRepo": {
+        "status": "mapped",
+        "files": [
+          "harness/session/types.ts"
+        ],
+        "rust": "SessionStorage",
+        "note": "Backend-agnostic repo trait (JSONL impl: JsonlSessionRepo)."
+      },
+      "SessionErrorCode": {
+        "status": "mapped",
+        "rust": "SessionErrorCode",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SessionError": {
+        "status": "mapped",
+        "rust": "SessionError",
+        "files": [
+          "harness/session/types.ts"
+        ]
+      },
+      "SkillDiagnosticCode": {
+        "status": "mapped",
+        "rust": "SkillDiagnosticCode",
+        "files": [
+          "harness/skills.ts"
+        ]
+      },
+      "SkillDiagnostic": {
+        "status": "mapped",
+        "rust": "SkillDiagnostic",
+        "files": [
+          "harness/skills.ts"
+        ]
+      },
+      "formatSkillInvocation": {
+        "status": "mapped",
+        "rust": "format_skill_invocation",
+        "files": [
+          "harness/skills.ts"
+        ]
+      },
+      "loadSkills": {
+        "status": "mapped",
+        "rust": "load_skills",
+        "files": [
+          "harness/skills.ts"
+        ]
+      },
+      "loadSourcedSkills": {
+        "status": "mapped",
+        "rust": "load_sourced_skills",
+        "files": [
+          "harness/skills.ts"
+        ]
+      },
+      "formatSkillsForSystemPrompt": {
+        "status": "mapped",
+        "rust": "format_skills_for_system_prompt",
+        "files": [
+          "harness/system-prompt.ts"
+        ]
+      },
+      "AttributeValue": {
+        "status": "mapped",
+        "rust": "AttributeValue",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "ExactTelemetryAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "SchemaTelemetrySpan": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "SpanAttributes": {
+        "status": "mapped",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "rust": "SpanAttributes"
+      },
+      "SpanOptions": {
+        "status": "mapped",
+        "rust": "SpanOptions",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "SpanStatus": {
+        "status": "mapped",
+        "rust": "SpanStatus",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryAttributeDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryAttributeMetadata": {
+        "status": "mapped",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "rust": "TelemetryAttributeDefinition",
+        "note": "Attribute metadata fields are folded into the attribute definition."
+      },
+      "TelemetryAttributeType": {
+        "status": "mapped",
+        "rust": "TelemetryAttributeType",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryContext": {
+        "status": "mapped",
+        "rust": "TelemetryContext",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryEventAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryEventAttributeDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryEventDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryEventDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryParentDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryParentDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetrySchemaDefinition": {
+        "status": "mapped",
+        "rust": "TelemetrySchemaDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetrySchemaSpanEndAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanEventAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanEventName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanStartAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySchemaSpanUnion": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "TelemetrySpan": {
+        "status": "mapped",
+        "rust": "TelemetrySpan",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetrySpanDefinition": {
+        "status": "mapped",
+        "rust": "TelemetrySpanDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TelemetryStartAttributeDefinition": {
+        "status": "mapped",
+        "rust": "TelemetryStartAttributeDefinition",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "TypedSpanStarter": {
+        "status": "mapped",
+        "rust": "TypedSpanStarter",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "AI_TELEMETRY_SCHEMA": {
+        "status": "mapped",
+        "rust": "ai_telemetry_schema",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "AiSpanName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpanStartAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpanEndAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpanAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpanEventName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpanEventAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiTelemetrySpan": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "AiSpan": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "startAiSpan": {
+        "status": "mapped",
+        "rust": "start_ai_span",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "HARNESS_TELEMETRY_SCHEMA": {
+        "status": "mapped",
+        "rust": "harness_telemetry_schema",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "AGENT_TELEMETRY_SCHEMAS": {
+        "status": "mapped",
+        "rust": "agent_telemetry_schemas",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "HarnessSpanName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpanStartAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpanEndAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpanAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpanEventName": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpanEventAttributes": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessTelemetrySpan": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "HarnessSpan": {
+        "status": "exception",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ],
+        "reason": "Compile-time typed span wrapper over the agent telemetry schema; Rust exposes the runtime schemas (ai_telemetry_schema, harness_telemetry_schema, agent_typed_span_starter)."
+      },
+      "startHarnessSpan": {
+        "status": "mapped",
+        "rust": "start_harness_span",
+        "files": [
+          "harness/telemetry.ts",
+          "index.ts"
+        ]
+      },
+      "BashToolInput": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ],
+        "rust": "BashToolInput"
+      },
+      "BashToolDetails": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ],
+        "rust": "BashToolDetails"
+      },
+      "BashExecution": {
+        "status": "mapped",
+        "rust": "BashExecution",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ]
+      },
+      "BashPrepare": {
+        "status": "mapped",
+        "rust": "BashPrepare",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ]
+      },
+      "BashToolOptions": {
+        "status": "mapped",
+        "rust": "BashToolOptions",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ]
+      },
+      "createBashTool": {
+        "status": "mapped",
+        "rust": "create_bash_tool",
+        "files": [
+          "harness/tools/bash.ts",
+          "harness/tools/index.ts"
+        ]
+      },
+      "detectLineEnding": {
+        "status": "mapped",
+        "rust": "detect_line_ending",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "normalizeToLF": {
+        "status": "mapped",
+        "rust": "normalize_to_lf",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "restoreLineEndings": {
+        "status": "mapped",
+        "rust": "restore_line_endings",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "normalizeForFuzzyMatch": {
+        "status": "mapped",
+        "rust": "normalize_for_fuzzy_match",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "applyReplacementsPreservingUnchangedLines": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ],
+        "rust": "apply_replacements_preserving_unchanged_lines"
+      },
+      "FuzzyMatchResult": {
+        "status": "mapped",
+        "rust": "FuzzyMatchResult",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "Edit": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ],
+        "rust": "Edit"
+      },
+      "AppliedEditsResult": {
+        "status": "mapped",
+        "rust": "AppliedEditsResult",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "fuzzyFindText": {
+        "status": "mapped",
+        "rust": "fuzzy_find_text",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "stripBom": {
+        "status": "mapped",
+        "rust": "strip_bom",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "applyEditsToNormalizedContent": {
+        "status": "mapped",
+        "rust": "apply_edits_to_normalized_content",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "generateUnifiedPatch": {
+        "status": "mapped",
+        "rust": "generate_unified_patch",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "generateDiffString": {
+        "status": "mapped",
+        "rust": "generate_diff_string",
+        "files": [
+          "harness/tools/edit-diff.ts"
+        ]
+      },
+      "EditToolInput": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/edit.ts",
+          "harness/tools/index.ts"
+        ],
+        "rust": "EditToolInput"
+      },
+      "EditToolDetails": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/edit.ts",
+          "harness/tools/index.ts"
+        ],
+        "rust": "EditToolDetails"
+      },
+      "createEditTool": {
+        "status": "mapped",
+        "rust": "create_edit_tool",
+        "files": [
+          "harness/tools/edit.ts",
+          "harness/tools/index.ts"
+        ]
+      },
+      "withFileMutationQueue": {
+        "status": "mapped",
+        "rust": "with_file_mutation_queue",
+        "files": [
+          "harness/tools/file-mutation-queue.ts"
+        ]
+      },
+      "detectSupportedImageMimeType": {
+        "status": "mapped",
+        "rust": "detect_supported_image_mime_type",
+        "files": [
+          "harness/tools/image.ts"
+        ]
+      },
+      "encodeBase64": {
+        "status": "mapped",
+        "rust": "encode_base64",
+        "files": [
+          "harness/tools/image.ts"
+        ]
+      },
+      "createReadTool": {
+        "status": "mapped",
+        "rust": "create_read_tool",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ]
+      },
+      "ReadImageProcessor": {
+        "status": "mapped",
+        "rust": "ReadImageProcessor",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ]
+      },
+      "ReadImageProcessorResult": {
+        "status": "mapped",
+        "rust": "ReadImageProcessorResult",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ]
+      },
+      "ReadToolDetails": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ],
+        "rust": "ReadToolDetails"
+      },
+      "ReadToolInput": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ],
+        "rust": "ReadToolInput"
+      },
+      "ReadToolOptions": {
+        "status": "mapped",
+        "rust": "ReadToolOptions",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/read.ts"
+        ]
+      },
+      "ExecutionToolContext": {
+        "status": "mapped",
+        "rust": "ExecutionToolContext",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/tool-context.ts"
+        ]
+      },
+      "createWriteTool": {
+        "status": "mapped",
+        "rust": "create_write_tool",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/write.ts"
+        ]
+      },
+      "WriteToolInput": {
+        "status": "mapped",
+        "files": [
+          "harness/tools/index.ts",
+          "harness/tools/write.ts"
+        ],
+        "rust": "WriteToolInput"
+      },
+      "resolveToolPath": {
+        "status": "mapped",
+        "rust": "resolve_tool_path",
+        "files": [
+          "harness/tools/path-utils.ts"
+        ]
+      },
+      "resolveReadToolPath": {
+        "status": "mapped",
+        "rust": "resolve_read_tool_path",
+        "files": [
+          "harness/tools/path-utils.ts"
+        ]
+      },
+      "ok": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "err": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "getOrThrow": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "getOrUndefined": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "toError": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "TS Result/TaggedError helper; Rust uses std Result with concrete error types (documented deviation)."
+      },
+      "Skill": {
+        "status": "mapped",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "rust": "Skill"
+      },
+      "PromptTemplate": {
+        "status": "mapped",
+        "rust": "PromptTemplate",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "AgentHarnessResources": {
+        "status": "mapped",
+        "rust": "AgentHarnessResources",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "AgentHarnessTool": {
+        "status": "mapped",
+        "rust": "AgentHarnessTool",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "AgentHarnessToolContextSource": {
+        "status": "exception",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ],
+        "reason": "Conditional type resolving the tool-context source; Rust passes concrete tool context values."
+      },
+      "AgentHarnessStreamOptions": {
+        "status": "mapped",
+        "rust": "AgentHarnessStreamOptions",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "AgentHarnessStreamOptionsPatch": {
+        "status": "mapped",
+        "rust": "AgentHarnessStreamOptionsPatch",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "FileKind": {
+        "status": "mapped",
+        "rust": "FileKind",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "FileErrorCode": {
+        "status": "mapped",
+        "rust": "FileErrorCode",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "FileError": {
+        "status": "mapped",
+        "rust": "FileError",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "ExecutionErrorCode": {
+        "status": "mapped",
+        "rust": "ExecutionErrorCode",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "ExecutionError": {
+        "status": "mapped",
+        "rust": "ExecutionError",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "CompactionErrorCode": {
+        "status": "mapped",
+        "rust": "CompactionErrorCode",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "CompactionError": {
+        "status": "mapped",
+        "rust": "CompactionError",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "BranchSummaryErrorCode": {
+        "status": "mapped",
+        "rust": "BranchSummaryErrorCode",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "BranchSummaryError": {
+        "status": "mapped",
+        "rust": "BranchSummaryError",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "FileInfo": {
+        "status": "mapped",
+        "rust": "FileInfo",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "FileSystem": {
+        "status": "mapped",
+        "rust": "FileSystem",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "ShellExecOptions": {
+        "status": "mapped",
+        "rust": "ShellExecOptions",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "Shell": {
+        "status": "mapped",
+        "rust": "Shell",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "ExecutionEnv": {
+        "status": "mapped",
+        "rust": "ExecutionEnv",
+        "files": [
+          "harness/types.ts",
+          "index.ts"
+        ]
+      },
+      "ShellCaptureProgress": {
+        "status": "mapped",
+        "rust": "ShellCaptureProgress",
+        "files": [
+          "harness/utils/shell-output.ts"
+        ]
+      },
+      "ShellCaptureOptions": {
+        "status": "mapped",
+        "rust": "ShellCaptureOptions",
+        "files": [
+          "harness/utils/shell-output.ts"
+        ]
+      },
+      "ShellCaptureResult": {
+        "status": "mapped",
+        "rust": "ShellCaptureResult",
+        "files": [
+          "harness/utils/shell-output.ts"
+        ]
+      },
+      "sanitizeBinaryOutput": {
+        "status": "mapped",
+        "rust": "sanitize_binary_output",
+        "files": [
+          "harness/utils/shell-output.ts"
+        ]
+      },
+      "executeShellWithCapture": {
+        "status": "mapped",
+        "rust": "execute_shell_with_capture",
+        "files": [
+          "harness/utils/shell-output.ts"
+        ]
+      },
+      "DEFAULT_MAX_LINES": {
+        "status": "mapped",
+        "rust": "DEFAULT_MAX_LINES",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "DEFAULT_MAX_BYTES": {
+        "status": "mapped",
+        "rust": "DEFAULT_MAX_BYTES",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "GREP_MAX_LINE_LENGTH": {
+        "status": "mapped",
+        "rust": "GREP_MAX_LINE_LENGTH",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "TruncationResult": {
+        "status": "mapped",
+        "rust": "TruncationResult",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "TruncationOptions": {
+        "status": "mapped",
+        "rust": "TruncationOptions",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "formatSize": {
+        "status": "mapped",
+        "rust": "format_size",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "truncateHead": {
+        "status": "mapped",
+        "rust": "truncate_head",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "truncateTail": {
+        "status": "mapped",
+        "rust": "truncate_tail",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "truncateLine": {
+        "status": "mapped",
+        "rust": "truncate_line",
+        "files": [
+          "harness/utils/truncate.ts"
+        ]
+      },
+      "uuidv7": {
+        "status": "mapped",
+        "rust": "uuidv7",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "InferEventAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferOptionalAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferRequiredAndOptionalAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "InferStartAttributes": {
+        "status": "exception",
+        "files": [
+          "index.ts"
+        ],
+        "reason": "TypeScript conditional/keyof type computed from a schema definition at compile time; the runtime schema handling is ported (define_telemetry_schema, create_typed_span_starter)."
+      },
+      "RecordedTelemetryEvent": {
+        "status": "mapped",
+        "rust": "RecordedTelemetryEvent",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "RecordedTelemetrySpan": {
+        "status": "mapped",
+        "rust": "RecordedTelemetrySpan",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "TelemetrySpanAttributes": {
+        "status": "mapped",
+        "files": [
+          "index.ts"
+        ],
+        "rust": "SpanAttributes",
+        "note": "Alias of SpanAttributes in TS as well."
+      },
+      "createTypedSpanStarter": {
+        "status": "mapped",
+        "rust": "create_typed_span_starter",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "defineTelemetrySchema": {
+        "status": "mapped",
+        "rust": "define_telemetry_schema",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "InMemoryTelemetryContext": {
+        "status": "mapped",
+        "rust": "InMemoryTelemetryContext",
+        "files": [
+          "index.ts"
+        ]
+      },
+      "NOOP_TELEMETRY_CONTEXT": {
+        "status": "mapped",
+        "files": [
+          "index.ts"
+        ],
+        "rust": "noop_telemetry_context"
+      },
+      "setDefaultStreamFn": {
+        "status": "mapped",
+        "rust": "set_default_stream_fn",
+        "files": [
+          "index.ts",
+          "stream-fn.ts"
+        ]
+      },
+      "ProxyAssistantMessageEvent": {
+        "status": "mapped",
+        "rust": "ProxyAssistantMessageEvent",
+        "files": [
+          "proxy.ts"
+        ]
+      },
+      "ProxyStreamOptions": {
+        "status": "mapped",
+        "rust": "ProxyStreamOptions",
+        "files": [
+          "proxy.ts"
+        ]
+      },
+      "streamProxy": {
+        "status": "mapped",
+        "rust": "stream_proxy",
+        "files": [
+          "proxy.ts"
+        ]
+      },
+      "ScanningReadable": {
+        "status": "mapped",
+        "rust": "ScanningReadable",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "ScanningReadableOptions": {
+        "status": "mapped",
+        "rust": "ScanningReadableOptions",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "ScanningReadableSource": {
+        "status": "mapped",
+        "rust": "ScanningReadableSource",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "ScanningSearchTextProjector": {
+        "status": "mapped",
+        "rust": "ScanningSearchTextProjector",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "ScanningSessionSearchHit": {
+        "status": "mapped",
+        "rust": "ScanningSessionSearchHit",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "ScanningSessionSearchOptions": {
+        "status": "mapped",
+        "rust": "ScanningSessionSearchOptions",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "SessionSearchCandidate": {
+        "status": "mapped",
+        "rust": "SessionSearchCandidate",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "createScanningSessionSearch": {
+        "status": "mapped",
+        "rust": "create_scanning_session_search",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "scanningEntries": {
+        "status": "mapped",
+        "rust": "scanning_entries",
+        "files": [
+          "search/index.ts",
+          "search/scanning.ts"
+        ]
+      },
+      "SessionSearchOptions": {
+        "status": "mapped",
+        "rust": "SessionSearchOptions",
+        "files": [
+          "search/index.ts"
+        ]
+      },
+      "SessionSearchHit": {
+        "status": "mapped",
+        "rust": "SessionSearchHit",
+        "files": [
+          "search/index.ts"
+        ]
+      },
+      "SessionSearch": {
+        "status": "mapped",
+        "rust": "SessionSearch",
+        "files": [
+          "search/index.ts"
+        ]
+      },
+      "getDefaultStreamFn": {
+        "status": "mapped",
+        "rust": "get_default_stream_fn",
+        "files": [
+          "stream-fn.ts"
+        ]
+      },
+      "StreamFn": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "StreamFn"
+      },
+      "ToolExecutionMode": {
+        "status": "mapped",
+        "rust": "ToolExecutionMode",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentToolCall": {
+        "status": "mapped",
+        "rust": "AgentToolCall",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "BeforeToolCallResult": {
+        "status": "mapped",
+        "rust": "BeforeToolCallResult",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AfterToolCallResult": {
+        "status": "mapped",
+        "rust": "AfterToolCallResult",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "BeforeToolCallContext": {
+        "status": "mapped",
+        "rust": "BeforeToolCallContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AfterToolCallContext": {
+        "status": "mapped",
+        "rust": "AfterToolCallContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ShouldStopAfterTurnContext": {
+        "status": "mapped",
+        "rust": "ShouldStopAfterTurnContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentLoopTurnUpdate": {
+        "status": "mapped",
+        "rust": "AgentLoopTurnUpdate",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "PrepareNextTurnContext": {
+        "status": "mapped",
+        "rust": "PrepareNextTurnContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentLoopConfig": {
+        "status": "mapped",
+        "rust": "AgentLoopConfig",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "ThinkingLevel": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "ThinkingLevel"
+      },
+      "CustomAgentMessages": {
+        "status": "exception",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "AgentMessage",
+        "reason": "Declaration-merging interface for module augmentation (compile-time only); custom messages ride AgentMessage::Custom in Rust."
+      },
+      "AgentMessage": {
+        "status": "mapped",
+        "rust": "AgentMessage",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentState": {
+        "status": "mapped",
+        "files": [
+          "types.ts"
+        ],
+        "rust": "AgentState"
+      },
+      "AgentToolResult": {
+        "status": "mapped",
+        "rust": "AgentToolResult",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentToolUpdateCallback": {
+        "status": "mapped",
+        "rust": "AgentToolUpdateCallback",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentTool": {
+        "status": "mapped",
+        "rust": "AgentTool",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentContext": {
+        "status": "mapped",
+        "rust": "AgentContext",
+        "files": [
+          "types.ts"
+        ]
+      },
+      "AgentEvent": {
+        "status": "mapped",
+        "rust": "AgentEvent",
+        "files": [
+          "types.ts"
+        ]
+      }
+    }
+  }
+}

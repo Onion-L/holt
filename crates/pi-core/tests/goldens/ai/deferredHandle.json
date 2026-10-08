@@ -1,0 +1,12 @@
+{
+	"provider": "openai",
+	"modelId": "o4-mini",
+	"api": "openai-responses",
+	"id": "resp_deferred_1",
+	"expiresAt": 1735693200000,
+	"pollAfterMs": 1500,
+	"data": {
+		"kind": "row",
+		"batch": "b1"
+	}
+}
