@@ -304,13 +304,16 @@ impl EngineService {
                 .iter_mut()
                 .find(|routine| routine.id == id)
                 .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
-            // A pause that raced the plan stands the fire down before it
-            // claims anything; Run now (manual) still goes — the card offers
-            // it on a user-paused Routine.
+            // A pause or schedule edit that raced the plan stands the old
+            // fire down before it claims anything. Run now remains available
+            // on a user-paused Routine.
             if routine.paused.is_some() && !fire.manual {
                 return Ok(None);
             }
             if let Some(at) = fire.scheduled_at {
+                if routine.last_fired_at >= Some(at) {
+                    return Ok(None);
+                }
                 routine.last_fired_at = Some(at);
             }
             // Skipped records land on top of the live run, so look past them.
@@ -503,4 +506,88 @@ fn time_zone_or_local(time_zone: Option<String>) -> String {
     time_zone
         .filter(|zone| !zone.trim().is_empty())
         .map_or_else(local_time_zone, |zone| zone.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use holt_proto::HOME_SPACE_ID;
+
+    use super::*;
+
+    #[test]
+    fn schedule_edit_discards_a_fire_planned_from_the_old_schedule() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 10, 7, 9, 0, 0).unwrap();
+        let clock = crate::Clock::manual(start);
+        let engine = crate::LocalEngine::assemble(&crate::EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            personal_skills_dir: None,
+            stream_fn: None,
+            search_backend_resolver: None,
+            clock: Some(clock.clone()),
+        })
+        .unwrap();
+        let params = serde_json::json!({
+            "name": "Digest",
+            "spaceId": HOME_SPACE_ID,
+            "prompt": "Summarize the changes.",
+            "cron": "0 * * * *",
+            "timeZone": "UTC",
+            "config": {
+                "provider": "openai",
+                "model": "openai/gpt-5.4",
+                "reasoning": null,
+                "permissionMode": "auto-review"
+            }
+        });
+        let RpcReply::Value(created) = engine.service.create_routine(params.clone()).unwrap()
+        else {
+            panic!("CreateRoutine did not reply a value");
+        };
+        let id = created["id"].as_str().unwrap();
+        let old = engine.service.routines.get(id).unwrap();
+
+        let edited_at = Utc.with_ymd_and_hms(2026, 10, 7, 12, 30, 0).unwrap();
+        clock.set(edited_at);
+        let due = crate::routines::due_at(&old, edited_at).unwrap();
+        assert_eq!(due.at, Utc.with_ymd_and_hms(2026, 10, 7, 12, 0, 0).unwrap());
+
+        let mut edited = params;
+        edited["routineId"] = id.into();
+        edited["cron"] = "* * * * *".into();
+        engine.service.update_routine(edited).unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let claim = runtime.block_on(engine.service.start_routine_run(
+            id,
+            Fire {
+                missed_fires: due.missed_fires,
+                manual: false,
+                scheduled_at: Some(due.at),
+            },
+        ));
+        assert!(matches!(claim, Ok(None)));
+
+        let current = engine.service.routines.get(id).unwrap();
+        assert_eq!(current.last_fired_at, Some(edited_at));
+        assert!(current.runs.is_empty());
+        assert_eq!(
+            crate::routines::next_fire(&current),
+            Some(Utc.with_ymd_and_hms(2026, 10, 7, 12, 31, 0).unwrap())
+        );
+        assert!(
+            engine
+                .service
+                .runtime
+                .chats
+                .read()
+                .unwrap()
+                .iter()
+                .all(|chat| chat.routine_run.is_none())
+        );
+    }
 }
