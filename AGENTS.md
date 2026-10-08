@@ -43,9 +43,10 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
   inside a `List` must use `.occlude()` or one wheel gesture can move both the child and the outer
   list. A bubble-phase `.on_scroll_wheel()` handler is insufficient because the outer List listener
   may run first. See ADR-0013.
-- The agent loop itself lives in the external `pi-core-rs` crate (git dependency in root
-  `Cargo.toml`); `crates/engine` only adapts it — run wiring, tools via `engine::tools`,
-  credentials, provider settings.
+- The agent loop itself lives in `crates/core` (package `pi-core-rs`, lib
+  `pi_core`; merged in as a workspace member, ADR-0043); `crates/engine`
+  only adapts it — run wiring, tools via `engine::tools`, credentials,
+  provider settings.
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in use:
   engine, ui, or `engine,ui` when a change spans both.
 - Releases: a pushed `v*` tag must match `workspace.version` in the root
