@@ -309,6 +309,111 @@ async fn the_compacted_history_survives_a_restart() {
     );
 }
 
+/// Rewrite the chat's persisted compaction record into issue #21's damaged
+/// shape: the `{"kind":"compaction"}` line becomes a plain
+/// `compactionSummary` message line, and the `retainedTail` message lines
+/// that preceded it move behind it — raw prefix in front, re-materialized
+/// tail behind, exactly the damaged file's layout.
+fn damage_compaction_record(data_dir: &std::path::Path, chat_id: &str) {
+    let path = data_dir.join("history").join(format!("{chat_id}.jsonl"));
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let record_at = lines
+        .iter()
+        .position(|value| value["kind"] == "compaction")
+        .expect("the compacted chat persisted a compaction record");
+    let entry = lines[record_at]["entry"].clone();
+    let tail_count = entry["retainedTail"].as_u64().unwrap_or(0) as usize;
+    let summary_line = serde_json::json!({
+        "kind": "message",
+        "entry": {
+            "role": "compactionSummary",
+            "summary": entry["summary"],
+            "tokensBefore": entry["tokensBefore"],
+            "timestamp": entry["timestamp"],
+        }
+    });
+    let mut lines = lines;
+    lines.remove(record_at);
+    let cut = record_at - tail_count;
+    let mut damaged = lines[..cut].to_vec();
+    damaged.push(summary_line);
+    damaged.extend(lines[cut..].to_vec());
+    let text = damaged
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!("{text}\n")).unwrap();
+}
+
+#[tokio::test]
+async fn a_lost_compaction_record_self_heals_on_reload() {
+    // Issue #21: the compaction record never landed as a
+    // `{"kind":"compaction"}` entry — the summary was materialized as a
+    // plain message with the retained tail behind it and the raw prefix
+    // in front. Replay honors the summary's meaning and drops the
+    // summarized prefix, so the post-restart request carries the summary
+    // plus the tail, not the raw History that made the model answer
+    // nothing.
+    let fixture = common::Fixture::new();
+    // The one big reply crosses the threshold; every reply after it
+    // reports the small default, so the reloaded History stays far below
+    // it and the post-restart Turn runs uncompacted — the request then IS
+    // the replayed History, which is the point.
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text_with_usage(big_text(40_000), overflowing_usage()),
+        ScriptedReply::text("the one summary"),
+        ScriptedReply::text("second answer"),
+        ScriptedReply::text("third reply"),
+        ScriptedReply::text("fourth reply"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "marker-alpha prompt").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "second prompt").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "third prompt").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    drop(engine);
+
+    damage_compaction_record(fixture.data_dir.path(), "chat-1");
+
+    let engine = fixture.engine(&provider);
+    let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "fourth prompt").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // The reload compacted nothing — the one summary request is the
+    // pre-damage Turn's.
+    let requests = provider.requests();
+    assert_eq!(
+        summary_requests(&requests).len(),
+        1,
+        "the damaged record must not re-trigger compaction"
+    );
+    let run = requests.last().unwrap();
+    let body = serde_json::to_string(&run.messages).unwrap();
+    assert!(
+        !body.contains("marker-alpha"),
+        "the summarized prefix replayed into the request: {body}"
+    );
+    assert!(
+        body.contains("the one summary"),
+        "the summary must lead the replayed History: {body}"
+    );
+    assert!(
+        body.contains("second prompt"),
+        "the retained tail must survive the drop: {body}"
+    );
+}
+
 #[tokio::test]
 async fn a_failed_summary_lets_the_turn_proceed_with_a_notice() {
     let fixture = common::Fixture::new();
