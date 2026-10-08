@@ -79,6 +79,7 @@ mod ai_transform_messages;
 mod ai_validation;
 mod ai_xai_responses;
 mod harness_agent_harness;
+mod harness_append_order;
 mod harness_compaction;
 mod harness_compat_types;
 mod harness_events;
