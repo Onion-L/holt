@@ -1,0 +1,13 @@
+{
+	"role": "toolResult",
+	"toolCallId": "call_2",
+	"toolName": "search",
+	"content": [
+		{
+			"type": "text",
+			"text": "boom"
+		}
+	],
+	"isError": true,
+	"timestamp": 1735689600005
+}

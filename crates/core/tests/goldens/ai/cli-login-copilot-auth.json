@@ -1,0 +1,9 @@
+{
+  "github-copilot": {
+    "type": "oauth",
+    "refresh": "ghu_refresh_token",
+    "access": "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
+    "expires": 9999999699000,
+    "availableModelIds": []
+  }
+}

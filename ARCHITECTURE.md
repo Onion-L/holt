@@ -29,6 +29,7 @@ contract; another backend can slot in behind the same trait.
 | `crates/proto` | Shared types: `ProviderId`, provider-qualified models and run configuration, entities (Chat/Space/Device/Session), `EngineInfo`, view derivations, the per-chat usage frame (`ChatUsage`: ledger totals plus occupancy), and the device-level usage aggregate (`UsageStatsReply`). |
 | `crates/doc` | The wire types both ends exchange — `MessagePart`, `SessionMessageEntry`, `TranscriptFrame`, the typed part payloads — plus transcript-frame diffing. Persistence is plain JSON/JSONL owned by `crates/engine` (see "Data on disk" below); the crate's Loro session/workspace schemas and its HLC registry port are dormant — nothing outside `crates/doc` links them. |
 | `crates/theme`, `crates/syntax` | Theme library and syntax highlighting. |
+| `crates/core` | The agent core (package `pi-core-rs`, lib `pi_core`): Holt's Rust port of pi v0.84.4 (`pi-agent-core`, `pi-ai`, `pi-telemetry`) — provider adapters and streaming, the agent loop, and the harness (sessions, tools, compaction, skill/template loaders). Merged into the workspace with its history (ADR-0043); upstream pi is no longer tracked. Free of Holt domain concepts — `crates/engine` is the only adapter. MIT-licensed, not the workspace's GPL-3.0. |
 
 ## The RPC contract (what a real backend must serve)
 
@@ -954,7 +955,8 @@ compaction, and overflow behavior are asserted without a real provider
   carrying the glass/edge-fade patches the UI depends on. It is a frozen
   asset: edit it in place when needed; no dependency resolves from git.
 - `LICENSE` is GPL-3.0; upstream attribution for the vendored sources rides
-  that license and the README credits.
+  that license and the README credits. The exception is `crates/core`, which
+  keeps the MIT license of the pi packages it was ported from (ADR-0043).
 - Historical design docs for removed subsystems (sync, agent drivers, edge)
   were deleted with them; `docs/adr` keeps the decision records and
   `docs/research` keeps the UI/gpui and domain research notes.

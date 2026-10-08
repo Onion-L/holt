@@ -1,0 +1,80 @@
+{
+	"role": "assistant",
+	"content": [
+		{
+			"type": "thinking",
+			"thinking": "Let me reason"
+		},
+		{
+			"type": "thinking",
+			"thinking": "Reasoned",
+			"thinkingSignature": "sig=="
+		},
+		{
+			"type": "thinking",
+			"thinking": "",
+			"thinkingSignature": "redacted-payload==",
+			"redacted": true
+		},
+		{
+			"type": "text",
+			"text": "Hello world"
+		},
+		{
+			"type": "text",
+			"text": "Signed",
+			"textSignature": "{\"v\":1,\"id\":\"msg_01\"}"
+		},
+		{
+			"type": "toolCall",
+			"id": "call_1",
+			"name": "read_file",
+			"arguments": {
+				"path": "/tmp/x",
+				"limit": 10,
+				"nested": {
+					"flag": true,
+					"nothing": null,
+					"list": [
+						1,
+						"two"
+					]
+				}
+			}
+		},
+		{
+			"type": "toolCall",
+			"id": "call_2",
+			"name": "search",
+			"arguments": {
+				"query": "q"
+			},
+			"namespace": "web/search"
+		}
+	],
+	"api": "anthropic-messages",
+	"provider": "anthropic",
+	"model": "claude-opus-4-7",
+	"responseModel": "claude-opus-4-7-20260101",
+	"responseId": "msg_01ABC",
+	"usage": {
+		"input": 120,
+		"output": 45,
+		"cacheRead": 2000,
+		"cacheWrite": 300,
+		"cacheWrite1h": 100,
+		"reasoning": 20,
+		"totalTokens": 2665,
+		"cost": {
+			"input": 0.001,
+			"output": 0.002,
+			"cacheRead": 0.0001,
+			"cacheWrite": 0.0005,
+			"total": 0.0036
+		}
+	},
+	"stopReason": "toolUse",
+	"rawStopReason": "tool_use",
+	"endTurn": false,
+	"timestamp": 1735689600000
+}

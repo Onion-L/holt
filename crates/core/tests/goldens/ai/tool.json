@@ -1,0 +1,19 @@
+{
+	"name": "read_file",
+	"description": "Read a file",
+	"parameters": {
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string",
+				"description": "Path"
+			},
+			"limit": {
+				"type": "number"
+			}
+		},
+		"required": [
+			"path"
+		]
+	}
+}

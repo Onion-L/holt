@@ -1,0 +1,8 @@
+  1. Anthropic
+  2. GitHub Copilot
+  3. Kimi For Coding
+  4. OpenAI Codex
+  5. OpenRouter
+  6. Radius
+  7. xAI
+Enter number (1-7): 

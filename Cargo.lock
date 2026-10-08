@@ -5849,7 +5849,6 @@ dependencies = [
 [[package]]
 name = "pi-core-rs"
 version = "0.84.4"
-source = "git+https://github.com/Onion-L/pi-core-rs.git#9f2f6b6c08c6347f58a9c7d2933c3c3ac802d8b4"
 dependencies = [
  "base64 0.22.1",
  "bytes",

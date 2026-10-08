@@ -1,0 +1,14 @@
+Usage: npx @earendil-works/pi-ai <command> [provider]
+
+Commands:
+  login [provider]  Login to an OAuth provider
+  list              List available providers
+
+Providers:
+  anthropic            Anthropic
+  github-copilot       GitHub Copilot
+  kimi-coding          Kimi For Coding
+  openai-codex         OpenAI Codex
+  openrouter           OpenRouter
+  radius               Radius
+  xai                  xAI

@@ -1,0 +1,2 @@
+{"kind":"header","version":4,"id":"branch-session","createdAt":1700000000000,"cwd":"/workspace/project"}
+{"kind":"entry","lane":"main","type":"branch_summary","id":"branch-1","fromId":"abandoned-1","summary":"abandoned branch work","parentId":null,"seq":1,"timestamp":1700000000000}

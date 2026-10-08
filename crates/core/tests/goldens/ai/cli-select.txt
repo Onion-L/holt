@@ -1,0 +1,5 @@
+
+Select OpenAI Codex login method:
+  1. Browser login (default)
+  2. Device code login (headless)
+Enter number (1-2): 

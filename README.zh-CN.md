@@ -69,13 +69,14 @@ gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + core agent 
 
 UI 只在启动时链接 `crates/engine` 来组装本地后端，功能代码不直接调用后端逻辑。其余通信都走
 `crates/rpc` 中的类型化协议；`crates/engine` 在 `RpcService` trait 后面适配
-[pi-core-rs](https://github.com/Onion-L/pi-core-rs)，因此替换成其他后端时不需要改动 UI。
+`crates/core`（`pi-core-rs`），因此替换成其他后端时不需要改动 UI。
 
 | Crate | 职责 |
 | --- | --- |
 | `apps/holt` | 可执行程序，没有 CLI。 |
 | `crates/ui` | gpui 视图层，与具体 agent 无关，负责渲染 `holt-doc` 中的 `MessagePart`。 |
 | `crates/engine` | 后端适配层：agent loop、provider、凭据、git、skills、终端。 |
+| `crates/core` | Agent 核心（`pi-core-rs`）：provider、流式传输、agent loop、harness。pi v0.84.4 的 Rust 移植版，归 Holt 所有。 |
 | `crates/rpc` | 类型化控制面：分帧、分发、内存传输。 |
 | `crates/proto` | 共享的协议类型和领域类型。 |
 | `crates/doc` | Transcript 和 History 的传输类型（`MessagePart`、`TranscriptFrame`）。磁盘上的数据是普通 JSON/JSONL，由 `crates/engine` 负责。 |

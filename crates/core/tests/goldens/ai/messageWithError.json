@@ -1,0 +1,24 @@
+{
+	"role": "assistant",
+	"content": [],
+	"api": "google-generative-ai",
+	"provider": "google",
+	"model": "gemini-3-pro",
+	"usage": {
+		"input": 0,
+		"output": 0,
+		"cacheRead": 0,
+		"cacheWrite": 0,
+		"totalTokens": 0,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0,
+			"total": 0
+		}
+	},
+	"stopReason": "error",
+	"errorMessage": "503 Service Unavailable",
+	"timestamp": 1735689600007
+}

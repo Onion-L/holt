@@ -1,0 +1,2 @@
+{"kind":"header","version":4,"id":"compaction-session","createdAt":1700000000000,"cwd":"/workspace/project"}
+{"kind":"entry","lane":"main","type":"compaction","id":"compact-1","summary":"earlier conversation","retainedTail":[{"role":"user","content":"kept","timestamp":1700000000000}],"tokensBefore":1234,"details":{"reason":"manual"},"usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"parentId":null,"seq":1,"timestamp":1700000000000}

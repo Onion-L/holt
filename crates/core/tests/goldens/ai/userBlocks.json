@@ -1,0 +1,15 @@
+{
+	"role": "user",
+	"content": [
+		{
+			"type": "text",
+			"text": "Hello world"
+		},
+		{
+			"type": "image",
+			"data": "aGVsbG8=",
+			"mimeType": "image/png"
+		}
+	],
+	"timestamp": 1735689600003
+}

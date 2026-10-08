@@ -2323,8 +2323,14 @@ mod tests {
             Duration::from_millis(5),
         ));
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(runtime.sessions.read().unwrap()[0].updated_at > before);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while runtime.sessions.read().unwrap()[0].updated_at <= before {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "heartbeat never refreshed updated_at"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
 
         stop.cancel();
         heartbeat.await.unwrap();

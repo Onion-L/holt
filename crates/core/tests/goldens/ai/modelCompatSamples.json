@@ -1,0 +1,85 @@
+{
+	"openaiCompletions": {
+		"supportsStore": false,
+		"supportsDeveloperRole": true,
+		"supportsReasoningEffort": true,
+		"supportsUsageInStreaming": true,
+		"supportsFinishReason": true,
+		"maxTokensField": "max_completion_tokens",
+		"requiresToolResultName": false,
+		"requiresAssistantAfterToolResult": false,
+		"requiresThinkingAsText": true,
+		"requiresReasoningContentOnAssistantMessages": false,
+		"thinkingFormat": "openai",
+		"chatTemplateKwargs": {
+			"enable_thinking": {
+				"$var": "thinking.enabled",
+				"omitWhenOff": true
+			}
+		},
+		"supportsStrictMode": true,
+		"cacheControlFormat": "anthropic",
+		"sendSessionAffinityHeaders": true,
+		"deferredToolsMode": "kimi",
+		"sessionAffinityFormat": "openai",
+		"supportsLongCacheRetention": true,
+		"thinkingTokenBudgetField": "thinking_budget",
+		"supportsThinkingTokenBudget": true,
+		"supportsOpenAIGrammarTools": true,
+		"zaiToolStream": false,
+		"openRouterRouting": {
+			"order": [
+				"anthropic"
+			],
+			"only": [
+				"openai"
+			],
+			"allow_fallbacks": false
+		},
+		"vercelGatewayRouting": {
+			"only": [
+				"bedrock"
+			],
+			"order": [
+				"anthropic",
+				"openai"
+			]
+		}
+	},
+	"openaiResponses": {
+		"supportsDeveloperRole": false,
+		"sessionAffinityFormat": "openai-nosession",
+		"supportsLongCacheRetention": false,
+		"supportsStrictMode": true,
+		"supportsOpenAIGrammarTools": false,
+		"supportsAdditionalTools": true,
+		"supportsToolSearch": true,
+		"supportsExplicitPromptCacheMode": true
+	},
+	"anthropic": {
+		"supportsEagerToolInputStreaming": false,
+		"supportsLongCacheRetention": true,
+		"sendSessionAffinityHeaders": false,
+		"supportsCacheControlOnTools": true,
+		"supportsTemperature": false,
+		"forceAdaptiveThinking": true,
+		"allowEmptySignature": true,
+		"supportsStrictTools": true,
+		"allowedFallbackModels": [
+			{
+				"provider": "anthropic",
+				"model": "claude-sonnet-4-6",
+				"cost": {
+					"input": 3,
+					"output": 15,
+					"cacheRead": 0.3,
+					"cacheWrite": 3.75
+				}
+			}
+		],
+		"supportsToolReferences": false
+	},
+	"bedrock": {
+		"supportsStrictMode": true
+	}
+}

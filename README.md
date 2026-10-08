@@ -76,8 +76,8 @@ gpui UI ── in-memory RPC (ndjson envelopes) ── LocalEngine + core agent 
 
 The UI links `crates/engine` only to assemble the local backend at bootstrap;
 no feature code calls backend logic. Everything else goes through the typed
-contract in `crates/rpc`; `crates/engine` adapts
-[pi-core-rs](https://github.com/Onion-L/pi-core-rs) behind the `RpcService`
+contract in `crates/rpc`; `crates/engine` adapts `crates/core`
+(`pi-core-rs`) behind the `RpcService`
 trait, so another backend can slot in without touching the UI.
 
 | Crate | Role |
@@ -85,6 +85,7 @@ trait, so another backend can slot in without touching the UI.
 | `apps/holt` | The binary. No CLI. |
 | `crates/ui` | The gpui viewport — agent-agnostic, renders `MessagePart`s from `holt-doc`. |
 | `crates/engine` | The backend adapter: agent loop, providers, credentials, git, skills, terminals. |
+| `crates/core` | The agent core (`pi-core-rs`): providers, streaming, agent loop, harness. Holt-owned Rust port of pi v0.84.4. |
 | `crates/rpc` | The typed control plane: framing, dispatch, memory transport. |
 | `crates/proto` | Shared protocol and domain types. |
 | `crates/doc` | Transcript and History wire types (`MessagePart`, `TranscriptFrame`). Data on disk is plain JSON/JSONL, owned by `crates/engine`. |
