@@ -326,6 +326,7 @@ mod tests {
             plan_mode: None,
             worktree: None,
             provider_mode: false,
+            routine_run: None,
         }
     }
 

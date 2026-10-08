@@ -272,6 +272,30 @@ pub mod methods {
     pub const WATCH_SESSIONS: &str = "WatchSessions";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
+    /// Routines (ADR-0042) → `Vec<RoutineView>`, the current list.
+    pub const LIST_ROUTINES: &str = "ListRoutines";
+    /// Pushed `Vec<RoutineView>`: current value first, then every change.
+    pub const WATCH_ROUTINES: &str = "WatchRoutines";
+    /// Params `{name, spaceId, prompt, cron | at, timeZone?, config,
+    /// checkout?}` → the new `Routine`. `at` (a local date-time) makes it
+    /// one-time and must lie ahead. `timeZone` defaults to the device's zone.
+    pub const CREATE_ROUTINE: &str = "CreateRoutine";
+    /// Params `{routineId, name, spaceId, prompt, cron | at, timeZone?,
+    /// config, checkout?}` → the updated `Routine`. Configuration only: run records
+    /// and pause state stay, and a changed schedule plans from now.
+    pub const UPDATE_ROUTINE: &str = "UpdateRoutine";
+    /// Params `{cron | at, timeZone?}` → `{timeZone, fires}`: the next three
+    /// fires from now (one for `at`), or `BadParams` naming the invalid cron,
+    /// zone, or a time that has passed.
+    pub const PREVIEW_ROUTINE_SCHEDULE: &str = "PreviewRoutineSchedule";
+    /// Params `{routineId}`. Run chats stay as ordinary Chats.
+    pub const DELETE_ROUTINE: &str = "DeleteRoutine";
+    /// Params `{routineId, paused}`: pause (reason "user") or resume.
+    /// Resuming does not make up fires passed while paused.
+    pub const SET_ROUTINE_PAUSED: &str = "SetRoutinePaused";
+    /// Fire a Routine once, off schedule. Params `{routineId}` → `{chatId}`,
+    /// or `{}` when a run is still live and the fire was skipped.
+    pub const RUN_ROUTINE_NOW: &str = "RunRoutineNow";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
     /// Params are tagged `{op: createChat|createSpace|renameSpace|deleteSpace|
     /// renameChat|setChatArchived|setChatPinned|deleteChat|renameDevice|markChatSeen|

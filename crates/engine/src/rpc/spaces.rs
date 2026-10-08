@@ -173,6 +173,7 @@ impl EngineService {
         drop(spaces);
         if removed {
             self.spaces_tx.send_replace(value);
+            self.pause_routines_in_space(&params.space_id);
         }
         RpcReply::value(&serde_json::json!({}))
     }
@@ -271,6 +272,7 @@ impl EngineService {
             plan_mode: None,
             provider_mode: false,
             worktree: params.worktree,
+            routine_run: None,
         });
         drop(chats);
         self.runtime
@@ -360,6 +362,7 @@ impl EngineService {
             self.runtime.remove_chat(&params.chat_id);
             self.terminals.close_chat(&params.chat_id);
             self.runtime.publish_chats();
+            self.forget_routine_run_chat(&params.chat_id);
             // Reclaim at restart, when no in-memory draft or retry owns files.
         }
         // Unknown chat: idempotent no-op, matching the archive path.

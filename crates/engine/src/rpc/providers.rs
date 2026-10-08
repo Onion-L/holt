@@ -1,6 +1,7 @@
 //! The provider/model catalog surface (ADR-0028/0031/0037): keys, probes,
 //! records, logos, proposals, and the settle cards.
 
+use holt_proto::RunOutcome;
 use holt_rpc::{RpcError, RpcReply};
 use pi_core::ai::auth::types::CredentialStore;
 use pi_core::ai::types::Model as CoreModel;
@@ -434,6 +435,9 @@ impl EngineService {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
         crate::tools::ask_user::dismiss_question(&chat, card_id).map_err(RpcError::Failed)?;
+        // A run waiting on the dismissed question is done.
+        self.routines
+            .move_run(chat_id, RunOutcome::Waiting, RunOutcome::Succeeded);
         RpcReply::value(&serde_json::json!({ "dismissed": true }))
     }
 

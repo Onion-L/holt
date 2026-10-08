@@ -539,6 +539,7 @@ impl Fixture {
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: None,
+            clock: None,
         })
         .unwrap()
     }
@@ -556,6 +557,23 @@ impl Fixture {
             personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
             stream_fn: Some(provider.stream_fn()),
             search_backend_resolver: Some(resolver),
+            clock: None,
+        })
+        .unwrap()
+    }
+
+    /// The scripted engine on a manual clock the test advances.
+    pub fn engine_with_clock(
+        &self,
+        provider: &ScriptedProvider,
+        clock: holt_engine::Clock,
+    ) -> LocalEngine {
+        LocalEngine::assemble(&EngineConfig {
+            data_dir: self.data_dir.path().to_path_buf(),
+            personal_skills_dir: Some(self.personal_dir.path().to_path_buf()),
+            stream_fn: Some(provider.stream_fn()),
+            search_backend_resolver: None,
+            clock: Some(clock),
         })
         .unwrap()
     }

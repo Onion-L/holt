@@ -38,6 +38,7 @@ use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
 use crate::pickers::{PickerEvent, Pickers};
 use crate::popover::{self, Loadable};
 use crate::rail;
+use crate::scheduled::{ScheduledEvent, ScheduledPage};
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
 use crate::settings::providers::{ProvidersPage, ProvidersPageEvent};
@@ -253,6 +254,8 @@ pub enum Route {
     Settings(SettingsSection),
     /// The Chat manager page (glossary) — global batch session operations.
     ChatManager,
+    /// The Scheduled page (glossary: Routine).
+    Scheduled,
 }
 
 /// The chat-row Rename dialog.
@@ -407,6 +410,8 @@ pub struct Shell {
     usage_page: Option<Entity<crate::settings::usage::UsagePage>>,
     chat_manager_page: Option<Entity<ChatManagerPage>>,
     chat_manager_sub: Option<Subscription>,
+    scheduled_page: Option<Entity<ScheduledPage>>,
+    scheduled_sub: Option<Subscription>,
     /// Last action failure from the providers page, shown as the window-top
     /// error alert until its 2s timer fires or the close button is pressed.
     provider_error: Option<SharedString>,
@@ -702,6 +707,7 @@ impl Shell {
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
             // `chats` boots straight into the Chat manager page.
             Some("chats") => Route::ChatManager,
+            Some("scheduled") => Route::Scheduled,
             // `new` pins the new-chat canvas (suppresses boot auto-select).
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
@@ -727,6 +733,7 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
             Route::ChatManager => NavEntry::ChatManager,
+            Route::Scheduled => NavEntry::Scheduled,
         });
         Self {
             state,
@@ -789,6 +796,8 @@ impl Shell {
             usage_page: None,
             chat_manager_page: None,
             chat_manager_sub: None,
+            scheduled_page: None,
+            scheduled_sub: None,
             provider_error: None,
             provider_error_timer: None,
             shortcuts_sub: None,
@@ -1161,7 +1170,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open the Chat manager page (⌘⇧M / the sidebar's Chats nav row).
+    /// Open the Chat manager page (⌘⇧M / the sidebar's inbox button).
     /// Pressing the shortcut again on the page walks back to wherever the
     /// user came from.
     fn open_chat_manager(&mut self, cx: &mut Context<Self>) {
@@ -1198,6 +1207,48 @@ impl Shell {
             },
         ));
         self.chat_manager_page = Some(page.clone());
+        page
+    }
+
+    /// Show the Scheduled page from the titlebar cluster.
+    pub(super) fn open_scheduled(&mut self, cx: &mut Context<Self>) {
+        self.route = Route::Scheduled;
+        self.nav.push(NavEntry::Scheduled);
+        self.reveal_scheduled(cx);
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
+    /// The Scheduled page editing `routine_id`.
+    pub(super) fn open_routine(&mut self, routine_id: String, cx: &mut Context<Self>) {
+        self.open_scheduled(cx);
+        let page = self.scheduled_page(cx);
+        page.update(cx, |page, cx| page.edit_routine(&routine_id, cx));
+    }
+
+    /// Re-land keyboard focus on a cached Scheduled page.
+    fn reveal_scheduled(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = &self.scheduled_page {
+            page.update(cx, |page, cx| page.reveal(cx));
+        }
+    }
+
+    /// The Scheduled page, created on first use. Run now lands on the run
+    /// Chat via the page's OpenChat event.
+    fn scheduled_page(&mut self, cx: &mut Context<Self>) -> Entity<ScheduledPage> {
+        if let Some(page) = &self.scheduled_page {
+            return page.clone();
+        }
+        let state = self.state.clone();
+        let pickers = self.composer.read(cx).pickers().clone();
+        let page = cx.new(|cx| ScheduledPage::new(state, pickers, cx));
+        self.scheduled_sub = Some(cx.subscribe(
+            &page,
+            |this: &mut Shell, _, event: &ScheduledEvent, cx| match event {
+                ScheduledEvent::OpenChat(chat_id) => this.open_chat(chat_id.clone(), cx),
+            },
+        ));
+        self.scheduled_page = Some(page.clone());
         page
     }
 
@@ -1830,6 +1881,7 @@ impl Shell {
         let page_outlet: Option<AnyElement> = match self.route {
             Route::Settings(section) => Some(self.settings_outlet(section, cx)),
             Route::ChatManager => Some(self.chat_manager_page(cx).into_any_element()),
+            Route::Scheduled => Some(self.scheduled_page(cx).into_any_element()),
             Route::Chat => None,
         };
         if let Some(outlet) = page_outlet {
@@ -2490,7 +2542,7 @@ impl Render for Shell {
                     // reads None (the render hook below re-lands focus when the
                     // route returns to Chat; a lingering unmounted handle would
                     // otherwise dead-end keyboard dispatch for good).
-                    Route::Settings(_) | Route::ChatManager => window.blur(),
+                    Route::Settings(_) | Route::ChatManager | Route::Scheduled => window.blur(),
                 }
             }));
         }
@@ -3168,6 +3220,129 @@ mod tests {
             stable_panel_content_width(conversation, Some((takeover, conversation))),
             conversation
         );
+    }
+
+    /// A state holding one Routine whose only run (Chat "run-chat") has
+    /// `outcome`.
+    fn routine_state(outcome: &str) -> AppState {
+        let mut state = AppState::new();
+        state.chats.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "run-chat", "deviceId": "test-device", "archived": false,
+                "cwd": "/tmp", "createdAt": "2026-10-07T09:00:00Z"
+            }))
+            .unwrap(),
+        );
+        state.routines.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "r1", "name": "Daily digest", "spaceId": "space-1",
+                "prompt": "Summarize.", "cron": "0 9 * * *", "timeZone": "UTC",
+                "config": {
+                    "provider": "openai", "model": "openai/gpt-5.4",
+                    "reasoning": null, "permissionMode": "auto-review"
+                },
+                "checkout": "main-checkout", "createdAt": "2026-10-07T08:00:00Z",
+                "runs": [{
+                    "firedAt": "2026-10-07T09:00:00Z", "outcome": outcome,
+                    "chatId": "run-chat"
+                }],
+            }))
+            .unwrap(),
+        );
+        state
+    }
+
+    /// The run caption's click lands on the Routine's edit form.
+    #[gpui::test]
+    fn open_routine_edits_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("succeeded"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        shell.update(cx, |shell, cx| shell.open_routine("r1".into(), cx));
+        cx.run_until_parked();
+        let page = shell.update(cx, |shell, cx| {
+            assert!(matches!(shell.route, Route::Scheduled));
+            assert_eq!(shell.nav.current().clone(), NavEntry::Scheduled);
+            shell.scheduled_page(cx)
+        });
+        assert_eq!(
+            page.read_with(cx, |page, cx| page.form_snapshot(cx))
+                .and_then(|(id, _, _)| id),
+            Some("r1".to_string())
+        );
+    }
+
+    #[gpui::test]
+    fn editing_a_routine_prefills_the_form(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("succeeded"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        let page = shell.update(cx, |shell, cx| {
+            shell.open_scheduled(cx);
+            shell.scheduled_page(cx)
+        });
+        page.update(cx, |page, cx| page.edit_routine("r1", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            page.read_with(cx, |page, cx| page.form_snapshot(cx)),
+            Some((
+                Some("r1".to_string()),
+                "Daily digest".to_string(),
+                "0 9 * * *".to_string()
+            ))
+        );
+        assert!(cx.debug_bounds("routine-form-preview").is_some());
+    }
+
+    #[gpui::test]
+    fn a_live_run_marks_the_titlebar_button_and_the_card(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| routine_state("waiting"));
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.debug_gate = Some(GatePhase::Ready);
+            shell
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_some());
+
+        shell.update(cx, |shell, cx| shell.open_scheduled(cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("routine-live-r1").is_some());
+
+        state.update(cx, |state, cx| {
+            state.routines[0].routine.runs[0].outcome = holt_proto::RunOutcome::Succeeded;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("titlebar-scheduled-live").is_none());
+        assert!(cx.debug_bounds("routine-live-r1").is_none());
     }
 
     // ---- navigation history (titlebar back/forward) ----

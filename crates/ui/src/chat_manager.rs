@@ -15,7 +15,7 @@
 //! page's clear-all precedent. Delete is irreversible and confirmed once
 //! with a breakdown; archive/unarchive are reversible and unconfirmed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{
@@ -120,6 +120,7 @@ fn filter_chats<'a>(
     query: &str,
     status: StatusFilter,
     space: Option<&str>,
+    routine: Option<&str>,
     space_name: impl Fn(&'a Chat) -> Option<&'a str>,
 ) -> Vec<&'a Chat> {
     let query = query.trim().to_lowercase();
@@ -131,6 +132,13 @@ fn filter_chats<'a>(
             StatusFilter::Archived => chat.archived,
         })
         .filter(|chat| space.is_none_or(|id| chat.space_id.as_deref() == Some(id)))
+        .filter(|chat| {
+            routine.is_none_or(|id| {
+                chat.routine_run
+                    .as_ref()
+                    .is_some_and(|marker| marker.routine_id == id)
+            })
+        })
         .filter(|chat| {
             query.is_empty()
                 || chat
@@ -147,6 +155,30 @@ fn filter_chats<'a>(
         .collect();
     rows.sort_by(|a, b| recency(b).cmp(&recency(a)).then_with(|| a.id.cmp(&b.id)));
     rows
+}
+
+/// The Routine filter's options: every Routine with a run chat, named as
+/// its latest run recorded it (a deleted Routine's runs stay findable),
+/// sorted by name. Pure.
+fn routine_options(chats: &[Chat]) -> Vec<(String, String)> {
+    let mut latest: HashMap<&str, (&Chat, &str)> = HashMap::new();
+    for chat in chats {
+        let Some(marker) = &chat.routine_run else {
+            continue;
+        };
+        let entry = latest
+            .entry(marker.routine_id.as_str())
+            .or_insert((chat, marker.routine_name.as_str()));
+        if chat.created_at > entry.0.created_at {
+            *entry = (chat, marker.routine_name.as_str());
+        }
+    }
+    let mut options: Vec<(String, String)> = latest
+        .into_iter()
+        .map(|(id, (_, name))| (id.to_string(), name.to_string()))
+        .collect();
+    options.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    options
 }
 
 /// Ids from `anchor` to `target` inclusive, in display order — the
@@ -316,6 +348,9 @@ pub struct ChatManagerPage {
     /// Space id the list is scoped to (None = every space).
     space: Option<String>,
     space_menu: Popup<()>,
+    /// Routine id the list is scoped to: every run of that Routine.
+    routine: Option<String>,
+    routine_menu: Popup<()>,
     /// Persistent id set — survives filter/search changes (glossary). Ids
     /// of chats the engine has dropped are pruned at render.
     selection: HashSet<String>,
@@ -351,6 +386,8 @@ impl ChatManagerPage {
             status: StatusFilter::All,
             space: None,
             space_menu: Popup::default(),
+            routine: None,
+            routine_menu: Popup::default(),
             selection: HashSet::new(),
             anchor: None,
             confirm: None,
@@ -378,6 +415,7 @@ impl ChatManagerPage {
             self.search.read(cx).text(),
             status,
             self.space.as_deref(),
+            self.routine.as_deref(),
             |chat| state.space_for_chat(chat).map(|space| space.display_name()),
         )
         .into_iter()
@@ -560,6 +598,19 @@ impl ChatManagerPage {
         }
     }
 
+    pub(crate) fn set_routine(&mut self, routine: Option<String>, cx: &mut Context<Self>) {
+        self.routine = routine;
+        self.close_routine_menu(cx);
+        cx.notify();
+    }
+
+    fn close_routine_menu(&mut self, cx: &mut Context<Self>) {
+        if self.routine_menu.begin_close() {
+            popover::reap_popup(cx, |page: &mut Self| &mut page.routine_menu);
+            cx.notify();
+        }
+    }
+
     /// Page-level keys. With the delete confirmation up, Enter confirms and
     /// Esc cancels; otherwise Esc closes the space menu, then clears the
     /// selection. ⌘A / ⌘⌫ only reach here when the search field is not
@@ -579,6 +630,7 @@ impl ChatManagerPage {
         }
         match key {
             "escape" if self.space_menu.is_open() => self.close_space_menu(cx),
+            "escape" if self.routine_menu.is_open() => self.close_routine_menu(cx),
             "escape" if !self.selection.is_empty() => self.clear_selection(cx),
             "a" if mods.secondary() && !mods.shift && !mods.alt => self.select_all_filtered(cx),
             "backspace" | "delete" if mods.secondary() && !self.selection.is_empty() => {
@@ -752,6 +804,102 @@ impl ChatManagerPage {
             card,
             self.space_menu.closing_since(),
         ))
+    }
+
+    /// The Routine filter: the same quiet trigger + menu as the project
+    /// filter, shown once any chat is a Routine run.
+    fn render_routine_filter(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
+        let routines = routine_options(&self.state.read(cx).chats);
+        if routines.is_empty() {
+            return None;
+        }
+        let label: SharedString = self
+            .routine
+            .as_deref()
+            .and_then(|id| routines.iter().find(|(rid, _)| rid == id))
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| "All Routines".into())
+            .into();
+        let open = self.routine_menu.is_open();
+        let trigger = div()
+            .id("cm-routine-filter")
+            .debug_selector(|| "cm-routine-filter".into())
+            .flex_none()
+            .h(px(28.0))
+            .max_w(px(220.0))
+            .px(px(8.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(8.0))
+            .text_size(crate::typography::ui_rems(12.5))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .when(open, |el| el.bg(ink(0.07)).text_color(theme.text))
+            .hover(|s| s.bg(ink(0.07)).text_color(theme.text))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    window.prevent_default();
+                    this.routine_menu.note_trigger_press();
+                }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.routine_menu.take_press_was_open() {
+                    this.close_routine_menu(cx);
+                } else {
+                    this.routine_menu.open(());
+                    cx.notify();
+                }
+            }))
+            .child(
+                icon(icons::CLOCK_CIRCLE)
+                    .size(px(13.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(div().min_w_0().truncate().child(label))
+            .child(
+                icon(icons::ALT_ARROW_DOWN)
+                    .size(px(11.0))
+                    .text_color(theme.text_muted.opacity(0.7)),
+            );
+        if self.routine_menu.get().is_none() {
+            return Some(trigger);
+        }
+        let mut list = div()
+            .id("cm-routine-list")
+            .max_h(px(320.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(2.0));
+        let options = std::iter::once((None, "All Routines".to_string()))
+            .chain(routines.into_iter().map(|(id, name)| (Some(id), name)));
+        for (ix, (id, name)) in options.enumerate() {
+            let active = id == self.routine;
+            list = list.child(
+                popover::menu_row(theme, active, format!("cm-routine-row-{ix}"))
+                    .id(("cm-routine-row", ix))
+                    .debug_selector(move || format!("cm-routine-row-{ix}"))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_routine(id.clone(), cx)))
+                    .child(div().flex_1().min_w_0().truncate().child(name)),
+            );
+        }
+        let card = popover::popover_card(theme)
+            .w(px(240.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_routine_menu(cx)))
+            .child(list)
+            .into_any_element();
+        Some(trigger.relative().child(popover::anchored_menu_below_end(
+            "cm-routine-menu",
+            card,
+            self.routine_menu.closing_since(),
+        )))
     }
 
     /// Column labels over the list, led by the tri-state select-all box.
@@ -1333,6 +1481,16 @@ impl Render for ChatManagerPage {
             {
                 self.space = None;
             }
+            // Same for a Routine whose run chats are all gone.
+            if self.routine.as_deref().is_some_and(|id| {
+                !state.chats.iter().any(|chat| {
+                    chat.routine_run
+                        .as_ref()
+                        .is_some_and(|marker| marker.routine_id == id)
+                })
+            }) {
+                self.routine = None;
+            }
             state.chats.len()
         };
         if self.confirm.as_ref().is_some_and(Vec::is_empty) {
@@ -1402,6 +1560,7 @@ impl Render for ChatManagerPage {
                     .gap(px(2.0))
                     .children(tabs)
                     .child(div().flex_1())
+                    .children(self.render_routine_filter(&theme, cx))
                     .child(self.render_space_filter(&theme, cx)),
             )
             .when_some(self.error.clone(), |el, message| {
@@ -1493,6 +1652,7 @@ mod tests {
             plan_mode: None,
             worktree: None,
             provider_mode: false,
+            routine_run: None,
         }
     }
 
@@ -1512,38 +1672,78 @@ mod tests {
         let mut archived = chat("b");
         archived.archived = true;
         let chats = vec![chat("a"), archived, chat("c")];
-        let rows = filter_chats(&chats, "", StatusFilter::Archived, None, no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::Archived, None, None, no_space);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "b");
-        let rows = filter_chats(&chats, "", StatusFilter::Active, None, no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::Active, None, None, no_space);
         assert_eq!(rows.len(), 2);
-        let rows = filter_chats(&chats, "", StatusFilter::All, None, no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::All, None, None, no_space);
         assert_eq!(rows.len(), 3);
     }
 
     #[test]
     fn filter_by_space() {
         let chats = vec![named("a", "x", "s1"), named("b", "y", "s2"), chat("c")];
-        let rows = filter_chats(&chats, "", StatusFilter::All, Some("s1"), no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::All, Some("s1"), None, no_space);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "a");
         // A dangling filter (space deleted) matches nothing rather than everything.
-        let rows = filter_chats(&chats, "", StatusFilter::All, Some("gone"), no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::All, Some("gone"), None, no_space);
         assert!(rows.is_empty());
+    }
+
+    fn run_of(id: &str, routine: &str, name: &str, minutes: i64) -> Chat {
+        let mut chat = chat(id);
+        chat.created_at = Utc::now() + Duration::minutes(minutes);
+        chat.routine_run = Some(holt_proto::RoutineRunMarker {
+            routine_id: routine.into(),
+            routine_name: name.into(),
+            missed_fires: 0,
+            manual: false,
+        });
+        chat
+    }
+
+    #[test]
+    fn filter_by_routine_lists_every_run() {
+        let mut archived = run_of("r1-old", "r1", "Digest", 0);
+        archived.archived = true;
+        let chats = vec![
+            chat("plain"),
+            archived,
+            run_of("r1-new", "r1", "Daily digest", 2),
+            run_of("r2", "r2", "Audit", 1),
+        ];
+        let rows = filter_chats(&chats, "", StatusFilter::All, None, Some("r1"), no_space);
+        let ids: Vec<&str> = rows.iter().map(|chat| chat.id.as_str()).collect();
+        assert_eq!(ids, ["r1-new", "r1-old"]);
+        // Options name each Routine by its latest run, sorted by name.
+        assert_eq!(
+            routine_options(&chats),
+            [
+                ("r2".to_string(), "Audit".to_string()),
+                ("r1".to_string(), "Daily digest".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn query_matches_title_and_space_name_case_insensitively() {
         let chats = vec![named("a", "Fix the Bug", "s1"), named("b", "other", "s2")];
-        let rows = filter_chats(&chats, "bug", StatusFilter::All, None, no_space);
+        let rows = filter_chats(&chats, "bug", StatusFilter::All, None, None, no_space);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "a");
-        let rows = filter_chats(&chats, "HOLT", StatusFilter::All, None, |chat| {
-            match chat.space_id.as_deref() {
+        let rows = filter_chats(
+            &chats,
+            "HOLT",
+            StatusFilter::All,
+            None,
+            None,
+            |chat| match chat.space_id.as_deref() {
                 Some("s2") => Some("holt repo"),
                 _ => None,
-            }
-        });
+            },
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "b");
     }
@@ -1560,7 +1760,7 @@ mod tests {
         c.created_at = now - Duration::days(5);
         c.last_message_at = Some(now - Duration::days(1));
         let chats = vec![a, c, b];
-        let rows = filter_chats(&chats, "", StatusFilter::All, None, no_space);
+        let rows = filter_chats(&chats, "", StatusFilter::All, None, None, no_space);
         let ids: Vec<&str> = rows.iter().map(|chat| chat.id.as_str()).collect();
         assert_eq!(ids, ["b", "c", "a"]);
     }
@@ -1702,6 +1902,44 @@ mod tests {
         });
         visual.run_until_parked();
         page.read_with(&*visual, |page, _| assert_eq!(page.space, None));
+    }
+
+    /// The Routine filter appears once a run chat exists; picking a
+    /// Routine narrows the list to its runs.
+    #[gpui::test]
+    fn routine_filter_narrows_to_its_runs(cx: &mut gpui::TestAppContext) {
+        let (page, visual) = page_with(
+            cx,
+            vec![
+                chat("plain"),
+                run_of("a", "r1", "Digest", 0),
+                run_of("b", "r1", "Digest", 1),
+                run_of("c", "r2", "Audit", 2),
+            ],
+        );
+        let filter = visual
+            .debug_bounds("cm-routine-filter")
+            .expect("the filter shows with run chats")
+            .center();
+        visual.simulate_click(filter, gpui::Modifiers::none());
+        visual.run_until_parked();
+        // Row 0 is "All Routines"; options sort by name: Audit, Digest.
+        let digest = visual.debug_bounds("cm-routine-row-2").unwrap().center();
+        visual.simulate_click(digest, gpui::Modifiers::none());
+        visual.run_until_parked();
+        page.read_with(&*visual, |page, cx| {
+            assert_eq!(page.routine.as_deref(), Some("r1"));
+            let ids: Vec<String> = page.filtered_rows(cx).into_iter().map(|c| c.id).collect();
+            assert_eq!(ids, ["b", "a"]);
+        });
+        assert!(visual.debug_bounds("cm-row-1").is_some());
+        assert!(visual.debug_bounds("cm-row-2").is_none());
+    }
+
+    #[gpui::test]
+    fn routine_filter_hides_without_run_chats(cx: &mut gpui::TestAppContext) {
+        let (_page, visual) = page_with(cx, vec![chat("plain")]);
+        assert!(visual.debug_bounds("cm-routine-filter").is_none());
     }
 
     /// A settled batch drops its targets from the selection only on

@@ -403,6 +403,44 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   `setChatPinned`, `deleteChat`, and `markChatSeen`; every other op (`renameSpace`,
   `deleteSpace`, `renameDevice`, …) falls through to `UnknownMethod`, which
   the UI surfaces as an error notice — and `QueueCommand`.
+- Routines (ADR-0042): `ListRoutines` / `WatchRoutines` (`Vec<RoutineView>`
+  — the Routine plus its computed next fire), `CreateRoutine` (a cron, or
+  `at` for a one-time Routine that fires once and then has no next fire;
+  the time zone defaults to the device's), `UpdateRoutine` (`{routineId, …}` with the
+  create fields; replaces the config only — runs and pause state stay, and a
+  changed schedule or time zone moves the schedule's anchor to now so the edit
+  never triggers a Catch-up run), `PreviewRoutineSchedule` (`{cron | at,
+  timeZone?}` → `{timeZone, fires}`, the next three fires; a bad cron or
+  zone, or an `at` already passed, is `BadParams`), `DeleteRoutine` (run chats stay as ordinary
+  Chats), `SetRoutinePaused` (`{routineId, paused}`; resuming moves the
+  schedule's anchor to now, so fires passed while paused are not made up),
+  and `RunRoutineNow` (`{routineId}` → `{chatId}`). While a run is running
+  or waiting, any further fire — scheduled or Run now — is recorded as
+  skipped with no Chat (`RunRoutineNow` then replies `{}`). Removing a
+  Space pauses its Routines with reason `space-removed` (no run recorded);
+  only an `UpdateRoutine` onto an existing Space resumes them —
+  `SetRoutinePaused` refuses, and Run now fails. A fire whose model is gone
+  from the catalog or whose provider has no key records a failed run with
+  the reason and no Chat; the Routine stays active. The scheduler
+  coalesces every fire since `lastFiredAt` that it reaches late — at
+  startup, or after the wall clock jumps on wake — into one Catch-up run
+  whose `missedFires` (on the record and the Chat marker) counts them; an
+  on-time fire carries 0. A run creates
+  its Chat engine-side — the Routine's name as a user-owned title, its
+  `ChatConfig` (Permission mode included, bypassing the sticky default),
+  the `Chat::routine_run` marker, and the new-worktree intent when the
+  Routine asks for one — then queues the prompt verbatim through the normal
+  run path. A run record's outcome is its first Turn's, set where the queue
+  publishes `TurnTerminalEvent`; follow-up Turns leave a settled record
+  alone. A run waits on the user two ways: the gate moves it running →
+  waiting while an Approval is pending and back after the verdict, and a
+  Turn that succeeds with an unanswered question card settles it as
+  waiting — the next Turn start (the answer) moves it back to running and
+  that Turn settles it, while `DismissQuestion` settles it succeeded. The
+  UI posts a banner when a run enters waiting, even with a window active,
+  unless its Chat is the one in view. Records
+  still running or waiting at launch become interrupted, and deleting a run
+  Chat clears the record's `chatId` (note "chat deleted").
 - Git capability (ADR-0001/0002, all served on the git2 backend inside
   `engine::git`): `ListRefs` / `ListBranches` (default-first local
   branches), `SwitchRef` / `CreateBranch` (safe checkouts), the checkout
@@ -686,6 +724,8 @@ behind whatever lines do parse (a damaged legacy snapshot opens empty).
   pattern — 0600, atomic replace, malformed or unknown-key files fail
   startup loudly) — each with its own atomic-write and failure policy as
   described above.
+- `routines.json` — every Routine with its newest 200 run records, whole-file
+  atomic replace; a malformed file fails startup loudly.
 - `device-id` (plain text), `engine.lock` (the single-instance lock), `logs/`,
   and the child `results/*.txt` summaries — the only non-JSON artifacts.
 

@@ -172,7 +172,9 @@ impl Shell {
             Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
             // The Chat manager keeps the session sidebar — it manages what
             // that sidebar lists.
-            Route::Chat | Route::ChatManager => self.render_chat_sidebar(&theme, cx),
+            Route::Chat | Route::ChatManager | Route::Scheduled => {
+                self.render_chat_sidebar(&theme, cx)
+            }
         };
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main
@@ -323,6 +325,8 @@ impl Shell {
         // nine chips appear together instead of leaving a hole on whichever
         // row is busy or under the pointer.
         jump_label: Option<SharedString>,
+        // A Routine's folded run row: its run count (the row is the latest).
+        routine_runs: Option<usize>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -627,7 +631,15 @@ impl Shell {
                                 ),
                         )
                     })
-                    .when(!pinned, |el| {
+                    .when(!pinned && routine_runs.is_some(), |el| {
+                        el.child(
+                            icon(icons::CLOCK_CIRCLE)
+                                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                                .flex_none()
+                                .text_color(subline.opacity(0.8)),
+                        )
+                    })
+                    .when(!pinned && routine_runs.is_none(), |el| {
                         el.when_some(
                             provider
                                 .as_ref()
@@ -647,12 +659,29 @@ impl Shell {
                             .truncate()
                             // The hover-revealed "…" menu button floats
                             // over the row's right edge (right 6 + 18 hit
-                            // target): the title truncates clear of it.
-                            .pr(px(24.0))
+                            // target): the title truncates clear of it —
+                            // or the run count does.
+                            .when(!routine_runs.is_some_and(|runs| runs > 1), |el| {
+                                el.pr(px(24.0))
+                            })
                             .text_size(crate::typography::ui_rems(13.0))
                             .line_height(px(17.0))
                             .child(title),
-                    ),
+                    )
+                    .when_some(routine_runs.filter(|runs| *runs > 1), |el, runs| {
+                        let count_selector = id.clone();
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("chat-runs-{id}")))
+                                .debug_selector(move || format!("chat-runs-{count_selector}"))
+                                .flex_none()
+                                // Clear of the hover "…" like the title.
+                                .mr(px(24.0))
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(subline)
+                                .child(SharedString::from(format!("\u{d7}{runs}"))),
+                        )
+                    }),
             )
             // Line 3 is reserved whitespace once either metadata view option
             // is on (fixed-height rows), pinned to the PR badge's 16px; it is
@@ -884,7 +913,6 @@ impl Shell {
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
         let filter_row = self.render_spaces_filter(theme, cx);
-        let nav = self.render_sidebar_nav(theme, cx);
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -893,7 +921,6 @@ impl Shell {
             .flex_col()
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
-            .child(nav)
             .child(filter_row)
             // The (filtered) Sessions list scrolls inside an EdgeFade scope —
             // a true per-glyph gradient at active overflow edges. Glass-safe
@@ -1006,6 +1033,7 @@ impl Shell {
                     .items_center()
                     .gap(px(Theme::SPACE_SM))
                     .child(div().flex_1().child(settings_row))
+                    .child(self.render_chat_manager_button(theme, cx))
                     .when_some(self.render_update_button(theme, cx), |el, button| {
                         el.child(button)
                     }),
@@ -1113,68 +1141,43 @@ impl Shell {
         self.schedule_save(cx);
     }
 
-    /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
-    /// the settings page directly. Styled exactly like the settings sidebar's
-    /// Back row — same padding, height, and hover.
-    /// The page nav pinned above the session list: one row per global page
-    /// (today the Chat manager), then the "Recent" label heading the list.
-    /// Rows share the settings sidebar's row recipe; the current page wears
-    /// the selected wash.
-    fn render_sidebar_nav(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The Chat manager entry, sitting right of the settings row: an icon
+    /// button wearing the selected wash while the manager page is up.
+    pub(super) fn render_chat_manager_button(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = matches!(self.route, Route::ChatManager);
-        let chats = div()
-            .id("sidebar-nav-chats")
+        div()
+            .id("sidebar-chat-manager")
+            .flex_none()
+            .size(px(24.0))
             .flex()
-            .flex_row()
             .items_center()
-            .gap(px(8.0))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .text_size(crate::typography::ui_rems(13.0))
-            .when(selected, |el| {
-                el.bg(crate::theme::glass_selected_bg())
-                    .font_weight(gpui::FontWeight::MEDIUM)
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .when(selected, |el| el.bg(crate::theme::glass_selected_bg()))
+            .hover(|style| style.bg(theme.glass_hover()))
+            .on_click(cx.listener(|this, _, _, cx| this.open_chat_manager(cx)))
+            .tooltip(|_, cx| {
+                cx.new(|_| crate::popover::TextTooltip("Chat manager".into()))
+                    .into()
             })
-            .text_color(if selected {
+            .tooltip_show_delay(std::time::Duration::from_millis(350))
+            // gpui's Svg paints only with its OWN text color, never inherits.
+            .child(icon(icons::INBOX).size(px(15.0)).text_color(if selected {
                 theme.text
             } else {
                 theme.text_muted
-            })
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
-            .on_click(cx.listener(|this, _, _, cx| {
-                if !matches!(this.route, Route::ChatManager) {
-                    this.open_chat_manager(cx);
-                }
             }))
-            .child(
-                icon(icons::INBOX)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(SharedString::from("Chats"));
-
-        // The spaces filter below brings its own 8px top pad.
-        div()
-            .flex_none()
-            .px(px(Theme::SPACE_SM))
-            .pt(px(8.0))
-            .flex()
-            .flex_col()
-            .child(chats)
-            .child(
-                div()
-                    .px(px(Theme::SPACE_SM))
-                    .pt(px(12.0))
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from("Recent")),
-            )
             .into_any_element()
     }
 
+    /// Bottom-of-sidebar settings entry: a bare row (gear + label) that opens
+    /// the settings page directly. Styled exactly like the settings sidebar's
+    /// Back row — same padding, height, and hover.
     pub(super) fn render_sidebar_settings_row(
         &mut self,
         theme: &Theme,

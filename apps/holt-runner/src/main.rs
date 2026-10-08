@@ -178,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
         personal_skills_dir: Some(args.data_dir.join("personal-skills")),
         stream_fn: None,
         search_backend_resolver: None,
+        clock: None,
     })
     .map_err(|error| anyhow!("assembling the engine: {error}"))?;
 

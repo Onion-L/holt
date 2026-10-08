@@ -13,7 +13,7 @@ use std::{
 };
 
 use holt_doc::parts::{GateVerdict, ReviewJudge, ToolGate, ToolGateState};
-use holt_proto::{ApprovalVerdict, PermissionMode};
+use holt_proto::{ApprovalVerdict, PermissionMode, RunOutcome};
 use pi_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
 use tokio_util::sync::CancellationToken;
 
@@ -422,6 +422,9 @@ pub(crate) struct GateWiring {
     pub(crate) cwd: String,
     pub(crate) review: ReviewTransport,
     pub(crate) cancel: CancellationToken,
+    /// The Routine store: a run Chat's record shows waiting while its
+    /// Approval is open (ADR-0042).
+    pub(crate) routines: Option<Arc<crate::routines::Routines>>,
 }
 
 /// Build the gate's before-tool-call hook for one run. The mode is the
@@ -437,6 +440,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
         cwd,
         review,
         cancel,
+        routines,
     } = wiring;
     Arc::new(
         move |ctx: BeforeToolCallContext, signal: Option<CancellationToken>| {
@@ -445,6 +449,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
             let approvals = approvals.clone();
             let cwd = cwd.clone();
             let review = review.clone();
+            let routines = routines.clone();
             // The loop's own signal — a clone of the run token today, but
             // the hook must not assume that; fall back to the captured one.
             let cancel = signal.unwrap_or_else(|| cancel.clone());
@@ -569,12 +574,18 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                         },
                     },
                 );
+                if let Some(routines) = &routines {
+                    routines.move_run(&chat.chat_id, RunOutcome::Running, RunOutcome::Waiting);
+                }
                 // The wait: a verdict through the RPC, or the Turn's end —
                 // interrupt remains the only stop-the-run channel.
                 let verdict = tokio::select! {
                     verdict = verdict_rx => verdict.ok(),
                     () = cancel.cancelled() => None,
                 };
+                if let Some(routines) = &routines {
+                    routines.move_run(&chat.chat_id, RunOutcome::Waiting, RunOutcome::Running);
+                }
                 approvals
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())

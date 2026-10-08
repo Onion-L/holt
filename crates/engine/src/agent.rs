@@ -733,6 +733,9 @@ pub(crate) struct AgentRuntime {
     /// Live provider-retry notices: the run path's `on_retry` callback fans
     /// out here; `WatchTurnRetry` subscribes.
     pub(crate) retry_events: crate::retry_events::RetryEvents,
+    /// The Routine store (ADR-0042), set once at boot: the gate moves a
+    /// run Chat's record to waiting while its Approval is open.
+    pub(crate) routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
 }
 
 impl AgentRuntime {
@@ -807,6 +810,7 @@ impl AgentRuntime {
             stream_fn: stream_fn.map(|raw| guard_stream_fn(raw, STREAM_IDLE_TIMEOUT)),
             mcp,
             retry_events: crate::retry_events::RetryEvents::new(),
+            routines: std::sync::OnceLock::new(),
         }
     }
 
@@ -1766,6 +1770,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
             stream_fn: stream_fn.clone(),
         },
         cancel: cancel.clone(),
+        routines: runtime.routines.get().cloned(),
     });
     let allow_images = model.input.contains(&pi_core::ai::types::ModelInput::Image);
     let search_backend_present = search_backend.is_some();
@@ -2189,6 +2194,7 @@ mod tests {
             plan_mode: None,
             worktree: None,
             provider_mode: false,
+            routine_run: None,
         }
     }
 

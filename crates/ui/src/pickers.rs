@@ -549,6 +549,30 @@ impl Pickers {
             && self.resolved(cx).model.is_some()
     }
 
+    /// Every loaded model of the configured providers, provider by provider
+    /// in catalog order: what a Routine's model is picked from.
+    pub(crate) fn offered_models(&self) -> Vec<&Model> {
+        let Some(providers) = self.providers.ready() else {
+            return Vec::new();
+        };
+        offered_providers(providers)
+            .into_iter()
+            .filter_map(|provider| self.models.get(&provider.id)?.ready())
+            .flatten()
+            .collect()
+    }
+
+    /// A model's display label from the loaded catalog; `None` until that
+    /// provider's catalog lands (or the id isn't in it).
+    pub fn model_label(&self, provider: &ProviderId, id: &str) -> Option<&str> {
+        self.models
+            .get(provider)?
+            .ready()?
+            .iter()
+            .find(|model| model.id == id)
+            .map(|model| model.label.as_str())
+    }
+
     pub fn resolved(&self, cx: &App) -> ResolvedRunConfig {
         ResolvedRunConfig {
             provider: self.effective_provider(cx),

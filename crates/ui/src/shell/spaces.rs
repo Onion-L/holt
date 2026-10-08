@@ -1186,6 +1186,10 @@ impl Shell {
                     None
                 };
                 slot += 1;
+                let routine_runs = chat
+                    .routine_run
+                    .as_ref()
+                    .map(|marker| self.state.read(cx).routine_run_count(&marker.routine_id));
                 let element = self.render_chat_row(
                     chat.id.clone(),
                     transcript::single_line(
@@ -1201,6 +1205,7 @@ impl Shell {
                     is_selected,
                     chat.pinned,
                     jump_label,
+                    routine_runs,
                     theme,
                     cx,
                 );
@@ -2631,6 +2636,7 @@ mod tests {
             plan_mode: None,
             worktree: None,
             provider_mode: false,
+            routine_run: None,
         }
     }
 
@@ -3028,5 +3034,78 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert!(state.selected_chat.is_none(), "the row must not activate");
         });
+    }
+
+    /// Recent folds a Routine's runs into its latest one, marked with the
+    /// run count; ordinary chats are untouched.
+    #[gpui::test]
+    fn recent_folds_a_routines_runs_into_the_latest(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        cx.update(|cx| crate::settings::init(UiSettings::default(), data_dir.clone(), cx));
+        let run = |id: &str, updated: i64| {
+            let mut chat = chat_at(id, updated, updated);
+            chat.space_id = Some(holt_proto::HOME_SPACE_ID.into());
+            chat.routine_run = Some(holt_proto::RoutineRunMarker {
+                routine_id: "r1".into(),
+                routine_name: "Daily digest".into(),
+                missed_fires: 0,
+                manual: false,
+            });
+            chat
+        };
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.workspace_scope = Some(holt_proto::WorkspaceScope::Local);
+            state.local_device_id = Some("test-device".into());
+            state.spaces.push(home_space());
+            let mut plain = chat_at("plain", 5, 5);
+            plain.space_id = Some(holt_proto::HOME_SPACE_ID.into());
+            state
+                .chats
+                .extend([plain, run("run-1", 10), run("run-3", 30), run("run-2", 20)]);
+            state
+        });
+        let shell = cx.new(|cx| {
+            Shell::new(
+                state.clone(),
+                EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            )
+        });
+        let (_, cx) = cx.add_window_view(|_window, cx| {
+            let _observe = cx.observe(&shell, |_, _, cx| cx.notify());
+            RowsHarness {
+                shell: shell.clone(),
+                _observe,
+            }
+        });
+        cx.run_until_parked();
+
+        let order = shell.update(cx, |shell, cx| shell.sidebar_visible_order(cx));
+        assert_eq!(order, ["run-3", "plain"]);
+        assert!(cx.debug_bounds("chat-more-run-3").is_some());
+        assert!(cx.debug_bounds("chat-more-run-2").is_none());
+        assert!(
+            cx.debug_bounds("chat-runs-run-3").is_some(),
+            "the count shows"
+        );
+        assert!(cx.debug_bounds("chat-runs-plain").is_none());
+
+        // Archiving down to one run drops the count.
+        state.update(cx, |state, cx| {
+            for chat in state.chats.iter_mut() {
+                if chat.id == "run-1" || chat.id == "run-2" {
+                    chat.archived = true;
+                }
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("chat-more-run-3").is_some());
+        assert!(cx.debug_bounds("chat-runs-run-3").is_none());
     }
 }

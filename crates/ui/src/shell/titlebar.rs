@@ -4,14 +4,6 @@
 
 use super::*;
 
-fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
-    if is_chat_route && has_selected_chat {
-        1.0
-    } else {
-        0.0
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Traffic-light-aware titlebar layout (feature-inventory §1.1)
 // ---------------------------------------------------------------------------
@@ -45,8 +37,10 @@ pub const TITLEBAR_IDENTITY_GAP: f32 = Theme::SPACE_MD;
 /// shift lands 6px from the top; use the same inset at the trailing edge.
 pub const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
 /// Width of the persistent top-left button cluster itself: a 24px sidebar
-/// trigger, an 8px group gap, then two 24px history buttons on a 2px rhythm.
-pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
+/// trigger, an 8px group gap, two 24px history buttons on a 2px rhythm, then
+/// an 8px group gap and the 24px Scheduled entry. The conditional new-session
+/// `+` rides its own slot ([`TITLEBAR_ACTION_SLOT_WIDTH`]).
+pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 4.0 + TITLEBAR_GROUP_GAP * 2.0 + TITLEBAR_CONTROL_GAP;
 /// Extra width consumed when the new-session `+` joins the cluster: its own
 /// 24px button behind an 8px group gap.
 pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = 24.0 + TITLEBAR_GROUP_GAP;
@@ -134,7 +128,7 @@ impl Shell {
     pub(super) fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match self.route {
             Route::Chat => self.render_session_title_bar(cx),
-            Route::Settings(_) | Route::ChatManager => {
+            Route::Settings(_) | Route::ChatManager | Route::Scheduled => {
                 let inner = div()
                     .size_full()
                     .flex()
@@ -214,11 +208,8 @@ impl Shell {
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
         // The titlebar is the single owner of the new-session action in both
-        // sidebar states. Hide it on the new-session canvas: opening another
-        // blank canvas from an already blank canvas has no effect and used to
-        // leave two competing + placements across the responsive variants.
-        let plus_alpha = self.titlebar_plus_alpha(cx);
-        let show_plus = plus_alpha > 0.01;
+        // sidebar states. It renders on every route — on the new-session
+        // canvas a press is a harmless no-op.
         div()
             .absolute()
             .top_0()
@@ -267,29 +258,68 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
                     )),
             )
-            // The new-session `+`, only while a session is selected.
-            .children(show_plus.then(|| {
+            // The new-session `+`, on every route.
+            .child(
                 div()
                     .ml(px(TITLEBAR_GROUP_GAP))
                     .flex_none()
-                    .opacity(plus_alpha)
                     .child(window_control_button(
                         "titlebar-new-session",
                         icons::PLUS,
                         &theme,
                         cx.listener(|this, _, _, cx| this.open_new_session(cx)),
+                    )),
+            )
+            // The Scheduled page entry, right of the new-session slot (it
+            // slides into the `+` position when the canvas hides the plus).
+            // A Routine run in flight shows on the button: amber while one
+            // waits on the user, the busy colour while one runs.
+            .child({
+                let live = {
+                    let state = self.state.read(cx);
+                    let outcomes = || {
+                        state
+                            .routines
+                            .iter()
+                            .filter_map(|view| crate::scheduled::live_run(&view.routine))
+                            .map(|run| run.outcome)
+                    };
+                    if outcomes().any(|outcome| outcome == holt_proto::RunOutcome::Waiting) {
+                        Some(theme.warning)
+                    } else if outcomes().next().is_some() {
+                        Some(theme.busy)
+                    } else {
+                        None
+                    }
+                };
+                div()
+                    .ml(px(TITLEBAR_GROUP_GAP))
+                    .flex_none()
+                    .relative()
+                    .child(window_control_button(
+                        "titlebar-scheduled",
+                        icons::CLOCK_CIRCLE,
+                        &theme,
+                        cx.listener(|this, _, _, cx| {
+                            if !matches!(this.route, Route::Scheduled) {
+                                this.open_scheduled(cx);
+                            }
+                        }),
                     ))
-            }))
+                    .when_some(live, |el, color| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "titlebar-scheduled-live".into())
+                                .absolute()
+                                .top(px(3.0))
+                                .right(px(3.0))
+                                .size(px(5.0))
+                                .rounded_full()
+                                .bg(color),
+                        )
+                    })
+            })
             .into_any_element()
-    }
-
-    /// The titlebar owns new-session creation regardless of sidebar state. It
-    /// is useful only while an existing session is selected.
-    pub(super) fn titlebar_plus_alpha(&self, cx: &App) -> f32 {
-        titlebar_new_session_alpha(
-            matches!(self.route, Route::Chat),
-            self.state.read(cx).selected_chat.is_some(),
-        )
     }
 
     fn selected_external_app(&self) -> ExternalApp {
@@ -994,14 +1024,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_session_action_lives_in_the_titlebar_only_when_useful() {
-        assert_eq!(titlebar_new_session_alpha(true, true), 1.0);
-        assert_eq!(titlebar_new_session_alpha(true, false), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, true), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, false), 0.0);
-    }
-
-    #[test]
     fn titlebar_cluster_matches_holt_window_controls() {
         // holt window-controls.tsx: `left: fullscreen ? 12 : 88` — the
         // cluster clears the {14,15} traffic lights, and reclaims the inset
@@ -1011,7 +1033,7 @@ mod tests {
         assert_eq!(TITLEBAR_CONTROL_GAP, 2.0);
         assert_eq!(TITLEBAR_GROUP_GAP, Theme::SPACE_SM);
         assert_eq!(TITLEBAR_IDENTITY_GAP, Theme::SPACE_MD);
-        assert_eq!(CLUSTER_BUTTONS_WIDTH, 82.0);
+        assert_eq!(CLUSTER_BUTTONS_WIDTH, 114.0);
         assert_eq!(TITLEBAR_ACTION_SLOT_WIDTH, 32.0);
         assert_eq!(TITLEBAR_ACTION_EDGE_INSET, 6.0);
     }
@@ -1064,12 +1086,12 @@ mod tests {
 
     #[test]
     fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..92; a 16px-padded header needs 84 more px
-        // to put content at 92 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 84.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 90.0);
+        // Linux: buttons at 10..124; a 16px-padded header needs 116 more px
+        // to put content at 124 + 8 breathing room.
+        assert_eq!(cluster_clearance(false, false, 0, 16.0), 116.0);
+        assert_eq!(cluster_clearance(false, false, 0, 10.0), 122.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 84.0 + 26.0);
+        assert_eq!(cluster_clearance(false, false, 1, 16.0), 116.0 + 26.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
             cluster_clearance(true, false, 0, 16.0),

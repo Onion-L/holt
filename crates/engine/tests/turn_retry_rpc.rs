@@ -90,6 +90,7 @@ async fn a_turns_provider_retries_fan_out_as_live_notices() {
         personal_skills_dir: Some(fixture.personal_dir.path().to_path_buf()),
         stream_fn: Some(stream_fn),
         search_backend_resolver: None,
+        clock: None,
     })
     .unwrap();
     common::setup_chat(&engine, "chat-1").await;

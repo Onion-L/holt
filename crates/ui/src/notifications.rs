@@ -23,6 +23,7 @@ use gpui::{
     App, AppContext as _, Context, Entity, Subscription, SystemNotification,
     SystemNotificationResponse, Task,
 };
+use holt_proto::RunOutcome;
 use holt_rpc::methods;
 use holt_rpc::turns::{TurnOutcome, TurnTerminalEvent};
 
@@ -50,6 +51,9 @@ pub struct TurnNotificationController {
     pump: Option<Task<()>>,
     seen_event_ids: VecDeque<String>,
     seen_event_id_set: HashSet<String>,
+    /// Run Chats whose Routine run is waiting on the user (ADR-0042), as of
+    /// the last AppState change — a Chat entering this set posts a banner.
+    waiting_runs: HashSet<String>,
     _state_observation: Subscription,
 }
 
@@ -59,12 +63,16 @@ impl TurnNotificationController {
     /// response handler outlive every window.
     pub fn init(state: Entity<AppState>, cx: &mut App) -> Entity<Self> {
         let controller = cx.new(|cx| {
-            let observation = cx.observe(&state, |this: &mut Self, _, cx| this.ensure_pump(cx));
+            let observation = cx.observe(&state, |this: &mut Self, _, cx| {
+                this.ensure_pump(cx);
+                this.notify_waiting_runs(cx);
+            });
             Self {
                 state,
                 pump: None,
                 seen_event_ids: VecDeque::new(),
                 seen_event_id_set: HashSet::new(),
+                waiting_runs: HashSet::new(),
                 _state_observation: observation,
             }
         });
@@ -190,6 +198,64 @@ impl TurnNotificationController {
             actions: Vec::new(),
             sound: settings.completion_notification_sound,
         });
+    }
+
+    /// A Routine run that starts waiting on an Approval or a question posts
+    /// a banner even while a Holt window is active — unattended runs must
+    /// not stall unnoticed — unless its Chat is the one in view (the window
+    /// is active and the Chat selected, the same test that marks a Chat
+    /// seen).
+    fn notify_waiting_runs(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let waiting: HashSet<String> = state
+            .routines
+            .iter()
+            .flat_map(|view| &view.routine.runs)
+            .filter(|run| run.outcome == RunOutcome::Waiting)
+            .filter_map(|run| run.chat_id.clone())
+            .collect();
+        let entered: Vec<String> = waiting
+            .iter()
+            .filter(|chat_id| !self.waiting_runs.contains(*chat_id))
+            .cloned()
+            .collect();
+        self.waiting_runs = waiting;
+        if entered.is_empty() {
+            return;
+        }
+        let settings = settings::current(cx);
+        if !settings.completion_notifications {
+            return;
+        }
+        let window_active = cx.active_window().is_some();
+        let state = self.state.read(cx);
+        let posts: Vec<(String, String)> = entered
+            .into_iter()
+            .filter(|chat_id| {
+                !(window_active && state.selected_chat.as_deref() == Some(chat_id.as_str()))
+            })
+            .map(|chat_id| {
+                let title = state
+                    .chats
+                    .iter()
+                    .find(|chat| chat.id == chat_id)
+                    .and_then(|chat| chat.title.as_deref())
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or("A scheduled run");
+                let body = format!("{title} is waiting for you");
+                (chat_id, body)
+            })
+            .collect();
+        for (chat_id, body) in posts {
+            cx.show_system_notification(SystemNotification {
+                tag: chat_id.into(),
+                title: APP_DISPLAY_NAME.into(),
+                body: body.into(),
+                actions: Vec::new(),
+                sound: settings.completion_notification_sound,
+            });
+        }
     }
 
     /// Dedup by `eventId` against a bounded recent window. Returns false for
@@ -865,5 +931,61 @@ mod tests {
         // Seen semantics are unchanged: the open still marked the Chat seen.
         let unseen = cx.read(|cx| harness.state.read(cx).chats[0].unseen());
         assert!(!unseen);
+    }
+
+    fn routine_with_run(chat_id: &str, outcome: &str) -> holt_proto::RoutineView {
+        serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "Daily digest", "spaceId": "space-1",
+            "prompt": "Summarize.", "cron": "0 9 * * *", "timeZone": "UTC",
+            "config": {
+                "provider": "openai", "model": "openai/gpt-5.4",
+                "reasoning": null, "permissionMode": "auto-review"
+            },
+            "checkout": "main-checkout", "createdAt": "2026-10-07T08:00:00Z",
+            "runs": [{
+                "firedAt": "2026-10-07T09:00:00Z", "outcome": outcome, "chatId": chat_id
+            }],
+        }))
+        .unwrap()
+    }
+
+    fn set_run(harness: &Harness, cx: &mut TestAppContext, chat_id: &str, outcome: &str) {
+        harness.state.update(cx, |state, cx| {
+            state.routines = vec![routine_with_run(chat_id, outcome)];
+            cx.notify();
+        });
+        harness.flush(cx);
+    }
+
+    #[gpui::test]
+    async fn a_waiting_run_posts_even_while_a_window_is_active(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        harness.engine.push_chats(serde_json::json!([chat_json(
+            "run-chat",
+            Some("Daily digest")
+        )]));
+        harness.wait_until(cx, |cx| chats_len(&harness, cx) == 1);
+        let _visual = active_window(cx);
+        set_run(&harness, cx, "run-chat", "running");
+        assert!(shown(cx).is_empty());
+        set_run(&harness, cx, "run-chat", "waiting");
+        let shown_now = shown(cx);
+        assert_eq!(shown_now.len(), 1);
+        assert_eq!(shown_now[0].body, "Daily digest is waiting for you");
+        assert_eq!(shown_now[0].tag, "run-chat");
+        // Staying in Waiting does not post again.
+        set_run(&harness, cx, "run-chat", "waiting");
+        assert_eq!(shown(cx).len(), 1);
+    }
+
+    #[gpui::test]
+    async fn a_waiting_run_in_view_stays_quiet(cx: &mut TestAppContext) {
+        let harness = harness(cx, |_| {});
+        let _visual = active_window(cx);
+        harness.state.update(cx, |state, _| {
+            state.selected_chat = Some("run-chat".into());
+        });
+        set_run(&harness, cx, "run-chat", "waiting");
+        assert!(shown(cx).is_empty());
     }
 }

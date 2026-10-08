@@ -12,7 +12,9 @@ use std::{
 
 use futures::FutureExt as _;
 use holt_doc::MessagePart;
-use holt_proto::{MessageQueue, PendingKind, PendingMessage, RunRequest, SessionStatus};
+use holt_proto::{
+    MessageQueue, PendingKind, PendingMessage, RunOutcome, RunRequest, SessionStatus,
+};
 use holt_rpc::{RpcError, turns::TurnTerminalEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -1040,6 +1042,25 @@ impl EngineService {
                                 (holt_rpc::turns::TurnOutcome::Interrupted, None)
                             }
                         };
+                        // A Turn that ends on an unanswered question
+                        // leaves its run waiting on the user.
+                        service.settle_routine_run(
+                            &worker_chat.chat_id,
+                            match outcome {
+                                holt_rpc::turns::TurnOutcome::Succeeded
+                                    if crate::tools::ask_user::has_pending_question(
+                                        &worker_chat,
+                                    ) =>
+                                {
+                                    RunOutcome::Waiting
+                                }
+                                holt_rpc::turns::TurnOutcome::Succeeded => RunOutcome::Succeeded,
+                                holt_rpc::turns::TurnOutcome::Failed => RunOutcome::Failed,
+                                holt_rpc::turns::TurnOutcome::Interrupted => {
+                                    RunOutcome::Interrupted
+                                }
+                            },
+                        );
                         service.turn_events.publish(TurnTerminalEvent {
                             event_id: uuid::Uuid::new_v4().to_string(),
                             chat_id: worker_chat.chat_id.clone(),
@@ -1063,7 +1084,7 @@ impl EngineService {
                     }
                 });
                 if let Err(payload) = iteration.catch_unwind().await {
-                    let detail = panic_detail(&payload);
+                    let detail = panic_detail(&*payload);
                     tracing::error!(
                         target: "holt::queue",
                         chat_id = %worker_chat.chat_id,

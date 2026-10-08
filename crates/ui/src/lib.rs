@@ -43,6 +43,7 @@ pub mod pickers;
 pub mod popover;
 pub mod provider_logos;
 pub mod rail;
+pub mod scheduled;
 pub mod settings;
 pub mod shell;
 pub mod state;

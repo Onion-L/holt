@@ -225,6 +225,20 @@ pub(crate) fn supersede_question_cards(chat: &ChatRuntime) {
     });
 }
 
+/// Whether the chat's transcript holds a question card still waiting on
+/// the user.
+pub(crate) fn has_pending_question(chat: &ChatRuntime) -> bool {
+    chat.transcript
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .flat_map(|entry| &entry.parts)
+        .any(|part| {
+            matches!(part, MessagePart::QuestionCard { state, .. }
+                if *state == ChoiceCardState::Pending)
+        })
+}
+
 /// Settle one pending question card on the user's answers — the pages of
 /// the approval bar — and return the (question, answer) pairs for the
 /// queued message. The answer count must match the questions; free text

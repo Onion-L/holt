@@ -2,6 +2,11 @@
 
 Issues and specs for this repo live as markdown files in `.scratch/`.
 
+GitHub issues (see the `issue` skill) are a separate surface: durable,
+externally visible bug reports and feature requests. `.scratch/` stays the
+source of truth for the development process — specs, implementation tickets,
+and wayfinding. Link the two with a `GitHub: #N <url>` line in the local spec.
+
 ## Conventions
 
 - One feature per directory: `.scratch/<feature-slug>/`

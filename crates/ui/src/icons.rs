@@ -292,6 +292,8 @@ icon_assets![
     (HARD_DRIVE, "hard-drive"),
     (HOME, "home"),
     (STOP, "stop"),
+    (PLAY, "play"),
+    (PAUSE, "pause"),
     (CHECK, "check"),
     (COPY, "copy"),
     // Hand-drawn eye glyphs in the Solar Linear style (like the terminal/

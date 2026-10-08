@@ -824,6 +824,15 @@ impl Transcript {
                         ))
                     })
             });
+        let caption = (is_user_row
+            && self.doc_override.is_none()
+            && self
+                .rows
+                .iter()
+                .position(|r| matches!(r.kind, RowKind::User { .. }))
+                == Some(ix))
+        .then(|| self.render_run_caption(&theme, cx))
+        .flatten();
         let entry_id = row.entry_id.clone();
         let row_id = row.id.clone();
         div()
@@ -865,11 +874,64 @@ impl Transcript {
                     .w_full()
                     .max_w(px(MAX_CONTENT_WIDTH))
                     .min_w_0()
+                    .children(caption)
                     .child(inner)
                     .children(strip)
                     .children(trailer),
             )
             .into_any_element()
+    }
+
+    /// A Routine run chat's caption over its first message, read from the
+    /// Chat's run marker (never agent events): "◷ name", "· 补跑" for a
+    /// Catch-up run. Clicking opens the Routine while it still exists.
+    fn render_run_caption(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.state.read(cx);
+        let marker = state.selected_chat_row()?.routine_run.clone()?;
+        let exists = state
+            .routines
+            .iter()
+            .any(|view| view.routine.id == marker.routine_id);
+        let mut label = marker.routine_name.clone();
+        if marker.missed_fires > 0 {
+            label.push_str(" \u{b7} 补跑");
+        }
+        let routine_id = marker.routine_id;
+        let caption = div()
+            .id("run-caption")
+            .debug_selector(|| "run-caption".into())
+            .max_w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(5.0))
+            .text_size(crate::typography::ui_rems(12.0))
+            .text_color(theme.text_muted.opacity(0.7))
+            .child(
+                crate::icons::icon(crate::icons::CLOCK_CIRCLE)
+                    .size(px(12.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(0.7)),
+            )
+            .child(div().min_w_0().truncate().child(SharedString::from(label)))
+            .when(exists, |el| {
+                el.cursor_pointer()
+                    .hover(|s| s.text_color(theme.text))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TranscriptEvent::OpenRoutine {
+                            routine_id: routine_id.clone(),
+                        });
+                    }))
+            });
+        Some(
+            div()
+                .w_full()
+                .flex()
+                .justify_end()
+                .pb(px(6.0))
+                .child(caption)
+                .into_any_element(),
+        )
     }
 
     /// Copy-button wiring for one row's code blocks ([`render::CopyUi`]):

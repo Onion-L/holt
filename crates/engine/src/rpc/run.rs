@@ -3,7 +3,9 @@
 
 use chrono::Utc;
 use holt_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
-use holt_proto::{Chat, ChatConfig, PendingKind, RunRequest, SessionStatus, Space, TitleSource};
+use holt_proto::{
+    Chat, ChatConfig, PendingKind, RunOutcome, RunRequest, SessionStatus, Space, TitleSource,
+};
 use holt_rpc::{RpcError, RpcReply};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -148,6 +150,7 @@ impl EngineService {
                     plan_mode: None,
                     provider_mode: false,
                     worktree: Some(spec.clone()),
+                    routine_run: None,
                 }),
             }
         }
@@ -710,6 +713,9 @@ impl EngineService {
         drop(transcript);
         self.runtime.publish_chats();
         self.runtime.set_session(chat_id, SessionStatus::Working);
+        // A run waiting on a question runs again with the next Turn.
+        self.routines
+            .move_run(chat_id, RunOutcome::Waiting, RunOutcome::Running);
         // Run acceptance rewrites the chat's config from the request, so the
         // chat's selection (the occupancy denominator's fallback) moves with
         // it.
