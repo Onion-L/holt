@@ -146,18 +146,23 @@ impl EngineService {
         );
         let schedule = parse_schedule(cron, at, &time_zone)?;
         let now = self.clock.now();
-        if let Schedule::Once(at) = schedule
+        if let Schedule::Once(at, _) = schedule
             && at <= now
         {
             return Err(RpcError::BadParams("that time has passed".into()));
         }
+        // The schedule's own zone: the fires travel as wall-clock times in
+        // it, so the form never does zone math (chrono-tz stays engine-only).
+        let zone = match &schedule {
+            Schedule::Cron(_, zone) | Schedule::Once(_, zone) => *zone,
+        };
         let mut fires = Vec::with_capacity(PREVIEW_FIRES);
         let mut after = now;
         while fires.len() < PREVIEW_FIRES {
             let Some(next) = next_after(&schedule, after) else {
                 break;
             };
-            fires.push(next);
+            fires.push(next.with_timezone(&zone));
             after = next;
         }
         RpcReply::value(&serde_json::json!({ "timeZone": time_zone, "fires": fires }))
@@ -174,7 +179,7 @@ impl EngineService {
             return Err(RpcError::BadParams("prompt must not be empty".into()));
         }
         let time_zone = time_zone_or_local(params.time_zone);
-        if let Schedule::Once(at) = parse_schedule(&params.cron, params.at, &time_zone)?
+        if let Schedule::Once(at, _) = parse_schedule(&params.cron, params.at, &time_zone)?
             && at <= self.clock.now()
         {
             return Err(RpcError::BadParams("that time has passed".into()));
@@ -269,7 +274,8 @@ impl EngineService {
     /// user-owned title, its model and Permission mode, the run marker),
     /// enqueue the prompt verbatim as the first message, and record the
     /// run. Returns the new Chat's id, or `None` when a run is still live
-    /// and the fire is recorded as skipped instead. A removed Space pauses
+    /// and the fire is recorded as skipped instead, or when a pause raced
+    /// the plan. A removed Space pauses
     /// the Routine and records nothing; an unavailable model records a
     /// failed run and leaves the Routine active — both reply the reason.
     pub(crate) async fn start_routine_run(
@@ -298,6 +304,12 @@ impl EngineService {
                 .iter_mut()
                 .find(|routine| routine.id == id)
                 .ok_or_else(|| RpcError::BadParams("unknown routine".into()))?;
+            // A pause that raced the plan stands the fire down before it
+            // claims anything; Run now (manual) still goes — the card offers
+            // it on a user-paused Routine.
+            if routine.paused.is_some() && !fire.manual {
+                return Ok(None);
+            }
             if let Some(at) = fire.scheduled_at {
                 routine.last_fired_at = Some(at);
             }

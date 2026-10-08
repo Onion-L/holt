@@ -185,6 +185,9 @@ async fn create_defaults_the_time_zone_and_rejects_bad_params() {
         json!({ "cron": "61 * * * *" }),
         json!({ "cron": "every morning" }),
         json!({ "timeZone": "Mars/Olympus_Mons" }),
+        // A one-time `at` inside a DST spring-forward gap: rejected, not
+        // silently shifted (2026-03-08 02:30 does not exist in New York).
+        json!({ "cron": "", "at": "2026-03-08T02:30:00", "timeZone": "America/New_York" }),
     ] {
         let error = engine
             .handle(methods::CREATE_ROUTINE, create_params(extra.clone()))
@@ -682,6 +685,27 @@ async fn a_paused_routine_does_not_fire_and_resume_does_not_make_up() {
 }
 
 #[tokio::test]
+async fn run_now_still_fires_a_user_paused_routine() {
+    let fixture = Fixture::new();
+    let provider = provider();
+    let engine = setup(&fixture, &provider).await;
+    let routine = create(&engine, json!({})).await;
+    let id = routine["id"].as_str().unwrap();
+
+    set_paused(&engine, id, true).await;
+    let chat_id = run_now(&engine, id).await;
+
+    let settled = wait_for_routine(&engine, id, |routine| {
+        first_run(routine).is_some_and(|run| run["outcome"] != "running")
+    })
+    .await;
+    let run = first_run(&settled).unwrap();
+    assert_eq!(run["manual"], true);
+    assert_eq!(run["outcome"], "succeeded");
+    assert_eq!(run["chatId"], chat_id.as_str());
+}
+
+#[tokio::test]
 async fn fires_missed_while_quit_coalesce_into_one_catch_up_run() {
     let fixture = Fixture::new();
     let provider = provider();
@@ -966,9 +990,9 @@ async fn preview_lists_the_next_three_fires() {
         json!({
             "timeZone": "Asia/Shanghai",
             "fires": [
-                "2026-10-08T01:00:00Z",
-                "2026-10-09T01:00:00Z",
-                "2026-10-12T01:00:00Z",
+                "2026-10-08T09:00:00+08:00",
+                "2026-10-09T09:00:00+08:00",
+                "2026-10-12T09:00:00+08:00",
             ],
         })
     );
@@ -1097,7 +1121,8 @@ async fn a_one_time_routine_fires_once_then_has_no_next_fire() {
     let provider = provider();
     let clock = clock();
     let engine = setup_at(&fixture, &provider, clock.clone()).await;
-    // Now is 17:00 in Shanghai; 21:00 tonight is 13:00 UTC.
+    // Now is 17:00 in Shanghai; 21:00 tonight is 13:00 UTC — previewed in
+    // the schedule's own zone, not UTC.
     let RpcReply::Value(preview) = engine
         .handle(
             methods::PREVIEW_ROUTINE_SCHEDULE,
@@ -1108,7 +1133,7 @@ async fn a_one_time_routine_fires_once_then_has_no_next_fire() {
     else {
         panic!("PreviewRoutineSchedule did not reply a value");
     };
-    assert_eq!(preview["fires"], json!(["2026-10-07T13:00:00Z"]));
+    assert_eq!(preview["fires"], json!(["2026-10-07T21:00:00+08:00"]));
     for at in ["2026-10-07T16:00:00", "2026-10-07T17:00:00"] {
         let error = engine
             .handle(

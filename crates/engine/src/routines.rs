@@ -174,8 +174,8 @@ pub(crate) fn local_time_zone() -> String {
 /// A Routine's schedule, read in its zone.
 pub(crate) enum Schedule {
     Cron(Box<Cron>, Tz),
-    /// A one-time Routine's single fire.
-    Once(DateTime<Utc>),
+    /// A one-time Routine's single fire, in its zone.
+    Once(DateTime<Utc>, Tz),
 }
 
 /// Parse a Routine's schedule: a cron expression, or one wall-clock time
@@ -192,7 +192,7 @@ pub(crate) fn parse_schedule(
         ("", Some(at)) => zone
             .from_local_datetime(&at)
             .earliest()
-            .map(|at| Schedule::Once(at.with_timezone(&Utc)))
+            .map(|at| Schedule::Once(at.with_timezone(&Utc), zone))
             .ok_or_else(|| RpcError::BadParams(format!("{at} does not exist in {zone}"))),
         (cron, None) => Cron::from_str(cron)
             .map(|cron| Schedule::Cron(Box::new(cron), zone))
@@ -216,7 +216,7 @@ pub(crate) fn next_after(schedule: &Schedule, after: DateTime<Utc>) -> Option<Da
             .find_next_occurrence(&after.with_timezone(zone), false)
             .ok()
             .map(|next| next.with_timezone(&Utc)),
-        Schedule::Once(at) => (*at > after).then_some(*at),
+        Schedule::Once(at, _) => (*at > after).then_some(*at),
     }
 }
 

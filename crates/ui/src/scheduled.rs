@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, Utc};
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, Task,
@@ -130,7 +130,7 @@ impl Default for Prefill {
 #[serde(rename_all = "camelCase")]
 struct SchedulePreview {
     time_zone: String,
-    fires: Vec<DateTime<Utc>>,
+    fires: Vec<DateTime<FixedOffset>>,
 }
 
 enum Preview {
@@ -2238,13 +2238,11 @@ fn delete_body(runs: usize) -> String {
 /// The form preview's fire list, deduplicated: one time-of-day across all
 /// fires collapses to the date span ("Oct 8 – Oct 10 at 09:00"); same-day
 /// fires share the date ("Oct 7, 17:00 · 18:00 · 19:00"); anything else
-/// lists each fire.
-fn preview_fires(fires: &[DateTime<Utc>]) -> String {
-    let local: Vec<DateTime<Local>> = fires
-        .iter()
-        .map(|fire| fire.with_timezone(&Local))
-        .collect();
-    match local.as_slice() {
+/// lists each fire. The fires arrive from the engine as wall-clock times in
+/// the schedule's own zone, so no zone math happens here.
+fn preview_fires(fires: &[DateTime<FixedOffset>]) -> String {
+    let wall: Vec<NaiveDateTime> = fires.iter().map(|fire| fire.naive_local()).collect();
+    match wall.as_slice() {
         [] => String::new(),
         [only] => only.format("%b %-d, %H:%M").to_string(),
         many => {
@@ -2254,7 +2252,7 @@ fn preview_fires(fires: &[DateTime<Utc>]) -> String {
                 .collect();
             let one_time = times.iter().all(|time| *time == times[0]);
             if one_time {
-                let days: Vec<NaiveDate> = many.iter().map(|at| at.date_naive()).collect();
+                let days: Vec<NaiveDate> = many.iter().map(|at| at.date()).collect();
                 let consecutive = days
                     .windows(2)
                     .all(|pair| (pair[1] - pair[0]).num_days() == 1);
@@ -2278,8 +2276,8 @@ fn preview_fires(fires: &[DateTime<Utc>]) -> String {
                 };
                 format!("{dates} at {}", times[0])
             } else {
-                let first_date = many[0].date_naive();
-                let same_day = many.iter().all(|at| at.date_naive() == first_date);
+                let first_date = many[0].date();
+                let same_day = many.iter().all(|at| at.date() == first_date);
                 if same_day {
                     format!(
                         "{}, {}",
@@ -2634,7 +2632,7 @@ mod tests {
             Local
                 .with_ymd_and_hms(2026, 10, day, hour, 0, 0)
                 .unwrap()
-                .with_timezone(&Utc)
+                .fixed_offset()
         };
         // Daily: consecutive days, one time — the span carries the dates.
         assert_eq!(
