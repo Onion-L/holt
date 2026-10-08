@@ -649,6 +649,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tmp_repro_zoom_raster_cap_shrinks_natural() {
+        // Wide diagram: 2000x400 natural. Initial raster at 1.0, then the
+        // zoom-driven re-raster at 3.0 (the writeback records raster_zoom=3.0).
+        let w = 2000.0f32;
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="400" viewBox="0 0 {w} 400"><rect x="0" y="0" width="{w}" height="400" fill="#ff0000"/></svg>"##
+        );
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(()));
+        let natural_at = |zoom: f32| {
+            let image = renderer
+                .render_single_frame(svg.as_bytes(), zoom)
+                .expect("rasterize");
+            let px = image.size(0).width.0 as f32;
+            (px, px / (gpui::SMOOTH_SVG_SCALE_FACTOR * zoom))
+        };
+        let (px1, nat1) = natural_at(1.0);
+        let (px3, nat3) = natural_at(3.0);
+        println!("zoom 1.0: {px1}px bitmap, recovered natural {nat1}");
+        println!("zoom 3.0: {px3}px bitmap, recovered natural {nat3}");
+        assert!((nat1 - w).abs() < 1.0, "initial natural is exact: {nat1}");
+        assert!(
+            (nat3 - w).abs() > 100.0,
+            "re-raster natural collapsed: {nat3} vs {w}"
+        );
+        // Displayed width per render.rs (container 800, MERMAID_MIN_FIT_SCALE
+        // 0.6): min_w floor binds for a wide diagram, and the collapsed
+        // natural shrinks it — the reported "zoom in, diagram shrinks".
+        let displayed = |nat: f32, z: f32| {
+            let w_req = nat * z;
+            let max = 800.0 * z;
+            let min = 0.6 * nat * z;
+            w_req.min(max).max(min)
+        };
+        let before = displayed(nat1, 3.0);
+        let after = displayed(nat3, 3.0);
+        println!("displayed before re-raster: {before}, after: {after}");
+        assert!(after < before * 0.9, "shrinks: {after} vs {before}");
+    }
+
     fn test_palette() -> MermaidPalette {
         MermaidPalette {
             dark: true,
