@@ -612,7 +612,11 @@ async fn cleanup_terminates_active_shell_processes() {
     }
     assert!(env.exists("started", None).await.unwrap());
     FileSystem::cleanup(env.as_ref()).await;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut execution).await;
+    // The kill settles in milliseconds, but on a heavily loaded CI runner
+    // this test's thread can be descheduled for seconds; the budget only
+    // needs to stay well under the 60s sleep so a failed kill still fails
+    // the test instead of outliving it.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), &mut execution).await;
     assert!(result.unwrap().is_ok());
 }
 
