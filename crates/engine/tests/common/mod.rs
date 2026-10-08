@@ -38,6 +38,12 @@ const WAIT: Duration = Duration::from_secs(10);
 pub enum ScriptedReply {
     /// A finished text reply.
     Text(String),
+    /// A finished reply with no content block at all and stop reason
+    /// `stop` — the degenerate "the model said nothing" shape.
+    Empty,
+    /// A finished reply whose only block is an empty text block — the
+    /// shape issue #21's provider actually returned.
+    EmptyText,
     /// A finished text reply reporting different usage than the provider
     /// pin (compaction tests anchor the estimator on exactly one reply).
     TextWithUsage { text: String, usage: Usage },
@@ -383,6 +389,19 @@ fn push_reply(
         ..Default::default()
     };
     match reply {
+        ScriptedReply::Empty | ScriptedReply::EmptyText => {
+            if matches!(reply, ScriptedReply::EmptyText) {
+                message.content = vec![AssistantContent::Text(TextContent {
+                    text: String::new(),
+                    ..Default::default()
+                })];
+            }
+            message.stop_reason = StopReason::Stop;
+            stream.push(AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                message,
+            });
+        }
         ScriptedReply::Text(text) => {
             message.content = vec![AssistantContent::Text(TextContent {
                 text,

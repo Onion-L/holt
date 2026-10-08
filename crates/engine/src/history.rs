@@ -190,6 +190,11 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
         ));
     }
     let mut messages = Vec::new();
+    // Whether a compaction point (a record, or a summary materialized as
+    // a message — see below) already shaped the replayed prefix. Guards
+    // the drop rule: once compacted, a later summary belongs to the
+    // compacted sequence, not to a lost record.
+    let mut compacted = false;
     for line in lines {
         if line.trim().is_empty() {
             continue;
@@ -208,7 +213,31 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                     .cloned()
                     .unwrap_or(serde_json::Value::Null),
             ) {
-                Ok(message) => messages.push(message),
+                Ok(message) => {
+                    // A compaction summary as a plain message entry is the
+                    // lost-record shape (issue #21): the compaction ran and
+                    // its summary plus retained tail were materialized as
+                    // ordinary messages, but the `{"kind":"compaction"}`
+                    // record never landed. Semantically everything before a
+                    // summary was summarized away, so replay drops it —
+                    // unless an earlier compaction point already shaped the
+                    // prefix (the edit path's rewrite legitimately writes a
+                    // whole compacted History, earlier summaries included,
+                    // as message entries).
+                    if let AgentMessage::Custom(custom) = &message
+                        && custom.role == "compactionSummary"
+                    {
+                        if !compacted && !messages.is_empty() {
+                            tracing::warn!(
+                                target: "holt::history",
+                                "compaction summary without its record; dropping the summarized prefix"
+                            );
+                            messages.clear();
+                        }
+                        compacted = true;
+                    }
+                    messages.push(message);
+                }
                 Err(error) => {
                     tracing::warn!(target: "holt::history", %error, "skipping undecodable history entry")
                 }
@@ -240,6 +269,7 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                             ),
                         );
                         messages.extend(tail);
+                        compacted = true;
                     }
                     Err(error) => {
                         tracing::warn!(target: "holt::history", %error, "skipping undecodable compaction entry")
@@ -928,6 +958,100 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["before", "after"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_summary_message_without_its_record_drops_the_summarized_prefix() {
+        // Issue #21's shape, from the damaged file: the raw history, the
+        // compaction summary materialized as a PLAIN message entry, the
+        // retained tail re-appended behind it, later turns — and no
+        // `{"kind":"compaction"}` record anywhere. Replay honors the
+        // summary's meaning: everything before it was summarized away.
+        let dir = temp_dir();
+        append_message(&dir, "chat-1", &user("the start")).unwrap();
+        append_message(&dir, "chat-1", &assistant("the long middle")).unwrap();
+        let summary = pi_core::agent::harness::messages::create_compaction_summary_message(
+            "the checkpoint",
+            246_535,
+            1_791_356_819,
+        );
+        append_message(&dir, "chat-1", &summary).unwrap();
+        append_message(&dir, "chat-1", &user("retained tail")).unwrap();
+        append_message(&dir, "chat-1", &assistant("also retained")).unwrap();
+        append_message(&dir, "chat-1", &user("after the restart")).unwrap();
+
+        let loaded = load(&dir, "chat-1").unwrap();
+        let texts: Vec<&str> = loaded
+            .iter()
+            .filter_map(|message| match message {
+                AgentMessage::User(user) => match &user.content {
+                    UserContent::Text(text) => Some(text.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["retained tail", "after the restart"]);
+        assert!(
+            matches!(&loaded[0], AgentMessage::Custom(custom) if custom.role == "compactionSummary"),
+            "the summary must lead the replayed History"
+        );
+        assert_eq!(loaded.len(), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_rewrite_shaped_summary_replays_verbatim() {
+        // The edit path's rewrite legitimately writes a compacted History
+        // as plain messages: the summary first, then the tail. Replay keeps
+        // it exactly as written (the drop rule hits an empty prefix).
+        let dir = temp_dir();
+        let summary = pi_core::agent::harness::messages::create_compaction_summary_message(
+            "the checkpoint",
+            246_535,
+            1_791_356_819,
+        );
+        append_message(&dir, "chat-1", &summary).unwrap();
+        let tail = vec![user("retained tail"), assistant("also retained")];
+        for message in &tail {
+            append_message(&dir, "chat-1", message).unwrap();
+        }
+
+        let mut expected = vec![summary];
+        expected.extend(tail);
+        assert_eq!(load(&dir, "chat-1").unwrap(), expected);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_chained_summary_keeps_the_earlier_compacted_prefix() {
+        // A later compaction can keep an earlier summary inside its
+        // retained tail; a rewrite then writes both as message entries.
+        // The second summary's prefix was already shaped by the first, so
+        // the drop rule must NOT fire and eat it.
+        let dir = temp_dir();
+        let first = pi_core::agent::harness::messages::create_compaction_summary_message(
+            "first checkpoint",
+            246_535,
+            1,
+        );
+        let second = pi_core::agent::harness::messages::create_compaction_summary_message(
+            "second checkpoint",
+            53_700,
+            2,
+        );
+        append_message(&dir, "chat-1", &second).unwrap();
+        append_message(&dir, "chat-1", &user("between summaries")).unwrap();
+        append_message(&dir, "chat-1", &first).unwrap();
+        append_message(&dir, "chat-1", &user("the tail")).unwrap();
+
+        let loaded = load(&dir, "chat-1").unwrap();
+        assert_eq!(loaded.len(), 4);
+        assert!(
+            matches!(&loaded[0], AgentMessage::Custom(custom) if custom.role == "compactionSummary"),
+        );
+        assert_eq!(loaded[3], user("the tail"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

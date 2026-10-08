@@ -266,3 +266,28 @@ async fn one_chat_walks_the_whole_history_and_compaction_story() {
     }
     let _ = &mut transcript;
 }
+
+#[tokio::test]
+async fn a_reply_without_any_content_lands_a_visible_notice() {
+    // Issue #21's symptom: the model "succeeds" but says nothing — either no
+    // content block at all or (what the provider actually sent) one empty
+    // text block. A blank Turn must be visible, not a normal-looking one.
+    for reply in [ScriptedReply::Empty, ScriptedReply::EmptyText] {
+        let fixture = common::Fixture::new();
+        let provider = ScriptedProvider::new(vec![reply]);
+        let engine = fixture.engine(&provider);
+        common::setup_chat(&engine, "chat-1").await;
+        let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+        common::run_prompt(&engine, "chat-1", &fixture.cwd(), "say something").await;
+        common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+        common::wait_for_transcript_text(
+            &mut transcript,
+            "The model ended its reply without any content",
+        )
+        .await;
+        let snapshot = common::transcript_snapshot(&engine, "chat-1").await;
+        assert!(snapshot.to_string().contains("empty-reply-"));
+    }
+}

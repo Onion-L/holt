@@ -691,6 +691,10 @@ impl ChatRuntime {
         }
         if let Err(error) = crate::history::append_compaction(&self.data_dir, &self.chat_id, record)
         {
+            // The highest-risk silent failure in the store: without the
+            // record, a restart replays the raw History the compaction
+            // was supposed to replace (issue #21) — so say it out loud.
+            tracing::warn!(target: "holt::history", %error, "compaction record append failed");
             *self
                 .persistence_error
                 .lock()
@@ -2086,6 +2090,38 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         message: "This conversation outgrew the model's context window. \
                                   The next message will first compact the conversation \
                                   into a summary, then continue."
+                            .into(),
+                    },
+                );
+            }
+            // A Turn that "succeeded" but whose terminal message carries no
+            // content block at all said nothing (issue #21's symptom): the
+            // blank reply must be visible, not a normal-looking Turn.
+            let empty_reply = messages.iter().rev().find_map(|message| match message {
+                AgentMessage::Assistant(assistant) => Some(
+                    assistant.stop_reason == pi_core::ai::types::StopReason::Stop
+                        && assistant.content.iter().all(|block| match block {
+                            pi_core::ai::types::AssistantContent::Text(text) => {
+                                text.text.trim().is_empty()
+                            }
+                            pi_core::ai::types::AssistantContent::Thinking(thinking) => {
+                                thinking.thinking.trim().is_empty()
+                            }
+                            pi_core::ai::types::AssistantContent::ToolCall(_) => false,
+                        }),
+                ),
+                _ => None,
+            });
+            if empty_reply == Some(true) && chat.child.is_none() {
+                push_system_part(
+                    &chat,
+                    &runtime.device_id,
+                    format!("empty-reply-{}", uuid::Uuid::new_v4()),
+                    MessagePart::Notice {
+                        id: "n0".into(),
+                        message: "The model ended its reply without any content. \
+                                  Try sending the message again, or compact the \
+                                  conversation if it keeps happening."
                             .into(),
                     },
                 );
