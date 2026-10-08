@@ -219,10 +219,10 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-For a deterministic run without live API calls, OAuth credential reads or
-refreshes, or local model servers, use `PI_TEST_OFFLINE=1 cargo test --all-targets`.
-Live scenarios remain visible as skipped cases; run without this variable to
-exercise them with configured credentials.
+The default run is deterministic: live API calls, OAuth credential reads or
+refreshes, and local model servers are skipped and stay visible as skipped
+cases. Use `PI_TEST_LIVE=1 cargo test --all-targets` to exercise them with
+configured credentials.
 
 ## License
 

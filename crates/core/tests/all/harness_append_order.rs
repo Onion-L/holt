@@ -1,13 +1,14 @@
-//! Regression: `NodeExecutionEnv::append_file` and `write_file` must resolve
-//! only after the write(2) reached the OS. `tokio::fs::File::write_all`
+//! Regression: `NodeExecutionEnv::append_file` must resolve only after the
+//! write(2) reached the OS. `tokio::fs::File::write_all`
 //! returns as soon as the bytes are copied into tokio's internal buffer —
 //! the blocking write runs afterwards — so on a fresh handle the future
 //! could resolve while the bytes were still queued. That let two sequential
 //! appends land out of order in the file (observed on CI as a session JSONL
 //! with lines swapped relative to their seq order) and let a read straight
-//! after a write miss it. The env flushes the handle before resolving; this
-//! test asserts the visible consequence: bytes appended (or written) by a
-//! resolved call are immediately readable.
+//! after an append miss it. The env flushes the handle before resolving; this
+//! test asserts the visible consequence: bytes appended by a resolved call
+//! are immediately readable. `write_file` (one-shot `tokio::fs::write`,
+//! which awaits the blocking write) is checked alongside as a guard.
 
 use std::sync::Arc;
 

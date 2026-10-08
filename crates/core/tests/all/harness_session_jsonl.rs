@@ -314,18 +314,10 @@ async fn rust_session_bytes_match_the_typescript_oracle() {
 
     let written = replay_oracle_scenario(&env, &root).await;
     let expected = golden("session.jsonl");
-    // Diagnostics for a CI-only flake where the written file had two lines
-    // swapped relative to their seq order (never reproduced locally): on a
-    // mismatch, re-read the file so the panic shows whether the content is
-    // stable (a real write-order bug) or still moving (a live writer).
-    if written != expected {
-        let path = format!("{root}/session.jsonl");
-        let reread = env.read_text_file(&path, None).await.unwrap();
-        panic!(
-            "session JSONL bytes must match the oracle\nstable on re-read: {}\nwritten:\n{written}\nreread:\n{reread}",
-            reread == written
-        );
-    }
+    assert_eq!(
+        written, expected,
+        "session JSONL bytes must match the oracle"
+    );
 }
 
 #[tokio::test]

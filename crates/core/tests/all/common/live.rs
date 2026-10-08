@@ -64,12 +64,16 @@ pub fn live_env(name: &str) -> Option<String> {
     }
 }
 
+/// Live suites are opt-in: they hit paid provider APIs, local model servers,
+/// and refresh OAuth credentials in `~/.pi/agent/auth.json`, so a plain
+/// `cargo test --workspace` must never reach them. `PI_TEST_LIVE=1` enables
+/// them for runs that have credentials configured.
 fn offline() -> bool {
-    std::env::var("PI_TEST_OFFLINE").is_ok_and(|value| value == "1")
+    !std::env::var("PI_TEST_LIVE").is_ok_and(|value| value == "1")
 }
 
-/// Offline-aware `get_env_api_key`: gates that key on a resolved provider
-/// credential must stay closed when `PI_TEST_OFFLINE=1`, so they use this
+/// Opt-in-aware `get_env_api_key`: gates that key on a resolved provider
+/// credential must stay closed without `PI_TEST_LIVE=1`, so they use this
 /// instead of the library function, which reads the process env directly.
 pub fn live_api_key(provider: &str) -> Option<String> {
     if offline() {
@@ -131,7 +135,7 @@ pub fn has_cloudflare_ai_gateway_credentials() -> bool {
 /// Prints the standard live-suite skip line and returns.
 pub fn skip(suite: &str, env: &str) {
     if offline() {
-        eprintln!("SKIP: {suite}: PI_TEST_OFFLINE=1 disables live credentials and services");
+        eprintln!("SKIP: {suite}: live suites run only with PI_TEST_LIVE=1");
         return;
     }
     eprintln!("SKIP: {suite} requires {env}");

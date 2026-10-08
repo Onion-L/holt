@@ -34,9 +34,10 @@ has been Holt-driven and no upstream sync has happened or is planned.
   90. New integration tests join as modules, never as new top-level files.
 - **No test may depend on the developer's process environment.** Env-reading
   tests hold `ai::test_env_lock()` and mask ambient provider credentials
-  (`mask_ambient`); the credential-gated live suites (`ai_live_*`) keep
-  their upstream `skipIf` semantics and fire real requests when credentials
-  exist — `PI_TEST_OFFLINE=1` forces them all to skip.
+  (`mask_ambient`); the credential-gated live suites (`ai_live_*`) are
+  opt-in via `PI_TEST_LIVE=1` (a deviation from upstream `skipIf`, which
+  fired whenever credentials existed), so `cargo test --workspace` never
+  hits paid APIs or rewrites `~/.pi/agent/auth.json`.
 
 ## Consequences
 

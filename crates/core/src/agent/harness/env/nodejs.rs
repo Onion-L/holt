@@ -579,22 +579,9 @@ impl FileSystem for NodeExecutionEnv {
             if is_aborted(abort_signal.as_ref()) {
                 return Err(aborted_error(Some(&resolved)));
             }
-            // `tokio::fs::write` resolves before the blocking write(2) runs,
-            // so a follow-up write or read on another handle could observe
-            // the old contents (or land before this one). Node's `fs.writeFile`
-            // resolves only once the write reached the OS; `flush` restores
-            // that ordering by waiting for the background write.
-            let mut file = match tokio::fs::File::create(&resolved).await {
-                Ok(file) => file,
-                Err(error) => return Err(to_file_error(&error, Some(&resolved))),
-            };
             let write = match content {
-                WriteContent::Text(text) => file.write_all(text.as_bytes()).await,
-                WriteContent::Bytes(bytes) => file.write_all(bytes).await,
-            };
-            let write = match write {
-                Ok(()) => file.flush().await,
-                Err(error) => Err(error),
+                WriteContent::Text(text) => tokio::fs::write(&resolved, text.as_bytes()).await,
+                WriteContent::Bytes(bytes) => tokio::fs::write(&resolved, bytes).await,
             };
             match write {
                 Ok(()) => Ok(()),
@@ -631,8 +618,11 @@ impl FileSystem for NodeExecutionEnv {
                 WriteContent::Text(text) => file.write_all(text.as_bytes()).await,
                 WriteContent::Bytes(bytes) => file.write_all(bytes).await,
             };
-            // See `write_file`: the flush waits out tokio's background
-            // write(2) so sequential appends keep their issue order on disk.
+            // `tokio::fs::File::write_all` resolves once the bytes are in
+            // tokio's buffer; the blocking write(2) runs afterwards, so a
+            // follow-up append on a fresh handle could land first. Node's
+            // `fs.appendFile` resolves only once the write reached the OS;
+            // `flush` restores that by waiting out the background write.
             let write = match write {
                 Ok(()) => file.flush().await,
                 Err(error) => Err(error),

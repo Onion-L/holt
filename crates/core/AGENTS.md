@@ -33,11 +33,11 @@ Keep the crate free of Holt domain concepts (Space, Turn change set, …):
 
 ## Testing
 
-Credential-gated live suites (`ai_live_*`) fire real provider requests
-whenever their env credentials exist — exporting `ANTHROPIC_API_KEY` locally
-runs the Anthropic live suite against the real API. Export
-`PI_TEST_OFFLINE=1` to force every live suite to skip (CI runs without
-credentials, so this only matters on a developer machine).
+Credential-gated live suites (`ai_live_*`) are opt-in: they skip unless
+`PI_TEST_LIVE=1` is exported, whatever credentials the shell or
+`~/.pi/agent/auth.json` holds. With `PI_TEST_LIVE=1` they fire real provider
+requests (and may refresh OAuth tokens in `auth.json`) for every provider
+whose credentials exist.
 
 Tests that touch provider env vars hold `ai::test_env_lock()` and mask
 ambient vars (`mask_ambient` in `src/ai/env_api_keys.rs`); assertions must
