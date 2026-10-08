@@ -110,11 +110,38 @@
 
   <ol class="vers">
 
+    <li class="ver" id="v0.3.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.3.0">0.3.0</a>
+        <span class="vdate mono">Oct 08, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Routines: scheduled prompts fire on their cron — routine cards on a Scheduled page, run outcomes recorded, waiting runs notify</li>
+            <li>Missed fires coalesce into one catch-up run; overlapping fires skip and can pause the Routine</li>
+            <li>One-time Routines via the Custom schedule; the schedule form has a calendar date picker and previews fires in the Routine&rsquo;s own time zone</li>
+            <li>Chat manager gains a run chat caption, Recent folding, and a filter</li>
+            <li>The titlebar keeps new-session on every route; Scheduled and Chat manager move into the chrome</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>Compaction truncates at char boundaries; a panicking run downcasts its payload correctly</li>
+            <li>Fire claims are a single write and re-check pause; obsolete scheduled fires are discarded</li>
+            <li>A removed Space auto-pauses its Routines; a missing model fails the run</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.2.8">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.2.8">0.2.8</a>
         <span class="vdate mono">Oct 06, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
