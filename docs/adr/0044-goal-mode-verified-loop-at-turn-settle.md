@@ -46,7 +46,9 @@ record on the chat's last Turn.
   admits only concrete evidence — files changed, command output, test
   results; plans and intentions do not count. It answers exactly one line:
   `COMPLETE: <evidence>`, `CONTINUE: <the missing piece>`, or
-  `BLOCKED: <reason>`.
+  `BLOCKED: <reason>`; a bare `COMPLETE` without evidence is no verdict at
+  all — clearing the objective is the one destructive transition, so it
+  must cite what settled it.
 - **Evaluation happens only when the queue holds no pending item at
   settle.** Any pending row — user-typed or an orphaned continuation — means
   the next step is already spoken for: the user queueing work is the user
@@ -70,12 +72,15 @@ record on the chat's last Turn.
   files for many Turns legitimately, and a wrong pause costs more than a
   few extra iterations under the hard cap.
 - **Failure taxonomy.** Turn interrupted → goal paused (the user stopped
-  it; resumption is explicit). Turn failed → goal paused, kept. A Message
+  it; resumption is explicit). Turn failed — a driver-iteration panic
+  included — → goal paused, kept. A Message
   item's admission failure (the model or credential is gone) → goal
   cleared with a Notice — retrying cannot fix a missing model; a manual
   Compaction's failure on the same `DriverOutcome::Settled` path never
   touches the goal. A garbled verdict and a failed evaluation call are the
-  SAME failure: `evalFailures` increments (a successful verdict resets it);
+  SAME failure: `evalFailures` increments (a successful verdict resets it)
+  and the loop keeps moving — the next step is queued so the following
+  settle re-verifies, never leaving an `active` goal with nothing queued;
   at 3 the goal pauses with a Notice.
 - **The evaluation is bounded and not user-interruptible.** The Turn's
   cancel token is already cleared at settle, and Stop between Turns pauses

@@ -75,6 +75,12 @@ pub(crate) fn parse_verdict(reply: &str) -> Option<GoalVerdict> {
                 continue;
             }
             let reason = rest.trim_start_matches(':').trim();
+            // COMPLETE is the verdict that ends the loop and clears the
+            // objective: it must cite its evidence. A bare COMPLETE is no
+            // verdict at all — the caller counts an evaluation failure.
+            if reason.is_empty() && prefix == "COMPLETE" {
+                return None;
+            }
             return Some(build(if reason.is_empty() {
                 "no reason given".to_string()
             } else {
@@ -596,12 +602,13 @@ pub(crate) async fn after_turn_settled(
     let verdict = match verdict {
         Ok(verdict) => verdict,
         Err(error) => {
-            let tripped = mutate_goal_row(service, &chat.chat_id, |goal| {
+            let Some(state) = mutate_goal_row(service, &chat.chat_id, |goal| {
                 goal.eval_failures += 1;
                 goal.last_reason = Some(error.clone());
-            })
-            .is_some_and(|goal| goal.eval_failures >= MAX_EVAL_FAILURES);
-            if tripped {
+            }) else {
+                return;
+            };
+            if state.eval_failures >= MAX_EVAL_FAILURES {
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.status = GoalStatus::Paused;
                 });
@@ -612,6 +619,35 @@ pub(crate) async fn after_turn_settled(
                         "Goal paused — the verifier failed {MAX_EVAL_FAILURES} times in a row. Resume with /goal resume."
                     ),
                 );
+                return;
+            }
+            // A failed check must not silently stall the loop with the goal
+            // still active: queue the next step so the following settle
+            // re-verifies. Bounded by the failure counter above; the user
+            // queueing work mid-check takes the wheel as usual.
+            if !chat
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .snapshot()
+                .pending
+                .is_empty()
+            {
+                return;
+            }
+            if enqueue_continuation(
+                service,
+                chat,
+                continuation_prompt(
+                    &goal.text,
+                    "the last verification pass failed before reaching a verdict — keep working toward the goal",
+                ),
+            )
+            .is_err()
+            {
+                mutate_goal_row(service, &chat.chat_id, |goal| {
+                    goal.status = GoalStatus::Paused;
+                });
             }
             return;
         }
@@ -793,11 +829,16 @@ mod tests {
             parse_verdict("BLOCKED: no database access"),
             Some(GoalVerdict::Blocked("no database access".into()))
         );
-        // A reason-less verdict still parses.
+        // A reason-less CONTINUE/BLOCKED still parses.
         assert_eq!(
             parse_verdict("CONTINUE"),
             Some(GoalVerdict::Continue("no reason given".into()))
         );
+        // A bare COMPLETE cites no evidence: no verdict at all, so the
+        // caller counts an evaluation failure instead of clearing the goal.
+        assert_eq!(parse_verdict("COMPLETE"), None);
+        assert_eq!(parse_verdict("COMPLETE:"), None);
+        assert_eq!(parse_verdict("COMPLETE:   "), None);
         // Anything else is no verdict — the caller counts a failure,
         // never a fabricated Continue.
         assert_eq!(parse_verdict("I think we should continue"), None);

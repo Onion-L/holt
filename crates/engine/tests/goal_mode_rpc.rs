@@ -228,6 +228,35 @@ async fn a_paused_queue_pauses_the_goal_and_deleting_the_continuation_stops_the_
 }
 
 #[tokio::test]
+async fn a_failing_verifier_keeps_the_loop_until_three_strikes() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("work one"),
+        ScriptedReply::text("I cannot decide"), // not a verdict
+        ScriptedReply::text("work two"),
+        ScriptedReply::text("COMPLETE"), // no evidence: not a verdict
+        ScriptedReply::text("work three"),
+        ScriptedReply::text("huh?"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    set_goal(&engine, "chat-1", "keep at it").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start").await;
+
+    // Each failed check queues the next step instead of stalling active;
+    // the third consecutive failure pauses the loop.
+    common::wait_for_transcript_text(&mut transcript, "the verifier failed 3 times").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_requests(&provider, 6).await;
+    assert_eq!(provider.requests().len(), 6);
+    let goal = watched_goal(&engine, "chat-1").await;
+    assert_eq!(goal["status"], "paused");
+    assert_eq!(goal["evalFailures"], 3);
+}
+
+#[tokio::test]
 async fn set_goal_rejects_the_wrong_chat_and_empty_text() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![]);

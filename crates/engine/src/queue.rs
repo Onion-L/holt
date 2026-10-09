@@ -1241,18 +1241,22 @@ impl EngineService {
                     // heartbeat stop; cancel and join are idempotent.
                     heartbeat_stop.cancel();
                     let _ = (&mut heartbeat).await;
-                    let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                    *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    let started = queue.record.started.is_some();
-                    let vanished =
-                        !started && queue.record.pending.iter().all(|m| m.message_id != picked);
-                    if !vanished && !worker_chat.is_removed() && !queue.unreadable {
-                        // The panic detail is this attempt's cause — a
-                        // persist error from the same Turn must not
-                        // stand in for it (issue #16).
-                        let _ = queue.finish(false, Some(format!("internal error: {detail}")));
-                    }
-                    drop(queue);
+                    let started = {
+                        let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        let started = queue.record.started.is_some();
+                        let vanished =
+                            !started && queue.record.pending.iter().all(|m| m.message_id != picked);
+                        if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                            // The panic detail is this attempt's cause — a
+                            // persist error from the same Turn must not
+                            // stand in for it (issue #16).
+                            let _ = queue.finish(false, Some(format!("internal error: {detail}")));
+                        }
+                        started
+                        // The guard is not `Send`: it drops with the block,
+                        // before the goal hook below awaits.
+                    };
                     if started {
                         service.runtime.set_session(
                             &worker_chat.chat_id,
@@ -1263,6 +1267,17 @@ impl EngineService {
                             },
                         );
                     }
+                    // A panicked iteration is a failed Turn for the goal loop
+                    // (ADR-0044): pause the goal rather than leave it active
+                    // with nothing queued. Last, so a goal-hook panic of its
+                    // own cannot preempt the queue settle above.
+                    crate::goal::after_turn_settled(
+                        &service,
+                        &worker_chat,
+                        crate::goal::SettledTurn::Failed,
+                        None,
+                    )
+                    .await;
                 }
             }
         });
