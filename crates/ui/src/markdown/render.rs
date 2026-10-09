@@ -15,9 +15,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, CursorStyle, FontStyle, FontWeight, Hsla, InteractiveText,
-    Pixels, RenderImage, SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div,
-    font, img, point, prelude::*, px, quad, relative, size,
+    AnyElement, BorderStyle, Bounds, CursorStyle, Div, FontStyle, FontWeight, Hsla,
+    InteractiveText, Pixels, RenderImage, SharedString, StyledText, TextRun, UnderlineStyle,
+    Window, canvas, div, font, img, point, prelude::*, px, quad, relative, size,
 };
 use holt_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
@@ -1352,9 +1352,11 @@ fn render_mermaid_image(
     });
 
     // Overlay controls (top-right, same ghost-button family as the code
-    // block's copy button): − / readout / + / Fit. Zoom 1.0 is fit-to-width
+    // block's copy button): Fit · − / readout / +. Zoom 1.0 is fit-to-width
     // and percentages are relative to it, so the readout says "Fit" there
-    // instead of a misleading "100%".
+    // instead of a misleading "100%". Fit sits on the far LEFT of the
+    // cluster, a gap away from the step buttons — adjacent to "+" a spam of
+    // zoom-in clicks kept landing on it and resetting the zoom.
     let fit = zoom == 1.0;
     let controls = opts.mermaid_ui.as_ref().map(|ui| {
         let step = ui.handler.clone();
@@ -1383,64 +1385,75 @@ fn render_mermaid_image(
                 .child(SharedString::from(label))
                 .on_click(move |_, window, cx| step(ix, factor, window, cx))
         };
+        let fit_button = |el: Div, reset: &Rc<MermaidResetHandler>| {
+            let fit_key = format!("{row_key}-mm-fit{ix}");
+            el.child(
+                div()
+                    .id(SharedString::from(fit_key.clone()))
+                    .h(px(20.0))
+                    .px(px(6.0))
+                    .rounded(px(5.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .bg(crate::motion::hover_blend(
+                        &fit_key,
+                        crate::theme::ink(0.10),
+                        crate::theme::ink(0.20),
+                    ))
+                    .on_hover(crate::motion::hover_listener(fit_key))
+                    .text_size(px(10.5))
+                    .text_color(theme.text_muted)
+                    .child("Fit")
+                    .on_click({
+                        let reset = reset.clone();
+                        move |_, window, cx| reset(ix, window, cx)
+                    }),
+            )
+        };
         div()
             .absolute()
             .top(px(5.0))
             .right(px(5.0))
             .flex()
             .items_center()
-            .gap(px(2.0))
-            .child(step_button(
-                format!("{row_key}-mm-minus{ix}"),
-                "−",
-                1.0 / MERMAID_BUTTON_ZOOM_STEP,
-            ))
+            // Fit — gap — step group: the gap is what keeps an off-aim
+            // "+" spam from resetting the zoom.
+            .gap(px(6.0))
+            .when(!fit, |el| fit_button(el, &reset))
             .child(
                 div()
-                    .h(px(20.0))
-                    .px(px(6.0))
-                    .rounded(px(5.0))
                     .flex()
                     .items_center()
-                    .bg(crate::theme::ink(0.10))
-                    .font_family(theme.font_mono.clone())
-                    .text_size(px(10.0))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(if fit {
-                        "Fit".to_string()
-                    } else {
-                        format!("{:.0}%", zoom * 100.0)
-                    })),
+                    .gap(px(2.0))
+                    .child(step_button(
+                        format!("{row_key}-mm-minus{ix}"),
+                        "−",
+                        1.0 / MERMAID_BUTTON_ZOOM_STEP,
+                    ))
+                    .child(
+                        div()
+                            .h(px(20.0))
+                            .px(px(6.0))
+                            .rounded(px(5.0))
+                            .flex()
+                            .items_center()
+                            .bg(crate::theme::ink(0.10))
+                            .font_family(theme.font_mono.clone())
+                            .text_size(px(10.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(if fit {
+                                "Fit".to_string()
+                            } else {
+                                format!("{:.0}%", zoom * 100.0)
+                            })),
+                    )
+                    .child(step_button(
+                        format!("{row_key}-mm-plus{ix}"),
+                        "+",
+                        MERMAID_BUTTON_ZOOM_STEP,
+                    )),
             )
-            .child(step_button(
-                format!("{row_key}-mm-plus{ix}"),
-                "+",
-                MERMAID_BUTTON_ZOOM_STEP,
-            ))
-            .when(!fit, |el| {
-                let reset = reset.clone();
-                let fit_key = format!("{row_key}-mm-fit{ix}");
-                el.child(
-                    div()
-                        .id(SharedString::from(fit_key.clone()))
-                        .h(px(20.0))
-                        .px(px(6.0))
-                        .rounded(px(5.0))
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .bg(crate::motion::hover_blend(
-                            &fit_key,
-                            crate::theme::ink(0.10),
-                            crate::theme::ink(0.20),
-                        ))
-                        .on_hover(crate::motion::hover_listener(fit_key))
-                        .text_size(px(10.5))
-                        .text_color(theme.text_muted)
-                        .child("Fit")
-                        .on_click(move |_, window, cx| reset(ix, window, cx)),
-                )
-            })
     });
 
     // Zoom is relative to the fit width. Fit caps the image to the card,

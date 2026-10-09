@@ -274,6 +274,45 @@ fn rasterize(svg: &str, svg_renderer: &SvgRenderer, zoom: f32) -> Option<Arc<Ren
     svg_renderer.render_single_frame(svg.as_bytes(), zoom).ok()
 }
 
+/// gpui's SVG rasterizer silently clamps pixmaps to 8192 device pixels per
+/// axis (vendor/gpui svg_renderer.rs — `log::warn` only, then truncation).
+/// Bitmap px are natural × zoom × 2, so a raster zoom above
+/// `MAX_RASTER_EDGE / 2 / max(natural_w, natural_h)` gets invisibly clamped
+/// while `raster_zoom` records the requested value; the renderer then
+/// divides the truncated bitmap back down and the inferred natural size
+/// collapses, snapping the display smaller mid-zoom (issue #25).
+const MAX_RASTER_EDGE: f32 = 8192.0;
+
+/// Natural px size from the SVG root's `viewBox` — the same source usvg
+/// resolves `tree.size()` from for merman output (root width is `100%`).
+/// `None` when absent or unparsable; the clamp is disabled then.
+fn svg_natural_size(svg: &str) -> Option<(f32, f32)> {
+    let root = &svg[svg.find("<svg")?..];
+    let root = &root[..root.find('>')?];
+    let view_box = root.split("viewBox=\"").nth(1)?;
+    let view_box = &view_box[..view_box.find('"')?];
+    // viewBox="min-x min-y width height" — the last two of exactly four
+    // numbers (merman always emits all four; extra whitespace is fine).
+    let mut dims = view_box.split_whitespace().map(|n| n.parse::<f32>().ok());
+    let (_min_x, _min_y, w, h) = (dims.next()??, dims.next()??, dims.next()??, dims.next()??);
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// Highest raster zoom that keeps both bitmap axes under gpui's pixmap cap;
+/// `INFINITY` (never binding) without a parsable natural size.
+fn raster_zoom_cap(natural: Option<(f32, f32)>) -> f32 {
+    natural.map_or(f32::INFINITY, |(w, h)| {
+        MAX_RASTER_EDGE / (gpui::SMOOTH_SVG_SCALE_FACTOR * w.max(h))
+    })
+}
+
+/// Raster target for a user zoom: the zoom itself, capped so the bitmap is
+/// never truncated. Past the cap the supersampled bitmap GPU-stretches —
+/// softer, but the display size stays monotonic in zoom.
+fn clamp_raster_zoom(zoom: f32, natural: Option<(f32, f32)>) -> f32 {
+    zoom.min(raster_zoom_cap(natural))
+}
+
 /// Cache identity: diagram source + appearance (colors are baked into the
 /// SVG at render time).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,7 +335,13 @@ struct MermaidEntry {
     /// Resvg-safe SVG kept for re-rasterization at other zoom levels.
     /// `None` after a render failure — permanent code-block fallback.
     svg: Option<Arc<str>>,
-    /// Rasterized at `raster_zoom`; `None` while pending or failed.
+    /// Natural px size parsed from the SVG root; bounds re-rasterization
+    /// (see [`clamp_raster_zoom`]). `None` until the SVG lands (or never,
+    /// for unparsable markup — the cap is disabled then).
+    natural: Option<(f32, f32)>,
+    /// Rasterized at `raster_zoom`; `None` while pending or failed. Always
+    /// the clamped target ([`clamp_raster_zoom`]), so the bitmap's pixel
+    /// size is exactly natural × raster_zoom × 2.
     image: Option<Arc<RenderImage>>,
     raster_zoom: f32,
     /// User zoom (wheel), relative to the fit width; clamped [0.5, 6].
@@ -360,20 +405,26 @@ impl MermaidStore {
                         .ok()
                         .and_then(|r| r.ok())
                         .map(Arc::<str>::from);
+                    let natural = svg.as_deref().and_then(svg_natural_size);
+                    // Even the initial fit raster must stay under the pixmap
+                    // cap, or diagrams larger than 4096 logical px infer a
+                    // collapsed natural size from their truncated bitmap.
+                    let zoom = clamp_raster_zoom(1.0, natural);
                     let image = svg
                         .as_ref()
-                        .and_then(|svg| rasterize(svg, &svg_renderer, 1.0));
-                    (svg, image)
+                        .and_then(|svg| rasterize(svg, &svg_renderer, zoom));
+                    (svg, natural, zoom, image)
                 })
                 .await;
             this.update(cx, |host, cx| {
                 if let Some(entry) = host.mermaid_store().entries.get_mut(&task_slot)
                     && entry.key == key
                 {
-                    let (svg, image) = rendered;
+                    let (svg, natural, zoom, image) = rendered;
                     entry.svg = svg;
+                    entry.natural = natural;
                     entry.image = image;
-                    entry.raster_zoom = 1.0;
+                    entry.raster_zoom = zoom;
                     entry._task = None;
                     cx.notify();
                 }
@@ -385,6 +436,7 @@ impl MermaidStore {
             MermaidEntry {
                 key,
                 svg: None,
+                natural: None,
                 image: None,
                 raster_zoom: 1.0,
                 zoom: 1.0,
@@ -411,8 +463,10 @@ impl MermaidStore {
     }
 
     /// Scale the slot's current image was rasterized at — its pixel size is
-    /// natural × this (× 2 supersampling), which lags `zoom` by up to
-    /// [`RASTER_DRIFT`] or while a re-raster is in flight.
+    /// natural × this (× 2 supersampling). Lags `zoom` by up to
+    /// [`RASTER_DRIFT`] or while a re-raster is in flight; past the pixmap
+    /// cap ([`raster_zoom_cap`]) it saturates there permanently and the
+    /// bitmap stretches on the GPU instead.
     pub fn raster_zoom_for(&self, row_key: &SharedString, block_ix: usize) -> f32 {
         self.entries
             .get(&(row_key.clone(), block_ix))
@@ -471,6 +525,9 @@ impl MermaidStore {
 
     /// Spawn a re-rasterization when the slot's zoom drifted from the
     /// raster's scale; the existing bitmap stays visible until it lands.
+    /// Drift and target are both measured after the pixmap cap
+    /// ([`clamp_raster_zoom`]) so zoom steps past the cap — where the target
+    /// saturates — don't re-rasterize a bitwise-identical bitmap every step.
     fn ensure_raster<H: MermaidHost>(
         &mut self,
         row_key: SharedString,
@@ -480,13 +537,11 @@ impl MermaidStore {
         let Some(entry) = self.entries.get_mut(&(row_key.clone(), block_ix)) else {
             return;
         };
-        if (entry.zoom / entry.raster_zoom - 1.0).abs() <= RASTER_DRIFT
-            || entry.raster_task.is_some()
-        {
+        let target = clamp_raster_zoom(entry.zoom, entry.natural);
+        if (target / entry.raster_zoom - 1.0).abs() <= RASTER_DRIFT || entry.raster_task.is_some() {
             return;
         }
         let key = entry.key;
-        let target = entry.zoom;
         let Some(svg) = entry.svg.clone() else {
             return;
         };
@@ -502,7 +557,9 @@ impl MermaidStore {
                 if let Some(entry) = host.mermaid_store().entries.get_mut(&task_slot)
                     && entry.key == key
                 {
-                    if entry.zoom == target {
+                    // The bitmap is valid for any zoom clamping to `target`,
+                    // not just the zoom the task was spawned for.
+                    if clamp_raster_zoom(entry.zoom, entry.natural) == target {
                         if let Some(image) = image {
                             entry.image = Some(image);
                             entry.raster_zoom = target;
@@ -562,6 +619,95 @@ mod tests {
         assert_eq!(MermaidKey::new("a", true), MermaidKey::new("a", true));
         assert_ne!(MermaidKey::new("a", true), MermaidKey::new("b", true));
         assert_ne!(MermaidKey::new("a", true), MermaidKey::new("a", false));
+    }
+
+    #[test]
+    fn natural_size_comes_from_the_view_box() {
+        // merman emits `width="100%"` with the real size in the viewBox —
+        // including negative offsets (sequence diagrams).
+        assert_eq!(
+            svg_natural_size(r#"<svg width="100%" viewBox="0 0 120.90625 178"></svg>"#),
+            Some((120.90625, 178.0))
+        );
+        assert_eq!(
+            svg_natural_size(
+                r#"<svg viewBox="-50 -10 450 217"/>
+<rect/>"#
+            ),
+            Some((450.0, 217.0))
+        );
+        for broken in [
+            "<svg/>",
+            "<svg viewBox=\"0 0 450\"/>",
+            "<svg viewBox=\"0 0 x y\"/>",
+            "<svg viewBox=\"0 0 0 100\"/>",
+            "no svg here",
+        ] {
+            assert_eq!(svg_natural_size(broken), None, "got: {broken}");
+        }
+    }
+
+    /// The parser must agree with what usvg actually rasterizes, or the cap
+    /// math lets truncated bitmaps through again.
+    #[test]
+    fn parsed_natural_size_matches_usvg_tree_size() {
+        let svg = render_svg("flowchart TD\n    A[Open] --> B[Close]", &test_palette())
+            .expect("flowchart should render");
+        let (w, h) = svg_natural_size(&svg).expect("viewBox");
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(()));
+        let bitmap = renderer
+            .render_single_frame(svg.as_bytes(), 1.0)
+            .expect("rasterize");
+        let size = bitmap.size(0);
+        assert!((size.width.0 as f32 - w * 2.0).abs() <= 1.0);
+        assert!((size.height.0 as f32 - h * 2.0).abs() <= 1.0);
+    }
+
+    #[test]
+    fn raster_target_respects_the_pixmap_cap() {
+        // 8192 device px / 2× supersampling / 2000px widest axis.
+        let wide = Some((2000.0, 800.0));
+        assert_eq!(clamp_raster_zoom(1.5, wide), 1.5);
+        assert_eq!(clamp_raster_zoom(3.0, wide), 2.048);
+        // Tall diagrams cap on the height axis.
+        assert_eq!(clamp_raster_zoom(6.0, Some((800.0, 2000.0))), 2.048);
+        // Natural size beyond 4096px caps the initial fit raster too.
+        assert_eq!(clamp_raster_zoom(1.0, Some((5000.0, 100.0))), 0.8192);
+        // Unparsable markup: the cap is disabled, zoom passes through.
+        assert_eq!(clamp_raster_zoom(6.0, None), 6.0);
+    }
+
+    /// Issue #25 repro: rasterizing 2000px-natural at zoom 3.0 used to hit
+    /// gpui's silent 8192px truncation, and dividing the truncated bitmap
+    /// back by 2 × raster_zoom collapsed the inferred natural size
+    /// (2000 → 1365) — the diagram snapped smaller mid-zoom.
+    #[test]
+    fn zoomed_raster_round_trips_the_natural_size() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 2000 800"><rect x="0" y="0" width="2000" height="800" fill="#f00"/></svg>"##;
+        let natural = Some(svg_natural_size(svg).expect("viewBox"));
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(()));
+        for zoom in [1.0f32, 2.048, 3.0, 6.0] {
+            let raster_zoom = clamp_raster_zoom(zoom, natural);
+            let bitmap = renderer
+                .render_single_frame(svg.as_bytes(), raster_zoom)
+                .expect("rasterize");
+            let size = bitmap.size(0);
+            // The renderer recovers natural as bitmap_px / (2 × raster_zoom)
+            // (crates/ui/src/markdown/render.rs); that inference must hold
+            // on both axes at every zoom, past the cap included.
+            let inferred_w = size.width.0 as f32 / (gpui::SMOOTH_SVG_SCALE_FACTOR * raster_zoom);
+            let inferred_h = size.height.0 as f32 / (gpui::SMOOTH_SVG_SCALE_FACTOR * raster_zoom);
+            assert!(
+                (inferred_w - 2000.0).abs() <= 1.0,
+                "zoom {zoom}: {inferred_w}"
+            );
+            assert!(
+                (inferred_h - 800.0).abs() <= 1.0,
+                "zoom {zoom}: {inferred_h}"
+            );
+            assert!(size.width.0 <= MAX_RASTER_EDGE as i32);
+            assert!(size.height.0 <= MAX_RASTER_EDGE as i32);
+        }
     }
 
     #[test]
