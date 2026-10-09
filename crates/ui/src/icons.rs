@@ -240,6 +240,8 @@ icon_assets![
     (DOCUMENT_ADD, "document-add"),
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
+    // Concentric rings and a center dot — the Goal mode chip (ADR-0044).
+    (TARGET, "target"),
     (WIDGET, "widget"),
     // Baseline + three column bars, same linear family — the Usage
     // settings page's sidebar glyph.

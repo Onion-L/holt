@@ -327,6 +327,12 @@ pub struct Chat {
     /// other chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine_run: Option<crate::RoutineRunMarker>,
+    /// Goal mode (ADR-0044): the chat's durable objective and its loop
+    /// state. `None` — no goal was ever set, or the verifier judged the
+    /// last one complete. Restored by restart; reconciliation at boot
+    /// pauses an `Active` goal whose queue holds no continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<ChatGoalState>,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on
@@ -337,6 +343,43 @@ pub struct Chat {
 #[serde(rename_all = "camelCase")]
 pub struct ChatPlanState {
     pub entry_permission_mode: PermissionMode,
+}
+
+/// Where a chat's goal loop stands (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalStatus {
+    /// Turn settles run the verifier; `CONTINUE` verdicts enqueue the next
+    /// step.
+    Active,
+    /// The loop is stopped but the objective is kept: interrupted or failed
+    /// Turn, a paused queue swallowing the continuation, the caps, or the
+    /// user. `SetGoalPaused(false)` resumes it.
+    Paused,
+    /// The verifier judged the goal unmeetable. Kept so the user sees the
+    /// verdict; resuming re-enters `Active`.
+    Blocked,
+}
+
+/// A chat's Goal Mode state (ADR-0044): the durable objective plus the
+/// loop's counters. There is no verdict history — terminal transitions land
+/// as Transcript Notice rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGoalState {
+    pub text: String,
+    pub status: GoalStatus,
+    /// Continuations enqueued so far (the chip's "round n").
+    pub iteration: u32,
+    /// Consecutive Succeeded Turns with no tool call and no change set.
+    pub no_progress: u32,
+    /// Consecutive evaluation failures (provider error or garbled verdict);
+    /// a parsed verdict resets it.
+    pub eval_failures: u32,
+    pub started_at: DateTime<Utc>,
+    /// The last verdict's one-line reason, surfaced on the chip's menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reason: Option<String>,
 }
 
 /// The `GetPlanMode` reply: the chat's Plan Mode view.

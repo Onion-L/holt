@@ -22,7 +22,7 @@ impl EngineService {
     /// swapped in — the one shape every engine-side enqueue uses (the
     /// composer's sends arrive pre-built; the plan follow-up and the Key
     /// request's settle notices build here).
-    pub(super) fn queued_run_request(
+    pub(crate) fn queued_run_request(
         config: &holt_proto::ChatConfig,
         prompt: &str,
         cwd: String,
@@ -151,6 +151,7 @@ impl EngineService {
                     provider_mode: false,
                     worktree: Some(spec.clone()),
                     routine_run: None,
+                    goal: None,
                 }),
             }
         }
@@ -1195,8 +1196,15 @@ impl EngineService {
             if chat.is_removed() {
                 return Err(RpcError::Failed("chat was deleted".into()));
             }
+            let was_goal_continuation = queue.is_goal_continuation(message_id);
             queue.delete(message_id)?;
-            queue.snapshot()
+            let snapshot = queue.snapshot();
+            drop(queue);
+            if was_goal_continuation {
+                // Deleting the loop's next step is a stop request (ADR-0044).
+                crate::goal::pause_for_deleted_continuation(self, &chat);
+            }
+            snapshot
         };
         RpcReply::value(&snapshot)
     }

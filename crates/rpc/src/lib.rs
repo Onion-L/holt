@@ -227,6 +227,17 @@ pub mod methods {
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
+    /// Goal mode (ADR-0044). `SetGoal` takes `{chatId, text}` — a
+    /// non-empty objective of at most 4000 chars — and (re)arms the chat's
+    /// goal loop; it rejects a planning, provider-mode, or routine-run
+    /// chat. `ClearGoal` (`{chatId}`) drops the objective and sweeps queued
+    /// continuations; `SetGoalPaused` (`{chatId, paused}`) stops the loop
+    /// while keeping it, and resuming enqueues a continuation when the chat
+    /// is idle. All three reply the chat's `holt_proto::Chat` row (the goal
+    /// state rides `WatchChats`); all are idempotent.
+    pub const SET_GOAL: &str = "SetGoal";
+    pub const CLEAR_GOAL: &str = "ClearGoal";
+    pub const SET_GOAL_PAUSED: &str = "SetGoalPaused";
     /// Provider Mode (ADR-0037). `EnterProviderMode` / `ExitProviderMode`
     /// take `{chatId}` and reply the chat's `holt_proto::ProviderModeState`;
     /// both are idempotent. Entering exits Plan Mode first (and

@@ -197,6 +197,18 @@ impl Composer {
                 }
                 super::slash::ProviderAction::Task(_) => {}
             },
+            super::slash::Parsed::MalformedGoal => {
+                self.failure = Some("Usage: /goal <objective> | off | pause | resume".into());
+                self.failure_key = self.state.read(cx).selected_chat.clone();
+                cx.notify();
+                return;
+            }
+            // Every `/goal` form dispatches itself (ADR-0044) — the raw
+            // directive never becomes prompt text.
+            super::slash::Parsed::Goal { action } => {
+                self.goal_command(action, cx);
+                return;
+            }
             _ => {}
         }
         let no_content = !composer_has_content(
@@ -215,6 +227,58 @@ impl Composer {
             SendButtonMode::Send | SendButtonMode::Queue => self.send(text, cx),
         }
     }
+    /// The `/goal` forms (ADR-0044). Every one needs an existing chat — a
+    /// draft has no captured model settings for the loop to run on, so the
+    /// objective lands with the first real message instead. The composer
+    /// input clears on dispatch; the chip rides the WatchChats republish.
+    pub(crate) fn goal_command(
+        &mut self,
+        action: super::slash::GoalAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.failure = Some("Engine not connected".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            self.failure = Some("Send the chat's first message before setting a goal".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let params = match &action {
+            super::slash::GoalAction::Set(text) => {
+                serde_json::json!({ "chatId": chat_id, "text": text })
+            }
+            super::slash::GoalAction::Clear => serde_json::json!({ "chatId": chat_id }),
+            super::slash::GoalAction::Pause => {
+                serde_json::json!({ "chatId": chat_id, "paused": true })
+            }
+            super::slash::GoalAction::Resume => {
+                serde_json::json!({ "chatId": chat_id, "paused": false })
+            }
+        };
+        let method = match action {
+            super::slash::GoalAction::Set(_) => methods::SET_GOAL,
+            super::slash::GoalAction::Clear => methods::CLEAR_GOAL,
+            _ => methods::SET_GOAL_PAUSED,
+        };
+        self.input.update(cx, |input, cx| input.set_text("", cx));
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = engine.client().call(method, params).await {
+                tracing::warn!(error = %error, "/goal command failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.failure = Some(format!("/goal failed: {error}").into());
+                    this.failure_key = Some(chat_id.clone());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Durably enqueue an ordinary message. New chats
     /// thread the picked config in: worktree creation (when the isolated toggle
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /

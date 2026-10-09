@@ -472,6 +472,7 @@ mod tests {
             worktree: None,
             provider_mode: false,
             routine_run: None,
+            goal: None,
         }
     }
 

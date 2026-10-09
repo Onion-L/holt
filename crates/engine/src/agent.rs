@@ -151,6 +151,12 @@ pub(crate) struct ChatRuntime {
     /// — a Turn interrupt must not stop title generation; only chat
     /// deletion cancels it (in `AgentRuntime::remove_chat`).
     pub(crate) title_cancel: Mutex<Option<CancellationToken>>,
+    /// The goal verifier's token (ADR-0044): the check runs after the
+    /// Turn's `cancel` is already cleared, so it rides its own — cancelled
+    /// by `ClearGoal`/pause/replacement, a superseding Turn admission, and
+    /// chat deletion. The user's Stop key does not reach it (the queue
+    /// pause is what Stop drives).
+    pub(crate) goal_check_cancel: Mutex<Option<CancellationToken>>,
     /// Where this chat's transcript persists; empty for the ephemeral
     /// runtimes tests build directly.
     pub(crate) data_dir: PathBuf,
@@ -228,6 +234,7 @@ impl ChatRuntime {
             usage_last_report: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
+            goal_check_cancel: Mutex::new(None),
             data_dir: PathBuf::new(),
             chat_id: String::new(),
             removed: std::sync::atomic::AtomicBool::new(false),
@@ -451,6 +458,7 @@ impl ChatRuntime {
             usage_last_report: Mutex::new(None),
             cancel: Mutex::new(None),
             title_cancel: Mutex::new(None),
+            goal_check_cancel: Mutex::new(None),
             data_dir: data_dir.to_path_buf(),
             chat_id: chat_id.to_string(),
             removed: std::sync::atomic::AtomicBool::new(false),
@@ -883,6 +891,7 @@ impl AgentRuntime {
             {
                 token.cancel();
             }
+            crate::goal::cancel_check(chat);
         }
         delete_transcript(&self.data_dir, chat_id);
         crate::history::delete_history(&self.data_dir, chat_id);
@@ -2238,6 +2247,7 @@ mod tests {
             worktree: None,
             provider_mode: false,
             routine_run: None,
+            goal: None,
         }
     }
 

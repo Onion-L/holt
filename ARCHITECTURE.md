@@ -173,6 +173,26 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   write/submit tools + injection to the conversational `<proposed_plan>`
   convention after reviewing Codex's plan mode; the enforced read-only
   toolset and the approval cards stay.)
+- Goal Mode (ADR-0044): a chat-scoped durable objective on the chat row
+  (`goal`: text, `active|paused|blocked` status, iteration / no-progress
+  / evaluation-failure counters). `SetGoal` (`{chatId, text}` — rejects a
+  planning, provider-mode, or routine-run chat), `ClearGoal` (`{chatId}`),
+  and `SetGoalPaused` (`{chatId, paused}`) are the whole surface; the
+  state rides `WatchChats`. After a settled Turn's card frame is on its
+  way (inside the same queue-driver iteration), one verifier pass on the
+  chat's own model judges the goal from evidence only (the History tail's
+  tool calls and results plus the frozen change-set summary) and answers
+  `COMPLETE | CONTINUE | BLOCKED`: complete clears the goal, blocked parks
+  it, continue enqueues an ordinary queue row flagged `goalContinuation`
+  carrying the reason — visible, editable, and deleting it pauses the
+  goal. Evaluation is skipped while user-queued items pend or a question
+  card is unanswered; interrupts and failed Turns pause; admission
+  failure (a gone model) clears; the caps (20 iterations, 3 no-progress
+  Turns, 3 consecutive verifier failures) pause with a Transcript notice.
+  Verifier passes book usage as `goal-check` immediately (never the
+  Turn's settled batch). The UI is `/goal <objective> | off | pause |
+  resume` plus a composer footer chip whose × clears; restart opens an
+  orphaned active goal as paused.
 - Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
   transcript part — 1–4 questions, each with 2–6 enumerated options —
   and returns: the model stops its Turn; it never blocks a tool result.

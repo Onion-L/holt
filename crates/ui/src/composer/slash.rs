@@ -38,6 +38,24 @@ pub(crate) enum Parsed {
     /// `/provider [off | <task>]` — Provider Mode (ADR-0037); the raw
     /// directive never becomes prompt text.
     Provider { action: ProviderAction },
+    /// `/goal` forms (ADR-0044); the raw directive never becomes prompt text.
+    Goal { action: GoalAction },
+    /// `/goal` with nothing after it — intercepted, with the usage message
+    /// for the composer to surface.
+    MalformedGoal,
+}
+
+/// One `/goal` form (ADR-0044).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GoalAction {
+    /// `/goal <objective>` — set or replace the chat's goal.
+    Set(String),
+    /// `/goal off` — drop it (queued continuations are swept).
+    Clear,
+    /// `/goal pause` / `/goal resume` — stop or restart the loop while
+    /// keeping the objective.
+    Pause,
+    Resume,
 }
 
 /// One `/plan` form (ADR-0025).
@@ -252,7 +270,7 @@ fn parse_init(text: &str) -> Parsed {
 /// `/provider` forms (ADR-0037), shaped like `/plan` plus `off`.
 fn parse_provider(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/provider") else {
-        return Parsed::Plain;
+        return parse_goal(text);
     };
     if rest.trim().is_empty() {
         return Parsed::Provider {
@@ -269,6 +287,29 @@ fn parse_provider(text: &str) -> Parsed {
         ProviderAction::Task(rest.to_string())
     };
     Parsed::Provider { action }
+}
+
+/// `/goal` forms (ADR-0044): `/goal <objective>` sets, `off` clears,
+/// `pause`/`resume` drive the loop. A bare `/goal` is the usage message;
+/// `/goalkeeper`-style longer words stay ordinary text.
+fn parse_goal(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/goal") else {
+        return Parsed::Plain;
+    };
+    if rest.trim().is_empty() {
+        return Parsed::MalformedGoal;
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return Parsed::Plain;
+    }
+    let rest = rest.trim();
+    let action = match rest {
+        "off" => GoalAction::Clear,
+        "pause" => GoalAction::Pause,
+        "resume" => GoalAction::Resume,
+        _ => GoalAction::Set(rest.to_string()),
+    };
+    Parsed::Goal { action }
 }
 
 #[cfg(test)]
@@ -337,6 +378,22 @@ mod tests {
         );
         assert_eq!(parse("/providers"), Parsed::Plain);
         assert_eq!(parse("please /provider"), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_goal_forms() {
+        let goal = |action| Parsed::Goal { action };
+        assert_eq!(
+            parse("/goal ship the login page"),
+            goal(GoalAction::Set("ship the login page".into()))
+        );
+        assert_eq!(parse("  /goal  off "), goal(GoalAction::Clear));
+        assert_eq!(parse("/goal pause"), goal(GoalAction::Pause));
+        assert_eq!(parse("/goal resume"), goal(GoalAction::Resume));
+        assert_eq!(parse("/goal"), Parsed::MalformedGoal);
+        assert_eq!(parse("/goal   "), Parsed::MalformedGoal);
+        assert_eq!(parse("/goalkeeper"), Parsed::Plain);
+        assert_eq!(parse("please /goal off"), Parsed::Plain);
     }
 
     #[test]

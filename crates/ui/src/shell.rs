@@ -1135,6 +1135,14 @@ impl Shell {
                 format!("Leaving Provider Mode failed: {error}").into(),
                 cx,
             ),
+            PickerEvent::GoalCleared => {
+                self.push_holt_notice(HoltNoticeKind::Plain, "Goal cleared".into(), cx)
+            }
+            PickerEvent::GoalClearFailed(error) => self.push_holt_notice(
+                HoltNoticeKind::Error,
+                format!("Clearing the goal failed: {error}").into(),
+                cx,
+            ),
         }
     }
 

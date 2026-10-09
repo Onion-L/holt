@@ -34,6 +34,7 @@ mod gate;
 mod git;
 mod git_status_watch;
 mod git_watch;
+mod goal;
 mod history;
 pub mod images;
 pub mod instance_lock;
@@ -256,6 +257,12 @@ impl LocalEngine {
             .collect();
         if !retired.is_empty() {
             chats.retain(|chat| !retired.contains(&chat.id));
+            store::persist_chats(&config.data_dir, &chats)?;
+        }
+        // Goal-mode reconciliation (ADR-0044): an active goal whose queue
+        // holds no continuation can never run again — continuations are
+        // born only at a Turn settle — so it opens paused.
+        if crate::goal::reconcile_on_boot(&config.data_dir, &mut chats) {
             store::persist_chats(&config.data_dir, &chats)?;
         }
         let runtime = Arc::new(AgentRuntime::new(
@@ -544,6 +551,7 @@ mod tests {
             provider_mode: false,
             worktree: None,
             routine_run: None,
+            goal: None,
         }
     }
 

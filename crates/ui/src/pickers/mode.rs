@@ -133,6 +133,19 @@ pub(crate) fn provider_label(chat: Option<&Chat>) -> Option<String> {
         .map(|_| "Provider".to_string())
 }
 
+/// The Goal chip's label (ADR-0044): the loop's state in one word group —
+/// the running round while active, the parked state otherwise. `None` when
+/// the chat has no goal.
+pub(crate) fn goal_label(chat: Option<&Chat>) -> Option<String> {
+    let goal = chat?.goal.as_ref()?;
+    Some(match goal.status {
+        holt_proto::GoalStatus::Active if goal.iteration == 0 => "Goal".to_string(),
+        holt_proto::GoalStatus::Active => format!("Goal · {}", goal.iteration),
+        holt_proto::GoalStatus::Paused => "Goal paused".to_string(),
+        holt_proto::GoalStatus::Blocked => "Goal blocked".to_string(),
+    })
+}
+
 impl Pickers {
     /// The mode the chip advertises: the selected chat's stored mode; on the
     /// new-chat canvas the draft pick, else the engine's sticky default (the
@@ -267,6 +280,33 @@ impl Pickers {
             theme,
             cx,
         ))
+    }
+
+    /// The Goal chip (ADR-0044): the loop's presence beside the mode flags.
+    /// Its × clears the goal (`/goal off`'s button form); pause and resume
+    /// ride the slash command.
+    pub(super) fn goal_chip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let state = self.state.read(cx);
+        let label = goal_label(state.selected_chat_row())?;
+        Some(self.mode_flag_chip(
+            crate::icons::TARGET,
+            label,
+            "picker-goal",
+            "Clear the goal (/goal off)",
+            Self::clear_goal,
+            theme,
+            cx,
+        ))
+    }
+
+    /// The Goal chip's close button: `ClearGoal` on the selected chat.
+    fn clear_goal(&mut self, cx: &mut Context<Self>) {
+        self.exit_chat_mode(
+            methods::CLEAR_GOAL,
+            super::PickerEvent::GoalCleared,
+            super::PickerEvent::GoalClearFailed,
+            cx,
+        );
     }
 
     /// A chat-level mode flag: icon + label, and a × revealed on hover
@@ -497,6 +537,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn goal_label_marks_goal_chats_and_states() {
+        let none = chat("chat-1", PermissionMode::ConfirmChanges);
+        assert_eq!(goal_label(Some(&none)), None);
+        assert_eq!(goal_label(None), None);
+
+        let mut with_goal = chat("chat-1", PermissionMode::ConfirmChanges);
+        with_goal.goal = Some(holt_proto::ChatGoalState {
+            text: "ship it".into(),
+            status: holt_proto::GoalStatus::Active,
+            iteration: 0,
+            no_progress: 0,
+            eval_failures: 0,
+            started_at: chrono::Utc::now(),
+            last_reason: None,
+        });
+        assert_eq!(goal_label(Some(&with_goal)).as_deref(), Some("Goal"));
+        with_goal.goal.as_mut().unwrap().iteration = 7;
+        assert_eq!(goal_label(Some(&with_goal)).as_deref(), Some("Goal · 7"));
+        with_goal.goal.as_mut().unwrap().status = holt_proto::GoalStatus::Paused;
+        assert_eq!(goal_label(Some(&with_goal)).as_deref(), Some("Goal paused"));
+        with_goal.goal.as_mut().unwrap().status = holt_proto::GoalStatus::Blocked;
+        assert_eq!(
+            goal_label(Some(&with_goal)).as_deref(),
+            Some("Goal blocked")
+        );
+    }
+
     fn chat(id: &str, mode: PermissionMode) -> holt_proto::Chat {
         holt_proto::Chat {
             id: id.into(),
@@ -529,6 +597,7 @@ mod tests {
             worktree: None,
             provider_mode: false,
             routine_run: None,
+            goal: None,
         }
     }
 
