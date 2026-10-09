@@ -2,7 +2,7 @@
 
 # pi-core-rs
 
-**A standalone Rust runtime for Pi's agent, AI, and telemetry core**
+**Holt's Rust runtime for the agent, AI, and telemetry core**
 
 <p>
   <code>Rust 2024</code>&nbsp;&nbsp;·&nbsp;&nbsp;
@@ -190,7 +190,7 @@ workflow agent:
 - telemetry schemas and helpers for AI requests and harness operations.
 
 The high-level `AgentHarness` v2 contract is present. Operations that are still
-scaffolded by the upstream contract intentionally return explicit
+scaffolded by the ported v0.84.4 contract intentionally return explicit
 `HarnessNotImplemented` or `HarnessClosed` errors instead of pretending to be
 available. The lower-level session, tool, compaction, reducer, and resource
 modules are independently exposed and tested.
@@ -211,17 +211,18 @@ tests/goldens/                 # serialized-output fixtures from the port
 
 ## Verification
 
-Run the focused examples while developing, then the full Rust checks:
+Run the focused examples while developing, then the full checks from the
+workspace root:
 
 ```bash
-cargo test --all-targets
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo test -p pi-core-rs
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The default run is deterministic: live API calls, OAuth credential reads or
 refreshes, and local model servers are skipped and stay visible as skipped
-cases. Use `PI_TEST_LIVE=1 cargo test --all-targets` to exercise them with
+cases. Use `PI_TEST_LIVE=1 cargo test -p pi-core-rs` to exercise them with
 configured credentials.
 
 ## License

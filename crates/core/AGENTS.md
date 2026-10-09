@@ -13,7 +13,7 @@ observable behavior — agent event order and payloads, state transitions,
 session JSONL format, tool names/schemas/output text, compaction and
 branch-summary results, retry and cancellation behavior, provider stream
 normalization, usage accounting — unless a change is deliberate; record
-deliverable deviations from upstream pi in the commit message.
+deliberate deviations from the v0.84.4 behavior in the commit message.
 
 Keep the crate free of Holt domain concepts (Space, Turn change set, …):
 `crates/engine` is the only adapter.

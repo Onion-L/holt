@@ -11,6 +11,7 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
 - Check / lint: `cargo check --workspace`, `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Test: `cargo test --workspace`; focus with `-p`, e.g. `cargo test -p holt-doc`.
+  `crates/core` live provider suites skip unless `PI_TEST_LIVE=1`.
 - CI runs on macOS and gates on check + test only (`.github/workflows/ci.yml`).
 
 ## Architecture rules
@@ -48,7 +49,7 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
   only adapts it — run wiring, tools via `engine::tools`, credentials,
   provider settings.
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in use:
-  engine, ui, or `engine,ui` when a change spans both.
+  core, engine, ui, comma-joined when a change spans several (e.g. `engine,ui`).
 - Releases: a pushed `v*` tag must match `workspace.version` in the root
   `Cargo.toml`; the Release workflow fails closed on a mismatch. A release
   touches three things — bump `workspace.version` (any cargo command refreshes

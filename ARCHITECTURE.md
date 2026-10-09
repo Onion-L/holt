@@ -159,7 +159,7 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   meets the human gatekeeper — full-access included, no session grant
   passes it, and auto-review never substitutes — because a catalog write
   steers where the API key is sent. The gate rides the agent loop's
-  `before_tool_call` hook (no upstream changes); the Title task and
+  `before_tool_call` hook (no `crates/core` changes); the Title task and
   Compaction mount no tools and never see it.
 - Plan Mode (ADR-0025): a chat-level planning checkpoint orthogonal to the
   permission mode, carried on the chat row (`planMode`: just the
@@ -590,7 +590,7 @@ catalog under the hand-edited overlay, and credentials survive it.
 
 Skills (ADR-0005/0006) ride the catalog above: every run whose catalog is
 non-empty appends a metadata-only `<available_skills>` block to the system
-prompt from a fresh three-root scan (the upstream loader and formatters;
+prompt from a fresh three-root scan (the `pi_core` loader and formatters;
 budget-capped; an empty or fully `disable-model-invocation` catalog adds
 nothing), the model self-serves `SKILL.md` through the mounted read tool, and
 the composer's `/skill` slash command queues a typed `InvokeSkill` item whose
@@ -736,7 +736,7 @@ read and write.
 ## Subagents
 
 `engine::subagents` owns foreground delegation through the existing pi-core-rs
-loop, without upstream changes. The fixed Explorer and Worker roles inherit
+loop, without `crates/core` changes. The fixed Explorer and Worker roles inherit
 the parent Turn's model, reasoning, working directory, and Permission mode.
 Explorers keep only the read-only set — `ls`, `read`, `grep`, `read_chat`,
 `web_fetch`, and the configured `web_search`; Workers mount the full toolset,
