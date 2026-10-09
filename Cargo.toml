@@ -72,7 +72,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
 notify = "7"
 # The engine's git backend (ADR-0001). Engine-only dependency: all git2
 # access lives in holt-engine's `git` module.

@@ -33,7 +33,15 @@ pub fn workspace_locator(
     };
     let mut hash = Sha256::new();
     hash.update(format!("{scope:?}\0{identity}"));
-    Some(format!("{:x}", hash.finalize())[..16].to_string())
+    Some(hex(&hash.finalize())[..16].to_string())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 pub fn holt_chat_link(chat_id: &str, workspace: &str) -> String {

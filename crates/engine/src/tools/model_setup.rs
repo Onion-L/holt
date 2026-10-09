@@ -23,7 +23,6 @@ use pi_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -303,7 +302,7 @@ pub(crate) fn baseline_fingerprint(
         .collect();
     let mut text = String::new();
     canonical(&serde_json::Value::Array(slice), &mut text);
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    crate::git::sha256_hex(text.as_bytes())
 }
 
 pub(crate) fn stored_proposal(chat: &ChatRuntime, id: &str) -> Option<StoredProposal> {

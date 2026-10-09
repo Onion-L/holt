@@ -14,6 +14,7 @@ use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 
 pub use builtins::builtin_registry;
 pub use library::{
@@ -23,6 +24,18 @@ pub use library::{
 fn custom_families() -> &'static RwLock<Vec<ThemeFamily>> {
     static CUSTOM: OnceLock<RwLock<Vec<ThemeFamily>>> = OnceLock::new();
     CUSTOM.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// `sha256:<hex>` of `bytes` — the persisted asset/source-hash format.
+/// Byte-stable by contract: stored themes key provenance off this string.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(7 + digest.len() * 2);
+    out.push_str("sha256:");
+    for byte in digest.iter() {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 /// Replace the process-wide custom portion of the runtime registry.

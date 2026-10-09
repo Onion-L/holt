@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use sha2::{Digest, Sha256};
-
 use crate::{
     AccentRoles, Appearance, Color, SurfaceTreatment, TerminalPalette, ThemeColors, ThemeFamily,
-    ThemeRegistry, ThemeSource, ThemeVariant,
+    ThemeRegistry, ThemeSource, ThemeVariant, sha256_hex,
 };
 
 pub fn builtin_registry() -> &'static ThemeRegistry {
@@ -164,7 +162,7 @@ fn variant(seed: Seeds<'_>) -> ThemeVariant {
     // curation edits as well as upstream revision changes.
     variant.source.asset_hash.clear();
     let encoded = serde_json::to_vec(&variant).expect("built-in theme serializes");
-    variant.source.asset_hash = format!("sha256:{:x}", Sha256::digest(encoded));
+    variant.source.asset_hash = sha256_hex(&encoded);
     variant
 }
 

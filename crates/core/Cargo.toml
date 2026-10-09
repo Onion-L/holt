@@ -26,7 +26,7 @@ futures = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "process", "io-util", "net", "fs"] }
 tokio-util = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json", "gzip"] }
-sha2 = "0.11.0"
+sha2.workspace = true
 indexmap = { version = "2", features = ["serde"] }
 base64 = "0.22"
 hmac = "0.13"
