@@ -317,3 +317,80 @@ async fn grants_are_scoped_to_their_chat() {
     common::wait_for_gate(&engine, "chat-1", "call-3", "settled:allowed").await;
     common::wait_for_gate(&engine, "chat-2", "call-4", "settled:allowed").await;
 }
+
+/// The gate binds the file the tool writes (issue #29): write/edit paths
+/// are normalized (leading `@` stripped, unicode spaces folded) before the
+/// gate, grants, the chip, and the tool all see them — one spelling, one
+/// file.
+#[tokio::test]
+async fn the_gate_binds_the_normalized_path_the_tool_writes() {
+    let fixture = Fixture::new();
+    let target = fixture.project_dir.path().join("target.txt");
+    let target = target.to_str().unwrap().to_string();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "write",
+            serde_json::json!({ "path": format!("@{target}"), "content": "a\n" }),
+        ),
+        ScriptedReply::tool_call(
+            "call-2",
+            "write",
+            serde_json::json!({ "path": target, "content": "b\n" }),
+        ),
+        ScriptedReply::tool_call(
+            "call-3",
+            "write",
+            serde_json::json!({ "path": "notes\u{202f}draft.md", "content": "c\n" }),
+        ),
+        // Normalization strips one `@` exactly once: `@@/abs` must write
+        // the file the gate names (`<cwd>/@/abs`), never `/abs`.
+        ScriptedReply::tool_call(
+            "call-4",
+            "write",
+            serde_json::json!({ "path": format!("@@{target}"), "content": "d\n" }),
+        ),
+        ScriptedReply::text("done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let _ = common::subscribe(&engine, "chat-1").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "work").await;
+
+    // call-1: the `@`-prefixed spelling — the pending chip names the real
+    // file, and always-allow grants that file.
+    let first = common::wait_for_gate(&engine, "chat-1", "call-1", "pending").await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(!snapshot.contains(&format!("@{target}")), "{snapshot}");
+    common::resolve_approval(
+        &engine,
+        &first,
+        serde_json::json!({ "kind": "alwaysAllow" }),
+    )
+    .await;
+    common::wait_for_gate(&engine, "chat-1", "call-1", "settled:alwaysAllowed").await;
+
+    // call-2: the plain spelling of the same file passes on that grant.
+    common::wait_for_gate(&engine, "chat-1", "call-2", "settled:exempted").await;
+
+    // call-3: a unicode-space homoglyph — the chip shows the ASCII name the
+    // tool writes, and that is the file that lands.
+    let third = common::wait_for_gate(&engine, "chat-1", "call-3", "pending").await;
+    let snapshot = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(snapshot.contains("notes draft.md"), "{snapshot}");
+    assert!(!snapshot.contains('\u{202f}'), "{snapshot}");
+    common::resolve_approval(&engine, &third, serde_json::json!({ "kind": "allow" })).await;
+    common::wait_for_gate(&engine, "chat-1", "call-3", "settled:allowed").await;
+    assert!(fixture.project_dir.path().join("notes draft.md").exists());
+
+    // call-4: not covered by the grant on `target` — it asks, and the
+    // allowed write lands under the cwd, leaving `target` untouched.
+    let fourth = common::wait_for_gate(&engine, "chat-1", "call-4", "pending").await;
+    common::resolve_approval(&engine, &fourth, serde_json::json!({ "kind": "allow" })).await;
+    common::wait_for_gate(&engine, "chat-1", "call-4", "settled:allowed").await;
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "b\n");
+}

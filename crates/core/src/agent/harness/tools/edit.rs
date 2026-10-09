@@ -10,7 +10,7 @@ use super::edit_diff::{
     generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom,
 };
 use super::file_mutation_queue::with_file_mutation_queue;
-use super::path_utils::resolve_tool_path;
+use super::path_utils::{normalize_path_argument, resolve_prepared_tool_path};
 use super::tool_context::as_execution_tool_context;
 
 /// Port of `EditToolInput`.
@@ -78,12 +78,14 @@ fn is_single_edit_input(value: &serde_json::Value) -> bool {
 }
 
 /// Port of `prepareEditArguments` (JSON-string edits, single-edit form,
-/// and the legacy top-level oldText/newText keys).
+/// and the legacy top-level oldText/newText keys), plus the `path`
+/// normalization (see `normalize_path_argument`).
 pub fn prepare_edit_arguments(input: &serde_json::Value) -> serde_json::Value {
     let Some(object) = input.as_object() else {
         return input.clone();
     };
     let mut args = object.clone();
+    normalize_path_argument(&mut args);
 
     if let Some(edits) = args.get("edits") {
         if let Some(text) = edits.as_str() {
@@ -172,7 +174,7 @@ pub fn create_edit_tool() -> crate::agent::harness::types::AgentHarnessTool {
                 Box::pin(async move {
                     let (path, edits) = parsed?;
                     let context = as_execution_tool_context(&context)?;
-                    let absolute_path = resolve_tool_path(&context.env, &path)
+                    let absolute_path = resolve_prepared_tool_path(&context.env, &path)
                         .await
                         .map_err(|error| error.to_string())?;
                     with_file_mutation_queue(&context.env, &absolute_path, || async {

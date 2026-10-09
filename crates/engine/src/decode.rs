@@ -12,7 +12,10 @@ use chrono::Utc;
 use holt_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, sanitize_tool_call};
 use holt_proto::ToolCall as TranscriptToolCall;
 use pi_core::{
-    agent::types::{AgentMessage, AgentToolResult},
+    agent::{
+        harness::tools::path_utils::normalize_tool_path,
+        types::{AgentMessage, AgentToolResult},
+    },
     ai::types::{AssistantContent, BlockContent},
 };
 
@@ -33,6 +36,7 @@ fn decode_tool_call(
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     };
+    let tool_path_arg = |key: &str| arg(key).map(|path| normalize_tool_path(&path));
     match name {
         "bash" => TranscriptToolCall::Exec {
             command: arg("command").unwrap_or_default(),
@@ -48,12 +52,15 @@ fn decode_tool_call(
                 .unwrap_or_else(|| "invalid Chat link".into()),
             title: None,
         },
+        // write/edit chips carry the gate's subject, so they show the path
+        // the tool actually writes — the normalized spelling the approval
+        // binds, never the raw mention-shim string.
         "write" => TranscriptToolCall::WriteFile {
-            path: arg("path").unwrap_or_default(),
+            path: tool_path_arg("path").unwrap_or_default(),
             content: None,
         },
         "edit" => TranscriptToolCall::EditFile {
-            path: arg("path").unwrap_or_default(),
+            path: tool_path_arg("path").unwrap_or_default(),
             old_string: None,
             new_string: None,
         },
@@ -449,7 +456,7 @@ fn skill_read_part(
         return None;
     }
     let path = tool_call.arguments.get("path")?.as_str()?;
-    let resolved = crate::tools::to_absolute(cwd, path);
+    let resolved = crate::tools::to_absolute(cwd, &normalize_tool_path(path));
     let name = skill_files.get(&resolved)?;
     Some(MessagePart::Skill {
         id: tool_call.id.clone(),

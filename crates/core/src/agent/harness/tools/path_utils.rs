@@ -8,7 +8,10 @@ use crate::agent::harness::types::ExecutionEnv;
 
 const NARROW_NO_BREAK_SPACE: char = '\u{202f}';
 
-fn normalize_tool_path(path: &str) -> String {
+/// The mention shim: strips one leading `@` and folds unicode spaces to
+/// ASCII. Public so every control that binds a write/edit target (approval
+/// gates, grants, attribution) resolves the same file the tool writes.
+pub fn normalize_tool_path(path: &str) -> String {
     let normalized: String = path
         .chars()
         .map(|character| match character {
@@ -20,6 +23,27 @@ fn normalize_tool_path(path: &str) -> String {
         .strip_prefix('@')
         .map(str::to_string)
         .unwrap_or(normalized)
+}
+
+/// Normalize the `path` argument in place — the write/edit
+/// `prepareArguments` step, so `before_tool_call` hooks and the executing
+/// tool see one spelling instead of each resolving the raw string. The
+/// tools then resolve the prepared path as-is (`resolve_prepared_tool_path`):
+/// normalization strips only one `@`, so running it twice would let `@@/x`
+/// bind `@/x` at the gate and write `/x`.
+pub(crate) fn normalize_path_argument(args: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Some(serde_json::Value::String(path)) = args.get_mut("path") {
+        *path = normalize_tool_path(path);
+    }
+}
+
+/// Resolve a path `normalize_path_argument` already prepared — no second
+/// normalization pass.
+pub async fn resolve_prepared_tool_path(
+    env: &Arc<dyn ExecutionEnv>,
+    path: &str,
+) -> Result<String, crate::agent::harness::types::FileError> {
+    env.absolute_path(path, None).await
 }
 
 /// Port of `resolveToolPath`.

@@ -6,7 +6,7 @@ use crate::agent::harness::types::{AgentToolResult, WriteContent};
 use crate::ai::types::{BlockContent, TextContent};
 
 use super::file_mutation_queue::with_file_mutation_queue;
-use super::path_utils::resolve_tool_path;
+use super::path_utils::{normalize_path_argument, resolve_prepared_tool_path};
 use super::tool_context::as_execution_tool_context;
 
 /// Port of `WriteToolInput`.
@@ -26,6 +26,16 @@ pub fn write_schema() -> serde_json::Value {
         }
     })
 }
+/// Normalizes `path` before validation (see `normalize_path_argument`).
+pub fn prepare_write_arguments(input: &serde_json::Value) -> serde_json::Value {
+    let Some(object) = input.as_object() else {
+        return input.clone();
+    };
+    let mut args = object.clone();
+    normalize_path_argument(&mut args);
+    serde_json::Value::Object(args)
+}
+
 /// Port of `createWriteTool`.
 pub fn create_write_tool() -> crate::agent::harness::types::AgentHarnessTool {
     crate::agent::harness::types::AgentHarnessTool {
@@ -34,7 +44,7 @@ pub fn create_write_tool() -> crate::agent::harness::types::AgentHarnessTool {
         description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.".to_string(),
         parameters: write_schema(),
         constrained_sampling: None,
-        prepare_arguments: None,
+        prepare_arguments: Some(Arc::new(prepare_write_arguments)),
         execution_mode: None,
         replay: None,
         execute: Arc::new(
@@ -57,7 +67,7 @@ pub fn create_write_tool() -> crate::agent::harness::types::AgentHarnessTool {
                 let context = std::sync::Arc::clone(context);
                 Box::pin(async move {
                     let context = as_execution_tool_context(&context)?;
-                    let absolute_path = resolve_tool_path(&context.env, &path)
+                    let absolute_path = resolve_prepared_tool_path(&context.env, &path)
                         .await
                         .map_err(|error| error.to_string())?;
                     with_file_mutation_queue(&context.env, &absolute_path, || async {
