@@ -15,6 +15,10 @@ const UPDATE_SWEEP: MotionSpec = MotionSpec::new(1400, EASE_IN_OUT);
 /// Width of the indeterminate bar's moving segment, as a track fraction.
 const SWEEP_WIDTH: f32 = 0.32;
 
+/// This dialog runs wider than the shared 360px `popover::dialog_card` —
+/// body copy and footer buttons cramped at the default (issue #24).
+const DIALOG_WIDTH: f32 = 420.0;
+
 impl Shell {
     /// Disc beside the settings row, shown only while the engine reports a
     /// newer release. Its face tracks the phase: download glyph, a progress
@@ -129,11 +133,11 @@ impl Shell {
             self.update_dialog = false;
             return None;
         };
-        let (glyph, title) = match update.phase {
-            UpdatePhase::Idle => (icons::DOWNLOAD_MINIMALISTIC, "Update available"),
-            UpdatePhase::Downloading => (icons::DOWNLOAD_MINIMALISTIC, "Downloading update"),
-            UpdatePhase::Installing => (icons::DOWNLOAD_MINIMALISTIC, "Installing update"),
-            UpdatePhase::Ready => (icons::CHECK, "Ready to restart"),
+        let title = match update.phase {
+            UpdatePhase::Idle => "Update available",
+            UpdatePhase::Downloading => "Downloading update",
+            UpdatePhase::Installing => "Installing update",
+            UpdatePhase::Ready => "Ready to restart",
         };
         let header = div()
             .flex()
@@ -141,15 +145,11 @@ impl Shell {
             .items_center()
             .gap(px(12.0))
             .child(
-                div()
+                img(crate::app_icon::logo_image())
                     .flex_none()
-                    .size(px(36.0))
-                    .rounded(px(10.0))
-                    .bg(theme.accent_wash)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(glyph).size(px(18.0)).text_color(theme.accent)),
+                    .size(px(44.0))
+                    .rounded(px(11.0))
+                    .object_fit(gpui::ObjectFit::Contain),
             )
             .child(
                 div()
@@ -305,6 +305,7 @@ impl Shell {
             });
 
         let card = popover::dialog_card(theme)
+            .w(px(DIALOG_WIDTH))
             .debug_selector(|| "update-dialog".into())
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.update_dialog = false;
