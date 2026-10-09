@@ -105,9 +105,14 @@ record on the chat's last Turn.
   kind** — never the Turn's capture buffer, whose batch settled before the
   verifier ran (the Title task's precedent).
 - **The UI is a slash entry plus a composer chip, not a mode.** `/goal`
-  joins `ListCommands` with an input hint (`/goal <text>`, `/goal off`,
-  `/goal pause`, `/goal resume`); the chip rides `WatchChats` like Plan
-  Mode's, shows the iteration count, and its menu pauses, resumes, or
+  joins `ListCommands` with an input hint. `/goal <objective>` arms the
+  goal and sends the objective as the first Turn's message — the
+  objective IS the task, and `SetGoal` rides after createChat, before the
+  queue (the plan enter's shape), so the new-chat canvas works and a
+  failed `SetGoal` aborts the send with the directive restored. `/goal
+  off`, `/goal pause`, and `/goal resume` drive the loop on an existing
+  chat. The chip rides `WatchChats` like Plan
+  Mode's, shows the iteration count, and its ×
   clears. Resume from `paused` or `blocked` sets `active`, grants a fresh
   budget (the counters reset), and enqueues a continuation when the chat
   is idle, so the loop visibly restarts. Goal

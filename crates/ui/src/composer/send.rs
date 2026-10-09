@@ -203,8 +203,13 @@ impl Composer {
                 cx.notify();
                 return;
             }
-            // Every `/goal` form dispatches itself (ADR-0044) — the raw
-            // directive never becomes prompt text.
+            // `/goal off|pause|resume` dispatch themselves (ADR-0044);
+            // `/goal <objective>` falls through to the send path, which
+            // arms the goal and sends the objective as the first Turn —
+            // the raw directive never becomes prompt text.
+            super::slash::Parsed::Goal {
+                action: super::slash::GoalAction::Set(_),
+            } => {}
             super::slash::Parsed::Goal { action } => {
                 self.goal_command(action, cx);
                 return;
@@ -227,10 +232,9 @@ impl Composer {
             SendButtonMode::Send | SendButtonMode::Queue => self.send(text, cx),
         }
     }
-    /// The `/goal` forms (ADR-0044). Every one needs an existing chat — a
-    /// draft has no captured model settings for the loop to run on, so the
-    /// objective lands with the first real message instead. The composer
-    /// input clears on dispatch; the chip rides the WatchChats republish.
+    /// The control-only `/goal` forms (`off` / `pause` / `resume`,
+    /// ADR-0044) — `/goal <objective>` rides the send path instead. These
+    /// need an existing chat: there is no loop to drive on the canvas.
     pub(crate) fn goal_command(
         &mut self,
         action: super::slash::GoalAction,
@@ -243,7 +247,7 @@ impl Composer {
             return;
         };
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
-            self.failure = Some("Send the chat's first message before setting a goal".into());
+            self.failure = Some("No chat here yet — /goal <objective> starts one".into());
             self.failure_key = None;
             cx.notify();
             return;
@@ -373,6 +377,8 @@ impl Composer {
                 cx.notify();
             });
         }
+        // `/goal <objective>` arms after createChat (ADR-0044).
+        let mut goal_set: Option<String> = None;
         let restore_text;
         if let super::slash::Parsed::Plan {
             action: super::slash::PlanAction::Task(task),
@@ -392,6 +398,21 @@ impl Composer {
             text = task.clone();
             slash = super::slash::Parsed::Plain;
             provider_enter = true;
+        } else if let super::slash::Parsed::Goal {
+            action: super::slash::GoalAction::Set(objective),
+        } = &slash
+        {
+            // `/goal <objective>` (ADR-0044): the objective IS the first
+            // Turn's message; the SetGoal RPC rides the async block below
+            // (after createChat, before the queue) so the Turn settles into
+            // an armed loop. A failed SetGoal restores the ORIGINAL
+            // directive, never the bare objective — resubmitting that as an
+            // ordinary message would silently skip the goal.
+            let objective = objective.clone();
+            restore_text = Some(text.clone());
+            text = objective.clone();
+            slash = super::slash::Parsed::Plain;
+            goal_set = Some(objective);
         } else if matches!(slash, super::slash::Parsed::Init) {
             // `/init`: the queued message's prompt is the bundled template
             // (codex's `include_str!` shape) — the directive itself never
@@ -653,6 +674,23 @@ impl Composer {
                     .await
                 {
                     return Err(format!("/provider failed: {err}"));
+                }
+                // `/goal <objective>` (ADR-0044): armed after createChat,
+                // before the run is queued, so the first Turn settles into
+                // the loop. Fatal like the plan enter — a failed SetGoal
+                // restores the directive instead of sending the objective
+                // as an ordinary message.
+                if let Some(goal_text) = &goal_set
+                    && let Err(err) = attachments::call_with_timeout(
+                        &engine,
+                        cx.background_executor(),
+                        methods::SET_GOAL,
+                        serde_json::json!({ "chatId": chat_id, "text": goal_text }),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+                {
+                    return Err(format!("/goal failed: {err}"));
                 }
 
                 let command = match &slash {
