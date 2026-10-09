@@ -131,59 +131,117 @@ fn merman_config(palette: &MermaidPalette) -> merman::MermaidConfig {
         text_muted,
         accent_wash,
     } = palette;
+    // Tuple list rather than one big `json!` literal — the macro expansion
+    // hits serde_json's recursion limit past a few dozen keys.
+    let theme_variables: serde_json::Value = [
+        ("background", "transparent".to_string()),
+        ("primaryColor", raised.clone()),
+        ("primaryTextColor", text.clone()),
+        ("primaryBorderColor", node_border.clone()),
+        ("lineColor", line.clone()),
+        ("secondaryColor", accent_wash.clone()),
+        ("secondaryTextColor", text.clone()),
+        ("tertiaryColor", cluster_fill.clone()),
+        ("tertiaryTextColor", text_muted.clone()),
+        ("mainBkg", node_fill.clone()),
+        ("nodeBorder", node_border.clone()),
+        ("nodeTextColor", text.clone()),
+        ("clusterBkg", cluster_fill.clone()),
+        ("clusterBorder", cluster_border.clone()),
+        ("titleColor", text_muted.clone()),
+        ("edgeLabelBackground", label_bg.clone()),
+        ("textColor", text.clone()),
+        ("noteBkgColor", accent_wash.clone()),
+        ("noteBorderColor", node_border.clone()),
+        ("noteTextColor", text.clone()),
+        ("actorBkg", node_fill.clone()),
+        ("actorBorder", node_border.clone()),
+        ("actorTextColor", text.clone()),
+        ("actorLineColor", cluster_border.clone()),
+        ("labelBoxBkgColor", node_fill.clone()),
+        ("labelBoxBorderColor", node_border.clone()),
+        ("labelTextColor", text.clone()),
+        ("loopTextColor", text_muted.clone()),
+        ("signalColor", line.clone()),
+        ("signalTextColor", text.clone()),
+        ("classText", text.clone()),
+        ("labelColor", text.clone()),
+        // Family-specific keys. merman merges our themeVariables over the
+        // named `base` theme's own registry, and every key we leave unset
+        // leaks that registry's light-theme default (stateBkg #fff4dd,
+        // transitionLabelColor #333, gantt/git/pie near-black text…) —
+        // unreadable on a dark surface. Each maps onto the nearest palette
+        // slot; categorical series (pie1..12, quadrant fills) still come
+        // from the base theme by design.
+        ("stateBkg", node_fill.clone()),
+        ("stateLabelColor", text.clone()),
+        ("transitionColor", line.clone()),
+        ("transitionLabelColor", text_muted.clone()),
+        ("specialStateColor", line.clone()),
+        ("innerEndBackground", raised.clone()),
+        ("labelBackgroundColor", label_bg.clone()),
+        ("altBackground", cluster_fill.clone()),
+        ("compositeBackground", cluster_fill.clone()),
+        ("compositeTitleBackground", node_fill.clone()),
+        ("activationBkgColor", accent_wash.clone()),
+        ("activationBorderColor", node_border.clone()),
+        ("sequenceNumberColor", text.clone()),
+        ("arrowheadColor", line.clone()),
+        ("emArrowhead", line.clone()),
+        ("errorBkgColor", raised.clone()),
+        ("errorTextColor", text.clone()),
+        ("commitLabelColor", text_muted.clone()),
+        ("commitLabelBackground", label_bg.clone()),
+        ("tagLabelColor", text.clone()),
+        ("tagLabelBackground", raised.clone()),
+        ("tagLabelBorder", node_border.clone()),
+        ("taskBkgColor", raised.clone()),
+        ("taskBorderColor", node_border.clone()),
+        ("taskTextColor", text.clone()),
+        ("taskTextDarkColor", text.clone()),
+        ("taskTextLightColor", text.clone()),
+        ("taskTextOutsideColor", text_muted.clone()),
+        ("doneTaskBkgColor", cluster_fill.clone()),
+        ("doneTaskBorderColor", cluster_border.clone()),
+        ("activeTaskBkgColor", accent_wash.clone()),
+        ("activeTaskBorderColor", node_border.clone()),
+        ("sectionBkgColor", cluster_fill.clone()),
+        ("altSectionBkgColor", node_fill.clone()),
+        ("gridColor", cluster_border.clone()),
+        ("todayLineColor", line.clone()),
+        ("pieTitleTextColor", text.clone()),
+        ("pieSectionTextColor", text.clone()),
+        ("pieLegendTextColor", text_muted.clone()),
+        ("pieStrokeColor", node_border.clone()),
+        ("pieOuterStrokeColor", node_border.clone()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), serde_json::Value::String(value)))
+    .collect();
     merman::MermaidConfig::from_value(serde_json::json!({
         "theme": "base",
         "darkMode": dark,
         "fontFamily": font_family,
         "htmlLabels": true,
         "flowchart": { "htmlLabels": true, "padding": 16 },
-        "themeVariables": {
-            "background": "transparent",
-            "primaryColor": raised,
-            "primaryTextColor": text,
-            "primaryBorderColor": node_border,
-            "lineColor": line,
-            "secondaryColor": accent_wash,
-            "secondaryTextColor": text,
-            "tertiaryColor": cluster_fill,
-            "tertiaryTextColor": text_muted,
-            "mainBkg": node_fill,
-            "nodeBorder": node_border,
-            "nodeTextColor": text,
-            "clusterBkg": cluster_fill,
-            "clusterBorder": cluster_border,
-            "titleColor": text_muted,
-            "edgeLabelBackground": label_bg,
-            "textColor": text,
-            "noteBkgColor": accent_wash,
-            "noteBorderColor": node_border,
-            "noteTextColor": text,
-            "actorBkg": node_fill,
-            "actorBorder": node_border,
-            "actorTextColor": text,
-            "actorLineColor": cluster_border,
-            "labelBoxBkgColor": node_fill,
-            "labelBoxBorderColor": node_border,
-            "labelTextColor": text,
-            "loopTextColor": text_muted,
-            "signalColor": line,
-            "signalTextColor": text,
-            "classText": text,
-            "labelColor": text,
-        },
+        "themeVariables": theme_variables,
     }))
 }
 
 /// merman → resvg-safe SVG. Sync, owned data only — runs on the background
 /// executor.
 fn render_svg(source: &str, palette: &MermaidPalette) -> anyhow::Result<String> {
+    render_svg_with_config(source, merman_config(palette))
+}
+
+fn render_svg_with_config(source: &str, config: merman::MermaidConfig) -> anyhow::Result<String> {
     static DIAGRAM_COUNTER: AtomicU64 = AtomicU64::new(0);
     let diagram_id = format!(
         "holt-mermaid-{}",
         DIAGRAM_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let renderer = merman::svg::HeadlessRenderer::new()
-        .with_site_config(merman_config(palette))
+        .with_site_config(config)
         .with_vendored_text_measurer()
         .with_diagram_id(&diagram_id);
     // resvg can't rasterize `<foreignObject>` labels and drops CSS at-rules;
@@ -584,6 +642,41 @@ impl MermaidStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression guard for the base-theme leak: a state diagram must draw
+    /// nodes, labels, and transitions from the palette, never from merman's
+    /// bundled light-theme defaults (#fff4dd nodes, #333 labels, #0b0b0b
+    /// transitions).
+    #[test]
+    fn state_diagram_uses_theme_palette() {
+        let svg = render_svg(
+            "stateDiagram-v2\n    [*] --> active: set\n    active --> complete: done\n",
+            &test_palette(),
+        )
+        .expect("state diagram should render");
+        assert!(
+            svg.contains(".node rect{fill:rgba(255, 255, 255, 0.060)"),
+            "state nodes must use node_fill, got: {svg}"
+        );
+        assert!(
+            svg.contains(".stateLabel text{fill:#e7e7e7"),
+            "state labels must use text, got: {svg}"
+        );
+        assert!(
+            svg.contains(".edgeLabel .label text{fill:#989898"),
+            "transition labels must use text_muted, got: {svg}"
+        );
+        assert!(
+            svg.contains(".transition{stroke:#989898"),
+            "transitions must use line, got: {svg}"
+        );
+        for leaked in ["#fff4dd", "#0b0b0b", "#333;"] {
+            assert!(
+                !svg.contains(leaked),
+                "base-theme default {leaked} leaked into the diagram"
+            );
+        }
+    }
 
     #[test]
     fn mermaid_language_gate() {
