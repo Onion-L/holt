@@ -129,9 +129,16 @@ enum PartialError {
 
 type PartialResult = Result<serde_json::Value, PartialError>;
 
+/// Nesting ceiling for the lenient parser, matching serde_json's recursion
+/// limit. The fallback runs on exactly the inputs strict parsing rejects, and
+/// streamed tool-call arguments are provider-controlled: without a bound a
+/// few KB of `[` overflow the worker stack and abort the process.
+const MAX_PARTIAL_DEPTH: usize = 128;
+
 struct PartialParser<'a> {
     chars: Vec<char>,
     position: usize,
+    depth: usize,
     _input: &'a str,
 }
 
@@ -164,6 +171,7 @@ pub fn parse_partial_json(json: &str) -> Option<serde_json::Value> {
     let mut parser = PartialParser {
         chars: json.chars().collect(),
         position: 0,
+        depth: 0,
         _input: json,
     };
     // Trailing content after the first complete value is ignored, matching
@@ -197,8 +205,7 @@ impl<'a> PartialParser<'a> {
         self.skip_whitespace();
         match self.peek() {
             None => Err(PartialError::Eof),
-            Some('{') => self.parse_object(),
-            Some('[') => self.parse_array(),
+            Some('{' | '[') => self.parse_container(),
             Some('"') => self.parse_string().map(serde_json::Value::String),
             Some('t') => self.parse_keyword("true", serde_json::Value::Bool(true)),
             Some('f') => self.parse_keyword("false", serde_json::Value::Bool(false)),
@@ -345,6 +352,22 @@ impl<'a> PartialParser<'a> {
         } else {
             Err(PartialError::Invalid)
         }
+    }
+
+    /// Past the depth ceiling the container is invalid, so the enclosing
+    /// containers degrade to their parsed prefix like any malformed tail.
+    fn parse_container(&mut self) -> PartialResult {
+        if self.depth >= MAX_PARTIAL_DEPTH {
+            return Err(PartialError::Invalid);
+        }
+        self.depth += 1;
+        let result = if self.peek() == Some('{') {
+            self.parse_object()
+        } else {
+            self.parse_array()
+        };
+        self.depth -= 1;
+        result
     }
 
     fn parse_object(&mut self) -> PartialResult {
@@ -521,6 +544,25 @@ mod tests {
         // caller falls back to an empty object).
         assert_eq!(parse_partial_json("   "), None);
         assert_eq!(parse_partial_json(""), None);
+    }
+
+    #[test]
+    fn deep_nesting_degrades_instead_of_overflowing_the_stack() {
+        // Strict parsing rejects this for depth, so it reaches the lenient
+        // fallback — which must stop at the ceiling, not recurse 100k deep.
+        let input = format!("{{\"a\": {}", "[".repeat(100_000));
+        let value = parse_streaming_json(Some(&input));
+        let mut depth = 0;
+        let mut cursor = &value["a"];
+        while let Some(inner) = cursor.as_array().and_then(|items| items.first()) {
+            depth += 1;
+            cursor = inner;
+        }
+        assert!(depth < MAX_PARTIAL_DEPTH, "depth {depth}");
+        assert!(
+            parse_partial_json(&"[".repeat(100_000)).is_some(),
+            "a bare deep array still yields its prefix"
+        );
     }
 
     #[test]
