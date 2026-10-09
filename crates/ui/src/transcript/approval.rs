@@ -11,9 +11,7 @@
 
 use gpui::{App, Entity, Hsla};
 
-use holt_doc::{
-    GateVerdict, MessagePart, ReviewJudge, SessionMessageEntry, ToolGate, ToolGateState,
-};
+use holt_doc::{GateVerdict, MessagePart, SessionMessageEntry, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, ToolCall};
 use holt_rpc::methods;
 
@@ -94,26 +92,15 @@ pub fn approval_target(call: &ToolCall) -> String {
 }
 
 /// Marker color language for a settled verdict: neutral for a user's or
-/// grant's pass, the judge's signpost color for a review pass (Auto-review
-/// blue, Jev review pink), and
+/// grant's pass, the model review's signpost color for a review pass
+/// (Auto-review blue), and
 /// `danger` for every form of rejection — denial is the chip's error case,
-/// consistent with failed-tool chips; a rejection names its judge in text.
+/// consistent with failed-tool chips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerdictTint {
     Neutral,
     AutoReview,
-    JevReview,
     Danger,
-}
-
-/// The reviewer a review verdict's chip names — the chat's own model
-/// (ADR-0014) or the Jev decision model (ADR-0026). Old records read as
-/// the chat model.
-fn judge_label(judge: ReviewJudge) -> &'static str {
-    match judge {
-        ReviewJudge::ChatModel => "Auto review",
-        ReviewJudge::Jev => "Jev review",
-    }
 }
 
 /// The settled verdict's compact marker text + tint (prototype 3-A's chip
@@ -127,17 +114,11 @@ pub fn verdict_chip(verdict: &GateVerdict) -> (String, VerdictTint) {
             "⚡ Prefix exempt · auto-passed".to_string(),
             VerdictTint::Neutral,
         ),
-        GateVerdict::ReviewPassed { judge } => (
-            format!("{} · passed", judge_label(*judge)),
-            match judge {
-                ReviewJudge::ChatModel => VerdictTint::AutoReview,
-                ReviewJudge::Jev => VerdictTint::JevReview,
-            },
-        ),
-        GateVerdict::ReviewRejected { reason, judge } => {
+        GateVerdict::ReviewPassed => ("Auto review · passed".to_string(), VerdictTint::AutoReview),
+        GateVerdict::ReviewRejected { reason } => {
             let text = match reason {
-                Some(reason) => format!("{} · rejected · \"{reason}\"", judge_label(*judge)),
-                None => format!("{} · rejected", judge_label(*judge)),
+                Some(reason) => format!("Auto review · rejected · \"{reason}\""),
+                None => "Auto review · rejected".to_string(),
             };
             (text, VerdictTint::Danger)
         }
@@ -156,9 +137,8 @@ pub fn verdict_tint_color(tint: VerdictTint, theme: &Theme) -> Hsla {
     match tint {
         // The neutral tone of an ordinary completed chip's label.
         VerdictTint::Neutral => theme.text_muted,
-        // The judges' signposts, matching the mode menu's tier tints.
+        // The model review's signpost, matching the mode menu's tier tint.
         VerdictTint::AutoReview => crate::theme::AccentColor::Blue.primary(theme.appearance),
-        VerdictTint::JevReview => crate::theme::AccentColor::Pink.primary(theme.appearance),
         VerdictTint::Danger => theme.danger,
     }
 }
@@ -265,7 +245,7 @@ mod tests {
 
     #[test]
     fn verdict_chips_cover_every_flavor() {
-        let cases: [(GateVerdict, &str, VerdictTint); 11] = [
+        let cases: [(GateVerdict, &str, VerdictTint); 9] = [
             (GateVerdict::Allowed, "✓ Approved", VerdictTint::Neutral),
             (
                 GateVerdict::AlwaysAllowed,
@@ -278,41 +258,20 @@ mod tests {
                 VerdictTint::Neutral,
             ),
             (
-                GateVerdict::ReviewPassed {
-                    judge: ReviewJudge::ChatModel,
-                },
+                GateVerdict::ReviewPassed,
                 "Auto review · passed",
                 VerdictTint::AutoReview,
             ),
             (
-                GateVerdict::ReviewPassed {
-                    judge: ReviewJudge::Jev,
-                },
-                "Jev review · passed",
-                VerdictTint::JevReview,
-            ),
-            (
-                GateVerdict::ReviewRejected {
-                    reason: None,
-                    judge: ReviewJudge::ChatModel,
-                },
+                GateVerdict::ReviewRejected { reason: None },
                 "Auto review · rejected",
                 VerdictTint::Danger,
             ),
             (
                 GateVerdict::ReviewRejected {
                     reason: Some("no tests".into()),
-                    judge: ReviewJudge::ChatModel,
                 },
                 "Auto review · rejected · \"no tests\"",
-                VerdictTint::Danger,
-            ),
-            (
-                GateVerdict::ReviewRejected {
-                    reason: Some("destructive".into()),
-                    judge: ReviewJudge::Jev,
-                },
-                "Jev review · rejected · \"destructive\"",
                 VerdictTint::Danger,
             ),
             (
@@ -500,9 +459,7 @@ mod tests {
                         origin: None,
                         id: "g1".into(),
                         state: ToolGateState::Settled {
-                            verdict: GateVerdict::ReviewPassed {
-                                judge: ReviewJudge::Jev,
-                            },
+                            verdict: GateVerdict::ReviewPassed,
                         },
                     }),
                 )],

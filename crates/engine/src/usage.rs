@@ -1029,9 +1029,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A retired kind's ledger lines (the removed `jev-review`, ADR-0027)
-    /// skip with a warning — they never block the ledger's other records
-    /// or a startup.
+    /// A retired kind's ledger lines skip with a warning — they never
+    /// block the ledger's other records or a startup.
     #[test]
     fn a_retired_kinds_lines_skip_without_blocking_the_ledger() {
         let dir = temp_dir();
@@ -1043,7 +1042,7 @@ mod tests {
             .open(&path)
             .unwrap();
         file.write_all(
-            b"{\"kind\":\"jev-review\",\"provider\":\"typesafe\",\"model\":\"jev-latest\",\"input\":330,\"output\":34,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0},\"timestamp\":1}\n",
+            b"{\"kind\":\"retired-kind\",\"provider\":\"any\",\"model\":\"any\",\"input\":330,\"output\":34,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0},\"timestamp\":1}\n",
         )
         .unwrap();
         drop(file);

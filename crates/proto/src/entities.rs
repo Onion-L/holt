@@ -219,17 +219,6 @@ pub struct WebSearchSettingsState {
     pub custom_error: Option<String>,
 }
 
-/// The Jev settings view (ADR-0027): the user's own TypeSafe key for the
-/// Jev connection layer. The raw key never rides this view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JevSettingsState {
-    /// The stored key, masked for display (first/last four characters;
-    /// keys of eight or fewer characters show only the ellipsis).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_masked: Option<String>,
-}
-
 /// Immutable-at-run-start repository context owned by one conversation.
 ///
 /// This is deliberately separate from the live checkout snapshot: another

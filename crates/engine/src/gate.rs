@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use holt_doc::parts::{GateVerdict, ReviewJudge, ToolGate, ToolGateState};
+use holt_doc::parts::{GateVerdict, ToolGate, ToolGateState};
 use holt_proto::{ApprovalVerdict, PermissionMode, RunOutcome};
 use pi_core::agent::types::{BeforeToolCallContext, BeforeToolCallFn, BeforeToolCallResult};
 use tokio_util::sync::CancellationToken;
@@ -512,9 +512,7 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     origin: None,
                                     id: uuid::Uuid::new_v4().to_string(),
                                     state: ToolGateState::Settled {
-                                        verdict: GateVerdict::ReviewPassed {
-                                            judge: ReviewJudge::ChatModel,
-                                        },
+                                        verdict: GateVerdict::ReviewPassed,
                                     },
                                 },
                             );
@@ -531,7 +529,6 @@ pub(crate) fn before_tool_call_hook(wiring: GateWiring) -> BeforeToolCallFn {
                                     state: ToolGateState::Settled {
                                         verdict: GateVerdict::ReviewRejected {
                                             reason: Some(reason.clone()),
-                                            judge: ReviewJudge::ChatModel,
                                         },
                                     },
                                 },

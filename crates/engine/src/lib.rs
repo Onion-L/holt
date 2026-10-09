@@ -37,8 +37,6 @@ mod git_watch;
 mod history;
 pub mod images;
 pub mod instance_lock;
-mod jev;
-mod jev_settings;
 mod local_fs;
 mod mcp;
 mod mode_default;
@@ -79,7 +77,6 @@ use agent::AgentRuntime;
 pub use clock::Clock;
 use credentials::HoltCredentialStore;
 pub use instance_lock::InstanceLock;
-pub use jev::{JevCall, JevJudge, JevJudgment, JevVerdict};
 use provider_settings::ProviderSettingsStore;
 use providers::ProviderAdapter;
 use store::{load_chats, load_or_create_device_id, load_spaces};
@@ -183,9 +180,6 @@ struct EngineService {
     /// Engine-owned web-search settings (ADR-0023): the user-chosen search
     /// backend record behind the `web_search` tool's mounting.
     web_search: web_search_settings::WebSearchStore,
-    /// Engine-owned Jev settings (ADR-0027): the user's own TypeSafe key
-    /// for the Jev connection layer.
-    jev: jev_settings::JevStore,
     /// Test-injected backend resolver (`EngineConfig`); production resolves
     /// through the built-in adapter table (which the backend slices fill
     /// in).
@@ -292,7 +286,6 @@ impl LocalEngine {
         let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
-        let jev = jev_settings::JevStore::load(&config.data_dir)?;
         let routines = Arc::new(routines::Routines::load(&config.data_dir)?);
         let _ = runtime.routines.set(routines.clone());
         let watch = Arc::new(git_watch::WatchHub::new(
@@ -320,7 +313,6 @@ impl LocalEngine {
                 title_settings,
                 mode_default,
                 web_search,
-                jev,
                 search_backend_resolver: config.search_backend_resolver.clone(),
                 clock: config.clock.clone().unwrap_or_default(),
                 routines,

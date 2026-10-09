@@ -129,8 +129,6 @@ pub enum ReasoningLevel {
 /// `workspace-write`/`read-only` → `confirm-changes`,
 /// `danger-full-access` → `full-access` — and any other value falls back to
 /// `confirm-changes` (the first-launch default) rather than failing startup.
-/// The retired `jev-review` tier (ADR-0026, removed by ADR-0027) reads back
-/// as confirm-changes through that same fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
@@ -1034,9 +1032,6 @@ mod tests {
         assert_eq!(decode("workspace-write"), PermissionMode::ConfirmChanges);
         assert_eq!(decode("read-only"), PermissionMode::ConfirmChanges);
         assert_eq!(decode("danger-full-access"), PermissionMode::FullAccess);
-        // The retired jev-review tier (ADR-0027) lands on the fallback like
-        // every other unknown value.
-        assert_eq!(decode("jev-review"), PermissionMode::ConfirmChanges);
         // Unknown values fall back to the first-launch default instead of
         // failing startup.
         assert_eq!(decode("bogus-tier"), PermissionMode::ConfirmChanges);

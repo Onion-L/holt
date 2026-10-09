@@ -105,18 +105,6 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   change lands from the next
   Turn, and no active entry leaves the `web_search` agent tool unmounted:
   absent, never erroring.
-- Jev connection (ADR-0027): `GetJevSettings` / `SaveJevSettings`
-  (`{apiKey}`, both replying the masked `JevSettingsState`),
-  `RevealJevKey`, and `RemoveJevSettings` — the user's own TypeSafe key
-  in `jev.json` under the credentials pattern (0600, atomic replace,
-  malformed fails startup loudly). Saving trims and refuses a blank key
-  with no network validation; the key is an independent record, never
-  shared with a same-vendor provider key. The engine also carries the
-  harness-written TypeSafe client (`jev.rs`: one decision endpoint,
-  atomic Noul question set, synthesis, retry/timeout policy). No feature
-  consumes the connection yet — the `jev-review` permission mode it
-  served was removed (ADR-0026 → 0027); future Jev-powered features
-  mount from here.
 - MCP servers (ADR-0034): `GetMcpSettings` (every definition in the flat
   hand-editable `mcpServers` entry shape — name, transport fields, enabled,
   timeouts, filters — plus any file-level `validationError` from a hand

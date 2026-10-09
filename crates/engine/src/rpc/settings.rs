@@ -1,10 +1,10 @@
-//! The settings quartets: title, web search, Jev, MCP
-//! (ADR-0012/0023/0027/0034).
+//! The settings quartets: title, web search, MCP
+//! (ADR-0012/0023/0034).
 
 use holt_doc::MessageRole;
 use holt_proto::{
-    JevSettingsState, TitleSettings, TitleSettingsState, TitleSource, WebSearchBackendOption,
-    WebSearchEntryView, WebSearchSettingsState,
+    TitleSettings, TitleSettingsState, TitleSource, WebSearchBackendOption, WebSearchEntryView,
+    WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply};
 use std::sync::Arc;
@@ -85,25 +85,6 @@ impl EngineService {
         &self,
     ) -> Result<Vec<crate::tools::web_search::custom::CustomBackend>, String> {
         crate::tools::web_search::custom::load(&self.data_dir)
-    }
-
-    /// The Jev settings view (ADR-0027) — the reply shape of the read and
-    /// save RPCs. The raw key never rides this view.
-    pub(super) fn jev_state(&self) -> JevSettingsState {
-        JevSettingsState {
-            api_key_masked: self.jev.get().map(|record| masked_key(&record.api_key)),
-        }
-    }
-
-    pub(super) async fn save_jev_settings(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
-        let key = required_string(&params, "apiKey")?;
-        self.jev
-            .save(key)
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
-        RpcReply::value(&self.jev_state())
     }
 
     /// The MCP settings view (ADR-0034): every definition — flat,
@@ -426,13 +407,6 @@ impl EngineService {
             .map_err(|error| RpcError::Failed(error.to_string()))?;
         RpcReply::value(&self.web_search_state())
     }
-
-    pub(super) fn remove_jev_settings(&self) -> Result<RpcReply, RpcError> {
-        self.jev
-            .remove()
-            .map_err(|error| RpcError::Failed(error.to_string()))?;
-        RpcReply::value(&serde_json::json!({}))
-    }
 }
 
 /// The Settings picker's options (ADR-0023): the built-ins in picker
@@ -455,7 +429,7 @@ fn web_search_options(
         .collect()
 }
 
-/// Mask a stored settings key (search or Jev) for display: the first and
+/// Mask a stored settings key for display: the first and
 /// last four characters joined by an ellipsis. At least one character must
 /// stay hidden, so keys of eight or fewer characters reveal nothing at all.
 fn masked_key(key: &str) -> String {

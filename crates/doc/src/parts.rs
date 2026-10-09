@@ -152,10 +152,9 @@ pub struct SubagentOrigin {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolGateState {
-    /// confirm-changes: the Turn is paused waiting for the user. A retired
-    /// Jev review escalation record may carry the note explaining why the
-    /// judge handed the call over (`"Jev review: …"`); an ordinary
-    /// Approval has none.
+    /// confirm-changes: the Turn is paused waiting for the user. A forced
+    /// approval (ADR-0029) carries the stored proposal's summary as its
+    /// note; an ordinary Approval has none.
     #[serde(rename_all = "camelCase")]
     Pending {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,17 +163,6 @@ pub enum ToolGateState {
     /// The verdict that resolved the gate.
     #[serde(rename_all = "camelCase")]
     Settled { verdict: GateVerdict },
-}
-
-/// Which reviewer produced a review verdict (ADR-0026): the chat's own
-/// model (auto-review) or the Jev decision model (Jev review). Old
-/// transcripts predate the field and read as the chat model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ReviewJudge {
-    #[default]
-    ChatModel,
-    Jev,
 }
 
 /// How a gate resolved. A denial's note (when the user wrote one) is the
@@ -190,23 +178,15 @@ pub enum GateVerdict {
     /// An always-allow grant matched this call — auto-passed without
     /// asking.
     Exempted,
-    /// A review pass (ADR-0014/0026): `judge` names who passed it — the
-    /// chat's own model or Jev. Records from before the field existed
-    /// read as the chat model.
-    #[serde(rename_all = "camelCase")]
-    ReviewPassed {
-        #[serde(default)]
-        judge: ReviewJudge,
-    },
+    /// A review pass (ADR-0014): the chat's model judged the call
+    /// acceptable.
+    ReviewPassed,
     /// A review rejection with the reviewer's reason — the reason is the
-    /// error tool result the agent received, and `judge` names the
-    /// reviewer.
+    /// error tool result the agent received.
     #[serde(rename_all = "camelCase")]
     ReviewRejected {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
-        #[serde(default)]
-        judge: ReviewJudge,
     },
     /// Denied — with the user's note when there was one.
     #[serde(rename_all = "camelCase")]

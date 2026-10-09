@@ -141,15 +141,6 @@ pub mod methods {
     pub const SET_ACTIVE_WEB_SEARCH_BACKEND: &str = "SetActiveWebSearchBackend";
     pub const REVEAL_WEB_SEARCH_KEY: &str = "RevealWebSearchKey";
     pub const REMOVE_WEB_SEARCH_BACKEND: &str = "RemoveWebSearchBackend";
-    /// Jev settings (ADR-0027): the user's own TypeSafe key for the Jev
-    /// connection layer. Read replies the masked state `{apiKeyMasked}`; save
-    /// takes `{apiKey}` — trimmed, non-empty, no network validation —
-    /// replying the same state; reveal returns the raw `{key}`; remove
-    /// clears the record.
-    pub const GET_JEV_SETTINGS: &str = "GetJevSettings";
-    pub const SAVE_JEV_SETTINGS: &str = "SaveJevSettings";
-    pub const REVEAL_JEV_KEY: &str = "RevealJevKey";
-    pub const REMOVE_JEV_SETTINGS: &str = "RemoveJevSettings";
     pub const GET_MCP_SETTINGS: &str = "GetMcpSettings";
     pub const SAVE_MCP_SERVER: &str = "SaveMcpServer";
     pub const REMOVE_MCP_SERVER: &str = "RemoveMcpServer";

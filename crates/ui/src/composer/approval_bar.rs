@@ -90,12 +90,8 @@ pub(crate) struct ApprovalPrompt {
     pub title: String,
     pub target: Option<String>,
     pub options: Vec<ApprovalOption>,
+    /// The note row's placeholder.
     pub note_placeholder: &'static str,
-    /// Why this approval came to the user when the gatekeeper said so —
-    /// retired Jev review escalations carry "Jev review was unsure — …"
-    /// (historical records; no producer today); `None` on every ordinary
-    /// approval.
-    pub note: Option<String>,
     /// The question card's pager: the 1-based page and the question count.
     /// `None` on the single-surface kinds.
     pub pager: Option<(usize, usize)>,
@@ -133,7 +129,6 @@ pub(crate) fn gate_prompt(call: &ToolCall) -> ApprovalPrompt {
                 danger: true,
             },
         ],
-        note: None,
         note_placeholder: "Deny with a note…",
         pager: None,
     }
@@ -152,7 +147,6 @@ pub(crate) fn plan_prompt() -> ApprovalPrompt {
             verdict: BarVerdict::Plan("approve"),
             danger: false,
         }],
-        note: None,
         note_placeholder: "Enter feedback…",
         pager: None,
     }
@@ -178,7 +172,6 @@ pub(crate) fn question_prompt(questions: &[holt_doc::CardQuestion], page: usize)
                 danger: false,
             })
             .collect(),
-        note: None,
         note_placeholder: "Answer in words…",
         pager: (questions.len() > 1).then_some((page + 1, questions.len())),
     }
@@ -324,18 +317,8 @@ impl Composer {
         let bar = self.approval_bar.as_ref()?;
         match bar.kind {
             BarKind::Gate => {
-                let (call, gate) = pending_approval_tool(&self.state.read(cx).transcript)?;
-                let mut prompt = gate_prompt(&call);
-                prompt.note = match &gate.state {
-                    holt_doc::parts::ToolGateState::Pending { note } => note.clone(),
-                    _ => None,
-                };
-                // A forced apply already leads with its summary as the
-                // target line; repeating it as the note row is noise.
-                if is_model_apply(&call) {
-                    prompt.note = None;
-                }
-                Some(prompt)
+                let (call, _gate) = pending_approval_tool(&self.state.read(cx).transcript)?;
+                Some(gate_prompt(&call))
             }
             BarKind::Plan => Some(plan_prompt()),
             BarKind::Question => {
@@ -795,19 +778,6 @@ impl Composer {
                                                 ))),
                                         )
                                         .child(page_arrow("›", page < total, 1, "right")),
-                                )
-                            })
-                            // The gatekeeper's reason this came to the user —
-                            // a retired Jev escalation's note, directly under
-                            // the title.
-                            .when_some(prompt.note.clone(), |el, note| {
-                                el.child(
-                                    div()
-                                        .mt(px(6.0))
-                                        .text_size(crate::typography::ui_rems(12.5))
-                                        .line_height(px(17.0))
-                                        .text_color(theme.text_muted)
-                                        .child(SharedString::from(note)),
                                 )
                             })
                             // The target leads when the producer has one: a

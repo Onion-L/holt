@@ -10,16 +10,16 @@
 //! own so its dropdown and key field stay out of this page.
 
 use gpui::{
-    AnyElement, App, Context, Entity, IntoElement, MouseButton, Render, SharedString, Subscription,
-    Task, Window, div, prelude::*, px,
+    AnyElement, Context, Entity, IntoElement, MouseButton, Render, SharedString, Task, Window, div,
+    prelude::*, px,
 };
-use holt_proto::{JevSettingsState, Model, Provider, TitleSettingsState};
+use holt_proto::{Model, Provider, TitleSettingsState};
 use holt_rpc::methods;
 
 mod web_search;
 
 use crate::{
-    composer::{ComposerInput, ComposerInputEvent},
+    composer::ComposerInput,
     popover::{self, Loadable, Popup},
     settings::{self, SavePolicy, widgets},
     state::AppState,
@@ -91,7 +91,7 @@ fn configured_providers(providers: &[Provider]) -> Vec<Provider> {
         .collect()
 }
 
-/// What a stored-key field (Web search, Jev) currently shows.
+/// What a stored-key field (Web search) currently shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyField {
     /// The engine's masked key — untouched.
@@ -114,32 +114,10 @@ pub struct GeneralPage {
     task: Option<Task<()>>,
     /// The Web search group (web-tools ticket 07).
     web_search: Entity<web_search::WebSearchGroup>,
-    /// The engine-owned Jev record (ADR-0027): the user's own TypeSafe
-    /// key, mounted by future Jev-powered features.
-    jev: Loadable<JevSettingsState>,
-    jev_key: Entity<ComposerInput>,
-    /// The raw stored key the field currently shows, fetched by
-    /// `RevealJevKey`; `None` while it shows the masked display or a draft.
-    jev_revealed_key: Option<String>,
-    /// Draft-only projection: the eye hides the key the user is typing.
-    jev_draft_concealed: bool,
-    jev_error: Option<String>,
-    /// Re-derives the Jev key field's projection on every edit: a pasted
-    /// key is concealed the moment it stops being the masked display.
-    _jev_key_events: Subscription,
 }
 
 impl GeneralPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let jev_key = cx.new(|cx| ComposerInput::new_secret("TypeSafe API key", cx));
-        let jev_key_events = cx.subscribe(
-            &jev_key,
-            |page: &mut Self, _, event: &ComposerInputEvent, cx| {
-                if matches!(event, ComposerInputEvent::Edited) {
-                    page.sync_jev_mask(cx);
-                }
-            },
-        );
         let web_search = cx.new(|cx| web_search::WebSearchGroup::new(state.clone(), cx));
         let mut page = Self {
             state,
@@ -153,12 +131,6 @@ impl GeneralPage {
             save_error: None,
             task: None,
             web_search,
-            jev: Loadable::Idle,
-            jev_key,
-            jev_revealed_key: None,
-            jev_draft_concealed: true,
-            jev_error: None,
-            _jev_key_events: jev_key_events,
         };
         page.load(cx);
         page
@@ -184,12 +156,10 @@ impl GeneralPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.settings = Loadable::Error("Engine not connected".into());
             self.models = Loadable::Error("Engine not connected".into());
-            self.jev = Loadable::Error("Engine not connected".into());
             return;
         };
         self.settings = Loadable::Loading;
         self.models = Loadable::Loading;
-        self.jev = Loadable::Loading;
         self.task = Some(cx.spawn(async move |this, cx| {
             let settings_result = engine
                 .client()
@@ -199,10 +169,6 @@ impl GeneralPage {
                 Ok(providers) => load_model_catalog(&engine, &providers).await,
                 Err(error) => Loadable::Error(error),
             };
-            let jev_result = engine
-                .client()
-                .call(methods::GET_JEV_SETTINGS, serde_json::json!({}))
-                .await;
             this.update(cx, |page, cx| {
                 match settings_result {
                     Ok(value) => match serde_json::from_value::<TitleSettingsState>(value) {
@@ -220,19 +186,6 @@ impl GeneralPage {
                     Err(error) => page.settings = Loadable::Error(error.to_string()),
                 }
                 page.models = models_result;
-                match jev_result {
-                    Ok(value) => match serde_json::from_value::<JevSettingsState>(value) {
-                        Ok(state) => page.apply_jev_state(state, cx),
-                        Err(error) => page.jev = Loadable::Error(error.to_string()),
-                    },
-                    Err(holt_rpc::RpcError::UnknownMethod(_)) => {
-                        page.jev = Loadable::Error(
-                            "Jev settings aren't available — the engine doesn't support them yet"
-                                .into(),
-                        );
-                    }
-                    Err(error) => page.jev = Loadable::Error(error.to_string()),
-                }
                 cx.notify();
             })
             .ok();
@@ -295,211 +248,6 @@ impl GeneralPage {
                         Err(error) => page.save_error = Some(error.to_string()),
                     },
                     Err(error) => page.save_error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// The Jev field's projection state — the same three-state machine as
-    /// the web-search key, tracked against the Jev record's masked display.
-    fn jev_key_field_state(&self, cx: &App) -> KeyField {
-        let text = self.jev_key.read(cx).text();
-        if self.jev_revealed_key.as_deref() == Some(text) {
-            return KeyField::Revealed;
-        }
-        let stored = self
-            .jev
-            .ready()
-            .and_then(|state| state.api_key_masked.as_deref());
-        if stored == Some(text) {
-            KeyField::Stored
-        } else {
-            KeyField::Draft
-        }
-    }
-
-    fn sync_jev_mask(&mut self, cx: &mut Context<Self>) {
-        let masked = self.jev_key_field_state(cx) == KeyField::Draft && self.jev_draft_concealed;
-        self.jev_key
-            .update(cx, |input, cx| input.set_masked(masked, cx));
-    }
-
-    /// Echo a Jev reply (read, save, or remove) into the group's editable
-    /// state — the stored truth is what the page shows.
-    fn apply_jev_state(&mut self, state: JevSettingsState, cx: &mut Context<Self>) {
-        let masked = state.api_key_masked.clone().unwrap_or_default();
-        self.jev = Loadable::Ready(state);
-        self.jev_revealed_key = None;
-        self.jev_draft_concealed = true;
-        self.jev_key.update(cx, |input, cx| {
-            input.set_masked(false, cx);
-            input.set_text(masked, cx);
-        });
-    }
-
-    /// The eye button on the Jev key field: stored keys reveal and conceal
-    /// through `RevealJevKey`; a draft is only a projection flip.
-    fn toggle_jev_key(&mut self, cx: &mut Context<Self>) {
-        match self.jev_key_field_state(cx) {
-            KeyField::Stored => self.reveal_jev_key(cx),
-            KeyField::Revealed => self.restore_masked_jev_key(cx),
-            KeyField::Draft => {
-                self.jev_draft_concealed = !self.jev_draft_concealed;
-                self.sync_jev_mask(cx);
-                cx.notify();
-            }
-        }
-    }
-
-    fn reveal_jev_key(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.jev_error = Some("Engine not connected".into());
-            cx.notify();
-            return;
-        };
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::REVEAL_JEV_KEY, serde_json::json!({}))
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(value) => match value
-                        .get("key")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|key| !key.is_empty())
-                    {
-                        Some(key) => {
-                            page.jev_revealed_key = Some(key.to_string());
-                            page.jev_key.update(cx, |input, cx| {
-                                input.set_masked(false, cx);
-                                input.set_text(key, cx);
-                            });
-                            page.jev_error = None;
-                        }
-                        None => {
-                            page.jev_error = Some("No API key is stored".into());
-                        }
-                    },
-                    Err(error) => page.jev_error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// Conceal again: put the engine's masked key back in the field.
-    fn restore_masked_jev_key(&mut self, cx: &mut Context<Self>) {
-        let masked = self
-            .jev
-            .ready()
-            .and_then(|state| state.api_key_masked.clone())
-            .unwrap_or_default();
-        self.jev_key.update(cx, |input, cx| {
-            input.set_masked(false, cx);
-            input.set_text(masked, cx);
-        });
-        self.jev_revealed_key = None;
-        self.jev_draft_concealed = true;
-        cx.notify();
-    }
-
-    /// Save the key field's content. An untouched field holds the engine's
-    /// masked display, never a usable key: the stored key is re-read through
-    /// `RevealJevKey` and re-saved — writing the masked display would
-    /// corrupt the record.
-    fn save_jev(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.jev_error = Some("Engine not connected".into());
-            cx.notify();
-            return;
-        };
-        let draft = self.jev_key.read(cx).text().to_string();
-        let untouched = self.jev_key_field_state(cx) == KeyField::Stored;
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let key = if untouched {
-                match engine
-                    .client()
-                    .call(methods::REVEAL_JEV_KEY, serde_json::json!({}))
-                    .await
-                {
-                    Ok(value) => value
-                        .get("key")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    Err(error) => {
-                        this.update(cx, |page, cx| {
-                            page.jev_error = Some(error.to_string());
-                            cx.notify();
-                        })
-                        .ok();
-                        return;
-                    }
-                }
-            } else {
-                draft
-            };
-            if key.trim().is_empty() {
-                this.update(cx, |page, cx| {
-                    page.jev_error = Some("Enter an API key".into());
-                    cx.notify();
-                })
-                .ok();
-                return;
-            }
-            let result = engine
-                .client()
-                .call(
-                    methods::SAVE_JEV_SETTINGS,
-                    serde_json::json!({ "apiKey": key }),
-                )
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(value) => match serde_json::from_value::<JevSettingsState>(value) {
-                        Ok(state) => {
-                            page.apply_jev_state(state, cx);
-                            page.jev_error = None;
-                        }
-                        Err(error) => page.jev_error = Some(error.to_string()),
-                    },
-                    Err(error) => page.jev_error = Some(error.to_string()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// Clear the Jev record — the unconfigured state is no file at all,
-    /// and the tier goes gray again.
-    fn remove_jev(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.jev_error = Some("Engine not connected".into());
-            cx.notify();
-            return;
-        };
-        self.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::REMOVE_JEV_SETTINGS, serde_json::json!({}))
-                .await;
-            this.update(cx, |page, cx| {
-                match result {
-                    Ok(_) => {
-                        page.jev_error = None;
-                        page.apply_jev_state(
-                            JevSettingsState {
-                                api_key_masked: None,
-                            },
-                            cx,
-                        );
-                    }
-                    Err(error) => page.jev_error = Some(error.to_string()),
                 }
                 cx.notify();
             })
@@ -596,85 +344,6 @@ impl GeneralPage {
         }
         cx.notify();
     }
-
-    /// The Jev connection group (ADR-0027): the TypeSafe key future
-    /// Jev-powered features mount from, with the same reveal affordance
-    /// and Save/Remove actions as Web search. No feature consumes it yet;
-    /// the group's state is independent of its neighbors.
-    fn render_jev(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let body = match &self.jev {
-            Loadable::Idle | Loadable::Loading => {
-                popover::skeleton_rows("jev-skeleton", theme, 1, cx.entity_id(), cx)
-                    .into_any_element()
-            }
-            Loadable::Error(error) => widgets::error_strip(theme, error.clone())
-                .id("jev-unavailable")
-                .debug_selector(|| "jev-unavailable".into())
-                .into_any_element(),
-            Loadable::Ready(state) => {
-                let configured = state.api_key_masked.is_some();
-                let mut actions = Vec::new();
-                if configured {
-                    actions.push(
-                        remove_button(theme, "remove-jev")
-                            .on_click(cx.listener(|page, _, _, cx| page.remove_jev(cx)))
-                            .child("Remove")
-                            .into_any_element(),
-                    );
-                }
-                actions.push(
-                    save_button(theme, "save-jev")
-                        .on_click(cx.listener(|page, _, _, cx| page.save_jev(cx)))
-                        .child("Save")
-                        .into_any_element(),
-                );
-                let card = group_rows().child(
-                    group_row()
-                        .items_start()
-                        .child(row_text(
-                            theme,
-                            "API key",
-                            "Stored on this device, separate from your provider keys.",
-                        ))
-                        .child(control_with_actions(
-                            jev_key_field(
-                                theme,
-                                self.jev_key.clone(),
-                                self.jev_key_field_state(cx),
-                                self.jev_draft_concealed,
-                                cx,
-                            ),
-                            actions,
-                        )),
-                );
-                let mut column = div().flex().flex_col().child(card);
-                if let Some(error) = self.jev_error.clone() {
-                    column = column.child(
-                        widgets::error_strip(theme, error)
-                            .id("jev-error")
-                            .debug_selector(|| "jev-error".into()),
-                    );
-                }
-                column.into_any_element()
-            }
-        };
-        let status = self
-            .jev
-            .ready()
-            .map(|state| status_pill(theme, state.api_key_masked.is_some(), "jev-unconfigured"));
-        div()
-            .id("jev-group")
-            .mt(px(GROUP_GAP))
-            .child(group_header(
-                theme,
-                "Jev (TypeSafe)",
-                status,
-                "Your own TypeSafe API key. Jev-powered features use it as they \
-                 arrive; the key is stored and ready either way.",
-            ))
-            .child(body)
-            .into_any_element()
-    }
 }
 
 /// Shared geometry for the right-hand controls (dropdown triggers, key
@@ -684,10 +353,6 @@ const CONTROL_HEIGHT: f32 = 32.0;
 /// Vertical space between groups — wider than the row rhythm so each
 /// group reads as its own block without a surface around it.
 const GROUP_GAP: f32 = 40.0;
-/// No Jev-powered feature ships yet, so the key group stays hidden rather
-/// than suggest the key does something. The load/save/remove plumbing is
-/// kept; flip this once a feature consumes the key.
-const JEV_GROUP_VISIBLE: bool = false;
 
 /// A group's caption: the section label (with an optional status pill
 /// beside it) over its muted description.
@@ -756,26 +421,6 @@ fn control_with_actions(control: impl IntoElement, actions: Vec<AnyElement>) -> 
         )
 }
 
-/// The status pill beside a keyed group's title.
-fn status_pill(theme: &Theme, configured: bool, id: &'static str) -> AnyElement {
-    if configured {
-        widgets::badge_active(theme, "Configured").into_any_element()
-    } else {
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .flex_none()
-            .px(px(8.0))
-            .py(px(2.0))
-            .rounded_full()
-            .bg(theme.ink(0.06))
-            .text_size(crate::typography::ui_rems(10.5))
-            .text_color(theme.text_muted)
-            .child("Not configured")
-            .into_any_element()
-    }
-}
-
 /// The filled Save button every group shares.
 fn save_button(theme: &Theme, id: &'static str) -> gpui::Stateful<gpui::Div> {
     let hover_theme = theme.clone();
@@ -795,52 +440,6 @@ fn remove_button(theme: &Theme, id: &'static str) -> gpui::Stateful<gpui::Div> {
         .id(id)
         .debug_selector(move || id.into())
         .hover(move |style| style.bg(danger.opacity(0.10)).text_color(danger_muted))
-}
-
-/// The API-key field for the Jev group — the same affordance as the
-/// Web search key field, with its own ids and toggle.
-fn jev_key_field(
-    theme: &Theme,
-    input: Entity<ComposerInput>,
-    field: KeyField,
-    draft_concealed: bool,
-    cx: &mut Context<GeneralPage>,
-) -> impl IntoElement {
-    let hover_theme = theme.clone();
-    let showing_plain =
-        field == KeyField::Revealed || (field == KeyField::Draft && !draft_concealed);
-    div()
-        .id("jev-key-field")
-        .debug_selector(|| "jev-key-field".into())
-        .flex_none()
-        .w(px(CONTROL_WIDTH))
-        .h(px(CONTROL_HEIGHT))
-        .pl(px(10.0))
-        .pr(px(2.0))
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .rounded(px(Theme::CONTROL_RADIUS))
-        .bg(theme.ink(0.05))
-        .child(div().flex_1().min_w_0().child(input))
-        .child(
-            widgets::ghost_action(theme)
-                .flex_none()
-                .id("toggle-jev-key")
-                .debug_selector(|| "toggle-jev-key".into())
-                .hover(move |style| widgets::ghost_hover(&hover_theme, style))
-                .on_click(cx.listener(|page, _, _, cx| page.toggle_jev_key(cx)))
-                .child(
-                    crate::icons::icon(if showing_plain {
-                        crate::icons::EYE_SLASH
-                    } else {
-                        crate::icons::EYE
-                    })
-                    .size(px(15.0))
-                    .text_color(theme.text_muted),
-                ),
-        )
-        .into_any_element()
 }
 
 /// The provider catalog: the model picker's source.
@@ -1133,10 +732,7 @@ impl Render for GeneralPage {
                             ))
                             .child(body),
                     )
-                    .child(self.web_search.clone())
-                    .when(JEV_GROUP_VISIBLE, |page| {
-                        page.child(self.render_jev(&theme, cx))
-                    }),
+                    .child(self.web_search.clone()),
             )
     }
 }
@@ -1308,211 +904,5 @@ mod tests {
             holt_proto::DEFAULT_TITLE_INSTRUCTION
         );
         assert_eq!(effective_instruction(true, "custom"), "custom");
-    }
-
-    /// The engine's mask: first and last four characters, nothing for short
-    /// keys.
-    fn masked(key: &str) -> String {
-        let chars: Vec<char> = key.chars().collect();
-        if chars.len() <= 8 {
-            return "…".into();
-        }
-        format!(
-            "{}…{}",
-            chars[..4].iter().collect::<String>(),
-            chars[chars.len() - 4..].iter().collect::<String>()
-        )
-    }
-
-    /// The Jev group's engine seam plus the title/provider reads the page
-    /// performs on load. Everything else (Web search included) is version
-    /// skew — the Web search group has its own tests.
-    struct FakeJevEngine {
-        state: std::sync::Mutex<JevSettingsState>,
-        key: std::sync::Mutex<Option<String>>,
-        saved: std::sync::Mutex<Vec<serde_json::Value>>,
-    }
-
-    #[async_trait::async_trait]
-    impl holt_rpc::RpcService for FakeJevEngine {
-        async fn handle(
-            &self,
-            method: &str,
-            params: serde_json::Value,
-        ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
-            use holt_rpc::{RpcError, RpcReply};
-            match method {
-                methods::GET_TITLE_SETTINGS => RpcReply::value(&serde_json::json!({
-                    "settings": {
-                        "modelId": null,
-                        "instruction": holt_proto::DEFAULT_TITLE_INSTRUCTION,
-                    },
-                })),
-                methods::LIST_PROVIDERS => RpcReply::value(&serde_json::json!([])),
-                methods::GET_JEV_SETTINGS => RpcReply::value(&*self.state.lock().unwrap()),
-                methods::REVEAL_JEV_KEY => RpcReply::value(&serde_json::json!({
-                    "key": self.key.lock().unwrap().clone(),
-                })),
-                methods::SAVE_JEV_SETTINGS => {
-                    let api_key = params
-                        .get("apiKey")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    if api_key.trim().is_empty() {
-                        return Err(RpcError::BadParams("apiKey is required".into()));
-                    }
-                    self.saved.lock().unwrap().push(params);
-                    *self.key.lock().unwrap() = Some(api_key.clone());
-                    *self.state.lock().unwrap() = JevSettingsState {
-                        api_key_masked: Some(masked(&api_key)),
-                    };
-                    RpcReply::value(&*self.state.lock().unwrap())
-                }
-                methods::REMOVE_JEV_SETTINGS => {
-                    *self.key.lock().unwrap() = None;
-                    *self.state.lock().unwrap() = JevSettingsState {
-                        api_key_masked: None,
-                    };
-                    RpcReply::value(&serde_json::json!({}))
-                }
-                _ => Err(RpcError::UnknownMethod(method.to_string())),
-            }
-        }
-    }
-
-    struct JevHarness<'a> {
-        page: Entity<GeneralPage>,
-        visual: &'a mut gpui::VisualTestContext,
-        engine: std::sync::Arc<FakeJevEngine>,
-        runtime: tokio::runtime::Runtime,
-        _dir: tempfile::TempDir,
-    }
-
-    impl JevHarness<'_> {
-        /// Drive RPC dispatch a few rounds (test thread), then the gpui
-        /// foreground executor — the notifications harness' pump.
-        fn pump(&self) {
-            for _ in 0..6 {
-                self.runtime
-                    .block_on(async { tokio::task::yield_now().await });
-                self.visual.run_until_parked();
-            }
-        }
-    }
-
-    fn jev_harness<'a>(
-        cx: &'a mut gpui::TestAppContext,
-        state: JevSettingsState,
-        key: Option<&str>,
-    ) -> JevHarness<'a> {
-        let engine = std::sync::Arc::new(FakeJevEngine {
-            state: std::sync::Mutex::new(state),
-            key: std::sync::Mutex::new(key.map(str::to_string)),
-            saved: std::sync::Mutex::new(Vec::new()),
-        });
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        cx.update(|cx| {
-            cx.set_global(Theme::default());
-            settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
-        });
-        let app_state = cx.new(|_| AppState::new());
-        // `memory_client` spawns its dispatch loop with `tokio::spawn`,
-        // which needs a runtime context on this thread.
-        let client = {
-            let _guard = runtime.enter();
-            holt_rpc::memory_client(engine.clone())
-        };
-        app_state.update(cx, |state, cx| state.attach_test_engine(client, cx));
-        let (page, visual) =
-            cx.add_window_view(|_window, cx| GeneralPage::new(app_state.clone(), cx));
-        let harness = JevHarness {
-            page,
-            visual,
-            engine,
-            runtime,
-            _dir: dir,
-        };
-        harness.pump();
-        harness
-    }
-
-    /// The Jev group: the masked key from `GetJevSettings` is what the
-    /// field shows; Save rides `SaveJevSettings` (an untouched field
-    /// re-reads the stored key through `RevealJevKey` instead of writing
-    /// the mask); the eye reveals and re-conceals; Remove clears the
-    /// stored key.
-    #[gpui::test]
-    fn the_jev_group_masks_saves_reveals_and_removes(cx: &mut gpui::TestAppContext) {
-        let harness = jev_harness(
-            cx,
-            JevSettingsState {
-                api_key_masked: Some("sk-j…mnop".into()),
-            },
-            Some("sk-jev-abcdefghijklmnop"),
-        );
-
-        // The masked display, never bullets; configured means no
-        // unconfigured note.
-        let text = |h: &JevHarness| {
-            h.visual
-                .read(|cx| h.page.read(cx).jev_key.read(cx).text().to_string())
-        };
-        let stored = |h: &JevHarness| {
-            h.visual.read(|cx| {
-                h.page
-                    .read(cx)
-                    .jev
-                    .ready()
-                    .and_then(|state| state.api_key_masked.clone())
-            })
-        };
-        assert_eq!(text(&harness), "sk-j…mnop");
-        assert_eq!(stored(&harness).as_deref(), Some("sk-j…mnop"));
-
-        // The group is hidden until a Jev feature ships
-        // (`JEV_GROUP_VISIBLE`), so drive the page methods its buttons'
-        // listeners call.
-        assert_eq!(
-            harness.visual.debug_bounds("save-jev").is_some(),
-            JEV_GROUP_VISIBLE
-        );
-
-        // Saving untouched re-reads and re-saves the stored key — the
-        // masked display itself is never written as a key.
-        harness
-            .page
-            .update(&mut *harness.visual, |page, cx| page.save_jev(cx));
-        harness.pump();
-        assert_eq!(
-            harness.engine.saved.lock().unwrap().as_slice(),
-            &[serde_json::json!({ "apiKey": "sk-jev-abcdefghijklmnop" })]
-        );
-        assert_eq!(text(&harness), "sk-j…mnop");
-
-        // The eye reveals through RevealJevKey, then conceals back to the
-        // engine's masked display.
-        harness
-            .page
-            .update(&mut *harness.visual, |page, cx| page.toggle_jev_key(cx));
-        harness.pump();
-        assert_eq!(text(&harness), "sk-jev-abcdefghijklmnop");
-        harness
-            .page
-            .update(&mut *harness.visual, |page, cx| page.toggle_jev_key(cx));
-        harness.pump();
-        assert_eq!(text(&harness), "sk-j…mnop");
-
-        // Remove returns the group to the unconfigured note.
-        harness
-            .page
-            .update(&mut *harness.visual, |page, cx| page.remove_jev(cx));
-        harness.pump();
-        assert_eq!(text(&harness), "");
-        assert_eq!(stored(&harness), None);
     }
 }

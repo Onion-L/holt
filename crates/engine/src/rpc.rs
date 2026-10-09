@@ -239,12 +239,6 @@ impl RpcService for EngineService {
             methods::SET_ACTIVE_WEB_SEARCH_BACKEND => self.set_active_web_search_backend(params),
             methods::REVEAL_WEB_SEARCH_KEY => self.reveal_web_search_key(params),
             methods::REMOVE_WEB_SEARCH_BACKEND => self.remove_web_search_backend(params),
-            methods::GET_JEV_SETTINGS => RpcReply::value(&self.jev_state()),
-            methods::SAVE_JEV_SETTINGS => self.save_jev_settings(params).await,
-            methods::REVEAL_JEV_KEY => RpcReply::value(&serde_json::json!({
-                "key": self.jev.get().map(|record| record.api_key),
-            })),
-            methods::REMOVE_JEV_SETTINGS => self.remove_jev_settings(),
             // MCP servers (ADR-0034): the Settings quartet — get with
             // validation feedback, strict upsert, remove, and the
             // on-demand probe. No standing watch: probing on demand is
