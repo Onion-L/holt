@@ -1151,6 +1151,10 @@ struct RunSink {
     cwd: String,
     skill_files: HashMap<String, String>,
     cancel: CancellationToken,
+    /// The Turn's Plan Mode snapshot (ADR-0025): gates the
+    /// `<proposed_plan>` folding in `assistant_parts` — only a planning
+    /// Turn's blocks become approval cards.
+    plan_mode: bool,
 }
 
 impl RunSink {
@@ -1165,6 +1169,7 @@ impl RunSink {
             &self.cwd,
             &self.skill_files,
             self.cancel.is_cancelled(),
+            self.plan_mode,
         ));
         parts
     }
@@ -1182,6 +1187,7 @@ impl RunSink {
             &self.cwd,
             &self.skill_files,
             self.cancel.is_cancelled(),
+            self.plan_mode,
         ));
         *base = parts.clone();
         parts
@@ -1539,6 +1545,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         cwd: cwd.clone(),
         skill_files,
         cancel: cancel.clone(),
+        plan_mode,
     });
     let emit_sink = Arc::clone(&sink);
     let emit: AgentEventSink = Arc::new(move |event| {

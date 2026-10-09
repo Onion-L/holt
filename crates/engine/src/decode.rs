@@ -348,12 +348,19 @@ pub(crate) fn part_char_len(part: &MessagePart) -> usize {
 /// absolute) to skill names: a read of one collapses to the same skill chip
 /// an invocation uses (ADR-0006) — the file's content reached the model
 /// context through the tool result, and never enters the transcript.
+///
+/// `plan_mode` is the Turn's Plan Mode snapshot (ADR-0025): only a planning
+/// Turn folds `<proposed_plan>` blocks into approval cards — it is the only
+/// Turn taught the convention. Anywhere else the tags are ordinary text, so
+/// a reply that merely quotes them (say, explaining plan mode) renders
+/// literally instead of spawning an inert approval card.
 pub(crate) fn assistant_parts(
     message: &AgentMessage,
     id_base: usize,
     cwd: &str,
     skill_files: &HashMap<String, String>,
     cancelled: bool,
+    plan_mode: bool,
 ) -> Vec<MessagePart> {
     let AgentMessage::Assistant(message) = message else {
         return Vec::new();
@@ -362,18 +369,27 @@ pub(crate) fn assistant_parts(
     for content in &message.content {
         match content {
             AssistantContent::Text(text) => {
-                // `<proposed_plan>` blocks fold into approval cards; the
-                // surrounding text stays prose. Ids keep the running
-                // offset so entry keys stay unique across messages.
+                // `<proposed_plan>` blocks fold into approval cards on a
+                // planning Turn only; anywhere else the tags stay literal.
+                // Ids keep the running offset so entry keys stay unique
+                // across messages.
                 let base = id_base + parts.len();
                 let mut n = 0usize;
-                parts.extend(crate::plan_mode::plan_aware_text_parts(
-                    &text.text,
-                    &mut || {
-                        n += 1;
-                        format!("t{}", base + n - 1)
-                    },
-                ));
+                let mut next_id = || {
+                    n += 1;
+                    format!("t{}", base + n - 1)
+                };
+                let folded = if plan_mode {
+                    crate::plan_mode::plan_aware_text_parts(&text.text, &mut next_id)
+                } else if text.text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![MessagePart::Text {
+                        id: next_id(),
+                        text: text.text.clone(),
+                    }]
+                };
+                parts.extend(folded);
             }
             AssistantContent::Thinking(thinking) if !thinking.thinking.is_empty() => {
                 parts.push(MessagePart::Reasoning {
@@ -513,6 +529,54 @@ mod tests {
         }
     }
 
+    fn text_message(text: &str) -> AgentMessage {
+        AgentMessage::Assistant(Box::new(AssistantMessage {
+            content: vec![AssistantContent::Text(TextContent {
+                text: text.into(),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn a_planning_turn_folds_complete_plan_blocks_into_pending_cards() {
+        let parts = assistant_parts(
+            &text_message("intro\n\n<proposed_plan>\n# Plan\n</proposed_plan>\n\noutro"),
+            0,
+            "/tmp/x",
+            &HashMap::new(),
+            false,
+            true,
+        );
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(&parts[1], MessagePart::PlanApproval { state, .. }
+            if *state == holt_doc::parts::PlanApprovalState::Pending));
+    }
+
+    #[test]
+    fn an_ordinary_turn_renders_quoted_plan_tags_literally() {
+        // A reply that merely explains the `<proposed_plan>` convention must
+        // not spawn an approval card (the chat was never in Plan Mode) — the
+        // tags stay in the prose, byte for byte.
+        let text = "wrap it like <proposed_plan>this</proposed_plan> to propose.";
+        let parts = assistant_parts(
+            &text_message(text),
+            0,
+            "/tmp/x",
+            &HashMap::new(),
+            false,
+            false,
+        );
+        assert_eq!(
+            parts,
+            vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.into(),
+            }]
+        );
+    }
+
     #[test]
     fn assistant_message_maps_text_and_reasoning_to_doc_parts() {
         let message = AgentMessage::Assistant(Box::new(AssistantMessage {
@@ -529,7 +593,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false, false),
             vec![
                 MessagePart::Reasoning {
                     id: "r0".into(),
@@ -545,7 +609,7 @@ mod tests {
         // generated part ids continue after the base so row keys never
         // collide.
         assert_eq!(
-            assistant_parts(&message, 2, "/tmp/x", &HashMap::new(), false),
+            assistant_parts(&message, 2, "/tmp/x", &HashMap::new(), false, false),
             vec![
                 MessagePart::Reasoning {
                     id: "r2".into(),
@@ -575,7 +639,7 @@ mod tests {
         // Stop / Steer: the transport's abort artifact is not an error —
         // only the partial text lands.
         assert_eq!(
-            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), true),
+            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), true, false),
             vec![MessagePart::Text {
                 id: "t0".into(),
                 text: "partial".into(),
@@ -584,7 +648,7 @@ mod tests {
         // An abort WITHOUT the run's cancellation (the transport died on
         // its own) keeps the chip — that failure must stay diagnosable.
         assert_eq!(
-            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), false),
+            assistant_parts(&aborted(), 0, "/tmp/x", &HashMap::new(), false, false),
             vec![
                 MessagePart::Text {
                     id: "t0".into(),
@@ -608,7 +672,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false),
+            assistant_parts(&message, 0, "/tmp/x", &HashMap::new(), false, false),
             vec![MessagePart::Tool {
                 id: "call-1".into(),
                 call: TranscriptToolCall::Exec {
@@ -734,7 +798,7 @@ mod tests {
                 ))],
                 ..Default::default()
             }));
-            assistant_parts(&message, 0, "/roots", &skill_files, false)
+            assistant_parts(&message, 0, "/roots", &skill_files, false, false)
         };
         // The advertised location, absolute…
         assert_eq!(
@@ -789,7 +853,7 @@ mod tests {
             ))],
             ..Default::default()
         }));
-        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new(), false);
+        let parts = assistant_parts(&message, 0, "/roots", &HashMap::new(), false, false);
         assert!(matches!(
             &parts[0],
             MessagePart::Tool {
@@ -901,7 +965,8 @@ mod tests {
         // First message creates the entry, later ones replace its parts in
         // place — same id, same created_at (the delta protocol keys appends
         // off an unchanged entry and the strip stamps once).
-        let mut first_parts = assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new(), false);
+        let mut first_parts =
+            assistant_parts(&text("hello"), 0, "/tmp/x", &HashMap::new(), false, false);
         update_assistant_entry(
             &chat,
             "run-1",
@@ -916,6 +981,7 @@ mod tests {
             first_parts.len(),
             "/tmp/x",
             &HashMap::new(),
+            false,
             false,
         );
         first_parts.extend(second);

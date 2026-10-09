@@ -221,6 +221,41 @@ async fn plain_text_without_a_block_gets_no_card() {
 }
 
 #[tokio::test]
+async fn an_ordinary_turn_quoting_the_tags_never_gets_a_card() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![ScriptedReply::text(
+        "Wrap the plan like <proposed_plan>this</proposed_plan> to propose it.",
+    )]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // The chat never entered Plan Mode — a reply that merely explains the
+    // tag convention must not spawn an inert approval card, and the tags
+    // stay in the prose instead of being stripped mid-sentence.
+    run_prompt(
+        &engine,
+        "chat-1",
+        &fixture.cwd(),
+        "how does plan mode work?",
+    )
+    .await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(
+        !transcript.contains("planApproval"),
+        "no card outside Plan Mode: {transcript}"
+    );
+    assert!(
+        transcript.contains("<proposed_plan>"),
+        "tags render literally: {transcript}"
+    );
+}
+
+#[tokio::test]
 async fn approve_exits_plan_mode_restores_the_entry_mode_and_history_carries_the_plan() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
