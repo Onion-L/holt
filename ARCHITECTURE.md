@@ -190,9 +190,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   failure (a gone model) clears; the caps (20 iterations, 3 no-progress
   Turns, 3 consecutive verifier failures) pause with a Transcript notice.
   Verifier passes book usage as `goal-check` immediately (never the
-  Turn's settled batch). The UI is `/goal <objective> | off | pause |
-  resume` plus a composer footer chip whose × clears; restart opens an
-  orphaned active goal as paused.
+  Turn's settled batch). `/goal <objective>` arms the goal and sends the
+  objective as the first Turn's message — the new-chat canvas included
+  (`SetGoal` rides after createChat, before the queue, like the plan
+  enter); `/goal off | pause | resume` and the composer footer chip's ×
+  drive an existing chat's loop. Restart opens an orphaned active goal as
+  paused.
 - Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
   transcript part — 1–4 questions, each with 2–6 enumerated options —
   and returns: the model stops its Turn; it never blocks a tool result.
