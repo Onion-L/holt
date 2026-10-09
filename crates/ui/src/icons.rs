@@ -13,7 +13,9 @@
 
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString, Styled as _, Svg, svg};
+use gpui::{
+    AssetSource, Div, Hsla, ParentElement, Result, SharedString, Styled as _, Svg, div, px, svg,
+};
 
 /// Bundled fallback fonts gpui's svg renderer loads by path
 /// (`svg_renderer::load_bundled_fonts`): they anchor generic font families
@@ -190,12 +192,7 @@ icon_assets![
     // Compact history-ref glyphs, drawn in the same linear style.
     (CLOUD, "cloud"),
     (TAG, "tag"),
-    (SIDEBAR_MINIMALISTIC, "sidebar-minimalistic"),
     (PROGRAMMING_OUTLINE, "programming-outline"),
-    // Mirrored variant (holt window-controls.tsx `-scale-x-100`): the LEFT
-    // sidebar toggle shows the panel line on the left; gpui divs have no
-    // scale transform at the pinned rev, so the flip is baked into the asset.
-    (SIDEBAR_MINIMALISTIC_LEFT, "sidebar-minimalistic-left"),
     (KEY_MINIMALISTIC, "key-minimalistic"),
     (KEYBOARD, "keyboard"),
     (ARROW_LEFT, "arrow-left"),
@@ -313,6 +310,47 @@ icon_assets![
 /// `[&_svg]:size-4` idiom.
 pub fn icon(path: &'static str) -> Svg {
     svg().path(path).flex_none()
+}
+
+/// The sidebar-toggle glyph: a rounded frame holding a panel whose width morphs 5.5 → 1.75 as the sidebar closes.
+/// gpui SVGs are static, so it is drawn from quads in the source's 24-unit
+/// space, scaled to `size`. `open` is the morph progress (1 = open — drive it
+/// from the shell's `WidthTween` so the glyph moves with the pane width);
+/// `right` mirrors the panel for the right pane's toggle.
+pub fn sidebar_glyph(open: f32, right: bool, size: f32, color: Hsla) -> Div {
+    let s = size / 24.0;
+    // `<rect x=3 y=4 w=18 h=16 rx=4 stroke-width=1.75>`: the centered stroke
+    // grows the box by half the stroke on each side.
+    let stroke = 1.75;
+    let frame = div()
+        .absolute()
+        .left(px((3.0 - stroke / 2.0) * s))
+        .top(px((4.0 - stroke / 2.0) * s))
+        .w(px((18.0 + stroke) * s))
+        .h(px((16.0 + stroke) * s))
+        .rounded(px((4.0 + stroke / 2.0) * s))
+        .border(px(stroke * s))
+        .border_color(color);
+    // `<rect class=zi-panel x=6.5 y=7.5 w=5.5 h=9 rx=.875>`; closed: w=1.75.
+    let inset = px(6.5 * s);
+    let panel = div()
+        .absolute()
+        .top(px(7.5 * s))
+        .w(px(crate::motion::lerp(1.75, 5.5, open.clamp(0.0, 1.0)) * s))
+        .h(px(9.0 * s))
+        .rounded(px(0.875 * s))
+        .bg(color);
+    let panel = if right {
+        panel.right(inset)
+    } else {
+        panel.left(inset)
+    };
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(frame)
+        .child(panel)
 }
 
 #[cfg(test)]

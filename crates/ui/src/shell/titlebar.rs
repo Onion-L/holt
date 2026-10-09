@@ -230,9 +230,20 @@ impl Shell {
                     .h_full()
                     .w(px(caption_buttons_width(self.linux_left_caption_count())))
             }))
-            .child(window_control_button(
+            .child(window_control_button_with(
                 "toggle-sidebar",
-                icons::SIDEBAR_MINIMALISTIC_LEFT,
+                // The glyph morphs with the pane: progress rides the sidebar's
+                // own width tween, so the icon and the width share one clock
+                // (0-wide collapsed target → closed glyph).
+                icons::sidebar_glyph(
+                    (self.eval_tween(self.sidebar_tween, self.sidebar_target())
+                        / self.settings.sidebar_width.max(1.0))
+                    .clamp(0.0, 1.0),
+                    false,
+                    16.0,
+                    theme.text_muted,
+                )
+                .into_any_element(),
                 &theme,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
             ))
@@ -806,7 +817,25 @@ fn window_control_button(
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    let muted = theme.text_muted;
+    window_control_button_with(
+        id,
+        icon(icon_path)
+            .size(px(16.0))
+            .text_color(theme.text_muted)
+            .into_any_element(),
+        theme,
+        on_click,
+    )
+}
+
+/// [`window_control_button`] with a caller-built glyph (e.g. the morphing
+/// [`icons::sidebar_glyph`]) instead of an embedded SVG path.
+fn window_control_button_with(
+    id: &'static str,
+    content: AnyElement,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let fade_key = format!("window-control-{id}");
     div()
         .id(id)
@@ -842,7 +871,7 @@ fn window_control_button(
             cx.stop_propagation();
             on_click(event, window, cx)
         })
-        .child(icon(icon_path).size(px(16.0)).text_color(muted))
+        .child(content)
 }
 
 const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 36.0;
@@ -989,7 +1018,27 @@ pub(super) fn header_icon_button(
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    let muted = theme.text_muted;
+    header_icon_button_with(
+        id,
+        icon(icon_path)
+            .size(px(16.0))
+            .text_color(theme.text_muted)
+            .into_any_element(),
+        theme,
+        on_click,
+    )
+}
+
+/// [`header_icon_button`] with a caller-built glyph (e.g. the morphing
+/// [`icons::sidebar_glyph`]) instead of an embedded SVG path.
+pub(super) fn header_icon_button_with(
+    id: &'static str,
+    content: AnyElement,
+    // Kept for signature symmetry with [`header_icon_button`]; the hover wash
+    // is theme-free (`crate::theme::wash`).
+    _theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let fade_key = format!("header-icon-{id}");
     div()
         .id(id)
@@ -1016,7 +1065,7 @@ pub(super) fn header_icon_button(
             cx.stop_propagation();
             on_click(event, window, cx)
         })
-        .child(icon(icon_path).size(px(16.0)).text_color(muted))
+        .child(content)
 }
 
 #[cfg(test)]

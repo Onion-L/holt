@@ -205,6 +205,15 @@ impl Shell {
         // The terminal and pane toggles track their panel state with the
         // active background.
         let right_open = self.right_pane_open(cx);
+        // Glyph morph progress rides the pane's own width tween (same clock
+        // as the width). Expand/un-expand tweens move between two nonzero
+        // widths — the pane is open throughout, so the glyph stays put.
+        let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
+        let right_open_t = match self.active_tween_endpoints(self.right_tween) {
+            Some((from, to)) if from > 0.0 && to > 0.0 => 1.0,
+            Some((from, to)) => (right_now / from.max(to).max(1.0)).clamp(0.0, 1.0),
+            None => (right_now / self.settings.right_pane_width.max(1.0)).clamp(0.0, 1.0),
+        };
         let trailing = div()
             .id("right-titlebar-controls")
             .flex_none()
@@ -250,9 +259,10 @@ impl Shell {
                 )
             })
             .child(
-                header_icon_button(
+                header_icon_button_with(
                     "toggle-right-pane",
-                    icons::SIDEBAR_MINIMALISTIC,
+                    icons::sidebar_glyph(right_open_t, true, 16.0, theme.text_muted)
+                        .into_any_element(),
                     &theme,
                     cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                 )
