@@ -1266,10 +1266,12 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
 /// own strip (its push time, nothing to copy) is replaced. The walk skips
 /// footerless rows (a change-set card can sit between) and stops at a User
 /// row or an earlier band — a band never claims a prompt's footer, an earlier
-/// Turn's, or another band's; with no owner it keeps its own strip. Version
-/// bit 61 marks the handoff (bit 62 is the model's own footer flag), so the
-/// row diff re-renders both affected rows. Pure over the freshly rebuilt
-/// rows, so reapplying it every sync can't drift.
+/// Turn's, or another band's; with no owner it keeps its own strip. The band
+/// also takes the owner's `entry_id`: the strip's hover reveal and copied
+/// feedback key on it, so hovering the message lights the strip under the
+/// band. Version bit 61 marks the handoff (bit 62 is the model's own footer
+/// flag), so the row diff re-renders both affected rows. Pure over the
+/// freshly rebuilt rows, so reapplying it every sync can't drift.
 pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
     for ix in 0..rows.len() {
         if !matches!(rows[ix].kind, RowKind::GoalEnd { .. }) {
@@ -1289,8 +1291,10 @@ pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
         let Some(owner) = owner else { continue };
         let timestamp = rows[owner].timestamp.take();
         let copy_text = rows[owner].copy_text.take();
+        let entry_id = rows[owner].entry_id.clone();
         rows[owner].version ^= 1 << 61;
         let band = &mut rows[ix];
+        band.entry_id = entry_id;
         band.timestamp = timestamp;
         band.copy_text = copy_text;
         band.version ^= 1 << 61;
@@ -2208,6 +2212,8 @@ mod tests {
         assert!(reply.timestamp.is_none() && reply.copy_text.is_none());
         assert_eq!(band.timestamp, Some(2));
         assert_eq!(band.copy_text.as_deref(), Some("done"));
+        // One hover unit with the message it caps.
+        assert_eq!(band.entry_id.as_ref(), "m1");
         assert_eq!(reply.version, before[1].version ^ 1 << 61);
         assert_eq!(band.version, before[3].version ^ 1 << 61);
         // The prompt and the card are untouched.
@@ -2227,6 +2233,7 @@ mod tests {
         assert_eq!(rows[0].timestamp, Some(1));
         assert_eq!(rows[0].copy_text.as_deref(), Some("fix it"));
         assert_eq!(rows[1].timestamp, Some(3));
+        assert_eq!(rows[1].entry_id.as_ref(), "goal-a");
         assert_eq!(rows[0].version, before[0].version);
         assert_eq!(rows[1].version, before[1].version);
     }
@@ -2244,6 +2251,7 @@ mod tests {
         assert_eq!(rows[2].copy_text.as_deref(), Some("done"));
         assert_eq!(rows[3].timestamp, Some(4));
         assert!(rows[3].copy_text.is_none());
+        assert_eq!(rows[3].entry_id.as_ref(), "goal-b");
     }
 
     /// The Compaction divider (ADR-0011) renders as one quiet row carrying
