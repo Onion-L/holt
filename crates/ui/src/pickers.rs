@@ -20,8 +20,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable as _, KeyDownEvent,
-    SharedString, Subscription, Task, Window, div, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable as _, KeyDownEvent, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 
 use holt_proto::{Model, PermissionMode, Provider, ProviderId, ReasoningLevel, RepoRef};
@@ -128,25 +128,6 @@ pub enum PickerKind {
     Space,
 }
 
-/// Events [`Pickers`] raises for its owner — the Shell subscribes exactly
-/// like it subscribes to `Composer`'s send event. The footer chips render
-/// from `AppState` and print nothing themselves, so a chip whose outcome the
-/// user must be TOLD about reports it here instead of drawing it into the
-/// row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PickerEvent {
-    /// The Plan Mode chip's close button left Plan Mode (ADR-0025); the
-    /// Shell confirms it.
-    PlanModeExited,
-    /// The same button's `ExitPlanMode` failed — the chat is still
-    /// planning — or there was no engine to send it to.
-    PlanModeExitFailed(String),
-    /// The Provider Mode chip's close button left Provider Mode (ADR-0037).
-    ProviderModeExited,
-    /// The same button's `ExitProviderMode` failed, or there was no engine.
-    ProviderModeExitFailed(String),
-}
-
 pub struct Pickers {
     state: Entity<AppState>,
     config: DraftConfig,
@@ -164,7 +145,6 @@ pub struct Pickers {
     /// fallback when no chat row and no draft pick applies.
     sticky_mode: PermissionMode,
     sticky_mode_loaded: bool,
-    pub(crate) plan_mode_draft: bool,
     /// The new-chat canvas's Provider Mode draft (ADR-0037): the first send
     /// enters Provider Mode. Only read while no chat is selected.
     pub(crate) provider_mode_draft: bool,
@@ -231,8 +211,6 @@ pub struct Pickers {
     _state_observe: Subscription,
     _catalog_observe: Subscription,
 }
-
-impl EventEmitter<PickerEvent> for Pickers {}
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
@@ -363,7 +341,6 @@ impl Pickers {
             draft_owner,
             sticky_mode: PermissionMode::default(),
             sticky_mode_loaded: false,
-            plan_mode_draft: false,
             provider_mode_draft: false,
             open,
             model_rail: ModelRail::default(),
@@ -1054,13 +1031,6 @@ impl Pickers {
                 _ => None,
             };
             let mode_chip = self.mode_chip(&theme, cx);
-            // Plan Mode rides beside the permission chip (ADR-0025):
-            // planning state and the active revision's lifecycle, read from
-            // the same chat row the mode chip renders. (The goal chip that
-            // rode here moved to the shell's top-right goal card — state
-            // answers to the conversation, not the footer.)
-            let plan_chip = self.plan_chip(&theme, cx);
-            let provider_chip = self.provider_chip(&theme, cx);
             let mut left = div()
                 .flex()
                 .flex_row()
@@ -1072,9 +1042,7 @@ impl Pickers {
                     PickerKind::Mode,
                     "mode-popover",
                     closing,
-                ))
-                .children(plan_chip)
-                .children(provider_chip);
+                ));
             // Mirrors the draft chips: mode + checkout hug the left edge, ref
             // the right.
             let mut right = div()
@@ -1163,8 +1131,6 @@ impl Pickers {
             _ => None,
         };
         let mode_chip = self.mode_chip(&theme, cx);
-        let plan_chip = self.plan_chip(&theme, cx);
-        let provider_chip = self.provider_chip(&theme, cx);
         let mut left = div()
             .flex()
             .flex_row()
@@ -1177,7 +1143,6 @@ impl Pickers {
                 "mode-popover",
                 closing,
             ));
-        left = left.children(plan_chip).children(provider_chip);
         let mut right = div().flex().flex_row().items_center().min_w_0();
         if git {
             // Refs feed the draft labels — eager + idempotent.

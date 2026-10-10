@@ -60,7 +60,7 @@ _Avoid_: double-Esc stop
   _Avoid_: plan (Plan Mode vocabulary), diff, suggestion
 - **Key request**: Provider Mode's way of collecting a provider API key mid-workflow: the assistant asks for it, a card in the transcript collects the value locally, and saving it notifies the chat to continue. The value never enters History, a tool argument, or the Transcript. The card shows the destination the key would be sent to, and saving it approves that destination for the chat. The provider may still be a draft that no proposal has written.
   _Avoid_: key prompt, password dialog, secret input
-- **Provider Mode**: a chat-level mode, like Plan Mode and exclusive with it, under which the conversation adds and updates providers. Its Turns run a fixed catalog workflow with a toolset that touches no files; writes happen only through a proposal card's Write button, never by the agent. Entered with `/provider` or Settings' "Add with AI"; the composer's Provider chip shows it and its × leaves it. It stays on until the user leaves it.
+- **Provider Mode**: a chat-level mode, like Plan Mode and exclusive with it, under which the conversation adds and updates providers. Its Turns run a fixed catalog workflow with a toolset that touches no files; writes happen only through a proposal card's Write button, never by the agent. Entered with `/provider` or Settings' "Add with AI"; `/provider off` — or the chat-state card's off button — leaves it. It stays on until the user leaves it.
   _Avoid_: setup chat, setup session, wizard chat
 - **Provider reset**: dropping every user-written catalog entry for one Provider — model records, custom provider definition, hidden models — leaving the compiled catalog under the hand-edited overlay. Credentials are not catalog entries and survive it.
   _Avoid_: restore, backup, factory reset
@@ -103,9 +103,9 @@ _Avoid_: double-Esc stop
 - **Always-allow**: a chat-scoped, in-memory grant that passes matching mutating calls through the gate for the rest of the app session — bash matches by command prefix, write/edit by exact file path. Checked before the gatekeeper, so it holds across mode switches; cleared on restart and never persisted.
 _Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
 
-- **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, write a pending plan document, and request approval before implementation; it is independent of the chat's Permission mode.
+- **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, write a pending plan document, and request approval before implementation; it is independent of the chat's Permission mode. Entered with `/plan`; `/plan off` — or the chat-state card's off button — leaves it.
 _Avoid_: planning permission mode, read-only permission mode
-- **Goal Mode**: a chat-scoped durable objective the agent loops on (ADR-0044): after each settled Turn an independent verifier pass judges the goal from concrete evidence (files changed, tool results) and the engine queues the next step itself — a visible, deletable queue row. Set with `/goal <objective>`, controlled with `/goal off | pause | resume` or the composer chip. It is not a mode in the Plan Mode sense: no tool gating, no system-prompt change. Mutually exclusive with Plan Mode, Provider Mode, and routine runs.
+- **Goal Mode**: a chat-scoped durable objective the agent loops on (ADR-0044): after each settled Turn an independent verifier pass judges the goal from concrete evidence (files changed, tool results) and the engine queues the next step itself — a visible, deletable queue row. Set with `/goal <objective>`, controlled with `/goal off | pause | resume` or the chat-state card's pause/clear buttons. It is not a mode in the Plan Mode sense: no tool gating, no system-prompt change. Mutually exclusive with Plan Mode, Provider Mode, and routine runs.
 _Avoid_: goal as a permission/mode concept, loop mode, autopilot
 - **Plan document**: a versioned Markdown document under the chat's working directory at `.holt/plans`, representing one proposed implementation plan.
 _Avoid_: todo list, task list

@@ -26,8 +26,8 @@ pub(crate) enum Parsed {
     /// `/compact` with arguments — still intercepted, with the usage
     /// message for the composer to surface.
     MalformedCompact,
-    /// `/plan [<task>]` — intercepted; the raw directive never becomes
-    /// prompt text (ADR-0025).
+    /// `/plan [off | <task>]` — intercepted; the raw directive never
+    /// becomes prompt text (ADR-0025).
     Plan { action: PlanAction },
     /// `/init` — intercepted; the send path swaps it for [`INIT_PROMPT`]
     /// and queues that as an ordinary message.
@@ -63,6 +63,9 @@ pub(crate) enum GoalAction {
 pub(crate) enum PlanAction {
     /// `/plan` — enter Plan Mode on the current chat.
     Enter,
+    /// `/plan off` — leave Plan Mode on the current chat (or drop the
+    /// canvas draft).
+    Exit,
     /// `/plan <task>` — enter Plan Mode and send the task as the first
     /// planning input.
     Task(String),
@@ -230,9 +233,9 @@ fn parse_compact(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/plan` forms (ADR-0025): bare `/plan` enters, and `/plan <task>` enters
-/// with the task as the first planning input. `/planner`-style longer words and mid-text
-/// directives stay ordinary text.
+/// `/plan` forms (ADR-0025): bare `/plan` enters, `/plan off` leaves, and
+/// `/plan <task>` enters with the task as the first planning input.
+/// `/planner`-style longer words and mid-text directives stay ordinary text.
 fn parse_plan(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/plan") else {
         return parse_init(text);
@@ -247,9 +250,12 @@ fn parse_plan(text: &str) -> Parsed {
         return Parsed::Plain;
     }
     let rest = rest.trim();
-    Parsed::Plan {
-        action: PlanAction::Task(rest.to_string()),
-    }
+    let action = if rest == "off" {
+        PlanAction::Exit
+    } else {
+        PlanAction::Task(rest.to_string())
+    };
+    Parsed::Plan { action }
 }
 
 /// `/init` takes no arguments (same shape as `/compact`);
@@ -267,7 +273,8 @@ fn parse_init(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/provider` forms (ADR-0037), shaped like `/plan` plus `off`.
+/// `/provider` forms (ADR-0037): bare enters, `off` leaves, the rest is the
+/// first task.
 fn parse_provider(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/provider") else {
         return parse_goal(text);
@@ -341,6 +348,12 @@ mod tests {
             parse("  /plan   "),
             Parsed::Plan {
                 action: PlanAction::Enter
+            }
+        );
+        assert_eq!(
+            parse("/plan off"),
+            Parsed::Plan {
+                action: PlanAction::Exit
             }
         );
         assert_eq!(

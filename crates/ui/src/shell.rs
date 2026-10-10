@@ -35,7 +35,6 @@ use crate::git_panel::{GitPanel, GitPanelEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, TAB_SLIDE};
-use crate::pickers::{PickerEvent, Pickers};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::scheduled::{ScheduledEvent, ScheduledPage};
@@ -58,12 +57,12 @@ mod about;
 mod chat_list;
 mod chat_menu;
 mod external_apps;
-mod goal_card;
 mod navigation;
 mod notices;
 mod panes;
 mod right_pane;
 mod spaces;
+mod state_card;
 mod tabs;
 mod titlebar;
 mod update;
@@ -290,13 +289,13 @@ pub struct Shell {
     /// the transcript's bottom clearance, and the jump pill's anchor (the
     /// same one-frame lag every fade here rides).
     bottom_stack: std::rc::Rc<std::cell::Cell<f32>>,
-    /// The goal card's collapse/expand morph: the outgoing form's measured
+    /// The state card's collapse/expand morph: the outgoing form's measured
     /// outer size at the toggle instant; the box tweens toward the current
     /// form's live measured size. `None` in the steady state.
-    goal_card_morph: Option<goal_card::GoalCardMorph>,
-    /// The goal card form's measured outer size (w, h) — canvas-fed each
+    state_card_morph: Option<state_card::StateCardMorph>,
+    /// The state card's goal form's measured outer size (w, h) — canvas-fed each
     /// frame, read with the usual one-frame lag (the bottom_stack idiom).
-    goal_card_size: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    state_card_size: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     /// Ephemeral collapsed project sections, keyed by organization + id.
     pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
     /// In-flight disclosure tweens, shared by the project groups.
@@ -550,9 +549,6 @@ pub struct Shell {
     _ticker: Task<()>,
     _state_observation: Subscription,
     _composer_events: Subscription,
-    /// The composer footer's picker events (the Plan Mode chip's close
-    /// button).
-    _picker_events: Subscription,
     /// The primary transcript's spawn-chip events (subagent tabs).
     _transcript_events: Subscription,
 }
@@ -660,10 +656,6 @@ impl Shell {
                 }
             }
         });
-        // Plan Mode exit from the footer's Plan chip (ADR-0025): the chip
-        // reports it here — the footer row has no notice line of its own.
-        let pickers = composer.read(cx).pickers().clone();
-        let picker_events = cx.subscribe(&pickers, Self::on_picker_event);
         // Spawn chips open their subagent's transcript as a right-pane tab.
         let transcript_events = cx.subscribe(&transcript, Self::on_transcript_event);
         // Working-indicator heartbeat: notify once a second while a session is
@@ -750,8 +742,8 @@ impl Shell {
             // Seed with the compact composer stack's rough height so the
             // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
-            goal_card_morph: None,
-            goal_card_size: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            state_card_morph: None,
+            state_card_size: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,
@@ -865,7 +857,6 @@ impl Shell {
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
-            _picker_events: picker_events,
             _transcript_events: transcript_events,
         }
     }
@@ -1121,31 +1112,6 @@ impl Shell {
             .ok();
         }));
         cx.notify();
-    }
-
-    /// Plan Mode exits raised by the composer footer's chips (ADR-0025): the
-    /// Plan chip's close button reports here because the footer has nowhere
-    /// to print the outcome — the confirmation (or the failure) rides the
-    /// notice strip.
-    fn on_picker_event(&mut self, _: Entity<Pickers>, event: &PickerEvent, cx: &mut Context<Self>) {
-        match event {
-            PickerEvent::PlanModeExited => {
-                self.push_holt_notice(HoltNoticeKind::Plain, "Plan Mode off".into(), cx)
-            }
-            PickerEvent::PlanModeExitFailed(error) => self.push_holt_notice(
-                HoltNoticeKind::Error,
-                format!("Leaving Plan Mode failed: {error}").into(),
-                cx,
-            ),
-            PickerEvent::ProviderModeExited => {
-                self.push_holt_notice(HoltNoticeKind::Plain, "Provider Mode off".into(), cx)
-            }
-            PickerEvent::ProviderModeExitFailed(error) => self.push_holt_notice(
-                HoltNoticeKind::Error,
-                format!("Leaving Provider Mode failed: {error}").into(),
-                cx,
-            ),
-        }
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
@@ -1841,22 +1807,23 @@ impl Shell {
             overlays.push(popover::top_alert("provider-error-alert", viewport, card));
         }
 
-        // The Goal card (ADR-0044, relocated from the composer footer): the
-        // chat's live loop state pinned at the column's head, notices
-        // flowing beneath it. Chat route only — the card answers to the
-        // conversation on screen. An expanded (takeover) pane hides the
-        // transcript, and with it the card; a docked pane shifts the
-        // column's right inset so the card hugs the pane's seam instead of
-        // covering its tab strip. The stack starts BELOW the titlebar band:
+        // The chat-state card (ADR-0044's goal card, now also carrying the
+        // Plan/Provider Mode forms): the chat's live state pinned at the
+        // column's head, notices flowing beneath it. Chat route only — the
+        // card answers to the conversation on screen. An expanded (takeover)
+        // pane hides the transcript, and with it the card; a docked pane
+        // shifts the column's right inset so the card hugs the pane's seam
+        // instead of covering its tab strip. The stack starts BELOW the
+        // titlebar band:
         // the bar's trailing controls (external-app picker, terminal, pane
         // toggles) own the top TITLEBAR_HEIGHT px — a smaller pad put the
         // card right over them.
-        let goal_card = if matches!(self.route, Route::Chat) && !self.right_pane_expanded {
-            self.render_goal_card(&theme, cx)
+        let state_card = if matches!(self.route, Route::Chat) && !self.right_pane_expanded {
+            self.render_state_card(&theme, cx)
         } else {
             None
         };
-        if !self.holt_notices.is_empty() || goal_card.is_some() {
+        if !self.holt_notices.is_empty() || state_card.is_some() {
             // Top-right stacked holt notices. Newest at the bottom of the
             // visual stack (matches the top alert above) so a fresh notice
             // does not push existing ones off-screen; a single fixed slot
@@ -1876,7 +1843,7 @@ impl Shell {
                 .gap(px(8.0))
                 .pt(px(Theme::TITLEBAR_HEIGHT + 8.0))
                 .pr(px(14.0 + pane_inset));
-            if let Some(card) = goal_card {
+            if let Some(card) = state_card {
                 stack = stack.child(card);
             }
             for notice in &self.holt_notices {
@@ -3419,52 +3386,6 @@ mod tests {
         );
         assert!(!nav.can_forward());
         assert_eq!(nav.forward(), None);
-    }
-
-    #[gpui::test]
-    fn plan_mode_exit_picker_events_ride_the_notice_strip(cx: &mut gpui::TestAppContext) {
-        let dir = tempfile::tempdir().unwrap();
-        cx.update(|cx| {
-            cx.set_global(Theme::default());
-            crate::settings::init(UiSettings::default(), dir.path(), cx);
-        });
-        let state = cx.new(|_| AppState::new());
-        let shell = cx.new(|cx| {
-            Shell::new(
-                state,
-                EngineBootConfig {
-                    data_dir: std::env::temp_dir(),
-                },
-                cx,
-            )
-        });
-        let pickers = cx.read(|cx| shell.read(cx).composer.read(cx).pickers().clone());
-
-        shell.update(cx, |shell, cx| {
-            shell.on_picker_event(pickers.clone(), &PickerEvent::PlanModeExited, cx);
-        });
-        cx.read(|cx| {
-            let notices = &shell.read(cx).holt_notices;
-            assert_eq!(notices.len(), 1);
-            assert!(matches!(notices[0].kind, HoltNoticeKind::Plain));
-            assert_eq!(notices[0].message.as_ref(), "Plan Mode off");
-        });
-
-        // A refused exit keeps the chat planning, so the failure is reported
-        // rather than silently leaving the chip in place.
-        shell.update(cx, |shell, cx| {
-            shell.on_picker_event(
-                pickers,
-                &PickerEvent::PlanModeExitFailed("engine offline".into()),
-                cx,
-            );
-        });
-        cx.read(|cx| {
-            let notices = &shell.read(cx).holt_notices;
-            assert_eq!(notices.len(), 2);
-            assert!(matches!(notices[1].kind, HoltNoticeKind::Error));
-            assert!(notices[1].message.contains("engine offline"));
-        });
     }
 
     #[test]

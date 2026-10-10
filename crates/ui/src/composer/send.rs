@@ -163,13 +163,12 @@ impl Composer {
                 cx.notify();
                 return;
             }
-            // The bare /plan form dispatches itself (ADR-0025).
+            // The /plan mode-only forms dispatch themselves (ADR-0025).
             // They send no message, so they never reach the send path —
             // a draft chat has nothing to enter or query yet.
             super::slash::Parsed::Plan { action } => match action {
                 super::slash::PlanAction::Enter => {
                     self.pickers.update(cx, |pickers, cx| {
-                        pickers.plan_mode_draft = true;
                         pickers.provider_mode_draft = false;
                         cx.notify();
                     });
@@ -177,10 +176,15 @@ impl Composer {
                         self.plan_command("enter", None, cx);
                     } else {
                         self.plan_mode_draft = true;
-                        self.pickers.update(cx, |pickers, cx| {
-                            pickers.plan_mode_draft = true;
-                            cx.notify();
-                        });
+                    }
+                    return;
+                }
+                super::slash::PlanAction::Exit => {
+                    if self.state.read(cx).selected_chat.is_some() {
+                        self.plan_command("exit", None, cx);
+                    } else {
+                        // Canvas draft: drop it, like /provider off.
+                        self.plan_mode_draft = false;
                     }
                     return;
                 }
@@ -944,7 +948,7 @@ impl Composer {
             {
                 Ok(state) => {
                     let notice = match action {
-                        "enter" => String::new(),
+                        "enter" => "Plan Mode on".to_string(),
                         "exit" => "Plan Mode off — plan documents are kept".to_string(),
                         _ => plan_status_notice(&state),
                     };
@@ -973,7 +977,7 @@ impl Composer {
 
     /// The mode-only `/provider` forms (ADR-0037). On the new-chat canvas
     /// they only flip the draft the first send enters with; on a chat they
-    /// call the engine, whose chat-row republish moves the chip.
+    /// call the engine and the notice line confirms the switch.
     pub(crate) fn provider_command(&mut self, enter: bool, cx: &mut Context<Self>) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             if enter {
@@ -981,9 +985,6 @@ impl Composer {
             }
             self.pickers.update(cx, |pickers, cx| {
                 pickers.provider_mode_draft = enter;
-                if enter {
-                    pickers.plan_mode_draft = false;
-                }
                 cx.notify();
             });
             cx.notify();
@@ -1005,16 +1006,24 @@ impl Composer {
                 .client()
                 .call(method, serde_json::json!({ "chatId": chat_id }))
                 .await;
-            // Success needs no notice: the chat row's republish moves the
-            // chip. Only a failure takes the (red) banner.
-            if let Err(err) = result {
-                tracing::warn!(error = %err, "/provider command failed");
-                let _ = this.update(cx, |this, cx| {
-                    this.failure = Some(format!("/provider failed: {err}").into());
-                    this.failure_key = Some(chat_id.clone());
-                    cx.notify();
-                });
-            }
+            let notice = if enter {
+                "Provider Mode on"
+            } else {
+                "Provider Mode off"
+            };
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    // Chat-scoped like failed sends: chat A's switch must not
+                    // render under chat B.
+                    Ok(_) => this.failure = Some(notice.into()),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "/provider command failed");
+                        this.failure = Some(format!("/provider failed: {err}").into());
+                    }
+                }
+                this.failure_key = Some(chat_id.clone());
+                cx.notify();
+            });
         })
         .detach();
     }
