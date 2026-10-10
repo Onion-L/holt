@@ -118,6 +118,13 @@ impl EngineService {
                 .iter_mut()
                 .find(|chat| chat.id == chat_id)
                 .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            // ADR-0044: Plan Mode and a goal never overlap (read-only turns
+            // could never satisfy the verifier).
+            if chat.goal.is_some() {
+                return Err(RpcError::BadParams(
+                    "the chat has a goal — clear it first (/goal off)".into(),
+                ));
+            }
             if chat.plan_mode.is_none() {
                 let entry_mode = chat
                     .config
@@ -175,6 +182,25 @@ impl EngineService {
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
         let chat_id = required_string(&params, "chatId")?;
+        // ADR-0044: a goal is durable state with a queue footprint — reject
+        // rather than silently clear it (the Plan/Provider swap precedent
+        // does not extend here).
+        {
+            let chats = self
+                .runtime
+                .chats
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            if chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .is_some_and(|chat| chat.goal.is_some())
+            {
+                return Err(RpcError::BadParams(
+                    "the chat has a goal — clear it first (/goal off)".into(),
+                ));
+            }
+        }
         self.exit_plan_mode(serde_json::json!({ "chatId": chat_id }))?;
         self.set_provider_mode(chat_id, true)?;
         RpcReply::value(&self.provider_mode_state(chat_id)?)
@@ -386,6 +412,161 @@ impl EngineService {
                 entry_permission_mode: None,
             },
         })
+    }
+
+    /// Set or replace the chat's goal (ADR-0044). Planning, provider-mode,
+    /// and routine-run chats are rejected (mutual exclusion is rejection,
+    /// never a silent clear). The loop starts with the chat's next Turn —
+    /// a fresh chat has no captured model settings to build a run from, and
+    /// every other harness's `/goal` waits for the next message too.
+    pub(super) fn set_goal(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        let text = required_string(&params, "text")?.trim().to_string();
+        if text.is_empty() {
+            return Err(RpcError::BadParams("goal text must not be empty".into()));
+        }
+        if text.chars().count() > crate::goal::MAX_GOAL_CHARS {
+            return Err(RpcError::BadParams(format!(
+                "goal text is over the {}-character cap",
+                crate::goal::MAX_GOAL_CHARS
+            )));
+        }
+        {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            if chat.plan_mode.is_some() {
+                return Err(RpcError::BadParams(
+                    "the chat is in Plan Mode — exit it first (/plan)".into(),
+                ));
+            }
+            if chat.provider_mode {
+                return Err(RpcError::BadParams(
+                    "the chat is in Provider Mode — exit it first".into(),
+                ));
+            }
+            if chat.routine_run.is_some() {
+                return Err(RpcError::BadParams(
+                    "a routine run cannot carry a goal".into(),
+                ));
+            }
+            chat.goal = Some(holt_proto::ChatGoalState {
+                text: text.clone(),
+                status: holt_proto::GoalStatus::Active,
+                iteration: 0,
+                no_progress: 0,
+                eval_failures: 0,
+                started_at: chrono::Utc::now(),
+                last_reason: None,
+            });
+            persist_chats(&self.data_dir, &chats)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
+        self.runtime.publish_chats();
+        let chat = self.runtime.chat(chat_id);
+        crate::goal::cancel_check(&chat);
+        {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue
+                .sweep_goal_continuations()
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        }
+        RpcReply::value(&self.goal_state(chat_id)?)
+    }
+
+    /// Drop the chat's goal (ADR-0044): the row forgets the objective, an
+    /// in-flight check is cancelled, and queued continuations are swept —
+    /// "off" never leaves a last Turn to run. Idempotent.
+    pub(super) fn clear_goal(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        let chat = self.runtime.chat(chat_id);
+        crate::goal::clear_goal_state(self, &chat);
+        RpcReply::value(&self.goal_state(chat_id)?)
+    }
+
+    /// Stop or resume the loop while keeping the objective (ADR-0044).
+    /// Pausing cancels an in-flight check and sweeps queued continuations.
+    /// Resuming grants a fresh budget (the counters reset) and enqueues a
+    /// continuation when the chat is idle, so the loop visibly restarts.
+    pub(super) fn set_goal_paused(&self, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat_id = required_string(&params, "chatId")?;
+        let paused = params
+            .get("paused")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| RpcError::BadParams("paused must be a bool".into()))?;
+        let (goal_text, goal_reason) = {
+            let mut chats = self
+                .runtime
+                .chats
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            let chat = chats
+                .iter_mut()
+                .find(|chat| chat.id == chat_id)
+                .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+            let Some(goal) = chat.goal.as_mut() else {
+                return Err(RpcError::BadParams("the chat has no goal".into()));
+            };
+            if paused {
+                goal.status = holt_proto::GoalStatus::Paused;
+            } else {
+                goal.iteration = 0;
+                goal.no_progress = 0;
+                goal.eval_failures = 0;
+                goal.status = holt_proto::GoalStatus::Active;
+            }
+            let result = (goal.text.clone(), goal.last_reason.clone());
+            persist_chats(&self.data_dir, &chats)
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+            result
+        };
+        self.runtime.publish_chats();
+        let chat = self.runtime.chat(chat_id);
+        crate::goal::cancel_check(&chat);
+        if paused {
+            let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue
+                .sweep_goal_continuations()
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
+        } else {
+            let no_work_queued = {
+                let queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                let snapshot = queue.snapshot();
+                snapshot.pending.is_empty() && snapshot.active_message_id.is_none()
+            };
+            if no_work_queued {
+                let reason = goal_reason.unwrap_or_else(|| "resumed by the user".into());
+                if let Err(error) = crate::goal::enqueue_continuation(
+                    self,
+                    &chat,
+                    crate::goal::continuation_prompt(&goal_text, &reason),
+                ) {
+                    tracing::warn!(target: "holt::goal", %error, "goal resume could not be queued");
+                }
+            }
+        }
+        RpcReply::value(&self.goal_state(chat_id)?)
+    }
+
+    /// The chat's goal state as the mutators reply it — the live view
+    /// itself rides `WatchChats`.
+    fn goal_state(&self, chat_id: &str) -> Result<Option<holt_proto::ChatGoalState>, RpcError> {
+        let chats = self
+            .runtime
+            .chats
+            .read()
+            .map_err(|_| RpcError::Failed("chats lock poisoned".into()))?;
+        let chat = chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .ok_or_else(|| RpcError::BadParams("unknown chat".into()))?;
+        Ok(chat.goal.clone())
     }
 }
 

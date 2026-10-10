@@ -65,6 +65,7 @@ pub(crate) enum UsageKind {
     Compaction,
     AutoReview,
     Title,
+    GoalCheck,
 }
 
 impl UsageKind {
@@ -79,6 +80,7 @@ impl UsageKind {
             Self::Compaction => "compaction",
             Self::AutoReview => "auto-review",
             Self::Title => "title",
+            Self::GoalCheck => "goal-check",
         }
     }
 }
@@ -726,6 +728,16 @@ pub(crate) fn record_compaction(chat: &ChatRuntime, response: &AssistantMessage)
 /// even when the reply normalizes to no title at all.
 pub(crate) fn record_title(chat: &ChatRuntime, response: &AssistantMessage) {
     record_immediate(chat, UsageRecord::from_message(UsageKind::Title, response));
+}
+
+/// Book one goal-verifier pass immediately (ADR-0044): the check runs after
+/// the Turn's batch settled, so the capture buffer would strand the record
+/// until a next Turn that may never come.
+pub(crate) fn record_goal_check(chat: &ChatRuntime, response: &AssistantMessage) {
+    record_immediate(
+        chat,
+        UsageRecord::from_message(UsageKind::GoalCheck, response),
+    );
 }
 
 /// Settle the finished Turn's usage: stamp the Turn's own records with its

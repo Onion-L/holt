@@ -3,8 +3,8 @@
 
 use holt_doc::MessageRole;
 use holt_proto::{
-    TitleSettings, TitleSettingsState, TitleSource, WebSearchBackendOption, WebSearchEntryView,
-    WebSearchSettingsState,
+    GoalSettings, GoalSettingsState, TitleSettings, TitleSettingsState, TitleSource,
+    WebSearchBackendOption, WebSearchEntryView, WebSearchSettingsState,
 };
 use holt_rpc::{RpcError, RpcReply};
 use std::sync::Arc;
@@ -322,18 +322,62 @@ impl EngineService {
         })
     }
 
-    pub(super) async fn save_title_settings(
+    /// The goal-verifier settings view (ADR-0044 follow-up): the optional
+    /// separate judge plus the same missing-credentials warning shape the
+    /// title settings carry. A warning never blocks the loop — the
+    /// verifier falls back to the chat's own model.
+    pub(super) async fn goal_settings_state(&self) -> GoalSettingsState {
+        let settings = self.goal_settings.get();
+        let warning = match settings.model_id.as_deref() {
+            Some(model_id) => {
+                let provider = model_id.split('/').next().unwrap_or_default();
+                if self
+                    .providers
+                    .credentials
+                    .reveal_key(provider)
+                    .await
+                    .is_some()
+                {
+                    None
+                } else {
+                    Some(format!(
+                        "Provider {provider} has no saved credentials — goal verification \
+                         will keep using each chat's own model until a key is configured."
+                    ))
+                }
+            }
+            None => None,
+        };
+        GoalSettingsState { settings, warning }
+    }
+
+    /// `SaveGoalSettings` — same model validation as the title settings'
+    /// model field: trim, empty = the default (the chat's model),
+    /// provider-qualified syntax, an eligible provider, a resolvable model.
+    pub(super) async fn save_goal_settings(
         &self,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
-        let mut settings: TitleSettings = serde_json::from_value(params)
+        let settings: GoalSettings = serde_json::from_value(params)
             .map_err(|error| RpcError::BadParams(error.to_string()))?;
-        // An empty/whitespace model id is the disabled state, not an error.
-        settings.model_id = settings
-            .model_id
+        let model_id = self.validate_settings_model_id(settings.model_id)?;
+        self.goal_settings
+            .save(GoalSettings { model_id })
+            .map_err(|error| RpcError::Failed(error.to_string()))?;
+        RpcReply::value(&self.goal_settings_state().await)
+    }
+
+    /// The provider-qualified model id a settings record may carry: trim,
+    /// empty = `None` (the feature's default), and the id must name an
+    /// eligible provider and a model its catalog resolves.
+    fn validate_settings_model_id(
+        &self,
+        model_id: Option<String>,
+    ) -> Result<Option<String>, RpcError> {
+        let model_id = model_id
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty());
-        if let Some(model_id) = settings.model_id.as_deref() {
+        if let Some(model_id) = model_id.as_deref() {
             let Some((provider, _)) = model_id.split_once('/') else {
                 return Err(RpcError::BadParams(format!(
                     "model must use provider/model syntax: {model_id}"
@@ -348,6 +392,17 @@ impl EngineService {
                 .resolve_model(provider, model_id)
                 .map_err(RpcError::BadParams)?;
         }
+        Ok(model_id)
+    }
+
+    pub(super) async fn save_title_settings(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let mut settings: TitleSettings = serde_json::from_value(params)
+            .map_err(|error| RpcError::BadParams(error.to_string()))?;
+        // An empty/whitespace model id is the disabled state, not an error.
+        settings.model_id = self.validate_settings_model_id(settings.model_id)?;
         let instruction = settings.instruction.trim();
         if instruction.is_empty() {
             return Err(RpcError::BadParams("instruction must not be empty".into()));

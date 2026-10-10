@@ -208,6 +208,8 @@ icon_assets![
     // terminal/plus/close ports) — the set has no return glyph.
     (RETURN, "return"),
     (ALT_ARROW_DOWN, "alt-arrow-down"),
+    // alt-arrow-down mirrored — the goal card's collapse affordance.
+    (ALT_ARROW_UP, "alt-arrow-up"),
     // Hand-drawn expand/maximize arrows in the Solar Linear style (like the
     // terminal/plus/return ports) — the set has no expand glyph.
     (EXPAND_ARROWS, "expand-arrows"),
@@ -240,6 +242,9 @@ icon_assets![
     (DOCUMENT_ADD, "document-add"),
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
+    // Concentric rings and a center dot — the goal surface's glyph
+    // (ADR-0044): the arming message's pill and the top-right goal card.
+    (TARGET, "target"),
     (WIDGET, "widget"),
     // Baseline + three column bars, same linear family — the Usage
     // settings page's sidebar glyph.

@@ -1056,7 +1056,9 @@ impl Pickers {
             let mode_chip = self.mode_chip(&theme, cx);
             // Plan Mode rides beside the permission chip (ADR-0025):
             // planning state and the active revision's lifecycle, read from
-            // the same chat row the mode chip renders.
+            // the same chat row the mode chip renders. (The goal chip that
+            // rode here moved to the shell's top-right goal card — state
+            // answers to the conversation, not the footer.)
             let plan_chip = self.plan_chip(&theme, cx);
             let provider_chip = self.provider_chip(&theme, cx);
             let mut left = div()

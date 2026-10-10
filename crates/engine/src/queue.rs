@@ -285,6 +285,48 @@ impl Queue {
         extra_instructions: Option<String>,
         attended: bool,
     ) -> Result<(), RpcError> {
+        self.enqueue_inner(
+            request,
+            message_id,
+            kind,
+            skill_name,
+            extra_instructions,
+            attended,
+            false,
+        )
+    }
+
+    /// The goal loop's continuation (ADR-0044): an ordinary queued run the
+    /// verifier enqueued, flagged so deleting it pauses the goal and
+    /// `ClearGoal`/pausing sweeps it. Never attended — the loop does not
+    /// grant itself a pass through a paused queue.
+    pub fn enqueue_goal_continuation(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+    ) -> Result<(), RpcError> {
+        self.enqueue_inner(
+            request,
+            message_id,
+            PendingKind::Ordinary,
+            None,
+            None,
+            false,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_inner(
+        &mut self,
+        request: RunRequest,
+        message_id: String,
+        kind: PendingKind,
+        skill_name: Option<String>,
+        extra_instructions: Option<String>,
+        attended: bool,
+        goal_continuation: bool,
+    ) -> Result<(), RpcError> {
         if self.record.accepted.contains(&message_id) {
             return if self.error.is_some() {
                 self.commit(self.record.clone())
@@ -300,6 +342,7 @@ impl Queue {
             kind,
             skill_name,
             extra_instructions,
+            goal_continuation,
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -355,6 +398,7 @@ impl Queue {
             kind,
             skill_name,
             extra_instructions,
+            goal_continuation: false,
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -431,6 +475,65 @@ impl Queue {
         next.pending.remove(index);
         next.priority.retain(|id| id != message_id);
         if next.attended_grant.as_deref() == Some(message_id) {
+            next.attended_grant = None;
+        }
+        if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
+            next.clear_pause_when_empty();
+        }
+        self.commit(next)
+    }
+
+    /// Whether a pending row is the goal loop's continuation (ADR-0044) —
+    /// the RPC layer checks before `delete`, since deleting one pauses the
+    /// goal.
+    pub fn is_goal_continuation(&self, message_id: &str) -> bool {
+        self.record
+            .pending
+            .iter()
+            .any(|item| item.message_id == message_id && item.goal_continuation)
+    }
+
+    /// Whether any goal continuation is queued or running — the restart
+    /// reconciliation's "the loop still has its next step" test.
+    pub fn has_goal_continuation(&self) -> bool {
+        self.record
+            .pending
+            .iter()
+            .any(|item| item.goal_continuation)
+            || self
+                .record
+                .started
+                .as_ref()
+                .is_some_and(|started| started.message.goal_continuation)
+    }
+
+    /// Drop every pending goal continuation (`ClearGoal`/pausing sweeps the
+    /// loop's queued steps so "off" never leaves a last Turn to run). A
+    /// started continuation is execution's property and stays — its settle
+    /// finds the goal gone and evaluates nothing.
+    pub fn sweep_goal_continuations(&mut self) -> Result<(), RpcError> {
+        if !self
+            .record
+            .pending
+            .iter()
+            .any(|item| item.goal_continuation)
+        {
+            return Ok(());
+        }
+        let mut next = self.record.clone();
+        next.pending.retain(|item| !item.goal_continuation);
+        let pending_ids: Vec<&str> = next
+            .pending
+            .iter()
+            .map(|item| item.message_id.as_str())
+            .collect();
+        next.priority
+            .retain(|id| pending_ids.contains(&id.as_str()));
+        if next
+            .attended_grant
+            .as_deref()
+            .is_some_and(|grant| !pending_ids.contains(&grant))
+        {
             next.attended_grant = None;
         }
         if next.pending.is_empty() && next.started.is_none() && self.error.is_none() {
@@ -912,6 +1015,23 @@ impl EngineService {
                         ),
                         DriverOutcome::Settled((success, error)) => (success, error, None),
                     };
+                    // The goal loop's view of this settle (ADR-0044),
+                    // captured before the terminal-event block moves
+                    // `turn_end`: a real Turn's outcome, or a Message item's
+                    // admission failure (the model or credential is gone) —
+                    // a manual Compaction's failure on the same
+                    // `DriverOutcome::Settled` path never reaches the goal.
+                    let goal_turn = turn_end.as_ref().map(|end| match end {
+                        crate::agent::TurnEnd::Succeeded => crate::goal::SettledTurn::Succeeded,
+                        crate::agent::TurnEnd::Failed { .. } => crate::goal::SettledTurn::Failed,
+                        crate::agent::TurnEnd::Interrupted => crate::goal::SettledTurn::Interrupted,
+                    });
+                    let goal_admission_error =
+                        if turn_end.is_none() && !success && kind != PendingKind::Compact {
+                            error.clone()
+                        } else {
+                            None
+                        };
                     // Wait for the heartbeat to stop before publishing the final
                     // status so a last tick cannot revive an idle session.
                     heartbeat_stop.cancel();
@@ -997,6 +1117,9 @@ impl EngineService {
                     } else {
                         None
                     };
+                    // The goal verifier reads the same frozen set (ADR-0044)
+                    // — cloned before the terminal event takes the original.
+                    let goal_change_set = final_change_set.clone();
                     // The usage ledger settles with the Turn: the round-trips
                     // buffered while it ran land as ONE batch append, stamped
                     // with the Turn's message id and outcome — after queue
@@ -1082,6 +1205,28 @@ impl EngineService {
                             .turn_changes
                             .clear_final_signal(&worker_chat.chat_id, &message_id);
                     }
+                    // The goal loop (ADR-0044): after the settled card's frame
+                    // grace, still inside the iteration, so a continuation can
+                    // never race the next admission and the verdict's Notice
+                    // never overtakes the Turn's own card. Bounded and not
+                    // user-interruptible (the Turn's cancel token is already
+                    // cleared); `catch_unwind` below covers a panic.
+                    if let Some(goal_turn) = goal_turn {
+                        crate::goal::after_turn_settled(
+                            &service,
+                            &worker_chat,
+                            goal_turn,
+                            goal_change_set.as_ref(),
+                        )
+                        .await;
+                    } else if let Some(admission_error) = goal_admission_error {
+                        crate::goal::after_admission_failure(
+                            &service,
+                            &worker_chat,
+                            &admission_error,
+                        )
+                        .await;
+                    }
                 });
                 if let Err(payload) = iteration.catch_unwind().await {
                     let detail = panic_detail(&*payload);
@@ -1096,18 +1241,22 @@ impl EngineService {
                     // heartbeat stop; cancel and join are idempotent.
                     heartbeat_stop.cancel();
                     let _ = (&mut heartbeat).await;
-                    let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
-                    *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    let started = queue.record.started.is_some();
-                    let vanished =
-                        !started && queue.record.pending.iter().all(|m| m.message_id != picked);
-                    if !vanished && !worker_chat.is_removed() && !queue.unreadable {
-                        // The panic detail is this attempt's cause — a
-                        // persist error from the same Turn must not
-                        // stand in for it (issue #16).
-                        let _ = queue.finish(false, Some(format!("internal error: {detail}")));
-                    }
-                    drop(queue);
+                    let started = {
+                        let mut queue = worker_chat.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        *worker_chat.cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        let started = queue.record.started.is_some();
+                        let vanished =
+                            !started && queue.record.pending.iter().all(|m| m.message_id != picked);
+                        if !vanished && !worker_chat.is_removed() && !queue.unreadable {
+                            // The panic detail is this attempt's cause — a
+                            // persist error from the same Turn must not
+                            // stand in for it (issue #16).
+                            let _ = queue.finish(false, Some(format!("internal error: {detail}")));
+                        }
+                        started
+                        // The guard is not `Send`: it drops with the block,
+                        // before the goal hook below awaits.
+                    };
                     if started {
                         service.runtime.set_session(
                             &worker_chat.chat_id,
@@ -1118,6 +1267,17 @@ impl EngineService {
                             },
                         );
                     }
+                    // A panicked iteration is a failed Turn for the goal loop
+                    // (ADR-0044): pause the goal rather than leave it active
+                    // with nothing queued. Last, so a goal-hook panic of its
+                    // own cannot preempt the queue settle above.
+                    crate::goal::after_turn_settled(
+                        &service,
+                        &worker_chat,
+                        crate::goal::SettledTurn::Failed,
+                        None,
+                    )
+                    .await;
                 }
             }
         });

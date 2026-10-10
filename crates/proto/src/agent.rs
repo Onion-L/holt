@@ -317,6 +317,12 @@ pub struct PendingMessage {
     pub skill_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
+    /// Goal mode (ADR-0044): this row is the verifier's continuation, not a
+    /// user-typed message. Deleting it pauses the goal; `ClearGoal`/pausing
+    /// sweeps every flagged row. Additive — queue files from before goal
+    /// mode decode with `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_continuation: bool,
     pub submitted_at: i64,
     pub error: Option<String>,
 }

@@ -234,6 +234,8 @@ impl RpcService for EngineService {
             methods::RESET_PROVIDER_CATALOG => self.reset_provider_catalog(params),
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.title_settings_state().await),
             methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,
+            methods::GET_GOAL_SETTINGS => RpcReply::value(&self.goal_settings_state().await),
+            methods::SAVE_GOAL_SETTINGS => self.save_goal_settings(params).await,
             methods::GET_WEB_SEARCH_SETTINGS => RpcReply::value(&self.web_search_state()),
             methods::SAVE_WEB_SEARCH_BACKEND => self.save_web_search_backend(params),
             methods::SET_ACTIVE_WEB_SEARCH_BACKEND => self.set_active_web_search_backend(params),
@@ -256,7 +258,8 @@ impl RpcService for EngineService {
                 { "name": "compact", "description": "Summarize the older conversation and keep only a recent tail" },
                 { "name": "init", "description": "Generate or update AGENTS.md for this repository" },
                 { "name": "plan", "description": "Plan Mode: explore read-only, submit a plan for approval", "inputHint": "[task]" },
-                { "name": "provider", "description": "Provider Mode: add or update providers and models by conversation", "inputHint": "[task | off]" }
+                { "name": "provider", "description": "Provider Mode: add or update providers and models by conversation", "inputHint": "[task | off]" },
+                { "name": "goal", "description": "Goal Mode: loop on an objective until a verifier says it holds", "inputHint": "[objective | off | pause | resume]" }
             ])),
             // The skills catalog (ADR-0005): fresh per call — the
             // filesystem is the registry, so there is nothing to cache.
@@ -431,6 +434,9 @@ impl RpcService for EngineService {
             }
             methods::ENTER_PLAN_MODE => self.enter_plan_mode(params),
             methods::EXIT_PLAN_MODE => self.exit_plan_mode(params),
+            methods::SET_GOAL => self.set_goal(params),
+            methods::CLEAR_GOAL => self.clear_goal(params),
+            methods::SET_GOAL_PAUSED => self.set_goal_paused(params),
             methods::ENTER_PROVIDER_MODE => self.enter_provider_mode(params),
             methods::EXIT_PROVIDER_MODE => self.exit_provider_mode(params),
             methods::GET_PROVIDER_MODE => {

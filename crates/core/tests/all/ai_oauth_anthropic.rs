@@ -148,6 +148,11 @@ async fn keeps_the_localhost_redirect_uri_for_manual_callback_login() {
         .login(interaction_object)
         .await
         .unwrap();
+    // The accept task owns the listener and only drops it on its next
+    // poll, which the runtime grants only while the root future yields —
+    // yield here (guard still held) so port 53692 is free before the next
+    // test binds it, instead of at runtime teardown after the guard.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     assert_eq!(credentials.access, "access-token");
     assert_eq!(credentials.refresh, "refresh-token");
@@ -226,6 +231,9 @@ async fn login_resolves_through_the_manual_prompt_and_aborts_it_after_settling()
         .login(Arc::new(interaction))
         .await
         .unwrap();
+    // Same as above: free port 53692 before the guard drops, not at
+    // runtime teardown.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     assert_eq!(credential.access, "access");
     assert_eq!(credential.refresh, "refresh");

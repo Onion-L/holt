@@ -262,6 +262,14 @@ pub enum RowKind {
     Notice {
         message: SharedString,
     },
+    /// The goal loop's terminal row (ADR-0044): the goal card's settled
+    /// form landed in the transcript — the same target glyph on a
+    /// passive band, so it reads as the arc's conclusion, not housekeeping
+    /// noise. Model-side it is a `Notice` the engine pushed under a
+    /// `goal-*` entry id.
+    GoalEnd {
+        message: SharedString,
+    },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
     /// carries, rendered as Markdown.
@@ -973,14 +981,24 @@ pub fn rows_for_entry(
                         id: part_id,
                         message,
                     } => {
+                        // The goal loop's terminal rows (ADR-0044) get the
+                        // band treatment; every other Notice stays a plain
+                        // housekeeping row.
+                        let kind = if entry.id.starts_with("goal-") {
+                            RowKind::GoalEnd {
+                                message: message.clone().into(),
+                            }
+                        } else {
+                            RowKind::Notice {
+                                // Engine-authored prose; the row wraps.
+                                message: message.clone().into(),
+                            }
+                        };
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
                             turn_start: false,
-                            kind: RowKind::Notice {
-                                // Engine-authored prose; the row wraps.
-                                message: message.clone().into(),
-                            },
+                            kind,
                             entry_id: entry_id.clone(),
                             timestamp: None,
                             copy_text: None,
@@ -1240,6 +1258,47 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
         suffix += 1;
     }
     Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
+}
+
+/// The goal loop's band (ADR-0044) concludes the Turn it caps: lift the
+/// settled message's footer strip (timestamp + copy) down under the band, so
+/// the block reads message → verdict → footer as one unit. The band entry's
+/// own strip (its push time, nothing to copy) is replaced. The walk skips
+/// footerless rows (a change-set card can sit between) and stops at a User
+/// row or an earlier band — a band never claims a prompt's footer, an earlier
+/// Turn's, or another band's; with no owner it keeps its own strip. The band
+/// also takes the owner's `entry_id`: the strip's hover reveal and copied
+/// feedback key on it, so hovering the message lights the strip under the
+/// band. Version bit 61 marks the handoff (bit 62 is the model's own footer
+/// flag), so the row diff re-renders both affected rows. Pure over the
+/// freshly rebuilt rows, so reapplying it every sync can't drift.
+pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
+    for ix in 0..rows.len() {
+        if !matches!(rows[ix].kind, RowKind::GoalEnd { .. }) {
+            continue;
+        }
+        let mut owner = None;
+        for back in (0..ix).rev() {
+            let row = &rows[back];
+            if matches!(row.kind, RowKind::User { .. } | RowKind::GoalEnd { .. }) {
+                break;
+            }
+            if row.timestamp.is_some() || row.copy_text.is_some() {
+                owner = Some(back);
+                break;
+            }
+        }
+        let Some(owner) = owner else { continue };
+        let timestamp = rows[owner].timestamp.take();
+        let copy_text = rows[owner].copy_text.take();
+        let entry_id = rows[owner].entry_id.clone();
+        rows[owner].version ^= 1 << 61;
+        let band = &mut rows[ix];
+        band.entry_id = entry_id;
+        band.timestamp = timestamp;
+        band.copy_text = copy_text;
+        band.version ^= 1 << 61;
+    }
 }
 
 /// The card row for one Turn's change set (ADR-0024 ticket 03). `entry_id`
@@ -2075,6 +2134,124 @@ mod tests {
             _other => panic!("expected a notice row"),
         }
         assert!(rows[0].copy_text.is_none());
+    }
+
+    /// The goal loop's terminal Notice (ADR-0044) lands under a `goal-*`
+    /// entry id and renders as the band row, not a plain housekeeping row.
+    #[test]
+    fn a_goal_notice_renders_the_goal_end_band() {
+        let mut entry = assistant(
+            "goal-abc",
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Goal achieved · 1 round · 12 min · 45.2k tokens".into(),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        match &rows[0].kind {
+            RowKind::GoalEnd { message } => assert!(message.contains("Goal achieved")),
+            _other => panic!("expected the goal-end band row"),
+        }
+    }
+
+    fn goal_rows(id: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(
+            id,
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Goal achieved · 12 min".into(),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn user_rows(id: &str, text: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(id, MessageStatus::Complete, vec![text_part("t0", text)]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn reply_rows(id: &str, text: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(id, MessageStatus::Complete, vec![text_part("t0", text)]);
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    #[test]
+    fn a_goal_band_takes_the_settled_reply_footer() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        // A footerless row between (a change-set card's shape) is skipped.
+        rows.push(Row {
+            id: "turn1#tcs".into(),
+            version: 7,
+            turn_start: false,
+            kind: RowKind::Notice {
+                message: "card".into(),
+            },
+            entry_id: "m1".into(),
+            timestamp: None,
+            copy_text: None,
+        });
+        rows.extend(goal_rows("goal-a", 3));
+        let before = rows.clone();
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        let (reply, band) = (&rows[1], &rows[3]);
+        assert!(reply.timestamp.is_none() && reply.copy_text.is_none());
+        assert_eq!(band.timestamp, Some(2));
+        assert_eq!(band.copy_text.as_deref(), Some("done"));
+        // One hover unit with the message it caps.
+        assert_eq!(band.entry_id.as_ref(), "m1");
+        assert_eq!(reply.version, before[1].version ^ 1 << 61);
+        assert_eq!(band.version, before[3].version ^ 1 << 61);
+        // The prompt and the card are untouched.
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert_eq!(rows[2].version, before[2].version);
+    }
+
+    #[test]
+    fn a_goal_band_right_after_the_prompt_keeps_its_own_footer() {
+        // "Goal cleared — the turn could not start": no reply to own.
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(goal_rows("goal-a", 3));
+        let before = rows.clone();
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert_eq!(rows[0].copy_text.as_deref(), Some("fix it"));
+        assert_eq!(rows[1].timestamp, Some(3));
+        assert_eq!(rows[1].entry_id.as_ref(), "goal-a");
+        assert_eq!(rows[0].version, before[0].version);
+        assert_eq!(rows[1].version, before[1].version);
+    }
+
+    #[test]
+    fn adjacent_goal_bands_never_take_each_others_footer() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        rows.extend(goal_rows("goal-a", 3));
+        rows.extend(goal_rows("goal-b", 4));
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        assert_eq!(rows[2].timestamp, Some(2));
+        assert_eq!(rows[2].copy_text.as_deref(), Some("done"));
+        assert_eq!(rows[3].timestamp, Some(4));
+        assert!(rows[3].copy_text.is_none());
+        assert_eq!(rows[3].entry_id.as_ref(), "goal-b");
     }
 
     /// The Compaction divider (ADR-0011) renders as one quiet row carrying

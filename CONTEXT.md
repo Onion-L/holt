@@ -105,6 +105,8 @@ _Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
 
 - **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, write a pending plan document, and request approval before implementation; it is independent of the chat's Permission mode.
 _Avoid_: planning permission mode, read-only permission mode
+- **Goal Mode**: a chat-scoped durable objective the agent loops on (ADR-0044): after each settled Turn an independent verifier pass judges the goal from concrete evidence (files changed, tool results) and the engine queues the next step itself — a visible, deletable queue row. Set with `/goal <objective>`, controlled with `/goal off | pause | resume` or the composer chip. It is not a mode in the Plan Mode sense: no tool gating, no system-prompt change. Mutually exclusive with Plan Mode, Provider Mode, and routine runs.
+_Avoid_: goal as a permission/mode concept, loop mode, autopilot
 - **Plan document**: a versioned Markdown document under the chat's working directory at `.holt/plans`, representing one proposed implementation plan.
 _Avoid_: todo list, task list
 - **Plan submission**: the explicit runtime action that submits the active Plan document for user approval.

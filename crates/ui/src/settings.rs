@@ -277,6 +277,9 @@ pub struct UiSettings {
     /// The Home canvas's first-project hint (ADR-0039) was dismissed.
     #[serde(default)]
     pub home_hint_dismissed: bool,
+    /// The goal card renders as the collapsed capsule (ADR-0044).
+    #[serde(default)]
+    pub goal_card_collapsed: bool,
     /// Open session tabs in visual order (drag-reorder edits in place).
     /// Device-local: a tab is a local viewport onto the synced session list —
     /// closing one never archives the session. Ids of archived/deleted chats
@@ -375,6 +378,7 @@ impl Default for UiSettings {
             sidebar_show_pull_request: true,
             last_space_id: None,
             home_hint_dismissed: false,
+            goal_card_collapsed: false,
             open_tabs: None,
             space_filter: None,
             tab_order: std::collections::HashMap::new(),
@@ -1109,6 +1113,7 @@ mod tests {
             file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
             home_hint_dismissed: true,
+            goal_card_collapsed: true,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
