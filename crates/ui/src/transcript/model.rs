@@ -262,6 +262,14 @@ pub enum RowKind {
     Notice {
         message: SharedString,
     },
+    /// The goal loop's terminal row (ADR-0044): the composer goal chip's
+    /// settled form landed in the transcript — the same target glyph on a
+    /// passive band, so it reads as the arc's conclusion, not housekeeping
+    /// noise. Model-side it is a `Notice` the engine pushed under a
+    /// `goal-*` entry id.
+    GoalEnd {
+        message: SharedString,
+    },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
     /// carries, rendered as Markdown.
@@ -973,14 +981,24 @@ pub fn rows_for_entry(
                         id: part_id,
                         message,
                     } => {
+                        // The goal loop's terminal rows (ADR-0044) get the
+                        // band treatment; every other Notice stays a plain
+                        // housekeeping row.
+                        let kind = if entry.id.starts_with("goal-") {
+                            RowKind::GoalEnd {
+                                message: message.clone().into(),
+                            }
+                        } else {
+                            RowKind::Notice {
+                                // Engine-authored prose; the row wraps.
+                                message: message.clone().into(),
+                            }
+                        };
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
                             turn_start: false,
-                            kind: RowKind::Notice {
-                                // Engine-authored prose; the row wraps.
-                                message: message.clone().into(),
-                            },
+                            kind,
                             entry_id: entry_id.clone(),
                             timestamp: None,
                             copy_text: None,
@@ -2075,6 +2093,28 @@ mod tests {
             _other => panic!("expected a notice row"),
         }
         assert!(rows[0].copy_text.is_none());
+    }
+
+    /// The goal loop's terminal Notice (ADR-0044) lands under a `goal-*`
+    /// entry id and renders as the band row, not a plain housekeeping row.
+    #[test]
+    fn a_goal_notice_renders_the_goal_end_band() {
+        let mut entry = assistant(
+            "goal-abc",
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Goal achieved · 1 round · 12 min · 45.2k tokens".into(),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        match &rows[0].kind {
+            RowKind::GoalEnd { message } => assert!(message.contains("Goal achieved")),
+            _other => panic!("expected the goal-end band row"),
+        }
     }
 
     /// The Compaction divider (ADR-0011) renders as one quiet row carrying

@@ -614,6 +614,7 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::GoalEnd { message } => goal_end_row(message.clone(), &theme),
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, window, cx)
             }
@@ -1473,6 +1474,55 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .line_height(px(17.0))
                 .text_color(theme.text_muted.opacity(0.9))
                 .child(message),
+        )
+        .into_any_element()
+}
+
+/// The goal loop's terminal row (ADR-0044): the composer chip's settled
+/// form landed in the transcript — the question chip's passive band with
+/// the goal's target glyph, so the row reads as the arc's conclusion,
+/// never as housekeeping noise beside it. One line, truncated.
+fn goal_end_row(message: SharedString, theme: &Theme) -> AnyElement {
+    div()
+        .py(px(4.0))
+        .w_full()
+        .child(
+            div()
+                .h(px(28.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(crate::theme::hairline(0.08))
+                .bg(crate::theme::ink(0.045))
+                .px(px(6.0))
+                .text_size(px(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(18.0))
+                        .rounded(px(5.0))
+                        .bg(crate::theme::ink(0.09))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(crate::icons::TARGET)
+                                .size(px(11.0))
+                                .text_color(theme.text_muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_color(theme.text_muted.opacity(0.9))
+                        .child(message),
+                ),
         )
         .into_any_element()
 }
