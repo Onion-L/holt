@@ -265,6 +265,124 @@ async fn a_failing_verifier_keeps_the_loop_until_three_strikes() {
     assert_eq!(goal["evalFailures"], 3);
 }
 
+/// Save the goal-verifier settings through the typed RPC (the General
+/// page's model picker).
+async fn save_goal_settings(
+    engine: &holt_engine::LocalEngine,
+    model_id: Option<&str>,
+) -> serde_json::Value {
+    let RpcReply::Value(value) = engine
+        .handle(
+            methods::SAVE_GOAL_SETTINGS,
+            serde_json::json!({ "modelId": model_id }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SaveGoalSettings did not return a value");
+    };
+    value
+}
+
+#[tokio::test]
+async fn the_verifier_rides_the_configured_model_at_minimal_reasoning() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("seeded"),
+        ScriptedReply::text("did the work"),
+        ScriptedReply::text("COMPLETE: the tests pass"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // A separate judge on the same provider (a different model) — the
+    // General page's Goal verifier picker.
+    let state = save_goal_settings(&engine, Some("openai/gpt-5.4-mini")).await;
+    assert_eq!(state["settings"]["modelId"], "openai/gpt-5.4-mini");
+    assert_eq!(state["warning"], serde_json::Value::Null);
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "seed").await;
+    common::wait_for_transcript_text(&mut transcript, "seeded").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    set_goal(&engine, "chat-1", "ship it").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "work").await;
+    common::wait_for_transcript_text(&mut transcript, "Goal achieved").await;
+    common::wait_for_requests(&provider, 3).await;
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    // The chat's Turns keep their own model; only the verification pass
+    // rides the configured judge — at the pinned lowest reasoning level.
+    assert_eq!(requests[0].model, "gpt-5.4");
+    assert_eq!(requests[1].model, "gpt-5.4");
+    let verifier = &requests[2];
+    assert_eq!(verifier.model, "gpt-5.4-mini");
+    assert_eq!(verifier.reasoning.as_deref(), Some("Minimal"));
+    assert_eq!(verifier.tools, 0);
+
+    // Clearing the picker restores the zero-config default.
+    let state = save_goal_settings(&engine, None).await;
+    assert_eq!(state["settings"]["modelId"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn a_verifier_without_credentials_falls_back_to_the_chats_model() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("seeded"),
+        ScriptedReply::text("did the work"),
+        ScriptedReply::text("COMPLETE: done"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // anthropic resolves in the catalog but has no saved key: the loop
+    // never stalls on settings drift — the verifier falls back — and the
+    // read-side view carries the warning the General page shows.
+    let state = save_goal_settings(&engine, Some("anthropic/claude-haiku-4-5")).await;
+    assert!(state["warning"].as_str().unwrap().contains("anthropic"));
+
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "seed").await;
+    common::wait_for_transcript_text(&mut transcript, "seeded").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    set_goal(&engine, "chat-1", "ship it").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "work").await;
+    common::wait_for_transcript_text(&mut transcript, "Goal achieved").await;
+    common::wait_for_requests(&provider, 3).await;
+
+    let requests = provider.requests();
+    // Every request rode the chat's own model.
+    assert!(requests.iter().all(|request| request.model == "gpt-5.4"));
+}
+
+#[tokio::test]
+async fn save_goal_settings_rejects_models_it_cannot_serve() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+
+    let bare = engine
+        .handle(
+            methods::SAVE_GOAL_SETTINGS,
+            serde_json::json!({ "modelId": "gpt-5.4" }),
+        )
+        .await;
+    assert!(bare.is_err());
+    let unknown = engine
+        .handle(
+            methods::SAVE_GOAL_SETTINGS,
+            serde_json::json!({ "modelId": "acme/nobody" }),
+        )
+        .await;
+    assert!(unknown.is_err());
+    // Whitespace trims to the default, not an error.
+    let state = save_goal_settings(&engine, Some("   ")).await;
+    assert_eq!(state["settings"]["modelId"], serde_json::Value::Null);
+}
+
 #[tokio::test]
 async fn set_goal_rejects_the_wrong_chat_and_empty_text() {
     let fixture = common::Fixture::new();

@@ -405,9 +405,12 @@ pub(crate) fn cancel_check(chat: &ChatRuntime) {
     }
 }
 
-/// The verifier's transport: the chat's own model, resolved fresh from the
-/// row's captured config (the auto-review precedent — no separate
-/// verifier-model setting in v1).
+/// The verifier's transport: the configured verifier model first (the
+/// ADR-0044 follow-up — a separate judge, ideally on another provider so
+/// the loop's blind spots are not the judge's too), else the chat's own
+/// model resolved fresh from the row's captured config. A configured model
+/// that no longer resolves — or whose provider lost its key — falls back
+/// to the chat's own: the loop never stalls on settings drift.
 async fn check_transport(
     service: &EngineService,
     chat_id: &str,
@@ -432,6 +435,19 @@ async fn check_transport(
             .ok_or_else(|| "the chat has no working directory".to_string())?;
         (config.provider.clone(), config.model.clone(), cwd)
     };
+    if let Some(verifier_id) = service.goal_settings.get().model_id.as_deref()
+        && let Some((verifier_provider, _)) = verifier_id.split_once('/')
+        && let Ok(model) = service
+            .providers
+            .resolve_model(verifier_provider, verifier_id)
+        && let Some(api_key) = service
+            .providers
+            .credentials
+            .reveal_key(verifier_provider)
+            .await
+    {
+        return Ok((model, api_key, cwd));
+    }
     let model = service
         .providers
         .resolve_model(provider.as_str(), &model_id)
@@ -469,7 +485,12 @@ async fn run_check(
         }
     );
     let mut options = pi_core::ai::types::SimpleStreamOptions::default();
-    options.base.max_tokens = Some(256);
+    // The judge doesn't solve, it checks: pin the lowest reasoning level
+    // (pi maps Minimal to each provider's floor) and leave headroom for the
+    // one-line verdict beside whatever minimal thinking the level emits —
+    // a tight cap let reasoning eat the whole budget and garble the reply.
+    options.base.max_tokens = Some(2048);
+    options.reasoning = Some(pi_core::ai::types::ThinkingLevel::Minimal);
     options.base.base.api_key = Some(api_key);
     options.base.base.signal = Some(cancel.clone());
     options.base.base.max_retries = Some(crate::agent::PROVIDER_MAX_RETRIES);

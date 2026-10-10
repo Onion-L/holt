@@ -163,6 +163,30 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
+/// Engine-owned goal-verifier configuration (ADR-0044 follow-up): the
+/// optional provider-qualified model the goal loop's verification pass
+/// rides instead of the chat's own. `None` — the default — keeps the
+/// zero-config behavior: every chat's verifier runs on its own model.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSettings {
+    /// Provider-qualified model id (`"kimi/k2"`); `None` = the chat's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+}
+
+/// Goal settings plus the engine's live validation view of them — the
+/// reply shape of both the read and the save RPC. A warning (missing
+/// provider credentials) never blocks goal loops: the verifier silently
+/// falls back to the chat's own model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSettingsState {
+    pub settings: GoalSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 /// One search backend the Settings picker offers (ADR-0023), built-in or
 /// user-defined:
 /// `id` is both the backend kind and its entry id, `name` is its label,

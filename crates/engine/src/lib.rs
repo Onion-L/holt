@@ -35,6 +35,7 @@ mod git;
 mod git_status_watch;
 mod git_watch;
 mod goal;
+mod goal_settings;
 mod history;
 pub mod images;
 pub mod instance_lock;
@@ -53,6 +54,7 @@ mod retry_events;
 mod routines;
 mod rpc;
 mod scheduler;
+mod settings_record;
 mod shell_env;
 mod skills;
 mod store;
@@ -175,6 +177,9 @@ struct EngineService {
     images: Arc<images::ImageStore>,
     /// Engine-owned title-task settings (ADR-0012).
     title_settings: title_settings::TitleSettingsStore,
+    /// Engine-owned goal-verifier settings (ADR-0044 follow-up): the
+    /// optional model the goal loop's verification pass rides.
+    goal_settings: goal_settings::GoalSettingsStore,
     /// Engine-owned sticky permission-mode default (ADR-0014): the mode new
     /// chats inherit; first launch defaults to confirm-changes.
     mode_default: mode_default::ModeDefaultStore,
@@ -290,7 +295,8 @@ impl LocalEngine {
         ));
         let git = git::Git::new();
         let skills = skills::Skills::new(&config.data_dir, config.personal_skills_dir.as_deref());
-        let title_settings = title_settings::TitleSettingsStore::load(&config.data_dir)?;
+        let title_settings = title_settings::load(&config.data_dir)?;
+        let goal_settings = goal_settings::load(&config.data_dir)?;
         let mode_default = mode_default::ModeDefaultStore::load(&config.data_dir)?;
         let web_search = web_search_settings::WebSearchStore::load(&config.data_dir)?;
         let routines = Arc::new(routines::Routines::load(&config.data_dir)?);
@@ -318,6 +324,7 @@ impl LocalEngine {
                 skills,
                 images: images::assemble(&config.data_dir),
                 title_settings,
+                goal_settings,
                 mode_default,
                 web_search,
                 search_backend_resolver: config.search_backend_resolver.clone(),

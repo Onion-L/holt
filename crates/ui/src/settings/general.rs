@@ -13,7 +13,7 @@ use gpui::{
     AnyElement, Context, Entity, IntoElement, MouseButton, Render, SharedString, Task, Window, div,
     prelude::*, px,
 };
-use holt_proto::{Model, Provider, TitleSettingsState};
+use holt_proto::{GoalSettingsState, Model, Provider, TitleSettingsState};
 use holt_rpc::methods;
 
 mod web_search;
@@ -26,8 +26,9 @@ use crate::{
     theme::Theme,
 };
 
-/// One rendered model-choice row. `id: None` is the Disabled row — clearing
-/// the model turns automatic titles off without touching anything else.
+/// One rendered model-choice row. `id: None` is the default row — what
+/// "no selection" means is per-feature (Disabled for titles, the chat's
+/// own model for the goal verifier).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRow {
     id: Option<String>,
@@ -40,16 +41,14 @@ struct ModelRow {
     unresolved: bool,
 }
 
-/// Assemble the model-choice rows: Disabled first, then every resolvable
-/// model in catalog order, with the current selection marked. A stored
-/// selection missing from the catalog is appended as an unresolved row.
-fn model_rows(models: &[Model], selected: Option<&str>) -> Vec<ModelRow> {
+/// Assemble the model-choice rows: the feature's default first, then every
+/// resolvable model in catalog order, with the current selection marked. A
+/// stored selection missing from the catalog is appended as an unresolved
+/// row.
+fn model_rows(models: &[Model], selected: Option<&str>, default: ModelRow) -> Vec<ModelRow> {
     let mut rows = vec![ModelRow {
-        id: None,
-        title: "Disabled".into(),
-        detail: "Keep the first-line title — no background naming request".into(),
         selected: selected.is_none(),
-        unresolved: false,
+        ..default
     }];
     let mut matched = selected.is_none();
     for model in models {
@@ -73,6 +72,29 @@ fn model_rows(models: &[Model], selected: Option<&str>) -> Vec<ModelRow> {
         });
     }
     rows
+}
+
+/// The title picker's default row: no model, no automatic titles.
+fn title_default_row() -> ModelRow {
+    ModelRow {
+        id: None,
+        title: "Disabled".into(),
+        detail: "Keep the first-line title — no background naming request".into(),
+        selected: false,
+        unresolved: false,
+    }
+}
+
+/// The goal-verifier picker's default row: no separate judge, every
+/// chat's goal loop verifies on its own model.
+fn verifier_default_row() -> ModelRow {
+    ModelRow {
+        id: None,
+        title: "Chat's model".into(),
+        detail: "Each chat's goal loop verifies on its own model".into(),
+        selected: false,
+        unresolved: false,
+    }
 }
 
 fn effective_instruction(custom_enabled: bool, instruction: &str) -> String {
@@ -102,6 +124,14 @@ enum KeyField {
     Draft,
 }
 
+/// Which settings record a model picker edits — the General page has one
+/// picker per engine-owned model setting, sharing the menu machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelTarget {
+    Title,
+    Verifier,
+}
+
 pub struct GeneralPage {
     state: Entity<AppState>,
     settings: Loadable<TitleSettingsState>,
@@ -111,6 +141,12 @@ pub struct GeneralPage {
     custom_instruction_enabled: bool,
     instruction: Entity<ComposerInput>,
     save_error: Option<String>,
+    /// The goal-verifier record (ADR-0044 follow-up): its own read/save
+    /// lifecycle, warning strip included, independent of the title group.
+    goal_settings: Loadable<GoalSettingsState>,
+    verifier_model: Option<String>,
+    verifier_menu: Popup<()>,
+    verifier_save_error: Option<String>,
     task: Option<Task<()>>,
     /// The Web search group (web-tools ticket 07).
     web_search: Entity<web_search::WebSearchGroup>,
@@ -129,6 +165,10 @@ impl GeneralPage {
             instruction: cx
                 .new(|cx| ComposerInput::new("Instruction sent with the first prompt", cx)),
             save_error: None,
+            goal_settings: Loadable::Idle,
+            verifier_model: None,
+            verifier_menu: Popup::default(),
+            verifier_save_error: None,
             task: None,
             web_search,
         };
@@ -156,14 +196,20 @@ impl GeneralPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.settings = Loadable::Error("Engine not connected".into());
             self.models = Loadable::Error("Engine not connected".into());
+            self.goal_settings = Loadable::Error("Engine not connected".into());
             return;
         };
         self.settings = Loadable::Loading;
         self.models = Loadable::Loading;
+        self.goal_settings = Loadable::Loading;
         self.task = Some(cx.spawn(async move |this, cx| {
             let settings_result = engine
                 .client()
                 .call(methods::GET_TITLE_SETTINGS, serde_json::json!({}))
+                .await;
+            let goal_result = engine
+                .client()
+                .call(methods::GET_GOAL_SETTINGS, serde_json::json!({}))
                 .await;
             let models_result = match load_providers(&engine).await {
                 Ok(providers) => load_model_catalog(&engine, &providers).await,
@@ -184,6 +230,23 @@ impl GeneralPage {
                         );
                     }
                     Err(error) => page.settings = Loadable::Error(error.to_string()),
+                }
+                match goal_result {
+                    Ok(value) => match serde_json::from_value::<GoalSettingsState>(value) {
+                        Ok(state) => {
+                            page.verifier_model = state.settings.model_id.clone();
+                            page.goal_settings = Loadable::Ready(state);
+                        }
+                        Err(error) => page.goal_settings = Loadable::Error(error.to_string()),
+                    },
+                    Err(holt_rpc::RpcError::UnknownMethod(_)) => {
+                        page.goal_settings = Loadable::Error(
+                            "Goal verifier settings aren't available — the engine doesn't \
+                             support them yet"
+                                .into(),
+                        );
+                    }
+                    Err(error) => page.goal_settings = Loadable::Error(error.to_string()),
                 }
                 page.models = models_result;
                 cx.notify();
@@ -330,19 +393,290 @@ impl GeneralPage {
             )
     }
 
-    fn close_model_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu.begin_close() {
-            popover::reap_popup(cx, |page| &mut page.model_menu);
+    fn menu_for(&mut self, target: ModelTarget) -> &mut Popup<()> {
+        match target {
+            ModelTarget::Title => &mut self.model_menu,
+            ModelTarget::Verifier => &mut self.verifier_menu,
         }
     }
 
-    fn toggle_model_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu.take_press_was_open() || self.model_menu.is_open() {
-            self.close_model_menu(cx);
+    /// The read-side of [`Self::menu_for`] for render paths, where an
+    /// immutable borrow of the popup's state is all the picker needs.
+    fn menu(&self, target: ModelTarget) -> &Popup<()> {
+        match target {
+            ModelTarget::Title => &self.model_menu,
+            ModelTarget::Verifier => &self.verifier_menu,
+        }
+    }
+
+    fn close_model_menu(&mut self, target: ModelTarget, cx: &mut Context<Self>) {
+        if self.menu_for(target).begin_close() {
+            popover::reap_popup(cx, move |page| page.menu_for(target));
+        }
+    }
+
+    fn toggle_model_menu(&mut self, target: ModelTarget, cx: &mut Context<Self>) {
+        let menu = self.menu_for(target);
+        if menu.take_press_was_open() || menu.is_open() {
+            self.close_model_menu(target, cx);
         } else {
-            self.model_menu.open(());
+            menu.open(());
         }
         cx.notify();
+    }
+
+    /// A pick is a complete edit: commit it right away instead of parking
+    /// it behind a Save (both records normalize on save, so the reply is
+    /// the truth the page shows).
+    fn pick_model(&mut self, target: ModelTarget, id: Option<String>, cx: &mut Context<Self>) {
+        match target {
+            ModelTarget::Title => {
+                self.selected_model = id;
+                self.save_model(cx);
+            }
+            ModelTarget::Verifier => {
+                self.verifier_model = id;
+                self.save_verifier_model(cx);
+            }
+        }
+    }
+
+    /// Commit a verifier pick on its own: `SaveGoalSettings` with the
+    /// chosen model (or the default), the reply refreshing the warning.
+    fn save_verifier_model(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.verifier_save_error = Some("Engine not connected".into());
+            cx.notify();
+            return;
+        };
+        let model_id = self.verifier_model.clone();
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    methods::SAVE_GOAL_SETTINGS,
+                    serde_json::json!({ "modelId": model_id }),
+                )
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(value) => match serde_json::from_value::<GoalSettingsState>(value) {
+                        Ok(state) => {
+                            page.verifier_model = state.settings.model_id.clone();
+                            page.goal_settings = Loadable::Ready(state);
+                            page.verifier_save_error = None;
+                        }
+                        Err(error) => page.verifier_save_error = Some(error.to_string()),
+                    },
+                    Err(error) => page.verifier_save_error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+    /// The shared model picker: trigger button plus its anchored menu,
+    /// parameterized by which record it edits. The menu lists the feature's
+    /// default row first, then the catalog.
+    #[allow(clippy::too_many_arguments)]
+    fn render_model_picker(
+        &self,
+        target: ModelTarget,
+        rows: &[ModelRow],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (trigger_id, scroll_id, menu_id, option_prefix) = match target {
+            ModelTarget::Title => (
+                "title-model-dropdown",
+                "title-model-scroll",
+                "title-model-menu",
+                "title-model-option",
+            ),
+            ModelTarget::Verifier => (
+                "goal-verifier-dropdown",
+                "goal-verifier-scroll",
+                "goal-verifier-menu",
+                "goal-verifier-option",
+            ),
+        };
+        let model_menu_rows = rows.iter().enumerate().map(|(index, row)| {
+            let row_id = row.id.clone();
+            let selected = row.selected;
+            let title = row.title.clone();
+            let detail = row.detail.clone();
+            let option_id: SharedString = format!("{option_prefix}-{index}").into();
+            let debug_id = option_id.clone();
+            popover::menu_row(theme, selected, option_id.clone())
+                .id(option_id.clone())
+                .debug_selector(move || debug_id.to_string())
+                .on_click(cx.listener(move |page, _, _, cx| {
+                    cx.stop_propagation();
+                    page.pick_model(target, row_id.clone(), cx);
+                    page.close_model_menu(target, cx);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(div().truncate().child(title))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(crate::typography::ui_rems(
+                                    widgets::ROW_DESCRIPTION_SIZE,
+                                ))
+                                .text_color(theme.text_muted)
+                                .child(detail),
+                        ),
+                )
+                .when(row.unresolved, |row| {
+                    row.child(widgets::badge(theme, "unavailable"))
+                })
+                .when(selected, |row| {
+                    row.child(
+                        crate::icons::icon(crate::icons::CHECK)
+                            .size(px(14.0))
+                            .text_color(theme.accent),
+                    )
+                })
+                .into_any_element()
+        });
+        let menu = popover::popover_card(theme)
+            .id(scroll_id)
+            .w(px(360.0))
+            .max_h(px(320.0))
+            .overflow_y_scroll()
+            .on_mouse_down_out(cx.listener(move |page, _, _, cx| page.close_model_menu(target, cx)))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(model_menu_rows)
+            .into_any_element();
+        let selected_row = rows.iter().find(|row| row.selected).unwrap_or(&rows[0]);
+        let selected_label = SharedString::from(selected_row.title.clone());
+        let trigger_debug_id = trigger_id;
+        let trigger = div()
+            .id(trigger_id)
+            .debug_selector(move || trigger_debug_id.to_string())
+            .relative()
+            .flex_none()
+            .w(px(CONTROL_WIDTH))
+            .h(px(CONTROL_HEIGHT))
+            .px(px(10.0))
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .bg(if self.menu(target).is_open() {
+                theme.ink(0.09)
+            } else {
+                theme.ink(0.05)
+            })
+            .when(!self.menu(target).is_open(), |el| {
+                el.hover(|style| style.bg(crate::theme::ink(0.07)))
+            })
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |page, _, _, _| page.menu_for(target).note_trigger_press()),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |page, _, _, _| page.menu_for(target).note_trigger_press()),
+            )
+            .on_click(cx.listener(move |page, _, _, cx| page.toggle_model_menu(target, cx)))
+            .child(div().flex_1().min_w_0().truncate().child(selected_label))
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
+            )
+            .when_some(self.menu(target).get().cloned(), |trigger, _| {
+                trigger.child(popover::anchored_menu_below(
+                    menu_id,
+                    menu,
+                    self.menu(target).closing_since(),
+                ))
+            });
+        trigger.into_any_element()
+    }
+
+    /// The goal-verifier group: one picker over the engine-owned record.
+    /// Independent of the title group — it renders its own loading, error,
+    /// and warning states so one group failing never blanks the other.
+    fn render_goal_verifier(
+        &self,
+        models: Option<&[Model]>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut group = div().mt(px(GROUP_GAP)).child(group_header(
+            theme,
+            "Goal verifier",
+            None,
+            "The model that judges each goal loop's turns. A different \u{2014} ideally \
+             cross-provider \u{2014} model catches what the working model misses. Verified at \
+             the lowest reasoning level; falls back to each chat's model when unset or \
+             unconfigured.",
+        ));
+        let body = match (&self.goal_settings, models) {
+            (Loadable::Idle, _) | (Loadable::Loading, _) => {
+                popover::skeleton_rows("goal-verifier-skeleton", theme, 1, cx.entity_id(), cx)
+                    .into_any_element()
+            }
+            (Loadable::Error(error), _) => {
+                widgets::error_strip(theme, error.clone()).into_any_element()
+            }
+            (Loadable::Ready(state), models) => {
+                let Some(catalog) = models else {
+                    // The record loaded but the catalog didn't (no
+                    // configured providers): the picker has nothing to
+                    // offer beyond the default — say so instead of a
+                    // skeleton that never resolves.
+                    return widgets::error_strip(
+                        theme,
+                        "No configured providers — add a provider key to pick a verifier model",
+                    )
+                    .into_any_element();
+                };
+                let rows = model_rows(
+                    catalog,
+                    self.verifier_model.as_deref(),
+                    verifier_default_row(),
+                );
+                let picker = self.render_model_picker(ModelTarget::Verifier, &rows, theme, cx);
+                div()
+                    .mt(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        group_row()
+                            .child(row_text(
+                                theme,
+                                "Verifier model",
+                                "Runs once after each settled goal-loop turn, at minimal \
+                                 reasoning.",
+                            ))
+                            .child(picker),
+                    )
+                    .when_some(state.warning.clone(), |el, warning| {
+                        el.child(widgets::warning_strip(theme, warning))
+                    })
+                    .when_some(self.verifier_save_error.clone(), |el, error| {
+                        el.child(widgets::error_strip(theme, error))
+                    })
+                    .into_any_element()
+            }
+        };
+        group = group.child(body);
+        group.into_any_element()
     }
 }
 
@@ -490,107 +824,8 @@ impl Render for GeneralPage {
             }
             (Loadable::Ready(state), models) => {
                 let catalog: &[Model] = models.ready().map(Vec::as_slice).unwrap_or(&[]);
-                let rows = model_rows(catalog, self.selected_model.as_deref());
-
-                let model_menu_rows = rows.iter().enumerate().map(|(index, row)| {
-                    let row_id = row.id.clone();
-                    let selected = row.selected;
-                    let title = row.title.clone();
-                    let detail = row.detail.clone();
-                    popover::menu_row(&theme, selected, format!("title-model-option-{index}"))
-                        .id(SharedString::from(format!("title-model-option-{index}")))
-                        .on_click(cx.listener(move |page, _, _, cx| {
-                            cx.stop_propagation();
-                            // A pick is a complete edit: commit it right
-                            // away instead of parking it behind Save.
-                            page.selected_model = row_id.clone();
-                            page.close_model_menu(cx);
-                            page.save_model(cx);
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .child(div().truncate().child(SharedString::from(title)))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(crate::typography::ui_rems(
-                                            widgets::ROW_DESCRIPTION_SIZE,
-                                        ))
-                                        .text_color(theme.text_muted)
-                                        .child(SharedString::from(detail)),
-                                ),
-                        )
-                        .when(row.unresolved, |row| {
-                            row.child(widgets::badge(&theme, "unavailable"))
-                        })
-                        .when(selected, |row| {
-                            row.child(
-                                crate::icons::icon(crate::icons::CHECK)
-                                    .size(px(14.0))
-                                    .text_color(theme.accent),
-                            )
-                        })
-                        .into_any_element()
-                });
-                let model_menu = popover::popover_card(&theme)
-                    .id("title-model-scroll")
-                    .w(px(360.0))
-                    .max_h(px(320.0))
-                    .overflow_y_scroll()
-                    .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_model_menu(cx)))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(model_menu_rows)
-                    .into_any_element();
-                let selected_row = rows.iter().find(|row| row.selected).unwrap_or(&rows[0]);
-                let selected_label = SharedString::from(selected_row.title.clone());
-                let model_trigger = div()
-                    .id("title-model-dropdown")
-                    .relative()
-                    .flex_none()
-                    .w(px(CONTROL_WIDTH))
-                    .h(px(CONTROL_HEIGHT))
-                    .px(px(10.0))
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .bg(if self.model_menu.is_open() {
-                        theme.ink(0.09)
-                    } else {
-                        theme.ink(0.05)
-                    })
-                    .when(!self.model_menu.is_open(), |el| {
-                        el.hover(|style| style.bg(crate::theme::ink(0.07)))
-                    })
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|page, _, _, _| page.model_menu.note_trigger_press()),
-                    )
-                    .on_click(cx.listener(|page, _, _, cx| page.toggle_model_menu(cx)))
-                    .child(div().flex_1().min_w_0().truncate().child(selected_label))
-                    .child(
-                        crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                            .size(px(14.0))
-                            .flex_none()
-                            .text_color(theme.text_muted),
-                    )
-                    .when_some(self.model_menu.get(), |trigger, _| {
-                        trigger.child(popover::anchored_menu_below(
-                            "title-model-menu",
-                            model_menu,
-                            self.model_menu.closing_since(),
-                        ))
-                    });
+                let rows = model_rows(catalog, self.selected_model.as_deref(), title_default_row());
+                let model_trigger = self.render_model_picker(ModelTarget::Title, &rows, &theme, cx);
 
                 let mut card = group_rows()
                     .child(
@@ -732,6 +967,11 @@ impl Render for GeneralPage {
                             ))
                             .child(body),
                     )
+                    .child(self.render_goal_verifier(
+                        self.models.ready().map(Vec::as_slice),
+                        &theme,
+                        cx,
+                    ))
                     .child(self.web_search.clone()),
             )
     }
@@ -828,7 +1068,11 @@ mod tests {
 
     #[test]
     fn disabled_row_comes_first_and_takes_the_empty_selection() {
-        let rows = model_rows(&[model("openai/gpt-5.4", "GPT-5.4")], None);
+        let rows = model_rows(
+            &[model("openai/gpt-5.4", "GPT-5.4")],
+            None,
+            title_default_row(),
+        );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, None);
         assert!(rows[0].selected);
@@ -841,7 +1085,7 @@ mod tests {
             model("anthropic/claude", "Claude"),
             model("openai/gpt-5.4", "GPT-5.4"),
         ];
-        let rows = model_rows(&models, Some("openai/gpt-5.4"));
+        let rows = model_rows(&models, Some("openai/gpt-5.4"), title_default_row());
         assert_eq!(rows.len(), 3);
         assert!(!rows[0].selected);
         assert!(!rows[1].selected);
@@ -851,7 +1095,11 @@ mod tests {
 
     #[test]
     fn a_selection_missing_from_the_catalog_stays_visible_as_unresolved() {
-        let rows = model_rows(&[model("openai/gpt-5.4", "GPT-5.4")], Some("old/provider"));
+        let rows = model_rows(
+            &[model("openai/gpt-5.4", "GPT-5.4")],
+            Some("old/provider"),
+            title_default_row(),
+        );
         let unresolved = rows.iter().find(|row| row.unresolved).unwrap();
         assert_eq!(unresolved.id.as_deref(), Some("old/provider"));
         assert!(unresolved.selected);
@@ -860,7 +1108,7 @@ mod tests {
 
     #[test]
     fn an_empty_catalog_still_offers_disabled() {
-        let rows = model_rows(&[], None);
+        let rows = model_rows(&[], None, title_default_row());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, None);
         assert!(rows[0].selected);
@@ -904,5 +1152,102 @@ mod tests {
             holt_proto::DEFAULT_TITLE_INSTRUCTION
         );
         assert_eq!(effective_instruction(true, "custom"), "custom");
+    }
+
+    /// The Goal verifier group drives its own RPC: the picker lists the
+    /// chat-model default plus the catalog, and a pick commits through
+    /// `SaveGoalSettings` immediately (the title picker's commit-on-pick
+    /// precedent).
+    #[gpui::test]
+    fn the_verifier_pick_commits_through_save_goal_settings(cx: &mut gpui::TestAppContext) {
+        use std::sync::{Arc, Mutex};
+
+        use crate::state::AppState;
+
+        /// Serves the General page's reads and records the verifier save.
+        struct GeneralEngine {
+            saves: Mutex<Vec<serde_json::Value>>,
+        }
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for GeneralEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                match method {
+                    methods::GET_TITLE_SETTINGS => holt_rpc::RpcReply::value(&serde_json::json!({
+                        "settings": { "modelId": null, "instruction": "name it" }
+                    })),
+                    methods::GET_GOAL_SETTINGS => holt_rpc::RpcReply::value(
+                        &serde_json::json!({ "settings": { "modelId": null } }),
+                    ),
+                    methods::LIST_PROVIDERS => holt_rpc::RpcReply::value(&serde_json::json!([{
+                        "id": "openai", "name": "OpenAI", "abbreviation": "OA",
+                        "configured": true, "custom": false,
+                        "variants": [
+                            { "id": "openai", "name": "OpenAI", "configured": true }
+                        ],
+                    }])),
+                    methods::LIST_MODELS => holt_rpc::RpcReply::value(&serde_json::json!([
+                        {
+                            "id": "openai/gpt-5.4", "provider": "openai",
+                            "label": "GPT-5.4", "custom": false,
+                        },
+                        {
+                            "id": "openai/gpt-5.4-mini", "provider": "openai",
+                            "label": "GPT-5.4 Mini", "custom": false,
+                        },
+                    ])),
+                    methods::SAVE_GOAL_SETTINGS => {
+                        self.saves.lock().unwrap().push(params.clone());
+                        holt_rpc::RpcReply::value(&serde_json::json!({ "settings": params }))
+                    }
+                    _ => Err(holt_rpc::RpcError::UnknownMethod(method.to_string())),
+                }
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let engine = Arc::new(GeneralEngine {
+            saves: Mutex::new(Vec::new()),
+        });
+        let state = cx.new(|_| AppState::new());
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(engine.clone())
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let (page, visual) = cx.add_window_view(|_window, cx| GeneralPage::new(state.clone(), cx));
+        page.update(&mut *visual, |_page, cx| cx.notify());
+        for _ in 0..8 {
+            runtime.block_on(async { tokio::task::yield_now().await });
+            visual.run_until_parked();
+        }
+
+        // The trigger shows the default (the chat's model), the menu lists
+        // the default row plus both catalog models.
+        let trigger = visual
+            .debug_bounds("goal-verifier-dropdown")
+            .expect("the verifier picker renders");
+        visual.simulate_click(trigger.center(), Default::default());
+        visual.run_until_parked();
+        let option = visual
+            .debug_bounds("goal-verifier-option-2")
+            .expect("the second catalog model is offered");
+        visual.simulate_click(option.center(), Default::default());
+        for _ in 0..8 {
+            runtime.block_on(async { tokio::task::yield_now().await });
+            visual.run_until_parked();
+        }
+
+        let saves = engine.saves.lock().unwrap();
+        assert_eq!(saves.len(), 1, "the pick commits exactly one save");
+        assert_eq!(saves[0]["modelId"], "openai/gpt-5.4-mini");
     }
 }

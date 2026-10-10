@@ -234,6 +234,8 @@ impl RpcService for EngineService {
             methods::RESET_PROVIDER_CATALOG => self.reset_provider_catalog(params),
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.title_settings_state().await),
             methods::SAVE_TITLE_SETTINGS => self.save_title_settings(params).await,
+            methods::GET_GOAL_SETTINGS => RpcReply::value(&self.goal_settings_state().await),
+            methods::SAVE_GOAL_SETTINGS => self.save_goal_settings(params).await,
             methods::GET_WEB_SEARCH_SETTINGS => RpcReply::value(&self.web_search_state()),
             methods::SAVE_WEB_SEARCH_BACKEND => self.save_web_search_backend(params),
             methods::SET_ACTIVE_WEB_SEARCH_BACKEND => self.set_active_web_search_backend(params),

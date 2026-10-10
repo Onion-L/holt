@@ -71,6 +71,16 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Saving rejects unresolvable provider-qualified models and empty or
   out-of-bounds instructions; missing credentials are a warning, never an
   error.
+- Goal verifier settings (ADR-0044 follow-up): `GetGoalSettings` /
+  `SaveGoalSettings` — the engine-owned verifier record (`GoalSettings` in
+  `goal-settings.json`), both replying `GoalSettingsState` (settings +
+  validation warning). A set `modelId` makes every goal loop's verification
+  pass ride that provider-qualified model (ideally cross-provider, so the
+  judge does not share the worker's blind spots) at the pinned lowest
+  reasoning level; `null` keeps the zero-config default — each chat's own
+  model. Saving rejects unresolvable models; missing credentials are a
+  warning and the pass silently falls back to the chat's model, never an
+  error.
 - Web search settings (ADR-0023): `GetWebSearchSettings`,
   `SaveWebSearchBackend` (`{kind, apiKey?}`), `SetActiveWebSearchBackend`
   (`{id}`; `null` turns web search off, entries kept), and
@@ -180,7 +190,10 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   and `SetGoalPaused` (`{chatId, paused}`) are the whole surface; the
   state rides `WatchChats`. After a settled Turn's card frame is on its
   way (inside the same queue-driver iteration), one verifier pass on the
-  chat's own model judges the goal from evidence only (the History tail's
+  chat's own model — or the configured verifier model (ADR-0044 follow-up,
+  `GetGoalSettings`/`SaveGoalSettings`; lowest reasoning level pinned, the
+  verdict line's budget sized for it) — judges the goal from evidence only
+  (the History tail's
   tool calls and results plus the frozen change-set summary) and answers
   `COMPLETE | CONTINUE | BLOCKED`: complete clears the goal, blocked parks
   it, continue enqueues an ordinary queue row flagged `goalContinuation`

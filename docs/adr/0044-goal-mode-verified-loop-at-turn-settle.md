@@ -144,5 +144,11 @@ keeps finding "one more thing". Adding a `MessagePart` variant was
 considered for structured verdicts and rejected: it would touch parts,
 schema, salvage, and every renderer for a row `Notice` already expresses,
 and old builds would read the new kind through their unknown-kind fallback.
-A configurable verifier model (the Title-settings pattern) and a goal queue
-(`/goal next`) are deliberate follow-ups, not part of this ADR.
+A configurable verifier model and a goal queue (`/goal next`) are
+deliberate follow-ups, not part of this ADR. The verifier-model half
+landed (2026-10): `goal-settings.json` + `GetGoalSettings`/
+`SaveGoalSettings` (the Title-settings pattern), a pinned lowest
+reasoning level, and a silent fallback to the chat's own model when the
+configured one cannot be served — the decision's reasoning (a separate,
+ideally cross-provider judge catches what the worker misses) holds
+unchanged.

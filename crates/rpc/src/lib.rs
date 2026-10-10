@@ -119,6 +119,8 @@ pub mod methods {
     /// An empty model id disables automatic titles.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SAVE_TITLE_SETTINGS: &str = "SaveTitleSettings";
+    pub const GET_GOAL_SETTINGS: &str = "GetGoalSettings";
+    pub const SAVE_GOAL_SETTINGS: &str = "SaveGoalSettings";
     /// Engine-owned web-search settings (ADR-0023): the configured search
     /// backends, with at most one active (keyless Exa on a fresh install).
     /// Get takes no params; get, save, set-active, and remove all reply
