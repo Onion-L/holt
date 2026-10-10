@@ -84,7 +84,8 @@ pub(crate) fn parse_verdict(reply: &str) -> Option<GoalVerdict> {
             return Some(build(if reason.is_empty() {
                 "no reason given".to_string()
             } else {
-                reason.chars().take(500).collect()
+                // The reason lands in the chat as a one-line status row.
+                reason.chars().take(200).collect()
             }));
         }
     }
@@ -98,10 +99,13 @@ Judge whether the goal below is met using ONLY concrete evidence from the \
 work so far: files changed, commands run, their outputs, test results. \
 Plans, intentions, and todo lists are not progress. \
 Reply with exactly one line and nothing else:\n\
-COMPLETE: <the evidence that settles it> — the goal is verifiably met.\n\
+COMPLETE: <the decisive evidence in a few words> — the goal is verifiably met.
+\
 CONTINUE: <the single most important missing piece> — work remains.\n\
 BLOCKED: <the reason> — the goal cannot be met (missing access, \
-contradictory requirements, or outside the agent's ability)."
+contradictory requirements, or outside the agent's ability).\n\
+Keep whatever follows the colon to ONE short line — it lands in the chat \
+as a status row, never a paragraph."
     )
 }
 
@@ -659,7 +663,11 @@ pub(crate) async fn after_turn_settled(
             notice(
                 service,
                 chat,
-                format!("Goal achieved after {iterations} continuation rounds: {reason}"),
+                if iterations == 0 {
+                    format!("Goal achieved: {reason}")
+                } else {
+                    format!("Goal achieved after {iterations} rounds: {reason}")
+                },
             );
         }
         GoalVerdict::Blocked(reason) => {
