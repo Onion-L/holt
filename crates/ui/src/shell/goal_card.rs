@@ -80,16 +80,29 @@ impl Shell {
             }
         }
 
-        // The floating box: popover chrome + frost, clipping to the morph
-        // size while the content keeps its natural size, glued to the
-        // top-right (the stack's top and the column's right edge are both
-        // fixed, so only the left/bottom edges sweep).
+        // The floating box: the composer pill's chrome recipe — a faint
+        // wash over the frost blur with a hairline border, never a solid
+        // slab (composer.rs; a drop shadow under the translucent fill
+        // paints through as an inner glow, so glass gets none). Clips to
+        // the morph size while the content keeps its natural size, glued
+        // to the top-right (the stack's top and the column's right edge
+        // are both fixed, so only the left/bottom edges sweep).
         let measured = self.goal_card_size.clone();
-        let mut card = crate::popover::popover_card_flush(theme)
+        let mut card = div()
             .id(id)
             // The card floats over the transcript: keep its clicks from
             // landing on the rows beneath, but let wheel scroll through.
             .block_mouse_except_scroll()
+            .overflow_hidden()
+            .rounded(px(crate::popover::CARD_RADIUS))
+            .border_1()
+            .border_color(theme.border)
+            .bg(if theme.is_frost() {
+                theme.input_glass_bg()
+            } else {
+                theme.surface_overlay
+            })
+            .when(!theme.is_frost(), |el| el.shadow_lg())
             .when_some(morph_size, |el, (w, h)| el.w(px(w)).h(px(h)))
             .flex()
             .flex_col()
