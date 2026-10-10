@@ -1696,6 +1696,49 @@ impl Transcript {
             new_rows.extend(self.rows_for(echo, true));
         }
 
+        // The goal loop's terminal band (ADR-0044) concludes the Turn it
+        // caps: lift the settled message's footer strip (timestamp + copy)
+        // down under the band, so the block reads message → verdict →
+        // footer as one unit. The band entry's own strip (its push time,
+        // nothing to copy) is replaced. The walk skips footerless rows (a
+        // change-set card can sit between) and stops at the previous User
+        // row — a band never claims an earlier Turn's footer. Version bit
+        // 61 marks the handoff (bit 62 is the model's own footer flag), so
+        // the row diff re-renders both affected rows.
+        for ix in 0..new_rows.len() {
+            if !matches!(new_rows[ix].kind, RowKind::GoalEnd { .. }) {
+                continue;
+            }
+            let mut owner = None;
+            let mut back = ix;
+            while back > 0 {
+                back -= 1;
+                let row = &new_rows[back];
+                if row.timestamp.is_some() || row.copy_text.is_some() {
+                    owner = Some(back);
+                    break;
+                }
+                if matches!(row.kind, RowKind::User { .. }) {
+                    break;
+                }
+            }
+            let Some(owner) = owner else { continue };
+            if new_rows[owner].entry_id == new_rows[ix].entry_id {
+                continue;
+            }
+            let moved = (
+                new_rows[owner].timestamp.take(),
+                new_rows[owner].copy_text.take(),
+            );
+            new_rows[owner].version ^= 1 << 61;
+            let band = &mut new_rows[ix];
+            if band.timestamp != moved.0 || band.copy_text != moved.1 {
+                band.timestamp = moved.0;
+                band.copy_text = moved.1;
+                band.version ^= 1 << 61;
+            }
+        }
+
         // Text already streamed before this (re)attach is the veil BASELINE:
         // its rows' veils seed instead of fading (render creates them from
         // this set), so only post-switch appends animate. Captured from the
