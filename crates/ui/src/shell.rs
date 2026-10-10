@@ -290,6 +290,13 @@ pub struct Shell {
     /// the transcript's bottom clearance, and the jump pill's anchor (the
     /// same one-frame lag every fade here rides).
     bottom_stack: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The goal card's collapse/expand morph: the outgoing form's measured
+    /// outer size at the toggle instant; the box tweens toward the current
+    /// form's live measured size. `None` in the steady state.
+    goal_card_morph: Option<goal_card::GoalCardMorph>,
+    /// The goal card form's measured outer size (w, h) — canvas-fed each
+    /// frame, read with the usual one-frame lag (the bottom_stack idiom).
+    goal_card_size: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     /// Ephemeral collapsed project sections, keyed by organization + id.
     pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
     /// In-flight disclosure tweens, shared by the project groups.
@@ -743,6 +750,8 @@ impl Shell {
             // Seed with the compact composer stack's rough height so the
             // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),
+            goal_card_morph: None,
+            goal_card_size: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,

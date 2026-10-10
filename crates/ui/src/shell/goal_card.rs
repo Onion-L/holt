@@ -5,8 +5,9 @@
 //! the next message, and the card can show the objective text the chip never
 //! could. Rendered only on the Chat route, above the notice stack in the
 //! same anchored column. The card collapses to a capsule (glyph + status
-//! word, persisted in `UiSettings::goal_card_collapsed`) so a long-running
-//! loop can be kept glanceable without clearing it.
+//! word, persisted in `UiSettings::goal_card_collapsed`); the swap tweens
+//! the box's width/height between the two forms' measured sizes instead of
+//! cutting.
 
 use super::Shell;
 
@@ -15,9 +16,22 @@ use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use holt_proto::{ChatGoalState, GoalStatus};
 use holt_rpc::methods;
 
+use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
 const CARD_WIDTH: f32 = 300.0;
+
+/// The collapse/expand morph: the outgoing form's measured outer size at the
+/// toggle instant. The box tweens from here toward the current form's LIVE
+/// measured size (canvas-fed each frame), so a reflow mid-morph retargets
+/// the lerp instead of finishing on a stale size. Manual evaluation, never
+/// `with_animation` — element-id keying replays on remount (panes.rs
+/// `WidthTween`'s rationale).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GoalCardMorph {
+    from: (f32, f32),
+    started: std::time::Instant,
+}
 
 impl Shell {
     /// The selected chat's goal card, or `None` when the chat carries no
@@ -33,56 +47,114 @@ impl Shell {
             .selected_chat_row()
             .map(|chat| chat.goal.clone())??;
         let collapsed = self.settings.goal_card_collapsed;
-        // Distinct ids per form: the swap unmounts one, dropping its
-        // `dialog_in` animation state, so the other form's entrance
-        // (180ms fade + 2px rise) replays on every toggle — a soft cut
-        // instead of a hard one.
-        let el = if collapsed {
-            self.goal_card_pill("goal-card-pill", &goal, theme, cx)
-                .into_any_element()
-        } else {
-            self.goal_card_body("goal-card", &goal, theme, cx)
-                .into_any_element()
-        };
-        Some(el)
-    }
-
-    /// The collapsed form: a capsule carrying just the identity glyph, the
-    /// name, and the loop's status word — the full objective and controls
-    /// are one click away. Same frost treatment as the card; the whole
-    /// capsule is the expand button.
-    fn goal_card_pill(
-        &mut self,
-        id: &'static str,
-        goal: &ChatGoalState,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let status_tint = goal_status_tint(goal.status, theme);
         let paused = goal.status == GoalStatus::Paused;
-        let blocked = goal.status == GoalStatus::Blocked;
-        let pill = crate::popover::popover_card(theme)
+        // Distinct ids per form: the swap unmounts one, so the other's
+        // entrance fade replays (opacity only — the morph moves the box,
+        // the content never translates).
+        let (id, content) = if collapsed {
+            ("goal-card-pill", self.goal_card_pill(&goal, theme))
+        } else {
+            (
+                "goal-card",
+                self.goal_card_body("goal-card", &goal, theme, cx),
+            )
+        };
+
+        // The in-flight box size: eased lerp from the toggle-time size to
+        // the live measured target (previous frame — the bottom_stack
+        // idiom). A completed morph clears to natural sizing.
+        let natural = self.goal_card_size.get();
+        let mut morph_size = None;
+        if let Some(morph) = self.goal_card_morph {
+            let total = motion::RESIZE.total().mul_f32(motion::speed_scale());
+            let raw = morph.started.elapsed().as_secs_f32() / total.as_secs_f32();
+            if raw >= 1.0 || self.reduced_motion {
+                self.goal_card_morph = None;
+            } else {
+                let eased = motion::RESIZE.progress(raw);
+                self.motion_active.set(true);
+                morph_size = Some((
+                    motion::lerp(morph.from.0, natural.0, eased),
+                    motion::lerp(morph.from.1, natural.1, eased),
+                ));
+            }
+        }
+
+        // The floating box: popover chrome + frost, clipping to the morph
+        // size while the content keeps its natural size, glued to the
+        // top-right (the stack's top and the column's right edge are both
+        // fixed, so only the left/bottom edges sweep).
+        let measured = self.goal_card_size.clone();
+        let mut card = crate::popover::popover_card_flush(theme)
             .id(id)
-            .debug_selector(|| "goal-card-pill".to_string())
-            // The capsule floats over the transcript: keep its clicks from
+            // The card floats over the transcript: keep its clicks from
             // landing on the rows beneath, but let wheel scroll through.
             .block_mouse_except_scroll()
-            .rounded_full()
-            .pl(px(8.0))
-            .pr(px(6.0))
+            .when_some(morph_size, |el, (w, h)| el.w(px(w)).h(px(h)))
+            .flex()
+            .flex_col()
+            .items_end()
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                measured.set((
+                                    f32::from(bounds.size.width),
+                                    f32::from(bounds.size.height),
+                                ));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(content),
+            );
+        if collapsed {
+            // The capsule itself is the expand button.
+            card = card
+                .debug_selector(|| "goal-card-pill".to_string())
+                .cursor_pointer()
+                .tooltip(move |_, cx| {
+                    cx.new(|_| crate::popover::TextTooltip("Expand the goal card".into()))
+                        .into()
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_goal_card_collapsed(false, cx);
+                }));
+        }
+        // The swap fades the content in over the morph; the paused dim
+        // rides the SAME opacity write so the entrance can't clobber it.
+        let base_opacity = if paused { 0.72 } else { 1.0 };
+        let faded = card.with_animation(id, motion::FADE_QUICK.animation(), move |el, t| {
+            el.opacity(t * base_opacity)
+        });
+        // `frosted` gives the card its own scene layer (the BadgeCard
+        // precedent): sharing the transcript's layer lets bubble text paint
+        // over it.
+        Some(
+            crate::frost::frosted(crate::popover::CARD_RADIUS, crate::frost::MENU_BLUR, faded)
+                .into_any_element(),
+        )
+    }
+
+    /// The capsule's content row: identity glyph, name, the loop's status
+    /// word, and the expand affordance. Handlers live on the box
+    /// (render_goal_card adds them in collapsed mode).
+    fn goal_card_pill(&mut self, goal: &ChatGoalState, theme: &Theme) -> AnyElement {
+        let status_tint = goal_status_tint(goal.status, theme);
+        let blocked = goal.status == GoalStatus::Blocked;
+        div()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .cursor_pointer()
-            .when(paused, |el| el.opacity(0.72))
-            .tooltip(move |_, cx| {
-                cx.new(|_| crate::popover::TextTooltip("Expand the goal card".into()))
-                    .into()
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.set_goal_card_collapsed(false, cx);
-            }))
+            .py(px(4.0))
+            .pl(px(8.0))
+            .pr(px(6.0))
             .child(
                 crate::icons::icon(crate::icons::TARGET)
                     .size(px(13.0))
@@ -113,41 +185,32 @@ impl Shell {
                     .size(px(11.0))
                     .flex_none()
                     .text_color(theme.text_muted),
-            );
-        // Same layer treatment as the card (see goal_card_body).
-        crate::frost::frosted(
-            crate::popover::CARD_RADIUS,
-            crate::frost::MENU_BLUR,
-            crate::motion::dialog_in(id, pill),
-        )
-        .into_any_element()
+            )
+            .into_any_element()
     }
 
-    /// One card. `id` scopes the entrance animation and the buttons.
+    /// The card's content column: header (identity, status, controls),
+    /// the objective, and the last verdict's reason. The floating box
+    /// chrome lives in `render_goal_card`; `id` scopes the buttons.
     fn goal_card_body(
         &mut self,
         id: &'static str,
         goal: &ChatGoalState,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let status_tint = goal_status_tint(goal.status, theme);
         let paused = goal.status == GoalStatus::Paused;
         let blocked = goal.status == GoalStatus::Blocked;
         let pause_id: SharedString = format!("{id}-pause").into();
         let clear_id: SharedString = format!("{id}-clear").into();
         let collapse_id: SharedString = format!("{id}-collapse").into();
-        let card = crate::popover::popover_card(theme)
-            .id(id)
-            // The card floats over the transcript: keep its clicks from
-            // landing on the rows beneath, but let wheel scroll through.
-            .block_mouse_except_scroll()
+        div()
             .w(px(CARD_WIDTH))
             .p(px(10.0))
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .when(paused, |el| el.opacity(0.72))
             .child(
                 // Header: identity + loop state left, controls right.
                 div()
@@ -324,22 +387,25 @@ impl Shell {
                                 .child(SharedString::from(reason)),
                         ),
                 )
-            });
-        // `frosted` gives the card its own scene layer (the BadgeCard
-        // precedent): sharing the transcript's layer lets bubble text paint
-        // over it.
-        crate::frost::frosted(
-            crate::popover::CARD_RADIUS,
-            crate::frost::MENU_BLUR,
-            crate::motion::dialog_in(id, card),
-        )
-        .into_any_element()
+            })
+            .into_any_element()
     }
 
     /// Card ↔ capsule toggle: pure view chrome (the loop keeps running),
     /// persisted in `UiSettings::goal_card_collapsed`. The direct store
     /// write survives Shell saves — `ShellSettingsFields` doesn't own it.
+    /// Starts the size morph from the outgoing form's measured size; a
+    /// zero measurement (never painted) or reduced motion snaps instead.
     fn set_goal_card_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        let from = self.goal_card_size.get();
+        self.goal_card_morph = if self.reduced_motion || from == (0.0, 0.0) {
+            None
+        } else {
+            Some(GoalCardMorph {
+                from,
+                started: std::time::Instant::now(),
+            })
+        };
         self.settings.goal_card_collapsed = collapsed;
         crate::settings::update(crate::settings::SavePolicy::Debounced, cx, move |current| {
             current.goal_card_collapsed = collapsed;
