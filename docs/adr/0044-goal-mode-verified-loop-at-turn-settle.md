@@ -34,6 +34,11 @@ record on the chat's last Turn.
   reason. There is no verdict history store — terminal transitions land as
   Transcript `Notice` rows (the reader-facing housekeeping row, ADR-0010),
   so history survives restarts through the record that already persists.
+  Each end row is one line: the outcome, the round count, the wall time,
+  and the goal's gross tokens since it was armed (every usage record since
+  `startedAt` — Turns, verifier passes, compactions). The Turn's own final
+  message is the summary, so the verifier's evidence stays out of the chat
+  — it would only duplicate that summary as a paragraph.
 - **The verifier is one model pass at Turn settle, after
   `clear_final_signal`, inside the same queue-driver iteration** — before
   the next pick, so the continuation it may enqueue cannot race the next

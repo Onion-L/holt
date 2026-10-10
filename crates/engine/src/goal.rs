@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use holt_proto::{Chat, ChatGoalState, GoalStatus, TurnChangeSet};
 use holt_rpc::RpcError;
 use pi_core::agent::types::AgentMessage;
@@ -328,6 +329,68 @@ fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, message: String) {
     );
 }
 
+/// The end-of-loop status segment: rounds, wall time, and the gross tokens
+/// the goal burned since it was armed. Turns, verifier passes, and
+/// compactions all book to the same chat ledger, so a timestamp filter
+/// catches the whole arc — and this runs after settle flushed the Turn's
+/// own batch.
+fn goal_stats(chat: &ChatRuntime, goal: &ChatGoalState) -> String {
+    let mut parts = Vec::new();
+    if goal.iteration > 0 {
+        parts.push(format!("{} rounds", goal.iteration));
+    }
+    parts.push(format_duration(
+        (Utc::now() - goal.started_at).num_seconds().max(0),
+    ));
+    let since = goal.started_at.timestamp_millis();
+    let tokens = crate::usage::load_records(&chat.data_dir, &chat.chat_id)
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.timestamp >= since)
+                .map(|record| record.gross())
+                .sum::<u64>()
+        })
+        .unwrap_or(0);
+    parts.push(format!("{} tokens", compact_tokens(tokens)));
+    parts.join(" · ")
+}
+
+/// Wall time as `12 min` / `3 h 5 min` — a status row never needs finer.
+fn format_duration(secs: i64) -> String {
+    let mins = secs / 60;
+    if mins < 1 {
+        return "under a minute".to_string();
+    }
+    if mins < 60 {
+        return format!("{mins} min");
+    }
+    let (hours, rest) = (mins / 60, mins % 60);
+    if rest == 0 {
+        format!("{hours} h")
+    } else {
+        format!("{hours} h {rest} min")
+    }
+}
+
+/// The UI tile's compact count, mirrored engine-side (`45.2k`, `1.1M`).
+fn compact_tokens(tokens: u64) -> String {
+    const SUFFIXES: [&str; 3] = ["k", "M", "B"];
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    // Step the suffix up where the mantissa's own rounding would carry
+    // (`999_950` prints as `1000.0k`, so it reads `1M` instead).
+    let carries = |suffix: u32| 1000u64.pow(suffix + 1) - 5 * 10u64.pow(3 * suffix - 2);
+    let mut suffix = 1u32;
+    while (suffix as usize) < SUFFIXES.len() && tokens >= carries(suffix) {
+        suffix += 1;
+    }
+    let value = format!("{:.1}", tokens as f64 / 1000f64.powi(suffix as i32));
+    let value = value.trim_end_matches('0').trim_end_matches('.');
+    format!("{value}{}", SUFFIXES[suffix as usize - 1])
+}
+
 /// Cancel the in-flight verifier pass, if any. The pass resolves to "no
 /// verdict" — every cancel source has already changed the goal state it
 /// would have written.
@@ -613,6 +676,7 @@ pub(crate) async fn after_turn_settled(
                 return;
             };
             if state.eval_failures >= MAX_EVAL_FAILURES {
+                let stats = goal_stats(chat, &goal);
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.status = GoalStatus::Paused;
                 });
@@ -620,7 +684,7 @@ pub(crate) async fn after_turn_settled(
                     service,
                     chat,
                     format!(
-                        "Goal paused — the verifier failed {MAX_EVAL_FAILURES} times in a row. Resume with /goal resume."
+                        "Goal paused · {stats} — the verifier failed {MAX_EVAL_FAILURES} times in a row. Resume with /goal resume."
                     ),
                 );
                 return;
@@ -657,26 +721,22 @@ pub(crate) async fn after_turn_settled(
         }
     };
     match verdict {
-        GoalVerdict::Complete(reason) => {
-            let iterations = goal.iteration;
+        GoalVerdict::Complete(_) => {
+            // The end row is a one-line status — the Turn's own final
+            // message is the summary, so the verifier's evidence would
+            // only duplicate it as a paragraph. It stays in the log.
+            let stats = goal_stats(chat, &goal);
             clear_goal_state(service, chat);
-            notice(
-                service,
-                chat,
-                if iterations == 0 {
-                    format!("Goal achieved: {reason}")
-                } else {
-                    format!("Goal achieved after {iterations} rounds: {reason}")
-                },
-            );
+            notice(service, chat, format!("Goal achieved · {stats}"));
         }
         GoalVerdict::Blocked(reason) => {
+            let stats = goal_stats(chat, &goal);
             mutate_goal_row(service, &chat.chat_id, |goal| {
                 goal.status = GoalStatus::Blocked;
                 goal.eval_failures = 0;
                 goal.last_reason = Some(reason.clone());
             });
-            notice(service, chat, format!("Goal blocked: {reason}"));
+            notice(service, chat, format!("Goal blocked · {stats} — {reason}"));
         }
         GoalVerdict::Continue(reason) => {
             let called_tools = turn_called_tools(chat);
@@ -692,6 +752,7 @@ pub(crate) async fn after_turn_settled(
             });
             let Some(state) = stalled else { return };
             if state.no_progress >= MAX_NO_PROGRESS {
+                let stats = goal_stats(chat, &goal);
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.status = GoalStatus::Paused;
                 });
@@ -699,12 +760,13 @@ pub(crate) async fn after_turn_settled(
                     service,
                     chat,
                     format!(
-                        "Goal paused — no progress in {MAX_NO_PROGRESS} turns (no tool calls, no workspace changes). Resume with /goal resume."
+                        "Goal paused · {stats} — no progress in {MAX_NO_PROGRESS} turns (no tool calls, no workspace changes). Resume with /goal resume."
                     ),
                 );
                 return;
             }
             if state.iteration >= MAX_ITERATIONS {
+                let stats = goal_stats(chat, &goal);
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.status = GoalStatus::Paused;
                 });
@@ -712,7 +774,7 @@ pub(crate) async fn after_turn_settled(
                     service,
                     chat,
                     format!(
-                        "Goal paused — reached the {MAX_ITERATIONS}-iteration cap. Resume with /goal resume."
+                        "Goal paused · {stats} — reached the {MAX_ITERATIONS}-iteration cap. Resume with /goal resume."
                     ),
                 );
                 return;
@@ -822,6 +884,20 @@ pub(crate) fn reconcile_on_boot(data_dir: &std::path::Path, chats: &mut [Chat]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn end_stats_format_compactly() {
+        assert_eq!(compact_tokens(0), "0");
+        assert_eq!(compact_tokens(999), "999");
+        assert_eq!(compact_tokens(1_000), "1k");
+        assert_eq!(compact_tokens(45_200), "45.2k");
+        assert_eq!(compact_tokens(272_000), "272k");
+        assert_eq!(compact_tokens(999_950), "1M");
+        assert_eq!(format_duration(30), "under a minute");
+        assert_eq!(format_duration(720), "12 min");
+        assert_eq!(format_duration(3 * 3600), "3 h");
+        assert_eq!(format_duration(3 * 3600 + 5 * 60), "3 h 5 min");
+    }
 
     #[test]
     fn verdict_parse_is_strict_first_line() {

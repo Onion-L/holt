@@ -84,7 +84,16 @@ async fn the_loop_runs_until_the_verifier_is_satisfied() {
     // The Turn settles, the verifier says CONTINUE, the continuation runs,
     // the verifier says COMPLETE: the loop ends with a Notice and the row
     // cleared.
-    common::wait_for_transcript_text(&mut transcript, "Goal achieved").await;
+    let end_notice = loop {
+        let frame = common::next_frame(&mut transcript).await;
+        if frame.to_string().contains("Goal achieved ·") {
+            break frame.to_string();
+        }
+    };
+    // The end row is the one-line status: rounds, wall time, and the
+    // goal's gross tokens — never the verifier's evidence paragraph.
+    assert!(end_notice.contains("1 round"), "rounds: {end_notice}");
+    assert!(end_notice.contains("tokens"), "tokens: {end_notice}");
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     common::wait_for_requests(&provider, 4).await;
 
