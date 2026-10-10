@@ -1478,7 +1478,7 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The goal loop's terminal row (ADR-0044): the composer chip's settled
+/// The goal loop's terminal row (ADR-0044): the goal card's settled
 /// form landed in the transcript — the question chip's passive band with
 /// the goal's target glyph, so the row reads as the arc's conclusion,
 /// never as housekeeping noise beside it. One line, truncated.

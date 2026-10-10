@@ -262,8 +262,8 @@ pub enum RowKind {
     Notice {
         message: SharedString,
     },
-    /// The goal loop's terminal row (ADR-0044): the composer goal chip's
-    /// settled form landed in the transcript — the same target glyph on a
+    /// The goal loop's terminal row (ADR-0044): the goal card's settled
+    /// form landed in the transcript — the same target glyph on a
     /// passive band, so it reads as the arc's conclusion, not housekeeping
     /// noise. Model-side it is a `Notice` the engine pushed under a
     /// `goal-*` entry id.

@@ -1,5 +1,12 @@
 # Goal mode: a chat-scoped loop with an evidence-based verifier at Turn settle
 
+**Status:** the loop design stands; the UI half of "a slash entry plus a
+composer chip" moved (2026-10): the footer chip became a pinned top-right
+goal card (objective, status, round, last verdict, pause/clear —
+`crates/ui/src/shell/goal_card.rs`), and the arming message folds a goal
+block the transcript lifts into a 🎯 pill (`crates/ui/src/goal.rs`). The
+`/goal` slash forms are unchanged.
+
 ## Context
 
 Agent harnesses converge on a "goal mode": the user states an objective, the

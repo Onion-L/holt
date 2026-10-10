@@ -407,10 +407,12 @@ impl Composer {
             // (after createChat, before the queue) so the Turn settles into
             // an armed loop. A failed SetGoal restores the ORIGINAL
             // directive, never the bare objective — resubmitting that as an
-            // ordinary message would silently skip the goal.
+            // ordinary message would silently skip the goal. The queued
+            // message carries the goal marker block so the transcript lifts
+            // it back out as the 🎯 pill (the comments pipeline).
             let objective = objective.clone();
             restore_text = Some(text.clone());
-            text = objective.clone();
+            text = crate::goal::with_goal_block(&objective);
             slash = super::slash::Parsed::Plain;
             goal_set = Some(objective);
         } else if matches!(slash, super::slash::Parsed::Init) {

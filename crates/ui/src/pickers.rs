@@ -145,10 +145,6 @@ pub enum PickerEvent {
     ProviderModeExited,
     /// The same button's `ExitProviderMode` failed, or there was no engine.
     ProviderModeExitFailed(String),
-    /// The Goal chip's close button cleared the goal (ADR-0044).
-    GoalCleared,
-    /// The same button's `ClearGoal` failed, or there was no engine.
-    GoalClearFailed(String),
 }
 
 pub struct Pickers {
@@ -1060,10 +1056,11 @@ impl Pickers {
             let mode_chip = self.mode_chip(&theme, cx);
             // Plan Mode rides beside the permission chip (ADR-0025):
             // planning state and the active revision's lifecycle, read from
-            // the same chat row the mode chip renders.
+            // the same chat row the mode chip renders. (The goal chip that
+            // rode here moved to the shell's top-right goal card — state
+            // answers to the conversation, not the footer.)
             let plan_chip = self.plan_chip(&theme, cx);
             let provider_chip = self.provider_chip(&theme, cx);
-            let goal_chip = self.goal_chip(&theme, cx);
             let mut left = div()
                 .flex()
                 .flex_row()
@@ -1077,8 +1074,7 @@ impl Pickers {
                     closing,
                 ))
                 .children(plan_chip)
-                .children(provider_chip)
-                .children(goal_chip);
+                .children(provider_chip);
             // Mirrors the draft chips: mode + checkout hug the left edge, ref
             // the right.
             let mut right = div()
@@ -1169,7 +1165,6 @@ impl Pickers {
         let mode_chip = self.mode_chip(&theme, cx);
         let plan_chip = self.plan_chip(&theme, cx);
         let provider_chip = self.provider_chip(&theme, cx);
-        let goal_chip = self.goal_chip(&theme, cx);
         let mut left = div()
             .flex()
             .flex_row()
@@ -1182,10 +1177,7 @@ impl Pickers {
                 "mode-popover",
                 closing,
             ));
-        left = left
-            .children(plan_chip)
-            .children(provider_chip)
-            .children(goal_chip);
+        left = left.children(plan_chip).children(provider_chip);
         let mut right = div().flex().flex_row().items_center().min_w_0();
         if git {
             // Refs feed the draft labels — eager + idempotent.

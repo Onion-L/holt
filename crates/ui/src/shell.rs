@@ -58,6 +58,7 @@ mod about;
 mod chat_list;
 mod chat_menu;
 mod external_apps;
+mod goal_card;
 mod navigation;
 mod notices;
 mod panes;
@@ -1135,14 +1136,6 @@ impl Shell {
                 format!("Leaving Provider Mode failed: {error}").into(),
                 cx,
             ),
-            PickerEvent::GoalCleared => {
-                self.push_holt_notice(HoltNoticeKind::Plain, "Goal cleared".into(), cx)
-            }
-            PickerEvent::GoalClearFailed(error) => self.push_holt_notice(
-                HoltNoticeKind::Error,
-                format!("Clearing the goal failed: {error}").into(),
-                cx,
-            ),
         }
     }
 
@@ -1839,12 +1832,32 @@ impl Shell {
             overlays.push(popover::top_alert("provider-error-alert", viewport, card));
         }
 
-        if !self.holt_notices.is_empty() {
+        // The Goal card (ADR-0044, relocated from the composer footer): the
+        // chat's live loop state pinned at the column's head, notices
+        // flowing beneath it. Chat route only — the card answers to the
+        // conversation on screen. An expanded (takeover) pane hides the
+        // transcript, and with it the card; a docked pane shifts the
+        // column's right inset so the card hugs the pane's seam instead of
+        // covering its tab strip. The stack starts BELOW the titlebar band:
+        // the bar's trailing controls (external-app picker, terminal, pane
+        // toggles) own the top TITLEBAR_HEIGHT px — a smaller pad put the
+        // card right over them.
+        let goal_card = if matches!(self.route, Route::Chat) && !self.right_pane_expanded {
+            self.render_goal_card(&theme, cx)
+        } else {
+            None
+        };
+        if !self.holt_notices.is_empty() || goal_card.is_some() {
             // Top-right stacked holt notices. Newest at the bottom of the
             // visual stack (matches the top alert above) so a fresh notice
             // does not push existing ones off-screen; a single fixed slot
             // means the column only grows downward and only ever needs one
             // anchor. Each chip animates in independently on its own id.
+            let pane_inset = if matches!(self.route, Route::Chat) && self.right_pane_open(cx) {
+                self.settings.right_pane_width
+            } else {
+                0.0
+            };
             let mut stack = div()
                 .id("holt-notice-stack")
                 .w(viewport.width)
@@ -1852,8 +1865,11 @@ impl Shell {
                 .flex_col()
                 .items_end()
                 .gap(px(8.0))
-                .pt(px(14.0))
-                .pr(px(14.0));
+                .pt(px(Theme::TITLEBAR_HEIGHT + 8.0))
+                .pr(px(14.0 + pane_inset));
+            if let Some(card) = goal_card {
+                stack = stack.child(card);
+            }
             for notice in &self.holt_notices {
                 let id = notice.id;
                 // Outer div satisfies `dialog_in`'s `Styled` bound; the
