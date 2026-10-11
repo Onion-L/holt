@@ -43,6 +43,8 @@ const MANAGED_EXTENSIONS: [&str; 4] = ["png", "jpg", "gif", "webp"];
 pub struct ImageStore {
     dir: PathBuf,
     data_dir: PathBuf,
+    /// The boot reconciliation running off the assembly path, if any.
+    reconciliation: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 pub use holt_rpc::images::ManagedImage as StagedImage;
@@ -52,6 +54,7 @@ impl ImageStore {
         Self {
             dir: data_dir.join("images"),
             data_dir: data_dir.to_path_buf(),
+            reconciliation: std::sync::Mutex::new(None),
         }
     }
 
@@ -243,6 +246,7 @@ impl ImageStore {
         Self {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
+            reconciliation: std::sync::Mutex::new(None),
         }
     }
 
@@ -384,17 +388,51 @@ pub(crate) fn sniff_mime_type(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Shared engine assembly: the store plus the boot-time reconciliation task.
+///
+/// Only the candidate listing happens here; the scan grows with the chat
+/// corpus, so it runs on its own thread and never holds up the first frame.
+/// The candidates are snapshotted before any RPC is served: files staged later
+/// carry fresh uuids outside the snapshot, and no in-memory draft exists yet to
+/// reference an old one — so the background pass reclaims exactly what a
+/// blocking one would. An exit mid-scan just leaves the rest for next boot.
 pub fn assemble(data_dir: &Path) -> Arc<ImageStore> {
     let store = Arc::new(ImageStore::new(data_dir));
-    // Assembly precedes serving RPCs: no newly staged file can race cleanup.
     let candidates = store.list_file_names();
-    let referenced = store.scan_references(&candidates);
-    for name in candidates {
-        if !referenced.contains(&name) {
-            let _ = std::fs::remove_file(store.dir.join(name));
+    if !candidates.is_empty() {
+        let scan = store.clone_for_scan();
+        let handle = std::thread::Builder::new()
+            .name("holt-image-reconcile".into())
+            .spawn(move || {
+                let referenced = scan.scan_references(&candidates);
+                for name in candidates {
+                    if !referenced.contains(&name) {
+                        let _ = std::fs::remove_file(scan.dir.join(name));
+                    }
+                }
+            });
+        if let Ok(handle) = handle {
+            *store
+                .reconciliation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(handle);
         }
     }
     store
+}
+
+impl ImageStore {
+    /// Block until the boot reconciliation has finished (no-op when none ran
+    /// or it was already awaited).
+    pub fn wait_reconciled(&self) {
+        let handle = self
+            .reconciliation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[cfg(test)]
