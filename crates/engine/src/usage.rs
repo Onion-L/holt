@@ -712,6 +712,17 @@ pub(crate) fn capture_subagent_round_trip(
     publish(parent);
 }
 
+/// The History was just compacted: the last round-trip's report measured the
+/// pre-compaction context, so drop it and let the occupancy fall back to the
+/// compacted History's estimate until the next report.
+pub(crate) fn forget_last_report(chat: &ChatRuntime) {
+    *chat
+        .usage_last_report
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    publish(chat);
+}
+
 /// Book a manual Compaction's summary response immediately — the queued
 /// `/compact` runs outside the Turn model, so it never waits for a batch.
 pub(crate) fn record_compaction(chat: &ChatRuntime, response: &AssistantMessage) {

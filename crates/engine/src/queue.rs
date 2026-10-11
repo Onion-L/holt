@@ -731,6 +731,7 @@ impl EngineService {
                     &outcome.record,
                 );
                 *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages;
+                crate::usage::forget_last_report(chat);
                 // A manual compaction pays the overflow debt too.
                 self.runtime.take_compact_before_next_turn(&chat.chat_id);
                 (true, None)
