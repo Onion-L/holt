@@ -620,6 +620,15 @@ impl Transcript {
             } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
             RowKind::GoalEnd { message } => goal_end_row(message.clone(), &theme),
+            RowKind::GoalRound {
+                label,
+                reason,
+                prompt,
+                footer_owner,
+            } => {
+                let footer = self.goal_round_footer(&row, footer_owner.as_ref(), &theme, cx);
+                self.render_goal_round(&row.id, label, reason, prompt, footer, &theme, cx)
+            }
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, window, cx)
             }
@@ -730,47 +739,16 @@ impl Transcript {
         // timestamp, edit, or copy affordances underneath it.
         let strip = row
             .timestamp
+            .filter(|_| !matches!(row.kind, RowKind::GoalRound { .. }))
             .filter(|_| {
                 self.message_edit
                     .as_ref()
                     .is_none_or(|edit| edit.message_id != row.entry_id.as_ref())
             })
             .map(|ms| {
-                let timestamp = div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted.opacity(0.55))
-                    .child(SharedString::from(format_timestamp(ms, &chrono::Local)));
+                let timestamp = footer_timestamp(ms, &theme);
                 let copy = copy_text.map(|text| {
-                    let entry_id = copy_entry_id.clone();
-                    let fade_key = format!("copy-message-hover-{entry_id}");
-                    div()
-                        .id(SharedString::from(format!("copy-message-{entry_id}")))
-                        .size(px(Theme::SPACE_MD * 2.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .cursor_pointer()
-                        // Same quiet icon-button treatment as the copy action
-                        // over transcript code blocks.
-                        .bg(motion::hover_blend(
-                            &fade_key,
-                            gpui::transparent_black(),
-                            crate::theme::ink(0.08),
-                        ))
-                        .on_hover(motion::hover_listener(fade_key))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy_message(entry_id.clone(), text.clone(), cx)
-                        }))
-                        .child(
-                            crate::icons::icon(if copied_message {
-                                crate::icons::CHECK
-                            } else {
-                                crate::icons::COPY
-                            })
-                            .size(px(14.0))
-                            .text_color(theme.text_muted),
-                        )
+                    self.footer_copy_button(copy_entry_id.clone(), text, copied_message, &theme, cx)
                 });
                 let metadata = div()
                     .flex()
@@ -1575,6 +1553,85 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .child(message),
         )
         .into_any_element()
+}
+
+/// The hover strip's timestamp label.
+fn footer_timestamp(ms: i64, theme: &Theme) -> gpui::Div {
+    div()
+        .text_size(crate::typography::ui_rems(12.0))
+        .text_color(theme.text_muted.opacity(0.55))
+        .child(SharedString::from(format_timestamp(ms, &chrono::Local)))
+}
+
+impl Transcript {
+    /// The hover strip's copy action for `entry_id`'s message.
+    fn footer_copy_button(
+        &self,
+        entry_id: SharedString,
+        text: SharedString,
+        copied: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let fade_key = format!("copy-message-hover-{entry_id}");
+        div()
+            .id(SharedString::from(format!("copy-message-{entry_id}")))
+            .size(px(Theme::SPACE_MD * 2.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .cursor_pointer()
+            // Same quiet icon-button treatment as the copy action over
+            // transcript code blocks.
+            .bg(motion::hover_blend(
+                &fade_key,
+                gpui::transparent_black(),
+                crate::theme::ink(0.08),
+            ))
+            .on_hover(motion::hover_listener(fade_key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.copy_message(entry_id.clone(), text.clone(), cx)
+            }))
+            .child(
+                crate::icons::icon(if copied {
+                    crate::icons::CHECK
+                } else {
+                    crate::icons::COPY
+                })
+                .size(px(14.0))
+                .text_color(theme.text_muted),
+            )
+    }
+
+    /// A loop row's inline footer: the copy action of the previous reply
+    /// whose strip it took over (`hand_footers_to_goal_rounds`), lit by
+    /// hovering either that reply or the row itself. No timestamp — the row
+    /// is a process marker, not a message. `None` when there is nothing to
+    /// copy.
+    fn goal_round_footer(
+        &self,
+        row: &Row,
+        owner: Option<&SharedString>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let owner = owner?.clone();
+        let text = row.copy_text.clone()?;
+        let lit = self
+            .hovered_entry
+            .as_ref()
+            .is_some_and(|(_, entry)| entry == &owner || entry == &row.entry_id);
+        if !lit {
+            return None;
+        }
+        let copied = self.copied_message.as_ref() == Some(&owner);
+        let copy = self.footer_copy_button(owner, text, copied, theme, cx);
+        Some(
+            motion::fade_quick(SharedString::from(format!("meta-{}", row.id)), copy)
+                .into_any_element(),
+        )
+    }
 }
 
 /// The goal loop's terminal row (ADR-0044): the goal card's settled

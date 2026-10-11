@@ -29,6 +29,16 @@ pub fn strip_block(text: &str) -> Option<String> {
     Some(text[..at].to_string())
 }
 
+/// A goal-loop continuation's leading label (ADR-0044): the transcript's
+/// loop row and the queue's pending row both lead with it.
+pub fn round_label(kind: &holt_proto::GoalRoundKind) -> String {
+    match kind {
+        holt_proto::GoalRoundKind::Continue(n) => format!("Round {n}"),
+        holt_proto::GoalRoundKind::Resume => "Resumed".into(),
+        holt_proto::GoalRoundKind::Retry => "Retry".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

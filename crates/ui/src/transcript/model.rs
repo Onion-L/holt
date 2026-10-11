@@ -274,6 +274,20 @@ pub enum RowKind {
     GoalEnd {
         message: SharedString,
     },
+    /// A goal-loop continuation (ADR-0044): a User entry the loop queued,
+    /// not the user. Drawn as a light, foldable loop row — round label and
+    /// the verifier's missing piece — instead of a user bubble; the fold
+    /// shows the full prompt the model got.
+    GoalRound {
+        label: SharedString,
+        reason: SharedString,
+        prompt: SharedString,
+        /// The entry whose footer strip (timestamp + copy) the row took over
+        /// ([`hand_footers_to_goal_rounds`]): drawn inline at the row's
+        /// right edge and lit by hovering that entry. Kept apart from the
+        /// row's own `entry_id`, which anchors the Turn it opens.
+        footer_owner: Option<SharedString>,
+    },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
     /// carries, rendered as Markdown.
@@ -583,6 +597,25 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // A loop-queued continuation carries its round marker as the final
+        // line: it is the loop speaking, so it never draws as a user bubble.
+        if let Some(round) = holt_proto::GoalRound::parse(&raw) {
+            rows.push(Row {
+                id: entry.id.clone().into(),
+                version: (raw.len() as u64) << 1 | pending as u64,
+                turn_start: true,
+                kind: RowKind::GoalRound {
+                    label: crate::goal::round_label(&round.kind).into(),
+                    reason: round.reason.into(),
+                    prompt: raw.into(),
+                    footer_owner: None,
+                },
+                entry_id,
+                timestamp: None,
+                copy_text: None,
+            });
+            return rows;
+        }
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let mut parsed = crate::attachments::parse_user_message_images(&raw);
@@ -1279,8 +1312,9 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
 /// the block reads message → verdict → footer as one unit. The band entry's
 /// own strip (its push time, nothing to copy) is replaced. The walk skips
 /// footerless rows (a change-set card can sit between) and stops at a User
-/// row or an earlier band — a band never claims a prompt's footer, an earlier
-/// Turn's, or another band's; with no owner it keeps its own strip. The band
+/// row, a loop row, or an earlier band — a band never claims a prompt's
+/// footer, an earlier Turn's, or another band's; with no owner it keeps its
+/// own strip. The band
 /// also takes the owner's `entry_id`: the strip's hover reveal and copied
 /// feedback key on it, so hovering the message lights the strip under the
 /// band. Version bit 61 marks the handoff (bit 62 is the model's own footer
@@ -1294,7 +1328,10 @@ pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
         let mut owner = None;
         for back in (0..ix).rev() {
             let row = &rows[back];
-            if matches!(row.kind, RowKind::User { .. } | RowKind::GoalEnd { .. }) {
+            if matches!(
+                row.kind,
+                RowKind::User { .. } | RowKind::GoalRound { .. } | RowKind::GoalEnd { .. }
+            ) {
                 break;
             }
             if row.timestamp.is_some() || row.copy_text.is_some() {
@@ -1312,6 +1349,44 @@ pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
         band.timestamp = timestamp;
         band.copy_text = copy_text;
         band.version ^= 1 << 61;
+    }
+}
+
+/// A loop row (ADR-0044) opens its Turn right under the previous reply,
+/// whose reserved footer lane would leave a hole above the light,
+/// flush-left row. The row takes that footer over instead: the reply drops
+/// its lane, the row draws its copy action inline at the right edge.
+/// The walk skips footerless rows and may take a goal band's (already
+/// handed-over) footer, but stops at a User row or another loop row. Runs
+/// after [`hand_footers_to_goal_bands`]; version bit 61 marks the handoff.
+pub fn hand_footers_to_goal_rounds(rows: &mut [Row]) {
+    for ix in 0..rows.len() {
+        if !matches!(rows[ix].kind, RowKind::GoalRound { .. }) {
+            continue;
+        }
+        let mut owner = None;
+        for back in (0..ix).rev() {
+            let row = &rows[back];
+            if matches!(row.kind, RowKind::User { .. } | RowKind::GoalRound { .. }) {
+                break;
+            }
+            if row.timestamp.is_some() || row.copy_text.is_some() {
+                owner = Some(back);
+                break;
+            }
+        }
+        let Some(owner) = owner else { continue };
+        let timestamp = rows[owner].timestamp.take();
+        let copy_text = rows[owner].copy_text.take();
+        let entry_id = rows[owner].entry_id.clone();
+        rows[owner].version ^= 1 << 61;
+        let round = &mut rows[ix];
+        round.timestamp = timestamp;
+        round.copy_text = copy_text;
+        round.version ^= 1 << 61;
+        if let RowKind::GoalRound { footer_owner, .. } = &mut round.kind {
+            *footer_owner = Some(entry_id);
+        }
     }
 }
 
@@ -2240,6 +2315,83 @@ mod tests {
         let mut entry = assistant(id, MessageStatus::Complete, vec![text_part("t0", text)]);
         entry.created_at = created_at;
         rows_for_entry(&entry, false, &mut parse)
+    }
+
+    /// A loop-queued continuation (ADR-0044) is the loop speaking: it draws
+    /// as the loop row — round label plus the verifier's missing piece, the
+    /// full prompt kept for the fold — never as a user bubble.
+    #[test]
+    fn goal_continuations_render_as_loop_rows() {
+        let round = holt_proto::GoalRound {
+            kind: holt_proto::GoalRoundKind::Continue(2),
+            reason: "tests not run".into(),
+        };
+        let prompt = format!("Work toward this goal:\n\nship it\n\n{}", round.marker());
+        let rows = user_rows("c1", &prompt, 5);
+        assert_eq!(rows.len(), 1);
+        let RowKind::GoalRound {
+            label,
+            reason,
+            prompt: kept,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected the loop row");
+        };
+        assert_eq!(label.as_ref(), "Round 2");
+        assert_eq!(reason.as_ref(), "tests not run");
+        assert_eq!(kept.as_ref(), prompt);
+        assert!(rows[0].turn_start);
+        assert!(rows[0].timestamp.is_none() && rows[0].copy_text.is_none());
+    }
+
+    #[test]
+    fn a_goal_round_takes_the_previous_reply_footer() {
+        let round = holt_proto::GoalRound {
+            kind: holt_proto::GoalRoundKind::Resume,
+            reason: String::new(),
+        };
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        rows.extend(user_rows("c1", &format!("x\n\n{}", round.marker()), 3));
+        rows.extend(reply_rows("m2", "more", 4));
+        let before = rows.clone();
+
+        hand_footers_to_goal_rounds(&mut rows);
+
+        let (reply, loop_row) = (&rows[1], &rows[2]);
+        assert!(reply.timestamp.is_none() && reply.copy_text.is_none());
+        assert_eq!(loop_row.timestamp, Some(2));
+        assert_eq!(loop_row.copy_text.as_deref(), Some("done"));
+        // The row keeps its own entry id (it anchors its Turn); the owner
+        // rides the kind.
+        assert_eq!(loop_row.entry_id.as_ref(), "c1");
+        assert!(matches!(
+            &loop_row.kind,
+            RowKind::GoalRound { footer_owner: Some(owner), .. } if owner.as_ref() == "m1"
+        ));
+        assert_eq!(reply.version, before[1].version ^ 1 << 61);
+        assert_eq!(loop_row.version, before[2].version ^ 1 << 61);
+        // The reply after the loop row keeps its own strip.
+        assert_eq!(rows[3].timestamp, Some(4));
+    }
+
+    #[test]
+    fn a_goal_round_right_after_a_prompt_takes_nothing() {
+        let round = holt_proto::GoalRound {
+            kind: holt_proto::GoalRoundKind::Continue(1),
+            reason: "x".into(),
+        };
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(user_rows("c1", &format!("x\n\n{}", round.marker()), 3));
+        let before = rows.clone();
+
+        hand_footers_to_goal_rounds(&mut rows);
+
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert!(rows[1].timestamp.is_none());
+        assert_eq!(rows[0].version, before[0].version);
+        assert_eq!(rows[1].version, before[1].version);
     }
 
     #[test]

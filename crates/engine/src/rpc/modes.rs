@@ -543,11 +543,14 @@ impl EngineService {
                 snapshot.pending.is_empty() && snapshot.active_message_id.is_none()
             };
             if no_work_queued {
-                let reason = goal_reason.unwrap_or_else(|| "resumed by the user".into());
+                let round = holt_proto::GoalRound {
+                    kind: holt_proto::GoalRoundKind::Resume,
+                    reason: goal_reason.unwrap_or_default(),
+                };
                 if let Err(error) = crate::goal::enqueue_continuation(
                     self,
                     &chat,
-                    crate::goal::continuation_prompt(&goal_text, &reason),
+                    crate::goal::continuation_prompt(&goal_text, &round),
                 ) {
                     tracing::warn!(target: "holt::goal", %error, "goal resume could not be queued");
                 }

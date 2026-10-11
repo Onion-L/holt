@@ -15,7 +15,9 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use holt_proto::{Chat, ChatGoalState, GoalStatus, GoalStep, TurnChangeSet};
+use holt_proto::{
+    Chat, ChatGoalState, GoalRound, GoalRoundKind, GoalStatus, GoalStep, TurnChangeSet,
+};
 use holt_rpc::RpcError;
 use pi_core::agent::types::AgentMessage;
 use tokio_util::sync::CancellationToken;
@@ -221,13 +223,24 @@ fn card_state_prompt(goal: &ChatGoalState) -> String {
 }
 
 /// The verifier-driven continuation: the goal plus what the last check
-/// found missing.
-pub(crate) fn continuation_prompt(text: &str, reason: &str) -> String {
+/// found missing, closed by the round's marker line — the UI draws the
+/// Turn as a loop row from it instead of a user bubble.
+pub(crate) fn continuation_prompt(text: &str, round: &GoalRound) -> String {
+    let status = match (&round.kind, round.reason.is_empty()) {
+        (GoalRoundKind::Retry, _) => {
+            "The last verification pass failed before reaching a verdict — keep working toward the goal.".to_string()
+        }
+        (GoalRoundKind::Resume, true) => "The user resumed the goal.".to_string(),
+        _ => format!(
+            "The verifier's last check found the goal not yet met: {}",
+            round.reason
+        ),
+    };
     format!(
-        "Work toward this goal:\n\n{text}\n\n\
-The verifier's last check found the goal not yet met: {reason}\n\n\
+        "Work toward this goal:\n\n{text}\n\n{status}\n\n\
 Continue. Judge your own progress by concrete evidence — files changed, \
-commands run, test results — not by plans or intentions."
+commands run, test results — not by plans or intentions.\n\n{}",
+        round.marker()
     )
 }
 
@@ -846,7 +859,10 @@ pub(crate) async fn after_turn_settled(
                 chat,
                 continuation_prompt(
                     &goal.text,
-                    "the last verification pass failed before reaching a verdict — keep working toward the goal",
+                    &GoalRound {
+                        kind: GoalRoundKind::Retry,
+                        reason: "the verifier couldn't reach a verdict".into(),
+                    },
                 ),
             )
             .is_err()
@@ -936,7 +952,11 @@ pub(crate) async fn after_turn_settled(
             {
                 return;
             }
-            if enqueue_continuation(service, chat, continuation_prompt(&goal.text, &reason)).is_ok()
+            let round = GoalRound {
+                kind: GoalRoundKind::Continue(state.iteration + 1),
+                reason,
+            };
+            if enqueue_continuation(service, chat, continuation_prompt(&goal.text, &round)).is_ok()
             {
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.iteration += 1;

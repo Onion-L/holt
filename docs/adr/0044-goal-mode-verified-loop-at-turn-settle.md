@@ -14,7 +14,15 @@ stores (`name`, `steps`), so the card heads the verifier-given name —
 never the raw objective — and lists the plan with each step's done state;
 and the composer projects an accepted `/goal` / `/plan` / `/provider`
 directive to a chip (the mode's icon + command name,
-`TextProjection::composer`).
+`TextProjection::composer`). A continuation no longer draws as a user
+bubble: the prompt closes on a `Goal loop · round n · <reason>` marker line
+(`holt_proto::GoalRound`, also `resumed` / `retry`), and the transcript
+renders that Turn as a foldable loop row (round + the verifier's missing
+piece, the full prompt in the fold); the queue's pending row shows the same
+projection, and its delete tooltip says deleting pauses the goal. The loop
+row takes over the previous reply's footer strip (its copy action, drawn
+inline at its right edge) so the reply's reserved lane leaves no hole above
+the light row (`hand_footers_to_goal_rounds`).
 
 ## Context
 

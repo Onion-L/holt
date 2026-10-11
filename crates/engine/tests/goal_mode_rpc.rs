@@ -126,6 +126,13 @@ async fn the_loop_runs_until_the_verifier_is_satisfied() {
             .any(|line| line.contains("the tests are still missing")),
         "continuation prompt lacks the reason: {continuation_prompt:?}"
     );
+    // ...and closes on the round marker the UI draws the loop row from.
+    assert!(
+        continuation_prompt
+            .iter()
+            .any(|line| line.contains("Goal loop · round 1 · the tests are still missing")),
+        "continuation prompt lacks the round marker: {continuation_prompt:?}"
+    );
 
     assert_eq!(
         watched_goal(&engine, "chat-1").await,

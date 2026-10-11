@@ -1697,6 +1697,7 @@ impl Transcript {
         }
 
         model::hand_footers_to_goal_bands(&mut new_rows);
+        model::hand_footers_to_goal_rounds(&mut new_rows);
 
         // Text already streamed before this (re)attach is the veil BASELINE:
         // its rows' veils seed instead of fading (render creates them from
