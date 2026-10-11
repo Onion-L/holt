@@ -8,7 +8,7 @@
 //! State answers to the conversation, not to the next message. Rendered
 //! only on the Chat route, above the notice stack in the same anchored
 //! column. The goal form collapses to a capsule (glyph + status word,
-//! persisted in `UiSettings::state_card_collapsed`); the swap tweens
+//! persisted in `UiSettings::state_card_expanded`); the swap tweens
 //! the box's width/height between the two forms' measured sizes instead of
 //! cutting.
 
@@ -24,6 +24,9 @@ use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
 const CARD_WIDTH: f32 = 300.0;
+/// The open card's body hangs under the name: the 13px target glyph plus
+/// the header's 6px gap.
+const BODY_INDENT: f32 = 19.0;
 
 /// What the mode form shows and does for one active mode. Plan wins when
 /// both flags are somehow set — the engine keeps the modes exclusive; the
@@ -129,7 +132,7 @@ impl Shell {
             let mode = mode_card_for(&chat)?;
             return Some(self.mode_card(mode, theme, cx));
         };
-        let collapsed = self.settings.state_card_collapsed;
+        let collapsed = !self.settings.state_card_expanded;
         let phase = crate::goal::loop_phase(self.state.read(cx)).unwrap_or(LoopPhase::Working);
         // Distinct ids per form: the swap unmounts one, so the other's
         // entrance fade replays (opacity only — the morph moves the box,
@@ -345,36 +348,36 @@ impl Shell {
     ) -> AnyElement {
         let status_tint = goal_status_tint(phase, theme);
         div()
+            .h(px(28.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .py(px(4.0))
-            .pl(px(8.0))
-            .pr(px(6.0))
+            .gap(px(7.0))
+            .pl(px(10.0))
+            .pr(px(8.0))
             .child(
                 crate::icons::icon(crate::icons::TARGET)
-                    .size(px(13.0))
+                    .size(px(12.0))
                     .flex_none()
                     .text_color(status_tint),
             )
             .child(
                 div()
-                    .max_w(px(140.0))
+                    .max_w(px(160.0))
                     .truncate()
                     .debug_selector(|| "goal-card-name".to_string())
                     .text_size(px(12.0))
-                    .line_height(px(18.0))
+                    .line_height(px(16.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child(goal_name(goal)),
+                    .child(goal_title(goal)),
             )
-            .child(goal_status(goal, phase, "goal-pill-status", theme, cx))
+            .child(goal_status(goal, phase, theme, cx))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
-                    .size(px(11.0))
+                    .size(px(10.0))
                     .flex_none()
-                    .text_color(theme.text_muted),
+                    .text_color(theme.text_faint),
             )
             .into_any_element()
     }
@@ -398,15 +401,45 @@ impl Shell {
         let pause_id: SharedString = format!("{id}-pause").into();
         let clear_id: SharedString = format!("{id}-clear").into();
         let collapse_id: SharedString = format!("{id}-collapse").into();
+        let named = goal.name.is_some();
+        let button = |id: SharedString,
+                      selector: &'static str,
+                      icon: &'static str,
+                      tooltip: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || selector.to_string())
+                .flex_none()
+                .size(px(22.0))
+                .rounded(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(theme.text_faint)
+                .hover(|el| el.bg(crate::theme::ink(0.06)).text_color(theme.text))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
+                        .into()
+                })
+                .child(crate::icons::icon(icon).size(px(12.0)))
+        };
         div()
             .w(px(CARD_WIDTH))
-            .p(px(10.0))
+            .pl(px(12.0))
+            .pr(px(6.0))
+            .pt(px(6.0))
+            .pb(px(10.0))
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(px(4.0))
             .child(
-                // Header: identity + loop state left, controls right.
+                // Header: identity + name, then the controls. The name is
+                // the verifier's short one; until the first pass names it,
+                // the objective itself heads the card (one line) rather than
+                // a contentless "Goal".
                 div()
+                    .h(px(26.0))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -417,197 +450,161 @@ impl Shell {
                             .flex_none()
                             .text_color(status_tint),
                     )
-                    // The name owns the header row; the live status sits on
-                    // its own line below, so neither squeezes the other.
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
-                            .flex_shrink(1.0)
                             .truncate()
                             .debug_selector(|| "goal-card-name".to_string())
-                            .text_size(px(12.0))
+                            .text_size(px(12.5))
                             .line_height(px(18.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(goal_name(goal)),
+                            .child(goal_title(goal)),
                     )
-                    .child(div().flex_1())
                     // Pause/resume: `SetGoalPaused`'s button form. The chat
                     // row's WatchChats republish repaints the card; a
                     // failure rides the notice strip.
                     .child(
-                        div()
-                            .id(pause_id)
-                            .debug_selector(|| "goal-card-pause".to_string())
-                            .flex_none()
-                            .size(px(20.0))
-                            .rounded(px(6.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::ink(0.06)))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| {
-                                    crate::popover::TextTooltip(
-                                        if stopped {
-                                            "Resume the goal (/goal resume)"
-                                        } else {
-                                            "Pause the goal (/goal pause)"
-                                        }
-                                        .into(),
-                                    )
-                                })
-                                .into()
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_goal_paused(!stopped, cx);
-                            }))
-                            .child(
-                                crate::icons::icon(if stopped {
-                                    crate::icons::PLAY
-                                } else {
-                                    crate::icons::PAUSE
-                                })
-                                .size(px(13.0))
-                                .text_color(theme.text_muted),
-                            ),
+                        button(
+                            pause_id,
+                            "goal-card-pause",
+                            if stopped {
+                                crate::icons::PLAY
+                            } else {
+                                crate::icons::PAUSE
+                            },
+                            if stopped {
+                                "Resume the goal (/goal resume)"
+                            } else {
+                                "Pause the goal (/goal pause)"
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_goal_paused(!stopped, cx);
+                        })),
                     )
                     // Clear: `/goal off`'s button form.
                     .child(
-                        div()
-                            .id(clear_id)
-                            .debug_selector(|| "goal-card-clear".to_string())
-                            .flex_none()
-                            .size(px(20.0))
-                            .rounded(px(6.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::ink(0.06)))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| {
-                                    crate::popover::TextTooltip("Clear the goal (/goal off)".into())
-                                })
-                                .into()
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.clear_goal(cx);
-                            }))
-                            .child(
-                                crate::icons::icon(crate::icons::CLOSE_CIRCLE)
-                                    .size(px(13.0))
-                                    .text_color(theme.text_muted),
-                            ),
+                        button(
+                            clear_id,
+                            "goal-card-clear",
+                            crate::icons::CLOSE_CIRCLE,
+                            "Clear the goal (/goal off)",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.clear_goal(cx);
+                        })),
                     )
                     // Collapse to the capsule: view chrome (persisted in
-                    // `UiSettings::state_card_collapsed`), not a goal action —
+                    // `UiSettings::state_card_expanded`), not a goal action —
                     // the loop keeps running.
                     .child(
-                        div()
-                            .id(collapse_id)
-                            .debug_selector(|| "goal-card-collapse".to_string())
-                            .flex_none()
-                            .size(px(20.0))
-                            .rounded(px(6.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|el| el.bg(crate::theme::ink(0.06)))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| crate::popover::TextTooltip("Collapse the card".into()))
-                                    .into()
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_state_card_collapsed(true, cx);
-                            }))
-                            .child(
-                                crate::icons::icon(crate::icons::ALT_ARROW_UP)
-                                    .size(px(13.0))
-                                    .text_color(theme.text_muted),
-                            ),
+                        button(
+                            collapse_id,
+                            "goal-card-collapse",
+                            crate::icons::ALT_ARROW_UP,
+                            "Collapse the card",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_state_card_collapsed(true, cx);
+                        })),
                     ),
             )
-            // The live status line, indented under the name.
-            .child(div().pl(px(19.0)).child(goal_status(
-                goal,
-                phase,
-                "goal-card-status",
-                theme,
-                cx,
-            )))
+            // The live status, aligned with the name's first glyph.
             .child(
-                // The objective: two lines, the rest on hover.
                 div()
-                    .id("goal-card-text")
-                    .min_w_0()
-                    .text_size(px(12.0))
-                    .line_height(px(17.0))
-                    .text_color(theme.text)
-                    .line_clamp(2)
-                    .child(SharedString::from(goal.text.clone())),
+                    .pl(px(19.0))
+                    .pr(px(6.0))
+                    .child(goal_status(goal, phase, theme, cx)),
             )
+            // The objective under a verifier-given name: secondary, two
+            // lines. Unnamed, the header already carries it.
+            .when(named, |el| {
+                el.child(
+                    div()
+                        .id("goal-card-text")
+                        .debug_selector(|| "goal-card-text".to_string())
+                        .min_w_0()
+                        .pl(px(BODY_INDENT))
+                        .pr(px(6.0))
+                        .mt(px(2.0))
+                        .text_size(px(11.5))
+                        .line_height(px(16.0))
+                        .text_color(theme.text_muted)
+                        .line_clamp(2)
+                        .child(SharedString::from(goal.text.clone())),
+                )
+            })
             // The verifier-maintained plan: a finished step reads struck
             // and faint behind its check, a pending one plain behind an
             // empty ring.
             .when(!goal.steps.is_empty(), |el| {
-                el.child(div().flex().flex_col().gap(px(4.0)).children(
-                    goal.steps.iter().enumerate().map(|(ix, step)| {
-                        let selector = format!("goal-card-step-{ix}");
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
-                            .debug_selector(move || selector.clone())
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(12.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(if step.done {
-                                        crate::icons::icon(crate::icons::CHECK)
-                                            .size(px(11.0))
-                                            .text_color(
-                                                crate::theme::AccentColor::Green
-                                                    .primary(theme.appearance),
-                                            )
-                                            .into_any_element()
-                                    } else {
-                                        div()
-                                            .size(px(8.0))
-                                            .rounded_full()
-                                            .border_1()
-                                            .border_color(theme.text_faint)
-                                            .into_any_element()
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .line_height(px(15.0))
-                                    .text_color(if step.done {
-                                        theme.text_faint
-                                    } else {
-                                        theme.text_muted
-                                    })
-                                    .when(step.done, |el| el.line_through())
-                                    .child(SharedString::from(step.text.clone())),
-                            )
-                            .into_any_element()
-                    }),
-                ))
+                el.child(
+                    div()
+                        .pl(px(BODY_INDENT))
+                        .pr(px(6.0))
+                        .mt(px(4.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .children(goal.steps.iter().enumerate().map(|(ix, step)| {
+                            let selector = format!("goal-card-step-{ix}");
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .debug_selector(move || selector.clone())
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(12.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(if step.done {
+                                            crate::icons::icon(crate::icons::CHECK)
+                                                .size(px(11.0))
+                                                .text_color(
+                                                    crate::theme::AccentColor::Green
+                                                        .primary(theme.appearance),
+                                                )
+                                                .into_any_element()
+                                        } else {
+                                            div()
+                                                .size(px(8.0))
+                                                .rounded_full()
+                                                .border_1()
+                                                .border_color(theme.text_faint)
+                                                .into_any_element()
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .line_height(px(15.0))
+                                        .text_color(if step.done {
+                                            theme.text_faint
+                                        } else {
+                                            theme.text_muted
+                                        })
+                                        .when(step.done, |el| el.line_through())
+                                        .child(SharedString::from(step.text.clone())),
+                                )
+                                .into_any_element()
+                        })),
+                )
             })
             .when_some(goal_reason_line(goal), |el, reason| {
                 el.child(
                     div()
                         .id("goal-card-reason")
+                        .pl(px(BODY_INDENT))
+                        .pr(px(6.0))
+                        .mt(px(2.0))
                         .flex()
                         .flex_row()
                         .gap(px(5.0))
@@ -639,7 +636,7 @@ impl Shell {
     }
 
     /// Card ↔ capsule toggle: pure view chrome (the loop keeps running),
-    /// persisted in `UiSettings::state_card_collapsed`. The direct store
+    /// persisted in `UiSettings::state_card_expanded`. The direct store
     /// write survives Shell saves — `ShellSettingsFields` doesn't own it.
     /// Starts the size morph from the outgoing form's measured size; a
     /// zero measurement (never painted) or reduced motion snaps instead.
@@ -653,9 +650,9 @@ impl Shell {
                 started: std::time::Instant::now(),
             })
         };
-        self.settings.state_card_collapsed = collapsed;
+        self.settings.state_card_expanded = !collapsed;
         crate::settings::update(crate::settings::SavePolicy::Debounced, cx, move |current| {
-            current.state_card_collapsed = collapsed;
+            current.state_card_expanded = !collapsed;
         });
         cx.notify();
     }
@@ -745,10 +742,21 @@ impl Shell {
     }
 }
 
-/// The card's name for the goal: the verifier-given short name, or the
-/// bare label until the first pass names it (never the raw objective).
-fn goal_name(goal: &ChatGoalState) -> SharedString {
-    goal.name.clone().unwrap_or_else(|| "Goal".into()).into()
+/// The card's name for the goal: the verifier-given short name, or — until
+/// the first pass names it — the objective's first line, so the header
+/// always says something about this goal (a bare "Goal" said nothing).
+fn goal_title(goal: &ChatGoalState) -> SharedString {
+    match &goal.name {
+        Some(name) => name.clone().into(),
+        None => goal
+            .text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("Goal")
+            .trim()
+            .to_string()
+            .into(),
+    }
 }
 
 /// One word group naming what the loop is doing right now: the round it is
@@ -778,32 +786,48 @@ fn goal_status_label(goal: &ChatGoalState, phase: LoopPhase) -> SharedString {
 fn goal_status(
     goal: &ChatGoalState,
     phase: LoopPhase,
-    key: &'static str,
     theme: &Theme,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
     let tint = goal_status_tint(phase, theme);
+    // A live loop breathes (the compaction label's pulse); a parked one
+    // holds a steady dot.
     let live = matches!(phase, LoopPhase::Working | LoopPhase::Checking);
+    let dot_opacity = if live {
+        let beat = motion::pulse_delta(&motion::HOLT_PULSE, cx.entity_id(), cx);
+        motion::lerp(0.35, 1.0, motion::pulse_wave(beat))
+    } else {
+        1.0
+    };
     div()
         .flex_none()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(5.0))
+        .gap(px(6.0))
         .text_size(px(11.0))
-        .line_height(px(18.0))
-        .text_color(tint)
-        .when(live, |el| {
-            el.child(crate::loaders::mini_mono_spinner(
-                key,
-                1.5,
-                theme.text_faint,
-                cx.entity_id(),
-                cx,
-            ))
-        })
-        .child(goal_status_label(goal, phase))
+        .line_height(px(16.0))
+        .text_color(theme.text_muted)
+        .child(
+            div()
+                .flex_none()
+                .size(px(6.0))
+                .rounded_full()
+                .bg(goal_dot_color(phase, theme))
+                .opacity(dot_opacity),
+        )
+        .child(div().text_color(tint).child(goal_status_label(goal, phase)))
         .into_any_element()
+}
+
+/// The status dot: the accent while the loop moves, orange when blocked,
+/// the accent again when it needs the user, faint when parked.
+fn goal_dot_color(phase: LoopPhase, theme: &Theme) -> gpui::Hsla {
+    match phase {
+        LoopPhase::Working | LoopPhase::Checking | LoopPhase::AwaitingAnswer => theme.accent,
+        LoopPhase::Blocked => crate::theme::AccentColor::Orange.primary(theme.appearance),
+        LoopPhase::Queued | LoopPhase::Paused => theme.text_faint,
+    }
 }
 
 /// Blocked reads at a glance (the verifier parked the loop) and an open
@@ -851,12 +875,14 @@ mod tests {
 
     #[test]
     fn the_card_names_the_goal_from_the_verifier() {
-        // Until the first verifier pass names the goal, the card carries
-        // the bare label — never the raw objective.
-        assert_eq!(goal_name(&goal(GoalStatus::Active, 0)), "Goal");
+        // Until the first verifier pass names the goal, the objective's
+        // first line heads the card.
+        let mut unnamed = goal(GoalStatus::Active, 0);
+        unnamed.text = "\nship the compaction slice\nand prove it".into();
+        assert_eq!(goal_title(&unnamed), "ship the compaction slice");
         let mut named = goal(GoalStatus::Active, 2);
         named.name = Some("Ship the compaction slice".into());
-        assert_eq!(goal_name(&named), "Ship the compaction slice");
+        assert_eq!(goal_title(&named), "Ship the compaction slice");
     }
 
     #[test]
@@ -984,6 +1010,7 @@ mod tests {
                 cx,
             );
             shell.route = super::super::Route::Chat;
+            shell.settings.state_card_expanded = true;
             shell
         });
         // Sanity: the seeded chat draws a card at all (a goal-less chat
@@ -1025,10 +1052,10 @@ mod tests {
         assert_eq!(calls[1].1["chatId"], "goal-chat");
     }
 
-    /// The card ↔ capsule switch is view chrome: the collapse button folds
-    /// the card to the pill, the pill expands on click, and the choice is
-    /// mirrored into the shell's persisted settings. No goal RPC fires —
-    /// the loop keeps running either way.
+    /// The card ↔ capsule switch is view chrome: the card starts folded,
+    /// the pill expands on click, the collapse button folds it back, and
+    /// the choice is mirrored into the shell's persisted settings. No goal
+    /// RPC fires — the loop keeps running either way.
     #[gpui::test]
     fn the_card_collapses_to_a_capsule_and_back(cx: &mut gpui::TestAppContext) {
         use std::sync::Arc;
@@ -1108,25 +1135,26 @@ mod tests {
             shell: shell.clone(),
         });
 
-        // Expanded by default: the card's controls, not the pill.
-        assert!(visual.debug_bounds("goal-card-collapse").is_some());
-        assert!(visual.debug_bounds("goal-card-pill").is_none());
-
-        // Fold to the capsule: the pill replaces the card and the choice
-        // lands on the shell's settings (the persisted copy).
-        let collapse = visual.debug_bounds("goal-card-collapse").unwrap();
-        visual.simulate_click(collapse.center(), Default::default());
-        visual.run_until_parked();
-        assert!(visual.read(|cx| shell.read(cx).settings.state_card_collapsed));
+        // Folded by default: the capsule, never the card's controls — the
+        // loop's state stays out of the user's view until asked for.
         assert!(visual.debug_bounds("goal-card-pill").is_some());
         assert!(visual.debug_bounds("goal-card-pause").is_none());
 
-        // The capsule expands back on click.
+        // The capsule expands on click, and the choice lands on the shell's
+        // settings (the persisted copy).
         let pill = visual.debug_bounds("goal-card-pill").unwrap();
         visual.simulate_click(pill.center(), Default::default());
         visual.run_until_parked();
-        assert!(!visual.read(|cx| shell.read(cx).settings.state_card_collapsed));
+        assert!(visual.read(|cx| shell.read(cx).settings.state_card_expanded));
         assert!(visual.debug_bounds("goal-card-pause").is_some());
+        assert!(visual.debug_bounds("goal-card-pill").is_none());
+
+        // Folding goes back to the capsule.
+        let collapse = visual.debug_bounds("goal-card-collapse").unwrap();
+        visual.simulate_click(collapse.center(), Default::default());
+        visual.run_until_parked();
+        assert!(!visual.read(|cx| shell.read(cx).settings.state_card_expanded));
+        assert!(visual.debug_bounds("goal-card-pill").is_some());
     }
 
     /// The verifier-maintained card content: the goal's name heads the card
@@ -1211,19 +1239,17 @@ mod tests {
                 cx,
             );
             shell.route = super::super::Route::Chat;
+            shell.settings.state_card_expanded = true;
             shell
         });
         let (_view, visual) = cx.add_window_view(|_, _| GoalCardView { shell });
 
-        // The header paints the verifier-given name: its element's laid-out
-        // width tracks the content (the test text system shapes every glyph
-        // at a fixed advance), so "Ship compaction" (15 chars) paints far
-        // wider than the 4-char "Goal" fallback. When the name clears, the
-        // card repaints at the fallback's width — the raw objective never
-        // heads the card.
-        let named = visual
-            .debug_bounds("goal-card-name")
-            .expect("the name element paints");
+        // Named, the header carries the verifier's name and the objective
+        // rides beneath it. Unnamed, the objective's first line heads the
+        // card instead — a contentless "Goal" never does — so the line
+        // beneath would only repeat it and is dropped.
+        assert!(visual.debug_bounds("goal-card-name").is_some());
+        assert!(visual.debug_bounds("goal-card-text").is_some());
         visual.update(|_, cx| {
             chats.update(cx, |state, _| {
                 state.chats[0].goal.as_mut().unwrap().name = None;
@@ -1231,13 +1257,8 @@ mod tests {
             cx.refresh_windows();
         });
         visual.run_until_parked();
-        let unnamed = visual
-            .debug_bounds("goal-card-name")
-            .expect("the fallback still paints");
-        assert!(
-            f32::from(named.size.width) > f32::from(unnamed.size.width) * 2.0,
-            "the name element tracks goal.name (named {named:?}, fallback {unnamed:?})"
-        );
+        assert!(visual.debug_bounds("goal-card-name").is_some());
+        assert!(visual.debug_bounds("goal-card-text").is_none());
 
         // Every step row renders; a goal without steps draws none (the
         // collapse test's fixture above asserts the same card's controls).
@@ -1384,6 +1405,7 @@ mod tests {
                 cx,
             );
             shell.route = super::super::Route::Chat;
+            shell.settings.state_card_expanded = true;
             shell
         });
         let (_view, visual) = cx.add_window_view(|_, _| CardView {

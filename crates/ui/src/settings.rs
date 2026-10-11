@@ -277,10 +277,13 @@ pub struct UiSettings {
     /// The Home canvas's first-project hint (ADR-0039) was dismissed.
     #[serde(default)]
     pub home_hint_dismissed: bool,
-    /// The state card renders as the collapsed capsule (ADR-0044). The
-    /// serialized key keeps the goal-card name for on-disk compatibility.
-    #[serde(default, rename = "goal_card_collapsed")]
-    pub state_card_collapsed: bool,
+    /// The goal card renders open (ADR-0044); by default it is the
+    /// collapsed capsule, so the loop's state never takes the user's view
+    /// until they ask. A new key on purpose: the retired
+    /// `goal_card_collapsed` (default open) is ignored, so every install
+    /// starts folded.
+    #[serde(default, rename = "goal_card_expanded")]
+    pub state_card_expanded: bool,
     /// Open session tabs in visual order (drag-reorder edits in place).
     /// Device-local: a tab is a local viewport onto the synced session list —
     /// closing one never archives the session. Ids of archived/deleted chats
@@ -379,7 +382,7 @@ impl Default for UiSettings {
             sidebar_show_pull_request: true,
             last_space_id: None,
             home_hint_dismissed: false,
-            state_card_collapsed: false,
+            state_card_expanded: false,
             open_tabs: None,
             space_filter: None,
             tab_order: std::collections::HashMap::new(),
@@ -1114,7 +1117,7 @@ mod tests {
             file_navigation: std::collections::HashMap::new(),
             legacy_accent_color: None,
             home_hint_dismissed: true,
-            state_card_collapsed: true,
+            state_card_expanded: true,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
