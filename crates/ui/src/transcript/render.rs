@@ -195,6 +195,7 @@ impl Transcript {
                 attachments,
                 badges,
                 skill,
+                goal_chip,
                 pending,
             } => {
                 let attachments = attachments.clone();
@@ -203,6 +204,7 @@ impl Transcript {
                 let raw = raw.clone();
                 let mentions = mentions.clone();
                 let skill = skill.clone();
+                let goal_chip = *goal_chip;
                 let pending = *pending;
                 let mut targets: Vec<crate::image_viewer::ViewerTarget> = attachments
                     .iter()
@@ -394,11 +396,14 @@ impl Transcript {
                             skill_open: Some(skill_open),
                             copy_map,
                         };
-                        match skill {
-                            Some(skill) => self.render_user_skill(
+                        match (skill, goal_chip) {
+                            (Some(skill), _) => self.render_user_skill(
                                 &row.id, &skill, &text, &mentions, &theme, clicks,
                             ),
-                            None => user_bubble_text_with_chip(
+                            (None, true) => {
+                                render_user_goal(&row.id, text, mentions, &theme, clicks)
+                            }
+                            (None, false) => user_bubble_text_with_chip(
                                 &row.id, text, mentions, None, &theme, clicks,
                             )
                             .into_any_element(),
@@ -1103,6 +1108,24 @@ struct SkillChipRun {
     open_url: Option<String>,
 }
 
+/// A leading directive chip at the bubble text's head: the legacy `/skill`
+/// invocation (accent ink on the accent wash, a click-through to its source
+/// file) or a `/goal` arming (white ink on a neutral wash with the target
+/// icon in the gutter — the composer's own treatment, never the accent).
+enum LeadingChip {
+    Skill(SkillChipRun),
+    Goal(std::ops::Range<usize>),
+}
+
+impl LeadingChip {
+    fn range(&self) -> std::ops::Range<usize> {
+        match self {
+            LeadingChip::Skill(chip) => chip.range.clone(),
+            LeadingChip::Goal(range) => range.clone(),
+        }
+    }
+}
+
 type ImageOpen = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
 /// A skill mention chip's click-through: emits the shell-facing file-open
@@ -1132,7 +1155,7 @@ fn user_bubble_text_with_chip(
     row_id: &SharedString,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
-    skill: Option<SkillChipRun>,
+    leading: Option<LeadingChip>,
     theme: &Theme,
     clicks: BubbleClicks,
 ) -> AnyElement {
@@ -1169,9 +1192,15 @@ fn user_bubble_text_with_chip(
     };
     let mut runs = Vec::with_capacity(mentions.len() * 2 + 2);
     let mut at = 0;
-    if let Some(chip) = &skill {
-        runs.push(skill_run(chip.range.len()));
-        at = chip.range.end;
+    if let Some(chip) = &leading {
+        let range = chip.range();
+        runs.push(match chip {
+            LeadingChip::Skill(_) => skill_run(range.len()),
+            // White sans ink — the body's own run. The neutral wash and the
+            // gutter icon carry the chip's identity (the composer's recipe).
+            LeadingChip::Goal(_) => body_run(range.len()),
+        });
+        at = range.end;
     }
     for span in mentions.iter() {
         if at < span.range.start {
@@ -1189,12 +1218,12 @@ fn user_bubble_text_with_chip(
     }
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
-    let skill_range = skill.as_ref().map(|chip| chip.range.clone());
+    let leading_range = leading.as_ref().map(LeadingChip::range);
     let mut links: Vec<(std::ops::Range<usize>, String, BubbleLinkKind)> = Vec::new();
-    if let Some(chip) = skill
-        && let Some(url) = chip.open_url
+    if let Some(LeadingChip::Skill(chip)) = &leading
+        && let Some(url) = chip.open_url.clone()
     {
-        links.push((chip.range, url, BubbleLinkKind::Url));
+        links.push((chip.range.clone(), url, BubbleLinkKind::Url));
     }
     for span in mentions.iter() {
         if span.is_skill {
@@ -1238,6 +1267,9 @@ fn user_bubble_text_with_chip(
     };
     let wash = theme.code_wash;
     let skill_wash = theme.accent_wash;
+    // The goal chip's neutral fill — white ink, never the skill's accent
+    // (the composer's `element_hover`).
+    let goal_wash = theme.element_hover;
     let sel_key: std::sync::Arc<str> = format!("{row_id}:u").into();
     let sel_theme = theme.clone();
     let underlay = canvas(
@@ -1255,8 +1287,33 @@ fn user_bubble_text_with_chip(
                     ));
                 }
             };
-            if let Some(range) = &skill_range {
-                paint(window, range, skill_wash);
+            if let Some(range) = &leading_range {
+                let goal = matches!(leading, Some(LeadingChip::Goal(_)));
+                paint(window, range, if goal { goal_wash } else { skill_wash });
+                // The goal chip leads with the mode's target glyph — painted
+                // in the label's gutter NBSPs, white like the ink (the
+                // composer's recipe; the display text is the bare name).
+                if goal
+                    && let Some(rect) = render::range_rects(&layout, range, 0.0, 2.0)
+                        .first()
+                        .copied()
+                {
+                    let icon = px(14.0);
+                    let _ = window.paint_svg(
+                        Bounds::new(
+                            point(
+                                rect.origin.x + px(2.5),
+                                rect.origin.y + (rect.size.height - icon) / 2.0,
+                            ),
+                            size(icon, icon),
+                        ),
+                        crate::icons::TARGET.into(),
+                        None,
+                        gpui::TransformationMatrix::unit(),
+                        sel_theme.text,
+                        cx,
+                    );
+                }
             }
             for span in mentions.iter() {
                 let color = if span.is_skill { skill_wash } else { wash };
@@ -1307,6 +1364,48 @@ fn user_bubble_text_with_chip(
         .child(underlay)
         .child(text_el)
         .into_any_element()
+}
+
+/// The `/goal` arming inside the user bubble: the white `goal` chip at the
+/// head of the text flow (icon gutter + bare name over NBSP pads — the
+/// composer's own projection, never the accent), then the objective. The
+/// arming marker itself never reaches the bubble (`model.rs` strips it), and
+/// no pill rides above it — the chip IS the provenance.
+fn render_user_goal(
+    row_id: &SharedString,
+    text: SharedString,
+    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+    theme: &Theme,
+    clicks: BubbleClicks,
+) -> AnyElement {
+    // The composer's chip layout: one side pad + a four-NBSP icon gutter +
+    // the bare name + the trailing pad. NBSPs only — every chip character
+    // must exist in Geist (exotic whitespace collapsed a chip once already).
+    let label = "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}goal\u{00A0}";
+    let chip = LeadingChip::Goal(0..label.len());
+    let (full, mentions) = if text.is_empty() {
+        (label.to_string(), Vec::new())
+    } else {
+        // Mention spans are in display-byte terms; the composed prefix shifts
+        // them by the label plus the joining space.
+        let offset = label.len() + 1;
+        let shifted = mentions
+            .iter()
+            .map(|span| crate::composer::SentMentionSpan {
+                range: span.range.start + offset..span.range.end + offset,
+                ..span.clone()
+            })
+            .collect();
+        (format!("{label} {text}"), shifted)
+    };
+    user_bubble_text_with_chip(
+        row_id,
+        SharedString::from(full),
+        Arc::new(mentions),
+        Some(chip),
+        theme,
+        clicks,
+    )
 }
 
 /// The transcript ErrorChip — a port of holt chat-view.tsx `ErrorChip`

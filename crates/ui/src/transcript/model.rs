@@ -209,6 +209,10 @@ pub enum RowKind {
         badges: Arc<Vec<crate::badges::MessageBadge>>,
         /// Skill invocation metadata when the turn was launched via `/skill`.
         skill: Option<Arc<UserSkill>>,
+        /// The arming send (`/goal <objective>`): the bubble heads its text
+        /// with the white `goal` chip (icon gutter + bare name — the
+        /// composer's own treatment) instead of a pill above it.
+        goal_chip: bool,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -585,9 +589,18 @@ pub fn rows_for_entry(
         // File mentions render as chips here too, not just in the composer.
         // The projection is pure over the text, so the raw-length row version
         // below stays a valid cache/diff key.
+        // The goal arming marker is always the FINAL block (`with_goal_block`
+        // appends it after everything the composer assembled); strip it first
+        // so the comment extractor still sees its own trailing blocks in a
+        // combined message. No pill replaces it: the renderer chips the `goal`
+        // directive inline at the bubble's head (the composer's treatment).
+        let (body, goal_chip) = match crate::goal::strip_block(&parsed.text) {
+            Some(objective) => (objective, true),
+            None => (parsed.text.clone(), false),
+        };
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
-        let (body, badges) = crate::badges::split(&parsed.text);
+        let (body, badges) = crate::badges::split(&body);
         // The appended path list leaves the bubble entirely: it rides the
         // prompt for the model, but on screen the references render as an
         // attachment chip row above the bubble (one badge per target, full
@@ -663,6 +676,7 @@ pub fn rows_for_entry(
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),
                     skill,
+                    goal_chip,
                     pending,
                 },
                 entry_id,
@@ -1951,6 +1965,47 @@ mod tests {
             &echoed[0].kind,
             RowKind::User { pending: true, .. }
         ));
+    }
+
+    /// A `/goal` arming send chips the directive inline at the bubble's head
+    /// instead of lifting a pill above it: the marker block leaves the text
+    /// entirely, the row flags the chip, and the copy strip stays the bare
+    /// objective.
+    #[test]
+    fn user_rows_chip_the_goal_directive_inline() {
+        let mut entry = assistant("u9", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part(
+            "t0",
+            &crate::goal::with_goal_block("ship the login page"),
+        )];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::User {
+            text,
+            raw,
+            badges,
+            goal_chip,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert!(goal_chip, "the row chips the goal directive inline");
+        assert!(badges.is_empty(), "no pill rides above the bubble");
+        assert_eq!(text.as_ref(), "ship the login page");
+        assert_eq!(raw.as_ref(), "ship the login page");
+        assert_eq!(rows[0].copy_text.as_deref(), Some("ship the login page"));
+        assert!(!text.contains("Goal armed"));
+
+        // An ordinary prompt never chips.
+        entry.parts = vec![text_part("t0", "just a prompt")];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { goal_chip, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert!(!goal_chip);
     }
 
     #[test]

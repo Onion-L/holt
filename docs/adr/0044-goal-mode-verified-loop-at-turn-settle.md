@@ -4,7 +4,10 @@
 composer chip" moved (2026-10): the footer chip became a pinned top-right
 goal card (objective, status, round, last verdict, pause/clear —
 `crates/ui/src/shell/goal_card.rs`), and the arming message folds a goal
-block the transcript lifts into a 🎯 pill (`crates/ui/src/goal.rs`). The
+block the transcript strips, chipping the `goal` directive inline at the
+bubble's head — icon gutter + bare name in white ink, the composer's own
+treatment — instead of a pill above the objective (`crates/ui/src/goal.rs`,
+`transcript/render.rs`'s `render_user_goal`). The
 `/goal` slash forms are unchanged. The card-facing half grew since
 (2026-10): the verifier's reply carries a `NAME:`/`STEPS:` block the row
 stores (`name`, `steps`), so the card heads the verifier-given name —

@@ -243,7 +243,7 @@ icon_assets![
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     // Concentric rings and a center dot — the goal surface's glyph
-    // (ADR-0044): the arming message's pill and the top-right goal card.
+    // (ADR-0044): the arming message's inline chip and the goal card.
     (TARGET, "target"),
     (WIDGET, "widget"),
     // Baseline + three column bars, same linear family — the Usage

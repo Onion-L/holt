@@ -359,7 +359,7 @@ impl Transcript {
             row_id,
             SharedString::from(full),
             Arc::new(mentions),
-            Some(chip),
+            Some(LeadingChip::Skill(chip)),
             theme,
             clicks,
         )

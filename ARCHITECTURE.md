@@ -211,7 +211,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`SetGoal` rides after createChat, before the queue, like the plan
   enter); `/goal off | pause | resume` and the top-right goal card's
   pause/clear buttons drive an existing chat's loop (the arming message
-  carries the goal block the transcript lifts into its 🎯 pill). The card
+  carries the goal block; the transcript strips it and chips the `goal`
+  directive inline at the bubble's head). The card
   and its collapsed capsule head the verifier-given name, not the raw
   objective, and list the plan's steps with their done state; the
   composer renders an accepted `/goal` `/plan` `/provider` directive as a

@@ -1,8 +1,9 @@
 //! The goal arming block: `/goal <objective>` sends the objective as the
 //! Turn's message, and [`with_goal_block`] folds a marker line under it the
-//! model reads. [`extract_badge`] lifts that block back out so the
-//! transcript draws the 🎯 pill above the objective bubble — the same
-//! stage/fold/extract pipeline diff comments ride (see `badges`).
+//! model reads. [`strip_block`] lifts that marker back out so the transcript
+//! can chip the `goal` directive inline at the bubble's head — icon gutter +
+//! bare name, the composer's own treatment — instead of drawing a pill above
+//! the objective (see `transcript/model.rs`).
 
 /// The marker sentence the arming message carries. Matched only as a whole
 /// trailing block, so a prompt merely quoting the header mid-body is left
@@ -15,23 +16,17 @@ pub fn with_goal_block(objective: &str) -> String {
     format!("{objective}\n\n{GOAL_BLOCK_HEADER}")
 }
 
-/// [`crate::badges::Extractor`] for the goal block.
-pub fn extract_badge(text: &str) -> Option<(String, crate::badges::MessageBadge)> {
+/// The inverse of [`with_goal_block`]: peel the trailing marker off a sent
+/// message, returning the bare objective. `None` when the message carries no
+/// marker — or when the header merely appears mid-body (trailing text after
+/// it), which is a quote, not an arming.
+pub fn strip_block(text: &str) -> Option<String> {
     let marker = format!("\n\n{GOAL_BLOCK_HEADER}");
     let at = text.rfind(&marker)?;
     if !text[at + marker.len()..].trim().is_empty() {
         return None;
     }
-    Some((
-        text[..at].to_string(),
-        crate::badges::MessageBadge {
-            icon: crate::icons::TARGET,
-            label: "Goal".into(),
-            // The objective is the bubble body right below the pill — a
-            // hover card would only repeat it.
-            details: Vec::new(),
-        },
-    ))
+    Some(text[..at].to_string())
 }
 
 #[cfg(test)]
@@ -46,26 +41,22 @@ mod tests {
     }
 
     #[test]
-    fn a_sent_goal_block_becomes_one_pill() {
-        let (text, badges) = crate::badges::split(&with_goal_block("ship it"));
-        assert_eq!(text, "ship it");
-        assert_eq!(badges.len(), 1);
-        assert_eq!(badges[0].label.as_ref(), "Goal");
-        assert_eq!(badges[0].icon, crate::icons::TARGET);
+    fn a_sent_goal_block_strips_back_to_the_objective() {
+        assert_eq!(
+            strip_block(&with_goal_block("ship it")).as_deref(),
+            Some("ship it")
+        );
     }
 
     #[test]
     fn a_prompt_quoting_the_header_mid_body_is_left_alone() {
-        let (text, badges) =
-            crate::badges::split(&format!("write about it:\n\n{GOAL_BLOCK_HEADER}\nand more"));
-        assert_eq!(badges.len(), 0);
-        assert!(text.contains(GOAL_BLOCK_HEADER));
+        let text = format!("write about it:\n\n{GOAL_BLOCK_HEADER}\nand more");
+        assert_eq!(strip_block(&text), None);
     }
 
     #[test]
     fn a_trailing_header_without_the_blank_line_does_not_match() {
-        let (text, badges) = crate::badges::split(&format!("write about it\n{GOAL_BLOCK_HEADER}"));
-        assert_eq!(badges.len(), 0);
-        assert_eq!(text, format!("write about it\n{GOAL_BLOCK_HEADER}"));
+        let text = format!("write about it\n{GOAL_BLOCK_HEADER}");
+        assert_eq!(strip_block(&text), None);
     }
 }
