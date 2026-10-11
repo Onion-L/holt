@@ -256,11 +256,10 @@ pub(crate) fn load(data_dir: &Path, chat_id: &str) -> Result<Vec<AgentMessage>, 
                         // retained tail — the file's own preceding message
                         // entries, recovered by count.
                         let tail_count = record.retained_tail as usize;
-                        let tail = if messages.len() >= tail_count {
-                            messages.split_off(messages.len() - tail_count)
-                        } else {
-                            std::mem::take(&mut messages)
-                        };
+                        let tail = messages.split_off(messages.len().saturating_sub(tail_count));
+                        // The summarized prefix goes: it is what the summary
+                        // stands in for (issue #37).
+                        messages.clear();
                         messages.push(
                             pi_core::agent::harness::messages::create_compaction_summary_message(
                                 record.summary,
@@ -958,6 +957,44 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["before", "after"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_compaction_record_replaces_the_summarized_prefix() {
+        // Issue #37: replay must leave summary + retained tail, not the raw
+        // prefix in front of them — at every record, so chained compactions
+        // don't stack prefixes either.
+        let dir = temp_dir();
+        let record = |summary: &str, retained_tail: u64| CompactionRecord {
+            summary: summary.into(),
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: holt_doc::parts::CompactionTrigger::Manual,
+            timestamp: 1,
+            retained_tail,
+        };
+        for text in ["p1", "p2", "t1", "t2"] {
+            append_message(&dir, "chat-1", &user(text)).unwrap();
+        }
+        append_compaction(&dir, "chat-1", &record("first", 2)).unwrap();
+        append_message(&dir, "chat-1", &user("after first")).unwrap();
+        append_compaction(&dir, "chat-1", &record("second", 1)).unwrap();
+        append_message(&dir, "chat-1", &user("after second")).unwrap();
+
+        let loaded = load(&dir, "chat-1").unwrap();
+        let shape: Vec<String> = loaded
+            .iter()
+            .map(|message| match message {
+                AgentMessage::User(user) => match &user.content {
+                    UserContent::Text(text) => text.clone(),
+                    _ => "?".into(),
+                },
+                AgentMessage::Custom(custom) => custom.value["summary"].as_str().unwrap().into(),
+                _ => "?".into(),
+            })
+            .collect();
+        assert_eq!(shape, ["second", "after first", "after second"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
