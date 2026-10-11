@@ -11,7 +11,7 @@
 //! cleanup; only files directly inside the managed root (with the naming shape
 //! this module issues) are Holt-owned.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,10 +35,16 @@ pub const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 /// ordinary path reference with no promised preview or visual read.
 pub const SUPPORTED_MIME_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
+/// The extensions `stage` issues (JPEG lands as `jpg`). Together with the
+/// hyphenated uuid stem they fix the shape of every managed name.
+const MANAGED_EXTENSIONS: [&str; 4] = ["png", "jpg", "gif", "webp"];
+
 /// The managed-image root: `<data_dir>/images`.
 pub struct ImageStore {
     dir: PathBuf,
     data_dir: PathBuf,
+    /// The boot reconciliation running off the assembly path, if any.
+    reconciliation: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 pub use holt_rpc::images::ManagedImage as StagedImage;
@@ -48,6 +54,7 @@ impl ImageStore {
         Self {
             dir: data_dir.join("images"),
             data_dir: data_dir.to_path_buf(),
+            reconciliation: std::sync::Mutex::new(None),
         }
     }
 
@@ -57,7 +64,8 @@ impl ImageStore {
     }
 
     /// True when `path` points at a file the store could have issued: a
-    /// child of the managed root with a managed extension. Works for paths
+    /// child of the managed root named `<hyphenated uuid>.<managed extension>`
+    /// (the reference scan relies on that fixed shape). Works for paths
     /// whose file is already gone (the parent is canonicalized instead), so
     /// releasing a reclaimed file stays truthful — and never true for an
     /// external picker/drag source, so cleanup can only ever consider
@@ -77,11 +85,13 @@ impl ImageStore {
             && candidate
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+                .is_some_and(|s| {
+                    s.len() == uuid::fmt::Hyphenated::LENGTH && uuid::Uuid::parse_str(s).is_ok()
+                })
             && candidate
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| matches!(ext, "png" | "jpg" | "gif" | "webp"))
+                .is_some_and(|ext| MANAGED_EXTENSIONS.contains(&ext))
     }
 
     /// Validate pasted bytes and persist them durably before the caller
@@ -236,6 +246,7 @@ impl ImageStore {
         Self {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
+            reconciliation: std::sync::Mutex::new(None),
         }
     }
 
@@ -279,14 +290,27 @@ impl ImageStore {
     /// without materializing the whole chat corpus as JSON DOM at boot. The
     /// whole-file scan sees more than string values alone, so a borderline
     /// hit retains a file instead of reclaiming it.
+    ///
+    /// The needles are the four extensions, not the names: every candidate is
+    /// a fixed-length uuid stem plus one of them, so the bytes ending at an
+    /// extension hit either spell a candidate or don't — the same answer as
+    /// searching every name. Hundreds of hex-led names defeat the matcher's
+    /// prefilter (nearly any byte can start one); four `.`-led literals let
+    /// it skip through the corpus.
     fn scan_references(&self, candidates: &[String]) -> HashSet<String> {
         let mut referenced = HashSet::new();
         if candidates.is_empty() {
             return referenced;
         }
+        let index: HashMap<&[u8], usize> = candidates
+            .iter()
+            .enumerate()
+            .map(|(position, name)| (name.as_bytes(), position))
+            .collect();
         let mut hit = vec![false; candidates.len()];
-        let automaton = aho_corasick::AhoCorasick::new(candidates)
-            .expect("image file names are literal patterns");
+        let automaton =
+            aho_corasick::AhoCorasick::new(MANAGED_EXTENSIONS.map(|ext| format!(".{ext}")))
+                .expect("image extensions are literal patterns");
         for dir in ["queues", "history", "transcripts"] {
             let entries = match std::fs::read_dir(self.data_dir.join(dir)) {
                 Ok(entries) => entries,
@@ -307,8 +331,15 @@ impl ImageStore {
                     referenced.extend(candidates.iter().cloned());
                     continue;
                 };
-                for found in automaton.find_iter(&content) {
-                    hit[found.pattern().as_usize()] = true;
+                let content = content.as_bytes();
+                for found in automaton.find_iter(content) {
+                    let Some(start) = found.start().checked_sub(uuid::fmt::Hyphenated::LENGTH)
+                    else {
+                        continue;
+                    };
+                    if let Some(&position) = index.get(&content[start..found.end()]) {
+                        hit[position] = true;
+                    }
                 }
             }
         }
@@ -357,17 +388,51 @@ pub(crate) fn sniff_mime_type(bytes: &[u8]) -> Option<&'static str> {
 }
 
 /// Shared engine assembly: the store plus the boot-time reconciliation task.
+///
+/// Only the candidate listing happens here; the scan grows with the chat
+/// corpus, so it runs on its own thread and never holds up the first frame.
+/// The candidates are snapshotted before any RPC is served: files staged later
+/// carry fresh uuids outside the snapshot, and no in-memory draft exists yet to
+/// reference an old one — so the background pass reclaims exactly what a
+/// blocking one would. An exit mid-scan just leaves the rest for next boot.
 pub fn assemble(data_dir: &Path) -> Arc<ImageStore> {
     let store = Arc::new(ImageStore::new(data_dir));
-    // Assembly precedes serving RPCs: no newly staged file can race cleanup.
     let candidates = store.list_file_names();
-    let referenced = store.scan_references(&candidates);
-    for name in candidates {
-        if !referenced.contains(&name) {
-            let _ = std::fs::remove_file(store.dir.join(name));
+    if !candidates.is_empty() {
+        let scan = store.clone_for_scan();
+        let handle = std::thread::Builder::new()
+            .name("holt-image-reconcile".into())
+            .spawn(move || {
+                let referenced = scan.scan_references(&candidates);
+                for name in candidates {
+                    if !referenced.contains(&name) {
+                        let _ = std::fs::remove_file(scan.dir.join(name));
+                    }
+                }
+            });
+        if let Ok(handle) = handle {
+            *store
+                .reconciliation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(handle);
         }
     }
     store
+}
+
+impl ImageStore {
+    /// Block until the boot reconciliation has finished (no-op when none ran
+    /// or it was already awaited).
+    pub fn wait_reconciled(&self) {
+        let handle = self
+            .reconciliation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +621,52 @@ mod tests {
         );
         assert!(Path::new(&referenced.path).exists());
         assert!(!Path::new(&orphan.path).exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_matches_every_reference_shape_of_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = store(dir.path());
+        std::fs::create_dir_all(dir.path().join("transcripts")).unwrap();
+        let name = |path: &str| {
+            Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let at_start = images.stage(png_bytes()).await.unwrap();
+        let bare = images.stage(jpeg_bytes()).await.unwrap();
+        let suffixed = images.stage(png_bytes()).await.unwrap();
+        let orphan = images.stage(png_bytes()).await.unwrap();
+        // Names at offset 0, bare in prose, and glued to trailing text all
+        // count; another uuid-named image and a short `x.png` do not.
+        std::fs::write(
+            dir.path().join("transcripts").join("chat.json"),
+            format!(
+                "{} then {} and {}x /tmp/{}.png x.png",
+                name(&at_start.path),
+                name(&bare.path),
+                name(&suffixed.path),
+                uuid::Uuid::new_v4()
+            ),
+        )
+        .unwrap();
+        // A file whose stem parses as a uuid but is not the hyphenated shape
+        // `stage` issues is not managed, so cleanup never touches it.
+        let foreign = dir
+            .path()
+            .join("images")
+            .join(format!("{}.png", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&foreign, png_bytes()).unwrap();
+        assert!(!images.is_managed(foreign.to_str().unwrap()));
+
+        let reclaimed = images.cleanup_unreferenced().await;
+        assert_eq!(reclaimed, vec![name(&orphan.path)]);
+        for kept in [&at_start, &bare, &suffixed] {
+            assert!(Path::new(&kept.path).exists(), "{} kept", kept.path);
+        }
+        assert!(foreign.exists());
     }
 
     #[tokio::test]

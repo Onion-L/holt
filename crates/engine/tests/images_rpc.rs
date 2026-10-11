@@ -392,6 +392,7 @@ async fn accepted_managed_images_survive_lost_ack_restart_and_repeated_release()
     drop(engine);
     let engine = fixture.engine(&provider);
     value(&engine, methods::READ_IMAGE, json!({"path":accepted})).await;
+    engine.wait_image_reconciliation();
     assert!(!std::path::Path::new(&abandoned).exists());
     assert!(external.exists());
     engine

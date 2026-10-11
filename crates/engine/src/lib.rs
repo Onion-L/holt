@@ -327,6 +327,13 @@ impl LocalEngine {
         Ok(engine)
     }
 
+    /// Block until the boot-time image reconciliation finishes. It runs in
+    /// the background so assembly never waits on it; tests that assert on
+    /// reclaimed files wait here first.
+    pub fn wait_image_reconciliation(&self) {
+        self.service.images.wait_reconciled();
+    }
+
     pub fn engine_info(&self) -> &EngineInfo {
         &self.service.engine_info
     }
