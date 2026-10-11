@@ -110,11 +110,29 @@
 
   <ol class="vers">
 
+    <li class="ver" id="v0.4.2">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.4.2">0.4.2</a>
+        <span class="vdate mono">Oct 11, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>Replaying a compacted chat no longer re-inflates the context with the summarized prefix on every restart</li>
+            <li>Occupancy falls after a compaction instead of holding the pre-compaction number, and the next turn no longer fires a redundant compaction</li>
+            <li>First open no longer stalls on boot-time image reconciliation</li>
+            <li>All Mermaid diagram families theme with the app instead of leaking base-theme defaults</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.4.1">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.4.1">0.4.1</a>
         <span class="vdate mono">Oct 09, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
