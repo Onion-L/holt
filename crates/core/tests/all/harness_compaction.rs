@@ -340,6 +340,52 @@ impl ContextUsageEstimateExt
     }
 }
 
+#[test]
+fn the_estimate_ignores_usage_reported_before_the_latest_compaction() {
+    let at = |message: AgentMessage, timestamp: i64| match message {
+        AgentMessage::Assistant(mut assistant) => {
+            assistant.timestamp = timestamp;
+            AgentMessage::Assistant(assistant)
+        }
+        other => other,
+    };
+    let summary = |timestamp| {
+        pi_core::agent::harness::messages::create_compaction_summary_message(
+            "summary", 250_000, timestamp,
+        )
+    };
+    // A retained tail's reply measured the pre-compaction context.
+    let compacted = vec![
+        summary(10),
+        user_message("kept"),
+        at(assistant_message("stale", mock_usage(250_000, 0, 0, 0)), 5),
+        user_message("next"),
+    ];
+    let estimate = estimate_context_tokens(&compacted);
+    assert_eq!(estimate.last_used_index(), None);
+    assert!(estimate.tokens < 1_000, "{estimate:?}");
+
+    // A reply after the compaction anchors again.
+    let mut answered = compacted.clone();
+    answered.push(at(
+        assistant_message("fresh", mock_usage(30_000, 0, 0, 0)),
+        20,
+    ));
+    let estimate = estimate_context_tokens(&answered);
+    assert_eq!(estimate.last_used_index(), Some(4));
+    assert_eq!(estimate.usage_tokens, 30_000);
+
+    // A chained compaction's tail carries an older summary followed by a
+    // stale reply: still not an anchor.
+    let chained = vec![
+        summary(30),
+        user_message("kept"),
+        summary(10),
+        at(assistant_message("stale", mock_usage(250_000, 0, 0, 0)), 20),
+    ];
+    assert_eq!(estimate_context_tokens(&chained).last_used_index(), None);
+}
+
 trait ContextUsageEstimateExt {
     fn last_used_index(&self) -> Option<usize>;
 }

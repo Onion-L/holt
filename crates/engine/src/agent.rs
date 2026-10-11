@@ -1615,6 +1615,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
         Ok(Some(outcome)) => {
             record_turn_start_compaction(&chat, &runtime.device_id, &outcome.record);
             *chat.history.write().unwrap_or_else(|e| e.into_inner()) = outcome.messages.clone();
+            crate::usage::forget_last_report(&chat);
             history = outcome.messages;
         }
         Ok(None) => {}

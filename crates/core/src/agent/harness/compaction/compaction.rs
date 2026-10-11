@@ -229,8 +229,25 @@ pub struct ContextUsageEstimate {
     pub last_usage_index: Option<usize>,
 }
 
+/// The last assistant usage reported after the latest compaction. A retained
+/// tail's assistant usage was measured against the pre-compaction context, so
+/// anchoring on it would report the old size. Recency is judged by timestamp,
+/// not position: a chained compaction's tail can carry an earlier summary with
+/// stale replies after it. Tail replies strictly predate their summary (it is
+/// generated after them), so a reply stamped in the same millisecond is
+/// fresh. With no report since, the caller estimates every message instead.
 fn get_last_assistant_usage_info(messages: &[AgentMessage]) -> Option<(Usage, usize)> {
+    let compacted_at = messages
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom(custom) if custom.role == "compactionSummary")
+        })
+        .map(message_timestamp)
+        .max();
     for (index, message) in messages.iter().enumerate().rev() {
+        if compacted_at.is_some_and(|at| message_timestamp(message) < at) {
+            continue;
+        }
         if let Some(usage) = get_assistant_usage(message) {
             return Some((usage, index));
         }

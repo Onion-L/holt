@@ -608,7 +608,6 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
         ),
         ScriptedReply::text("mid-turn checkpoint text"),
         ScriptedReply::Silent,
-        ScriptedReply::text("restart summary"),
         ScriptedReply::text("post-crash reply"),
     ])
     .with_usage(overflowing_usage());
@@ -622,8 +621,10 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     common::wait_for_requests(&provider, 3).await;
     drop(engine);
 
-    // A fresh engine replays the compacted record: the restart's own
-    // compaction CHAINS the mid-Turn summary — it survived the kill.
+    // A fresh engine replays the compacted record: the mid-Turn summary
+    // survived the kill and leads the next request. Its retained tail's
+    // overflowing usage predates the compaction, so the restart does not
+    // compact again (issue #37).
     let engine = fixture.engine(&provider);
     let (_, mut sessions) = common::subscribe(&engine, "chat-1").await;
     common::run_prompt(&engine, "chat-1", &fixture.cwd(), "after the crash").await;
@@ -637,15 +638,16 @@ async fn a_mid_turn_compaction_survives_a_kill_and_restart() {
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 
     let requests = provider.requests();
-    let chained_prompt = summary_requests(&requests)
-        .into_iter()
-        .map(|request| user_text(&request.messages[0]))
-        .find(|prompt| prompt.contains("<previous-summary>"))
-        .expect("no chained summary after the restart");
-    assert!(
-        chained_prompt.contains("mid-turn checkpoint text"),
-        "{chained_prompt}"
+    assert_eq!(
+        summary_requests(&requests).len(),
+        1,
+        "no redundant compaction"
     );
+    let run = requests.last().unwrap();
+    let summary = user_text(&run.messages[0]);
+    assert!(summary.contains("mid-turn checkpoint text"), "{summary}");
+    let run_text = serde_json::to_string(&run.messages).unwrap();
+    assert!(run_text.contains("after the crash"), "{run_text}");
 }
 
 #[tokio::test]
