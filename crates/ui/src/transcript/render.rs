@@ -1634,28 +1634,31 @@ impl Transcript {
     }
 }
 
-/// The goal loop's terminal row (ADR-0044): the goal card's settled
-/// form landed in the transcript — the question chip's passive band with
-/// the goal's target glyph, so the row reads as the arc's conclusion,
-/// never as housekeeping noise beside it. One line, truncated.
+/// The goal loop's lifecycle row (ADR-0044): the goal card's settled form
+/// landed in the transcript — the question chip's passive band. The glyph
+/// says which transition it was (achieved, blocked, paused, cleared), so a
+/// pause never reads as the arc's end; a blocked row tints the warning.
+/// Wraps rather than truncates — the reason after the dash is the point.
 fn goal_end_row(message: SharedString, theme: &Theme) -> AnyElement {
+    let (icon, tint) = goal_band_glyph(&message, theme);
     div()
         .py(px(4.0))
         .w_full()
         .child(
             div()
-                .h(px(28.0))
+                .min_h(px(28.0))
                 .w_full()
                 .flex()
-                .items_center()
+                .items_start()
                 .gap(px(8.0))
-                .overflow_hidden()
                 .rounded(px(8.0))
                 .border_1()
                 .border_color(crate::theme::hairline(0.08))
                 .bg(crate::theme::ink(0.045))
                 .px(px(6.0))
+                .py(px(4.0))
                 .text_size(px(12.0))
+                .line_height(px(18.0))
                 .child(
                     div()
                         .flex_none()
@@ -1665,22 +1668,40 @@ fn goal_end_row(message: SharedString, theme: &Theme) -> AnyElement {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(
-                            crate::icons::icon(crate::icons::TARGET)
-                                .size(px(11.0))
-                                .text_color(theme.text_muted),
-                        ),
+                        .child(crate::icons::icon(icon).size(px(11.0)).text_color(tint)),
                 )
                 .child(
                     div()
                         .min_w_0()
                         .flex_1()
-                        .truncate()
                         .text_color(theme.text_muted.opacity(0.9))
                         .child(message),
                 ),
         )
         .into_any_element()
+}
+
+/// The band's glyph and tint, read off the engine's message head (the
+/// engine owns the wording; `goal.rs` composes every one as
+/// `Goal <verb> …`).
+fn goal_band_glyph(message: &str, theme: &Theme) -> (&'static str, gpui::Hsla) {
+    if message.starts_with("Goal achieved") {
+        (
+            crate::icons::CHECK,
+            crate::theme::AccentColor::Green.primary(theme.appearance),
+        )
+    } else if message.starts_with("Goal blocked") {
+        (
+            crate::icons::DANGER_TRIANGLE,
+            crate::theme::AccentColor::Orange.primary(theme.appearance),
+        )
+    } else if message.starts_with("Goal paused") {
+        (crate::icons::PAUSE, theme.text_muted)
+    } else if message.starts_with("Goal cleared") {
+        (crate::icons::CLOSE_CIRCLE, theme.text_muted)
+    } else {
+        (crate::icons::TARGET, theme.text_muted)
+    }
 }
 
 /// A passive one-line chip marking a question the agent asked — the

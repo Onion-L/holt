@@ -459,8 +459,10 @@ fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, message: String) {
 /// own batch.
 fn goal_stats(chat: &ChatRuntime, goal: &ChatGoalState) -> String {
     let mut parts = Vec::new();
-    if goal.iteration > 0 {
-        parts.push(format!("{} rounds", goal.iteration));
+    match goal.iteration {
+        0 => {}
+        1 => parts.push("1 round".into()),
+        n => parts.push(format!("{n} rounds")),
     }
     parts.push(format_duration(
         (Utc::now() - goal.started_at).num_seconds().max(0),

@@ -19,6 +19,7 @@ use gpui::{AnyElement, Context, IntoElement, SharedString, div, prelude::*, px};
 use holt_proto::{Chat, ChatGoalState, GoalStatus};
 use holt_rpc::methods;
 
+use crate::goal::LoopPhase;
 use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
@@ -129,14 +130,17 @@ impl Shell {
             return Some(self.mode_card(mode, theme, cx));
         };
         let collapsed = self.settings.state_card_collapsed;
-        let paused = goal.status == GoalStatus::Paused;
+        let phase = crate::goal::loop_phase(self.state.read(cx)).unwrap_or(LoopPhase::Working);
         // Distinct ids per form: the swap unmounts one, so the other's
         // entrance fade replays (opacity only — the morph moves the box,
         // the content never translates).
         let (id, content) = if collapsed {
-            ("goal-card-pill", self.goal_pill(&goal, theme))
+            ("goal-card-pill", self.goal_pill(&goal, phase, theme, cx))
         } else {
-            ("goal-card", self.goal_body("goal-card", &goal, theme, cx))
+            (
+                "goal-card",
+                self.goal_body("goal-card", &goal, phase, theme, cx),
+            )
         };
 
         // The in-flight box size: eased lerp from the toggle-time size to
@@ -205,10 +209,10 @@ impl Shell {
                     this.set_state_card_collapsed(false, cx);
                 }));
         }
-        // The swap fades the content in over the morph; the paused dim
-        // rides the SAME opacity write so the entrance can't clobber it.
-        let base_opacity = if paused { 0.72 } else { 1.0 };
-        Some(fade_and_frost(card, id, base_opacity))
+        // The swap fades the content in over the morph. A paused loop stays
+        // fully legible — the status word says it stopped, the card itself
+        // never reads as disabled.
+        Some(fade_and_frost(card, id, 1.0))
     }
 
     /// The mode body inside the shared chrome: identity glyph, name, the
@@ -332,9 +336,14 @@ impl Shell {
     /// The capsule's content row: identity glyph, the goal's name, the
     /// loop's status word, and the expand affordance. Handlers live on the
     /// box (render_state_card adds them in collapsed mode).
-    fn goal_pill(&mut self, goal: &ChatGoalState, theme: &Theme) -> AnyElement {
-        let status_tint = goal_status_tint(goal.status, theme);
-        let blocked = goal.status == GoalStatus::Blocked;
+    fn goal_pill(
+        &mut self,
+        goal: &ChatGoalState,
+        phase: LoopPhase,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let status_tint = goal_status_tint(phase, theme);
         div()
             .flex()
             .flex_row()
@@ -360,17 +369,7 @@ impl Shell {
                     .text_color(theme.text)
                     .child(goal_name(goal)),
             )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .line_height(px(18.0))
-                    .text_color(if blocked {
-                        status_tint
-                    } else {
-                        theme.text_faint
-                    })
-                    .child(goal_status_label(goal)),
-            )
+            .child(goal_status(goal, phase, "goal-pill-status", theme, cx))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
                     .size(px(11.0))
@@ -387,11 +386,14 @@ impl Shell {
         &mut self,
         id: &'static str,
         goal: &ChatGoalState,
+        phase: LoopPhase,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let status_tint = goal_status_tint(goal.status, theme);
-        let paused = goal.status == GoalStatus::Paused;
+        let status_tint = goal_status_tint(phase, theme);
+        // Paused and blocked both resume (`SetGoalPaused(false)` re-arms
+        // either); only a live loop offers the pause.
+        let stopped = goal.status != GoalStatus::Active;
         let blocked = goal.status == GoalStatus::Blocked;
         let pause_id: SharedString = format!("{id}-pause").into();
         let clear_id: SharedString = format!("{id}-clear").into();
@@ -415,9 +417,12 @@ impl Shell {
                             .flex_none()
                             .text_color(status_tint),
                     )
+                    // The name owns the header row; the live status sits on
+                    // its own line below, so neither squeezes the other.
                     .child(
                         div()
-                            .max_w(px(150.0))
+                            .min_w_0()
+                            .flex_shrink(1.0)
                             .truncate()
                             .debug_selector(|| "goal-card-name".to_string())
                             .text_size(px(12.0))
@@ -426,20 +431,7 @@ impl Shell {
                             .text_color(theme.text)
                             .child(goal_name(goal)),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(11.0))
-                            .line_height(px(18.0))
-                            .text_color(if blocked {
-                                status_tint
-                            } else {
-                                theme.text_faint
-                            })
-                            .child(goal_status_label(goal)),
-                    )
+                    .child(div().flex_1())
                     // Pause/resume: `SetGoalPaused`'s button form. The chat
                     // row's WatchChats republish repaints the card; a
                     // failure rides the notice strip.
@@ -458,7 +450,7 @@ impl Shell {
                             .tooltip(move |_, cx| {
                                 cx.new(|_| {
                                     crate::popover::TextTooltip(
-                                        if paused {
+                                        if stopped {
                                             "Resume the goal (/goal resume)"
                                         } else {
                                             "Pause the goal (/goal pause)"
@@ -469,10 +461,10 @@ impl Shell {
                                 .into()
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_goal_paused(!paused, cx);
+                                this.set_goal_paused(!stopped, cx);
                             }))
                             .child(
-                                crate::icons::icon(if paused {
+                                crate::icons::icon(if stopped {
                                     crate::icons::PLAY
                                 } else {
                                     crate::icons::PAUSE
@@ -538,6 +530,14 @@ impl Shell {
                             ),
                     ),
             )
+            // The live status line, indented under the name.
+            .child(div().pl(px(19.0)).child(goal_status(
+                goal,
+                phase,
+                "goal-card-status",
+                theme,
+                cx,
+            )))
             .child(
                 // The objective: two lines, the rest on hover.
                 div()
@@ -604,7 +604,7 @@ impl Shell {
                     }),
                 ))
             })
-            .when_some(goal.last_reason.clone(), |el, reason| {
+            .when_some(goal_reason_line(goal), |el, reason| {
                 el.child(
                     div()
                         .id("goal-card-reason")
@@ -751,24 +751,84 @@ fn goal_name(goal: &ChatGoalState) -> SharedString {
     goal.name.clone().unwrap_or_else(|| "Goal".into()).into()
 }
 
-/// One word group naming where the loop stands (the chip label's successor):
-/// the running round while active, the parked state otherwise.
-fn goal_status_label(goal: &ChatGoalState) -> SharedString {
-    match goal.status {
-        GoalStatus::Active if goal.iteration == 0 => "armed".into(),
-        GoalStatus::Active => format!("round {}", goal.iteration).into(),
-        GoalStatus::Paused => "paused".into(),
-        GoalStatus::Blocked => "blocked".into(),
+/// One word group naming what the loop is doing right now: the round it is
+/// on while a Turn runs, the verifier's pass between Turns, and the parked
+/// states. Round 0 is the arming Turn — "working", never jargon.
+fn goal_status_label(goal: &ChatGoalState, phase: LoopPhase) -> SharedString {
+    let round = |verb: &str| -> SharedString {
+        if goal.iteration == 0 {
+            verb.to_string().into()
+        } else {
+            format!("round {} · {verb}", goal.iteration).into()
+        }
+    };
+    match phase {
+        LoopPhase::Working => round("working"),
+        LoopPhase::Checking => "checking".into(),
+        LoopPhase::Queued => "after your queue".into(),
+        LoopPhase::AwaitingAnswer => "waiting for you".into(),
+        LoopPhase::Paused => "paused".into(),
+        LoopPhase::Blocked => "blocked".into(),
     }
 }
 
-/// Blocked reads at a glance (the verifier parked the loop); the other
-/// states stay neutral — the card's job is presence, not alarm.
-fn goal_status_tint(status: GoalStatus, theme: &Theme) -> gpui::Hsla {
-    match status {
-        GoalStatus::Blocked => crate::theme::AccentColor::Orange.primary(theme.appearance),
-        _ => theme.text_muted,
+/// The status word group with its live affordance: a running phase leads
+/// with the transcript's mini spinner, so the card visibly moves while the
+/// loop does.
+fn goal_status(
+    goal: &ChatGoalState,
+    phase: LoopPhase,
+    key: &'static str,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let tint = goal_status_tint(phase, theme);
+    let live = matches!(phase, LoopPhase::Working | LoopPhase::Checking);
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .text_size(px(11.0))
+        .line_height(px(18.0))
+        .text_color(tint)
+        .when(live, |el| {
+            el.child(crate::loaders::mini_mono_spinner(
+                key,
+                1.5,
+                theme.text_faint,
+                cx.entity_id(),
+                cx,
+            ))
+        })
+        .child(goal_status_label(goal, phase))
+        .into_any_element()
+}
+
+/// Blocked reads at a glance (the verifier parked the loop) and an open
+/// question asks for the user; the other phases stay neutral — the card's
+/// job is presence, not alarm.
+fn goal_status_tint(phase: LoopPhase, theme: &Theme) -> gpui::Hsla {
+    match phase {
+        LoopPhase::Blocked => crate::theme::AccentColor::Orange.primary(theme.appearance),
+        LoopPhase::AwaitingAnswer => theme.accent,
+        LoopPhase::Paused => theme.text_muted,
+        _ => theme.text_faint,
     }
+}
+
+/// The card's last line: the verifier's last finding — or, while its
+/// passes keep failing, a plain "retrying" count instead of the raw
+/// provider error or garbled reply (those stay in the log).
+fn goal_reason_line(goal: &ChatGoalState) -> Option<String> {
+    if goal.eval_failures > 0 {
+        return Some(format!(
+            "The verifier couldn't reach a verdict ({}/3) — the loop keeps going.",
+            goal.eval_failures
+        ));
+    }
+    goal.last_reason.clone()
 }
 
 #[cfg(test)]
@@ -800,11 +860,35 @@ mod tests {
     }
 
     #[test]
-    fn the_status_label_names_the_loop_state() {
-        assert_eq!(goal_status_label(&goal(GoalStatus::Active, 0)), "armed");
-        assert_eq!(goal_status_label(&goal(GoalStatus::Active, 7)), "round 7");
-        assert_eq!(goal_status_label(&goal(GoalStatus::Paused, 7)), "paused");
-        assert_eq!(goal_status_label(&goal(GoalStatus::Blocked, 7)), "blocked");
+    fn the_status_label_names_what_the_loop_is_doing() {
+        let first = goal(GoalStatus::Active, 0);
+        let later = goal(GoalStatus::Active, 7);
+        assert_eq!(goal_status_label(&first, LoopPhase::Working), "working");
+        assert_eq!(
+            goal_status_label(&later, LoopPhase::Working),
+            "round 7 · working"
+        );
+        assert_eq!(goal_status_label(&later, LoopPhase::Checking), "checking");
+        assert_eq!(
+            goal_status_label(&later, LoopPhase::AwaitingAnswer),
+            "waiting for you"
+        );
+        assert_eq!(goal_status_label(&later, LoopPhase::Paused), "paused");
+        assert_eq!(goal_status_label(&later, LoopPhase::Blocked), "blocked");
+    }
+
+    #[test]
+    fn verifier_failures_read_as_a_retry_count_not_the_raw_error() {
+        let mut failing = goal(GoalStatus::Active, 2);
+        failing.last_reason = Some("garbled verdict: I think…".into());
+        failing.eval_failures = 1;
+        let line = goal_reason_line(&failing).unwrap();
+        assert!(line.contains("1/3") && !line.contains("garbled"));
+        failing.eval_failures = 0;
+        assert_eq!(
+            goal_reason_line(&failing).as_deref(),
+            Some("garbled verdict: I think…")
+        );
     }
 
     /// The drawing + wiring half: a chat with a goal draws the card with

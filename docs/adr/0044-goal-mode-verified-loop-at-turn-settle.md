@@ -22,7 +22,18 @@ piece, the full prompt in the fold); the queue's pending row shows the same
 projection, and its delete tooltip says deleting pauses the goal. The loop
 row takes over the previous reply's footer strip (its copy action, drawn
 inline at its right edge) so the reply's reserved lane leaves no hole above
-the light row (`hand_footers_to_goal_rounds`).
+the light row (`hand_footers_to_goal_rounds`). The UI also reads a live
+loop phase off state it already watches — queue, transcript, send overlay
+(`crate::goal::loop_phase`): working, checking (the queue's active item
+clears before the verifier runs, so an idle queue after a settled reply IS
+the pass), queued behind the user's work, waiting on a question, paused,
+blocked. The card's status line, a "Checking the goal…" transcript trailer,
+and the composer's idle placeholder ("Steer the goal — or /goal pause to
+stop it") all follow it — no new wire state. Lifecycle bands take a glyph
+per transition (achieved / blocked / paused / cleared) so a pause no longer
+reads as the arc's end, and they wrap instead of truncating the reason.
+Repeated verifier failures show as a retry count, not the raw provider
+error. A blocked goal's card offers resume (play), not pause.
 
 ## Context
 

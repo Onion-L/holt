@@ -726,6 +726,10 @@ impl ComposerInput {
         cx.notify();
     }
 
+    pub fn placeholder(&self) -> &SharedString {
+        &self.placeholder
+    }
+
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.invalidate_mention_tooltip();
         self.content = text.into();

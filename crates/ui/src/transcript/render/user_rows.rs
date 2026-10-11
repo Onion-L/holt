@@ -652,6 +652,37 @@ impl Transcript {
                         .into_any_element(),
                 );
             }
+            // Between goal-loop Turns the verifier judges the settled one
+            // (ADR-0044): say so, or the chat looks idle right before a
+            // Turn starts by itself.
+            if self.state.read(cx).indicator_for(&chat_id, now) != crate::state::Indicator::Working
+                && crate::goal::loop_phase(self.state.read(cx))
+                    == Some(crate::goal::LoopPhase::Checking)
+            {
+                let theme = Theme::of(cx).clone();
+                return Some(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(Theme::SPACE_SM))
+                        .pt(px(Theme::SPACE_LG))
+                        .child(crate::loaders::gradient_spinner(
+                            "goal-check-indicator",
+                            &theme,
+                            2.5,
+                            cx.entity_id(),
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from("Checking the goal…")),
+                        )
+                        .into_any_element(),
+                );
+            }
             let (sending, queued, elapsed) = {
                 let state = self.state.read(cx);
                 if state.indicator_for(&chat_id, now) != crate::state::Indicator::Working {
