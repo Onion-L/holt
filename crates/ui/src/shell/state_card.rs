@@ -329,9 +329,9 @@ impl Shell {
         .detach();
     }
 
-    /// The capsule's content row: identity glyph, name, the loop's status
-    /// word, and the expand affordance. Handlers live on the box
-    /// (render_state_card adds them in collapsed mode).
+    /// The capsule's content row: identity glyph, the goal's name, the
+    /// loop's status word, and the expand affordance. Handlers live on the
+    /// box (render_state_card adds them in collapsed mode).
     fn goal_pill(&mut self, goal: &ChatGoalState, theme: &Theme) -> AnyElement {
         let status_tint = goal_status_tint(goal.status, theme);
         let blocked = goal.status == GoalStatus::Blocked;
@@ -351,11 +351,14 @@ impl Shell {
             )
             .child(
                 div()
+                    .max_w(px(140.0))
+                    .truncate()
+                    .debug_selector(|| "goal-card-name".to_string())
                     .text_size(px(12.0))
                     .line_height(px(18.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Goal"),
+                    .child(goal_name(goal)),
             )
             .child(
                 div()
@@ -414,11 +417,14 @@ impl Shell {
                     )
                     .child(
                         div()
+                            .max_w(px(150.0))
+                            .truncate()
+                            .debug_selector(|| "goal-card-name".to_string())
                             .text_size(px(12.0))
                             .line_height(px(18.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child("Goal"),
+                            .child(goal_name(goal)),
                     )
                     .child(
                         div()
@@ -543,6 +549,61 @@ impl Shell {
                     .line_clamp(2)
                     .child(SharedString::from(goal.text.clone())),
             )
+            // The verifier-maintained plan: a finished step reads struck
+            // and faint behind its check, a pending one plain behind an
+            // empty ring.
+            .when(!goal.steps.is_empty(), |el| {
+                el.child(div().flex().flex_col().gap(px(4.0)).children(
+                    goal.steps.iter().enumerate().map(|(ix, step)| {
+                        let selector = format!("goal-card-step-{ix}");
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .debug_selector(move || selector.clone())
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(12.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(if step.done {
+                                        crate::icons::icon(crate::icons::CHECK)
+                                            .size(px(11.0))
+                                            .text_color(
+                                                crate::theme::AccentColor::Green
+                                                    .primary(theme.appearance),
+                                            )
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .size(px(8.0))
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(theme.text_faint)
+                                            .into_any_element()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .line_height(px(15.0))
+                                    .text_color(if step.done {
+                                        theme.text_faint
+                                    } else {
+                                        theme.text_muted
+                                    })
+                                    .when(step.done, |el| el.line_through())
+                                    .child(SharedString::from(step.text.clone())),
+                            )
+                            .into_any_element()
+                    }),
+                ))
+            })
             .when_some(goal.last_reason.clone(), |el, reason| {
                 el.child(
                     div()
@@ -684,6 +745,12 @@ impl Shell {
     }
 }
 
+/// The card's name for the goal: the verifier-given short name, or the
+/// bare label until the first pass names it (never the raw objective).
+fn goal_name(goal: &ChatGoalState) -> SharedString {
+    goal.name.clone().unwrap_or_else(|| "Goal".into()).into()
+}
+
 /// One word group naming where the loop stands (the chip label's successor):
 /// the running round while active, the parked state otherwise.
 fn goal_status_label(goal: &ChatGoalState) -> SharedString {
@@ -711,6 +778,8 @@ mod tests {
     fn goal(status: GoalStatus, iteration: u32) -> ChatGoalState {
         ChatGoalState {
             text: "ship the compaction slice".into(),
+            name: None,
+            steps: Vec::new(),
             status,
             iteration,
             no_progress: 0,
@@ -718,6 +787,16 @@ mod tests {
             started_at: chrono::Utc::now(),
             last_reason: None,
         }
+    }
+
+    #[test]
+    fn the_card_names_the_goal_from_the_verifier() {
+        // Until the first verifier pass names the goal, the card carries
+        // the bare label — never the raw objective.
+        assert_eq!(goal_name(&goal(GoalStatus::Active, 0)), "Goal");
+        let mut named = goal(GoalStatus::Active, 2);
+        named.name = Some("Ship the compaction slice".into());
+        assert_eq!(goal_name(&named), "Ship the compaction slice");
     }
 
     #[test]
@@ -965,6 +1044,128 @@ mod tests {
         assert!(!visual.read(|cx| shell.read(cx).settings.state_card_collapsed));
         assert!(visual.debug_bounds("goal-card-pause").is_some());
     }
+
+    /// The verifier-maintained card content: the goal's name heads the card
+    /// and its steps render in order — done ones styled complete.
+    #[gpui::test]
+    fn the_card_shows_the_name_and_steps(cx: &mut gpui::TestAppContext) {
+        use std::sync::Arc;
+
+        use crate::state::AppState;
+
+        struct NoopEngine;
+
+        #[async_trait::async_trait]
+        impl holt_rpc::RpcService for NoopEngine {
+            async fn handle(
+                &self,
+                method: &str,
+                _params: serde_json::Value,
+            ) -> Result<holt_rpc::RpcReply, holt_rpc::RpcError> {
+                Err(holt_rpc::RpcError::UnknownMethod(method.to_string()))
+            }
+        }
+
+        struct GoalCardView {
+            shell: gpui::Entity<Shell>,
+        }
+        impl gpui::Render for GoalCardView {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let theme = Theme::of(cx).clone();
+                let card = self
+                    .shell
+                    .update(cx, |shell, cx| shell.render_state_card(&theme, cx));
+                div().children(card)
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "goal-chat", "deviceId": "test-device", "archived": false,
+                    "cwd": "/tmp", "createdAt": "2026-10-10T00:00:00Z",
+                    "goal": {
+                        "text": "ship the compaction slice and prove it holds",
+                        "name": "Ship compaction",
+                        "status": "active", "iteration": 2,
+                        "noProgress": 0, "evalFailures": 0,
+                        "startedAt": "2026-10-10T00:00:00Z",
+                        "steps": [
+                            { "text": "Freeze the change set", "done": true },
+                            { "text": "Wire the verifier", "done": true },
+                            { "text": "Add the regression test", "done": false }
+                        ]
+                    }
+                }))
+                .unwrap(),
+            );
+            state.selected_chat = Some("goal-chat".into());
+            state
+        });
+        let client = {
+            let _guard = runtime.enter();
+            holt_rpc::memory_client(Arc::new(NoopEngine))
+        };
+        state.update(cx, |state, cx| state.attach_test_engine(client, cx));
+        let chats = state.clone();
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(
+                state,
+                crate::state::EngineBootConfig {
+                    data_dir: std::env::temp_dir(),
+                },
+                cx,
+            );
+            shell.route = super::super::Route::Chat;
+            shell
+        });
+        let (_view, visual) = cx.add_window_view(|_, _| GoalCardView { shell });
+
+        // The header paints the verifier-given name: its element's laid-out
+        // width tracks the content (the test text system shapes every glyph
+        // at a fixed advance), so "Ship compaction" (15 chars) paints far
+        // wider than the 4-char "Goal" fallback. When the name clears, the
+        // card repaints at the fallback's width — the raw objective never
+        // heads the card.
+        let named = visual
+            .debug_bounds("goal-card-name")
+            .expect("the name element paints");
+        visual.update(|_, cx| {
+            chats.update(cx, |state, _| {
+                state.chats[0].goal.as_mut().unwrap().name = None;
+            });
+            cx.refresh_windows();
+        });
+        visual.run_until_parked();
+        let unnamed = visual
+            .debug_bounds("goal-card-name")
+            .expect("the fallback still paints");
+        assert!(
+            f32::from(named.size.width) > f32::from(unnamed.size.width) * 2.0,
+            "the name element tracks goal.name (named {named:?}, fallback {unnamed:?})"
+        );
+
+        // Every step row renders; a goal without steps draws none (the
+        // collapse test's fixture above asserts the same card's controls).
+        for selector in ["goal-card-step-0", "goal-card-step-1", "goal-card-step-2"] {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "{selector} renders"
+            );
+        }
+        assert!(visual.debug_bounds("goal-card-step-3").is_none());
+    }
+
     /// The mode form: a Plan/Provider chat (no goal) draws the off button,
     /// and it reaches the right exit RPC with a notice-strip confirmation.
     #[test]

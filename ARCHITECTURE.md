@@ -185,7 +185,8 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   toolset and the approval cards stay.)
 - Goal Mode (ADR-0044): a chat-scoped durable objective on the chat row
   (`goal`: text, `active|paused|blocked` status, iteration / no-progress
-  / evaluation-failure counters). `SetGoal` (`{chatId, text}` — rejects a
+  / evaluation-failure counters, plus the verifier-maintained `name` and
+  `steps` the card renders). `SetGoal` (`{chatId, text}` — rejects a
   planning, provider-mode, or routine-run chat), `ClearGoal` (`{chatId}`),
   and `SetGoalPaused` (`{chatId, paused}`) are the whole surface; the
   state rides `WatchChats`. After a settled Turn's card frame is on its
@@ -195,7 +196,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   verdict line's budget sized for it) — judges the goal from evidence only
   (the History tail's
   tool calls and results plus the frozen change-set summary) and answers
-  `COMPLETE | CONTINUE | BLOCKED`: complete clears the goal, blocked parks
+  `COMPLETE | CONTINUE | BLOCKED` plus the card-facing `NAME:`/`STEPS:`
+  block it carries forward and refreshes each pass: complete clears the
+  goal, blocked parks
   it, continue enqueues an ordinary queue row flagged `goalContinuation`
   carrying the reason — visible, editable, and deleting it pauses the
   goal. Evaluation is skipped while user-queued items pend or a question
@@ -208,7 +211,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   (`SetGoal` rides after createChat, before the queue, like the plan
   enter); `/goal off | pause | resume` and the top-right goal card's
   pause/clear buttons drive an existing chat's loop (the arming message
-  carries the goal block the transcript lifts into its 🎯 pill). Restart
+  carries the goal block the transcript lifts into its 🎯 pill). The card
+  and its collapsed capsule head the verifier-given name, not the raw
+  objective, and list the plan's steps with their done state; the
+  composer renders an accepted `/goal` `/plan` `/provider` directive as a
+  chip (the mode's icon + command name). Restart
   opens an orphaned active goal as paused.
 - Questions (ADR-0040): the `ask_user` tool lands a `QuestionCard`
   transcript part — 1–4 questions, each with 2–6 enumerated options —

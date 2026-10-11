@@ -848,18 +848,14 @@ impl Composer {
                         // style): bold name, muted truncating description,
                         // the source root as a quiet right-aligned tag.
                         .child(
-                            crate::icons::icon(if is_skill {
-                                crate::icons::CUBE
-                            } else {
-                                crate::icons::COMMAND
-                            })
-                            .size(px(15.0))
-                            .flex_none()
-                            .text_color(if is_skill {
-                                theme.accent
-                            } else {
-                                theme.text_muted
-                            }),
+                            crate::icons::icon(candidate.icon())
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(if is_skill {
+                                    theme.accent
+                                } else {
+                                    theme.text_muted
+                                }),
                         )
                         .child(
                             div()

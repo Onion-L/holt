@@ -458,6 +458,8 @@ impl EngineService {
             }
             chat.goal = Some(holt_proto::ChatGoalState {
                 text: text.clone(),
+                name: None,
+                steps: Vec::new(),
                 status: holt_proto::GoalStatus::Active,
                 iteration: 0,
                 no_progress: 0,

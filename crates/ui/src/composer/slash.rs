@@ -15,6 +15,15 @@ use holt_proto::{SkillListing, SkillRoot, SlashCommand};
 /// AGENTS.md itself. Bundled, never read from the filesystem.
 pub(crate) const INIT_PROMPT: &str = include_str!("init_prompt.md");
 
+/// The mode directives' identity glyphs (the state card's icons): the slash
+/// menu's rows and the composer's directive chip share them, so picking
+/// `/goal` reads the same as the goal card it arms.
+pub(crate) const MODE_COMMANDS: [(&str, &str); 3] = [
+    ("goal", crate::icons::TARGET),
+    ("plan", crate::icons::CHECKLIST),
+    ("provider", crate::icons::CLOUD),
+];
+
 /// What the composer learned from one input string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
@@ -104,6 +113,19 @@ pub(crate) enum SlashCandidate {
 }
 
 impl SlashCandidate {
+    /// The row's identity glyph: skills carry the cube; a mode directive
+    /// carries its state-card icon, any other command the generic glyph.
+    pub(crate) fn icon(&self) -> &'static str {
+        match self {
+            SlashCandidate::Skill { .. } => crate::icons::CUBE,
+            SlashCandidate::Command { name, .. } => MODE_COMMANDS
+                .iter()
+                .find(|(command, _)| command == name)
+                .map(|(_, icon)| *icon)
+                .unwrap_or(crate::icons::COMMAND),
+        }
+    }
+
     /// What accepting fills into the composer: the skill's linked mention
     /// form `[$name](SKILL.md path)` (ADR-0035) — ready for surrounding
     /// instructions and submit — or `/name` for a command (`/compact` and
@@ -482,6 +504,32 @@ mod tests {
         // Filtering matches name+description for both sources.
         assert!(candidates[1].filter_label().contains("Grill a plan."));
         assert!(candidates[0].filter_label().starts_with("compact"));
+    }
+
+    #[test]
+    fn mode_commands_carry_their_state_card_icons() {
+        let icon_of = |name: &str| {
+            SlashCandidate::Command {
+                name: name.into(),
+                description: String::new(),
+                input_hint: None,
+            }
+            .icon()
+        };
+        assert_eq!(icon_of("goal"), crate::icons::TARGET);
+        assert_eq!(icon_of("plan"), crate::icons::CHECKLIST);
+        assert_eq!(icon_of("provider"), crate::icons::CLOUD);
+        assert_eq!(icon_of("compact"), crate::icons::COMMAND);
+        assert_eq!(
+            SlashCandidate::Skill {
+                name: "grill".into(),
+                description: String::new(),
+                file: "/roots/grill/SKILL.md".into(),
+                root: SkillRoot::Personal,
+            }
+            .icon(),
+            crate::icons::CUBE
+        );
     }
 
     /// The Home space never offers `/init` (ADR-0039): the flag drops that

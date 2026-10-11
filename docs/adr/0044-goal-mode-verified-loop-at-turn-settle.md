@@ -5,7 +5,13 @@ composer chip" moved (2026-10): the footer chip became a pinned top-right
 goal card (objective, status, round, last verdict, pause/clear —
 `crates/ui/src/shell/goal_card.rs`), and the arming message folds a goal
 block the transcript lifts into a 🎯 pill (`crates/ui/src/goal.rs`). The
-`/goal` slash forms are unchanged.
+`/goal` slash forms are unchanged. The card-facing half grew since
+(2026-10): the verifier's reply carries a `NAME:`/`STEPS:` block the row
+stores (`name`, `steps`), so the card heads the verifier-given name —
+never the raw objective — and lists the plan with each step's done state;
+and the composer projects an accepted `/goal` / `/plan` / `/provider`
+directive to a chip (the mode's icon + command name,
+`TextProjection::composer`).
 
 ## Context
 

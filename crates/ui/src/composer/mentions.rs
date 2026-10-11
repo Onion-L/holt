@@ -164,6 +164,33 @@ pub(super) struct SkillLink {
     pub(super) path: String,
 }
 
+/// A leading mode directive (`/goal`, `/plan`, `/provider`) the composer
+/// projects to a chip — the mode's icon + the command name — once accepted
+/// from the slash menu (or typed out). Recognition mirrors the send path's
+/// interception (`super::slash::parse`): the exact word at offset 0,
+/// followed by whitespace or the end. The raw text keeps the `/word` form,
+/// so submit, undo, and copy see exactly what was typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CommandChip {
+    pub(super) range: Range<usize>,
+    pub(super) name: &'static str,
+    pub(super) icon: &'static str,
+}
+
+pub(super) fn command_chip(text: &str) -> Option<CommandChip> {
+    let token_len = text.find(char::is_whitespace).unwrap_or(text.len());
+    let token = &text[..token_len];
+    let name = token.strip_prefix('/')?;
+    let &(name, icon) = super::slash::MODE_COMMANDS
+        .iter()
+        .find(|(command, _)| command == &name)?;
+    Some(CommandChip {
+        range: 0..token_len,
+        name,
+        icon,
+    })
+}
+
 fn skill_links(text: &str) -> Vec<SkillLink> {
     holt_doc::skill_mentions(text)
         .into_iter()
@@ -191,14 +218,15 @@ pub(crate) fn skill_mention_names(text: &str) -> Vec<String> {
 /// bytes).
 const MASK_CHAR: char = '•';
 
-/// How a skill chip's label renders in projected text — everywhere the
-/// same now: icon gutter + bare name (the `$` sigil is never displayed;
-/// the icon carries the identity).
-const SKILL_CHIP_GUTTER_PADS: usize = 4;
+/// How a chip's label renders in projected text — everywhere the same:
+/// icon gutter + bare name (sigils are never displayed; the painted icon
+/// carries the identity).
+const CHIP_GUTTER_PADS: usize = 4;
 
-/// One chip source in a projection pass: a linked skill mention or a file
-/// mention, ordered by raw position.
+/// One chip source in a projection pass: a leading mode directive, a linked
+/// skill mention, or a file mention, ordered by raw position.
 enum Chip<'a> {
+    Command(&'a CommandChip),
     Skill(&'a SkillLink),
     File {
         link: &'a FileMentionLink,
@@ -209,6 +237,7 @@ enum Chip<'a> {
 impl Chip<'_> {
     fn raw_start(&self) -> &usize {
         match self {
+            Chip::Command(chip) => &chip.range.start,
             Chip::Skill(link) => &link.range.start,
             Chip::File { link, .. } => &link.range.start,
         }
@@ -216,10 +245,21 @@ impl Chip<'_> {
 
     fn raw_end(&self) -> &usize {
         match self {
+            Chip::Command(chip) => &chip.range.end,
             Chip::Skill(link) => &link.range.end,
             Chip::File { link, .. } => &link.range.end,
         }
     }
+}
+
+/// How a chip's label paints: file mentions read as inline code, skill
+/// mentions wear the accent, and the mode directive stays plain text
+/// ink — the three never share a look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChipStyle {
+    Code,
+    Skill,
+    Command,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -229,6 +269,9 @@ pub(super) struct TextProjection {
     /// Linked skill mentions (`[$name](SKILL.md path)`), projected to the
     /// accent `$name` chip; the bare `$name` form stays plain text.
     pub(super) skills: Vec<(SkillLink, Range<usize>)>,
+    /// The leading mode-directive chip (composer only — the transcript
+    /// projection skips it): the raw token range plus its display range.
+    pub(super) command: Option<(CommandChip, Range<usize>)>,
     /// Secret projection: one bullet per raw char. Holds the raw byte offset
     /// of every char plus the end offset, for raw↔display translation.
     /// Mutually exclusive with `mentions` — secret inputs never enable them.
@@ -241,6 +284,7 @@ impl TextProjection {
             display: raw.to_string(),
             mentions: Vec::new(),
             skills: Vec::new(),
+            command: None,
             mask_starts: None,
         }
     }
@@ -261,12 +305,13 @@ impl TextProjection {
             display,
             mentions: Vec::new(),
             skills: Vec::new(),
+            command: None,
             mask_starts: Some(mask_starts),
         }
     }
 
-    /// Every chip — skill links and file mentions — as (raw range, display
-    /// range) pairs in raw-text order.
+    /// Every chip — the mode directive, skill links, and file mentions — as
+    /// (raw range, display range) pairs in raw-text order.
     fn chips(&self) -> Vec<(&Range<usize>, &Range<usize>)> {
         let mut chips: Vec<_> = self
             .skills
@@ -277,22 +322,31 @@ impl TextProjection {
                     .iter()
                     .map(|(link, display)| (&link.range, display)),
             )
+            .chain(
+                self.command
+                    .iter()
+                    .map(|(chip, display)| (&chip.range, display)),
+            )
             .collect();
         chips.sort_by_key(|(raw, _)| raw.start);
         chips
     }
 
-    /// Chip display ranges in order, skill chips flagged — the text layout
-    /// paints skill chips in the accent colour, file mentions as inline code.
-    pub(super) fn chip_spans(&self) -> Vec<(Range<usize>, bool)> {
+    /// Chip display ranges in order, each with its paint style.
+    pub(super) fn chip_spans(&self) -> Vec<(Range<usize>, ChipStyle)> {
         let mut spans: Vec<_> = self
             .skills
             .iter()
-            .map(|(_, display)| (display.clone(), true))
+            .map(|(_, display)| (display.clone(), ChipStyle::Skill))
             .chain(
                 self.mentions
                     .iter()
-                    .map(|(_, display)| (display.clone(), false)),
+                    .map(|(_, display)| (display.clone(), ChipStyle::Code)),
+            )
+            .chain(
+                self.command
+                    .iter()
+                    .map(|(_, display)| (display.clone(), ChipStyle::Command)),
             )
             .collect();
         spans.sort_by_key(|(display, _)| display.start);
@@ -300,6 +354,18 @@ impl TextProjection {
     }
 
     pub(super) fn new(raw: &str) -> Self {
+        Self::build(raw, false)
+    }
+
+    /// The composer projection: mention/skill chips plus the leading
+    /// mode-directive chip (the transcript keeps [`Self::new`]'s plainer
+    /// projection).
+    pub(super) fn composer(raw: &str) -> Self {
+        Self::build(raw, true)
+    }
+
+    fn build(raw: &str, detect_command: bool) -> Self {
+        let command = detect_command.then(|| command_chip(raw)).flatten();
         let skills = skill_links(raw);
         let mut links = file_mention_links(raw);
         // The two grammars cannot parse the same span, but a degenerate
@@ -311,7 +377,7 @@ impl TextProjection {
             })
         });
         let labels = mention_display_labels(&links);
-        // One ordered pass over both chip kinds, raw position ascending.
+        // One ordered pass over all chip kinds, raw position ascending.
         let mut ordered: Vec<Chip> = skills
             .iter()
             .map(Chip::Skill)
@@ -319,6 +385,7 @@ impl TextProjection {
                 link: &links[ix],
                 label,
             }))
+            .chain(command.iter().map(Chip::Command))
             .collect();
         ordered.sort_by_key(|chip| *chip.raw_start());
         let mut projection = Self::default();
@@ -333,13 +400,19 @@ impl TextProjection {
             // fallback width and collapsed the chip once already).
             projection.display.push_str(MENTION_SIDE_PAD);
             match &chip {
+                Chip::Command(chip) => {
+                    for _ in 0..CHIP_GUTTER_PADS {
+                        projection.display.push_str(MENTION_SIDE_PAD);
+                    }
+                    projection.display.push_str(chip.name);
+                }
                 Chip::Skill(link) => {
                     // The label is the bare name over a wide icon-gutter —
                     // the `$` sigil is never displayed; the painted icon
                     // glyph carries the identity. Only NBSPs here — every
                     // character must exist in Geist (exotic whitespace
                     // collapsed a chip once already).
-                    for _ in 0..SKILL_CHIP_GUTTER_PADS {
+                    for _ in 0..CHIP_GUTTER_PADS {
                         projection.display.push_str(MENTION_SIDE_PAD);
                     }
                     for ch in link.name.chars() {
@@ -360,6 +433,9 @@ impl TextProjection {
             projection.display.push('\u{00A0}');
             let display_end = projection.display.len();
             match chip {
+                Chip::Command(chip) => {
+                    projection.command = Some((chip.clone(), display_start..display_end))
+                }
                 Chip::Skill(link) => projection
                     .skills
                     .push((link.clone(), display_start..display_end)),
@@ -759,6 +835,60 @@ mod tests {
         );
     }
 
+    /// A leading `/goal` (or `/plan` / `/provider`) becomes a chip in the
+    /// composer: icon gutter + bare command name, atomic for the caret,
+    /// with the arguments staying plain text after it.
+    #[test]
+    fn mode_directives_project_to_command_chips() {
+        let projection = TextProjection::composer("/goal ship the login page");
+        let (chip, display) = projection.command.as_ref().expect("the chip projects");
+        assert_eq!(chip.range, 0..5);
+        assert_eq!(chip.name, "goal");
+        assert_eq!(chip.icon, crate::icons::TARGET);
+        assert_eq!(
+            &projection.display[display.clone()],
+            "\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}goal\u{a0}"
+        );
+        assert!(projection.display.ends_with(" ship the login page"));
+        // The chip is atomic: offsets inside it snap to its raw boundaries.
+        assert_eq!(projection.display_to_raw(display.start + 1), 0);
+        assert_eq!(projection.display_to_raw(display.end - 1), 5);
+        assert_eq!(projection.previous_boundary(5), Some(0));
+        assert_eq!(projection.next_boundary(0), Some(5));
+        // It reads as a neutral command chip — never the skill's accent.
+        assert!(
+            projection
+                .chip_spans()
+                .first()
+                .is_some_and(|(range, style)| range == display && *style == ChipStyle::Command)
+        );
+
+        // The other two modes chip the same way.
+        assert_eq!(
+            command_chip("/plan").map(|chip| chip.icon),
+            Some(crate::icons::CHECKLIST)
+        );
+        assert_eq!(
+            command_chip("/provider add a provider").map(|chip| chip.icon),
+            Some(crate::icons::CLOUD)
+        );
+    }
+
+    #[test]
+    fn mode_directive_recognition_matches_the_send_path() {
+        // Longer words and mid-text directives stay plain (slash.rs rules),
+        // and the no-argument commands never chip — they fire on accept.
+        assert!(command_chip("/goalkeeper").is_none());
+        assert!(command_chip("plan /goal off").is_none());
+        assert!(command_chip("/compact").is_none());
+        assert!(command_chip("/init").is_none());
+        assert!(command_chip("/").is_none());
+        assert!(command_chip("").is_none());
+        // The transcript projection (`TextProjection::new`) never chips —
+        // a sent message's raw text stays verbatim there.
+        assert!(TextProjection::new("/goal ship it").command.is_none());
+    }
+
     #[test]
     fn linked_skill_mentions_project_to_accent_chips() {
         let raw = "[$grill](/root/grill/SKILL.md) refactor this";
@@ -783,7 +913,7 @@ mod tests {
             projection
                 .chip_spans()
                 .first()
-                .is_some_and(|(_, skill)| *skill)
+                .is_some_and(|(_, style)| *style == ChipStyle::Skill)
         );
         // A bare `$name` token stays plain text — it resolves at send.
         let plain = TextProjection::new("try $grill please");
@@ -802,8 +932,8 @@ mod tests {
         assert_eq!(projection.mentions.len(), 1);
         let spans = projection.chip_spans();
         assert_eq!(spans.len(), 2);
-        assert!(spans[0].1, "the skill chip comes first");
-        assert!(!spans[1].1);
+        assert_eq!(spans[0].1, ChipStyle::Skill, "the skill chip comes first");
+        assert_eq!(spans[1].1, ChipStyle::Code);
         assert!(projection.display.contains("and"));
     }
 

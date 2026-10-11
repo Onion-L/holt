@@ -392,6 +392,14 @@ pub enum GoalStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ChatGoalState {
     pub text: String,
+    /// The verifier-given short name the card shows instead of the raw
+    /// objective. `None` until the first verifier pass names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The verifier-maintained plan, refreshed on every pass: a step flips
+    /// to `done` only on concrete evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<GoalStep>,
     pub status: GoalStatus,
     /// Continuations enqueued so far (the chip's "round n").
     pub iteration: u32,
@@ -404,6 +412,15 @@ pub struct ChatGoalState {
     /// The last verdict's one-line reason, surfaced on the chip's menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reason: Option<String>,
+}
+
+/// One step of the goal's verifier-maintained plan (ADR-0044).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalStep {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
 }
 
 /// The `GetPlanMode` reply: the chat's Plan Mode view.
@@ -1292,6 +1309,47 @@ mod tests {
         assert_eq!(value["worktree"]["repoPath"], "/repo");
         assert_eq!(value["worktree"]["base"], "main");
         assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), bound);
+    }
+
+    #[test]
+    fn goal_state_name_and_steps_are_additive() {
+        // Rows stored before the verifier named goals and kept their plan
+        // decode with `name: None` and no steps.
+        let legacy = json!({
+            "text": "ship the login page",
+            "status": "active",
+            "iteration": 2,
+            "noProgress": 0,
+            "evalFailures": 0,
+            "startedAt": "2026-10-10T00:00:00Z"
+        });
+        let goal: ChatGoalState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(goal.name, None);
+        assert!(goal.steps.is_empty());
+
+        let named = ChatGoalState {
+            name: Some("Ship the login page".into()),
+            steps: vec![
+                GoalStep {
+                    text: "Build the form".into(),
+                    done: true,
+                },
+                GoalStep {
+                    text: "Add tests".into(),
+                    done: false,
+                },
+            ],
+            ..goal
+        };
+        let value = serde_json::to_value(&named).unwrap();
+        assert_eq!(value["name"], "Ship the login page");
+        assert_eq!(value["steps"][0]["text"], "Build the form");
+        assert_eq!(value["steps"][0]["done"], true);
+        assert_eq!(value["steps"][1]["done"], false);
+        assert_eq!(
+            serde_json::from_value::<ChatGoalState>(value).unwrap(),
+            named
+        );
     }
 
     #[test]

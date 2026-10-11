@@ -134,6 +134,68 @@ async fn the_loop_runs_until_the_verifier_is_satisfied() {
 }
 
 #[tokio::test]
+async fn the_verifier_names_the_goal_and_maintains_its_steps() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("reproduced the 401"),
+        ScriptedReply::text(
+            "CONTINUE: the rotated token still 401s\n\
+             NAME: Fix login tokens\n\
+             STEPS:\n\
+             - [x] reproduce the 401\n\
+             - [ ] rotate the token",
+        ),
+        ScriptedReply::text("rotated the token; the API still rejects it"),
+        ScriptedReply::text(
+            "BLOCKED: no access to the token service\n\
+             NAME: Fix login tokens\n\
+             STEPS:\n\
+             - [x] reproduce the 401\n\
+             - [x] rotate the token\n\
+             - [ ] get access to the token service",
+        ),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    set_goal(&engine, "chat-1", "make login stop 401ing").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start").await;
+
+    // The first pass names the goal and opens the plan; the second flips a
+    // step and parks the loop BLOCKED — the row stays, carrying the card
+    // state the UI renders.
+    common::wait_for_transcript_text(&mut transcript, "Goal blocked").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_requests(&provider, 4).await;
+
+    let goal = watched_goal(&engine, "chat-1").await;
+    assert_eq!(goal["status"], "blocked");
+    assert_eq!(goal["name"], "Fix login tokens");
+    assert_eq!(
+        goal["steps"],
+        serde_json::json!([
+            { "text": "reproduce the 401", "done": true },
+            { "text": "rotate the token", "done": true },
+            { "text": "get access to the token service", "done": false },
+        ])
+    );
+
+    // The second pass read its own card state back, so the plan carries
+    // forward instead of being reinvented.
+    let requests = provider.requests();
+    let second_check = common::summarize(&requests[3].messages);
+    assert!(
+        second_check
+            .iter()
+            .any(|line| line.contains("NAME: Fix login tokens")
+                && line.contains("- [x] reproduce the 401")
+                && line.contains("- [ ] rotate the token")),
+        "the verifier prompt lacks the current card state: {second_check:?}"
+    );
+}
+
+#[tokio::test]
 async fn three_empty_turns_pause_the_loop() {
     let fixture = common::Fixture::new();
     let provider = ScriptedProvider::new(vec![

@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use holt_proto::{Chat, ChatGoalState, GoalStatus, TurnChangeSet};
+use holt_proto::{Chat, ChatGoalState, GoalStatus, GoalStep, TurnChangeSet};
 use holt_rpc::RpcError;
 use pi_core::agent::types::AgentMessage;
 use tokio_util::sync::CancellationToken;
@@ -56,6 +56,22 @@ pub(crate) enum GoalVerdict {
     Blocked(String),
 }
 
+/// The verifier's full reply: the verdict line plus the card-facing state
+/// it maintains — the goal's short name and the current step list. Both are
+/// optional: a reply without them leaves the card as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GoalCheckReport {
+    pub(crate) verdict: GoalVerdict,
+    pub(crate) name: Option<String>,
+    pub(crate) steps: Vec<GoalStep>,
+}
+
+/// The card-facing caps: the name is a few words, the plan a handful of
+/// short steps.
+const MAX_GOAL_NAME_CHARS: usize = 60;
+pub(crate) const MAX_GOAL_STEPS: usize = 7;
+const MAX_STEP_CHARS: usize = 80;
+
 /// Strict first-line parse, mirroring `gate::parse_review_reply`: anything
 /// else is no verdict at all — the caller counts it as an evaluation
 /// failure, never as a fabricated `Continue`.
@@ -93,21 +109,115 @@ pub(crate) fn parse_verdict(reply: &str) -> Option<GoalVerdict> {
     None
 }
 
+/// Parse the verifier's reply: the strict first-line verdict, then the
+/// card-facing extras — a `NAME:` line and markdown task-list step lines
+/// (`- [x] done` / `- [ ] pending`). The extras are lenient on purpose:
+/// they paint the card, so a sloppy line is skipped, never fatal.
+pub(crate) fn parse_check_report(reply: &str) -> Option<GoalCheckReport> {
+    let verdict = parse_verdict(reply)?;
+    let mut name = None;
+    let mut steps = Vec::new();
+    for line in reply.lines().skip(1) {
+        let line = line.trim();
+        if name.is_none()
+            && let Some(rest) = line.strip_prefix("NAME:")
+        {
+            let cleaned = rest.trim();
+            if !cleaned.is_empty() {
+                name = Some(cleaned.chars().take(MAX_GOAL_NAME_CHARS).collect());
+            }
+            continue;
+        }
+        if line == "STEPS:" {
+            continue;
+        }
+        let Some(body) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) else {
+            continue;
+        };
+        let (done, text) = if let Some(text) = body.strip_prefix("[x]") {
+            (true, text)
+        } else if let Some(text) = body.strip_prefix("[X]") {
+            (true, text)
+        } else if let Some(text) = body.strip_prefix("[ ]") {
+            (false, text)
+        } else {
+            continue;
+        };
+        let text = text.trim();
+        if !text.is_empty() && steps.len() < MAX_GOAL_STEPS {
+            steps.push(GoalStep {
+                text: text.chars().take(MAX_STEP_CHARS).collect(),
+                done,
+            });
+        }
+    }
+    Some(GoalCheckReport {
+        verdict,
+        name,
+        steps,
+    })
+}
+
+/// Fold the verifier's card-facing state into the row: a fresh name or step
+/// list REPLACES the old one; an absent one leaves it — a flaky reply must
+/// not wipe the plan.
+fn apply_card_state(goal: &mut ChatGoalState, name: Option<String>, steps: Vec<GoalStep>) {
+    if let Some(name) = name {
+        goal.name = Some(name);
+    }
+    if !steps.is_empty() {
+        goal.steps = steps;
+    }
+}
+
 fn verifier_system_prompt(cwd: &str) -> String {
     format!(
         "You are the goal verifier for a coding agent working in {cwd}. \
 Judge whether the goal below is met using ONLY concrete evidence from the \
 work so far: files changed, commands run, their outputs, test results. \
 Plans, intentions, and todo lists are not progress. \
-Reply with exactly one line and nothing else:\n\
-COMPLETE: <the decisive evidence in a few words> — the goal is verifiably met.
-\
+The FIRST line of your reply is exactly one of:\n\
+COMPLETE: <the decisive evidence in a few words> — the goal is verifiably met.\n\
 CONTINUE: <the single most important missing piece> — work remains.\n\
 BLOCKED: <the reason> — the goal cannot be met (missing access, \
 contradictory requirements, or outside the agent's ability).\n\
 Keep whatever follows the colon to ONE short line — it lands in the chat \
-as a status row, never a paragraph."
+as a status row, never a paragraph.\n\
+On a CONTINUE or BLOCKED verdict, two blocks follow the first line:\n\
+NAME: <a short name for the goal, two to six words>\n\
+STEPS:\n\
+- [x] <a step the evidence shows finished>\n\
+- [ ] <a step that remains>\n\
+Three to seven steps, short imperative phrases. The list mirrors the \
+CURRENT state: carry the shown steps forward, flipping one to [x] only on \
+concrete evidence."
     )
+}
+
+/// The card state the verifier maintains: its own previous name and step
+/// list ride the prompt, so it carries them forward instead of reinventing
+/// the plan on every pass.
+fn card_state_prompt(goal: &ChatGoalState) -> String {
+    if goal.name.is_none() && goal.steps.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "The goal card currently shows (keep the name stable; bring the steps up to date):\n",
+    );
+    if let Some(name) = &goal.name {
+        block.push_str(&format!("NAME: {name}\n"));
+    }
+    if !goal.steps.is_empty() {
+        block.push_str("STEPS:\n");
+        for step in &goal.steps {
+            block.push_str(&format!(
+                "- [{}] {}\n",
+                if step.done { "x" } else { " " },
+                step.text
+            ));
+        }
+    }
+    block
 }
 
 /// The verifier-driven continuation: the goal plus what the last check
@@ -471,13 +581,19 @@ async fn run_check(
     goal: &ChatGoalState,
     change_set: Option<&TurnChangeSet>,
     cancel: &CancellationToken,
-) -> Result<GoalVerdict, String> {
+) -> Result<GoalCheckReport, String> {
     let (model, api_key, cwd) = check_transport(service, &chat.chat_id).await?;
     let evidence = evidence_tail(chat);
+    let card_state = card_state_prompt(goal);
     let prompt = format!(
-        "Goal:\n{}\n\n{}\n\nWork so far (newest last):\n{}",
+        "Goal:\n{}\n\n{}\n\n{}Work so far (newest last):\n{}",
         goal.text,
         change_set_summary(change_set),
+        if card_state.is_empty() {
+            String::new()
+        } else {
+            format!("{card_state}\n")
+        },
         if evidence.is_empty() {
             "(nothing yet)".to_string()
         } else {
@@ -487,9 +603,10 @@ async fn run_check(
     let mut options = pi_core::ai::types::SimpleStreamOptions::default();
     // The judge doesn't solve, it checks: pin the lowest reasoning level
     // (pi maps Minimal to each provider's floor) and leave headroom for the
-    // one-line verdict beside whatever minimal thinking the level emits —
-    // a tight cap let reasoning eat the whole budget and garble the reply.
-    options.base.max_tokens = Some(2048);
+    // verdict plus the card's name/steps block beside whatever minimal
+    // thinking the level emits — a tight cap let reasoning eat the whole
+    // budget and garble the reply.
+    options.base.max_tokens = Some(3072);
     options.reasoning = Some(pi_core::ai::types::ThinkingLevel::Minimal);
     options.base.base.api_key = Some(api_key);
     options.base.base.signal = Some(cancel.clone());
@@ -534,7 +651,7 @@ async fn run_check(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    parse_verdict(&text).ok_or_else(|| format!("garbled verdict: {}", truncate(&text, 200)))
+    parse_check_report(&text).ok_or_else(|| format!("garbled verdict: {}", truncate(&text, 200)))
 }
 
 /// Enqueue the loop's next step — an ordinary, visible queue row flagged as
@@ -687,8 +804,8 @@ pub(crate) async fn after_turn_settled(
         // would have written.
         return;
     }
-    let verdict = match verdict {
-        Ok(verdict) => verdict,
+    let report = match verdict {
+        Ok(report) => report,
         Err(error) => {
             let Some(state) = mutate_goal_row(service, &chat.chat_id, |goal| {
                 goal.eval_failures += 1;
@@ -741,6 +858,11 @@ pub(crate) async fn after_turn_settled(
             return;
         }
     };
+    let GoalCheckReport {
+        verdict,
+        name,
+        steps,
+    } = report;
     match verdict {
         GoalVerdict::Complete(_) => {
             // The end row is a one-line status — the Turn's own final
@@ -756,6 +878,7 @@ pub(crate) async fn after_turn_settled(
                 goal.status = GoalStatus::Blocked;
                 goal.eval_failures = 0;
                 goal.last_reason = Some(reason.clone());
+                apply_card_state(goal, name, steps);
             });
             notice(service, chat, format!("Goal blocked · {stats} — {reason}"));
         }
@@ -765,6 +888,7 @@ pub(crate) async fn after_turn_settled(
             let stalled = mutate_goal_row(service, &chat.chat_id, |goal| {
                 goal.eval_failures = 0;
                 goal.last_reason = Some(reason.clone());
+                apply_card_state(goal, name, steps);
                 if !called_tools && no_changes {
                     goal.no_progress += 1;
                 } else {
@@ -949,6 +1073,134 @@ mod tests {
         assert_eq!(parse_verdict("I think we should continue"), None);
         assert_eq!(parse_verdict(""), None);
         assert_eq!(parse_verdict("CONTINUED: nope"), None);
+    }
+
+    #[test]
+    fn check_report_reads_the_card_blocks_after_the_verdict() {
+        let report = parse_check_report(
+            "CONTINUE: the tests are still missing\n\
+             NAME: Ship the login page\n\
+             STEPS:\n\
+             - [x] build the form\n\
+             - [ ] add the tests",
+        )
+        .expect("a verdict plus card blocks parses");
+        assert_eq!(
+            report.verdict,
+            GoalVerdict::Continue("the tests are still missing".into())
+        );
+        assert_eq!(report.name.as_deref(), Some("Ship the login page"));
+        assert_eq!(
+            report.steps,
+            vec![
+                GoalStep {
+                    text: "build the form".into(),
+                    done: true,
+                },
+                GoalStep {
+                    text: "add the tests".into(),
+                    done: false,
+                },
+            ]
+        );
+
+        // The extras are optional: a bare verdict line leaves the card as
+        // it was (the caller keeps the previous name and steps).
+        let bare = parse_check_report("BLOCKED: no database access").unwrap();
+        assert_eq!(bare.name, None);
+        assert!(bare.steps.is_empty());
+
+        // A garbled first line is no verdict at all, even with card blocks.
+        assert!(parse_check_report("NAME: huh\n- [x] something").is_none());
+    }
+
+    #[test]
+    fn check_report_caps_and_skips_sloppy_lines() {
+        // Uppercase marks and `*` bullets count; empty step text and
+        // non-task lines are skipped; the list caps out.
+        let mut reply = String::from(
+            "CONTINUE: keep going\nNAME: X\nSTEPS:\n- [X] done one\n* [ ] todo two\n- [ ] \n- not a task\n",
+        );
+        for ix in 0..10 {
+            reply.push_str(&format!("- [ ] step {ix}\n"));
+        }
+        let report = parse_check_report(&reply).unwrap();
+        assert_eq!(report.name.as_deref(), Some("X"));
+        assert_eq!(report.steps.len(), MAX_GOAL_STEPS);
+        assert!(report.steps[0].done);
+        assert_eq!(report.steps[0].text, "done one");
+        assert!(!report.steps[1].done);
+        assert_eq!(report.steps[1].text, "todo two");
+
+        // A long name trims to the cap; a long step text trims too.
+        let long = parse_check_report(&format!(
+            "CONTINUE: go\nNAME: {}\nSTEPS:\n- [ ] {}",
+            "word ".repeat(30),
+            "a".repeat(200)
+        ))
+        .unwrap();
+        assert_eq!(long.name.unwrap().chars().count(), MAX_GOAL_NAME_CHARS);
+        assert_eq!(long.steps[0].text.chars().count(), MAX_STEP_CHARS);
+    }
+
+    #[test]
+    fn card_state_applies_only_when_fresh() {
+        let mut goal = ChatGoalState {
+            text: "ship it".into(),
+            name: None,
+            steps: Vec::new(),
+            status: GoalStatus::Active,
+            iteration: 0,
+            no_progress: 0,
+            eval_failures: 0,
+            started_at: Utc::now(),
+            last_reason: None,
+        };
+        apply_card_state(
+            &mut goal,
+            Some("Ship it".into()),
+            vec![GoalStep {
+                text: "build".into(),
+                done: false,
+            }],
+        );
+        assert_eq!(goal.name.as_deref(), Some("Ship it"));
+        assert_eq!(goal.steps.len(), 1);
+        // A reply without the blocks keeps what the card already shows.
+        apply_card_state(&mut goal, None, Vec::new());
+        assert_eq!(goal.name.as_deref(), Some("Ship it"));
+        assert_eq!(goal.steps.len(), 1);
+    }
+
+    #[test]
+    fn card_state_prompt_echoes_the_shown_plan() {
+        let mut goal = ChatGoalState {
+            text: "ship it".into(),
+            name: None,
+            steps: Vec::new(),
+            status: GoalStatus::Active,
+            iteration: 0,
+            no_progress: 0,
+            eval_failures: 0,
+            started_at: Utc::now(),
+            last_reason: None,
+        };
+        assert!(card_state_prompt(&goal).is_empty());
+        goal.name = Some("Ship it".into());
+        goal.steps = vec![
+            GoalStep {
+                text: "build".into(),
+                done: true,
+            },
+            GoalStep {
+                text: "test".into(),
+                done: false,
+            },
+        ];
+        let prompt = card_state_prompt(&goal);
+        assert!(prompt.contains("NAME: Ship it"));
+        assert!(prompt.contains("- [x] build"));
+        assert!(prompt.contains("- [ ] test"));
     }
 
     #[test]

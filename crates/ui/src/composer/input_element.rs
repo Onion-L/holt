@@ -57,9 +57,10 @@ impl Render for MentionPathTooltip {
 pub(super) struct ComposerTextPrepaint {
     cursor: Option<PaintQuad>,
     mention_quads: Vec<PaintQuad>,
-    /// Window-space bounds for each skill chip's identity glyph (the `/`
-    /// menu's cube), painted in the label's gutter.
-    skill_icons: Vec<Bounds<Pixels>>,
+    /// Window-space bounds, asset path, and ink for each icon chip's
+    /// identity glyph (skill chips' cube, the mode directive's own icon),
+    /// painted in the label's gutter.
+    chip_icons: Vec<(Bounds<Pixels>, &'static str, gpui::Hsla)>,
     mention_hits: Vec<MentionHit>,
     selection_quads: Vec<PaintQuad>,
     /// Completion preview: window-space origin of the end-of-text caret plus
@@ -146,23 +147,46 @@ impl gpui::Element for ComposerTextElement {
         let mention_color = Theme::of(cx).code_wash;
         // Skill chips sit on the accent wash, matching their accent label.
         let skill_color = Theme::of(cx).accent_wash;
-        let mut skill_icons = Vec::new();
+        // The mode directive gets a neutral fill — white ink, never the
+        // skill's accent.
+        let command_color = Theme::of(cx).element_hover;
+        let command_ink = Theme::of(cx).text;
+        let accent_ink = Theme::of(cx).accent;
+        let mut chip_icons = Vec::new();
 
         let mut mention_quads = Vec::new();
         let mut mention_hits = Vec::new();
-        for (_, display) in &input.projection.skills {
+        // The icon chips: skill mentions carry the cube on the accent wash,
+        // the leading mode directive its state-card icon on a neutral one.
+        let icon_chips = input
+            .projection
+            .skills
+            .iter()
+            .map(|(_, display)| (display, crate::icons::CUBE, skill_color, accent_ink))
+            .chain(
+                input
+                    .projection
+                    .command
+                    .iter()
+                    .map(|(chip, display)| (display, chip.icon, command_color, command_ink)),
+            );
+        for (display, icon_path, wash, ink) in icon_chips {
             // The icon rides the label's gutter NBSPs, on the chip's FIRST
             // line only (a wrapped chip keeps its glyph at its head).
             if let Some(local_bounds) = input.bounds_for_display_range(display.clone()).first() {
                 let icon = px(12.0);
                 let chip_top = origin.y + local_bounds.origin.y + px(2.0);
                 let chip_height = local_bounds.size.height - px(4.0);
-                skill_icons.push(Bounds::new(
-                    point(
-                        origin.x + local_bounds.origin.x + px(2.5),
-                        chip_top + (chip_height - icon) / 2.0,
+                chip_icons.push((
+                    Bounds::new(
+                        point(
+                            origin.x + local_bounds.origin.x + px(2.5),
+                            chip_top + (chip_height - icon) / 2.0,
+                        ),
+                        size(icon, icon),
                     ),
-                    size(icon, icon),
+                    icon_path,
+                    ink,
                 ));
             }
             for local_bounds in input.bounds_for_display_range(display.clone()) {
@@ -176,7 +200,7 @@ impl gpui::Element for ComposerTextElement {
                 mention_quads.push(quad(
                     chip_bounds,
                     px(5.0),
-                    skill_color,
+                    wash,
                     px(0.0),
                     gpui::transparent_black(),
                     BorderStyle::default(),
@@ -321,7 +345,7 @@ impl gpui::Element for ComposerTextElement {
         ComposerTextPrepaint {
             cursor,
             mention_quads,
-            skill_icons,
+            chip_icons,
             mention_hits,
             selection_quads,
             ghost,
@@ -369,16 +393,15 @@ impl gpui::Element for ComposerTextElement {
             for quad in prepaint.mention_quads.drain(..) {
                 window.paint_quad(quad);
             }
-            let accent = Theme::of(cx).accent;
-            for icon_bounds in prepaint.skill_icons.drain(..) {
+            for (icon_bounds, path, ink) in prepaint.chip_icons.drain(..) {
                 // Best-effort paint: a failed SVG rasterization must not take
                 // down the input's paint phase.
                 let _ = window.paint_svg(
                     icon_bounds,
-                    crate::icons::CUBE.into(),
+                    path.into(),
                     None,
                     gpui::TransformationMatrix::unit(),
-                    accent,
+                    ink,
                     cx,
                 );
             }
