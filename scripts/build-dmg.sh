@@ -133,7 +133,14 @@ end run
 APPLESCRIPT
 
 sync
-hdiutil detach "$MOUNT_DIR" -quiet
+# Finder/Spotlight can keep the volume busy for a moment after the window
+# closes (hdiutil exits 16, EBUSY); retry before forcing the detach.
+detached=0
+for _ in 1 2 3 4 5; do
+  if hdiutil detach "$MOUNT_DIR" -quiet; then detached=1; break; fi
+  sleep 3
+done
+(( detached )) || hdiutil detach "$MOUNT_DIR" -force -quiet
 trap - ERR
 hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -ov -o "$DMG" >/dev/null
 rm -f "$TMP_DMG"
