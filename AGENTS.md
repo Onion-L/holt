@@ -12,7 +12,7 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
   `cargo clippy --workspace --all-targets -- -D warnings`.
 - Test: `cargo test --workspace`; focus with `-p`, e.g. `cargo test -p holt-doc`.
   `crates/core` live provider suites skip unless `PI_TEST_LIVE=1`.
-- CI runs on macOS and gates on check + test only (`.github/workflows/ci.yml`).
+- CI runs on macOS and gates on `cargo test --workspace` only (`.github/workflows/ci.yml`).
 
 ## Architecture rules
 
