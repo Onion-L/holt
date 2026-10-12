@@ -416,13 +416,18 @@ impl Shell {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .text_color(theme.text_faint)
-                .hover(|el| el.bg(crate::theme::ink(0.06)).text_color(theme.text))
+                .hover(|el| el.bg(crate::theme::ink(0.06)))
                 .tooltip(move |_, cx| {
                     cx.new(|_| crate::popover::TextTooltip(tooltip.into()))
                         .into()
                 })
-                .child(crate::icons::icon(icon).size(px(12.0)))
+                // The svg paints its own color — it never inherits the
+                // container's text color.
+                .child(
+                    crate::icons::icon(icon)
+                        .size(px(12.0))
+                        .text_color(theme.text_muted),
+                )
         };
         div()
             .w(px(CARD_WIDTH))
