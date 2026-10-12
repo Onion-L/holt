@@ -13,6 +13,7 @@ mod grep;
 mod ls;
 pub(crate) mod model_setup;
 mod read_chat;
+pub(crate) mod submit_plan;
 #[cfg(test)]
 pub(crate) mod test_http;
 mod web_fetch;

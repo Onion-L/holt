@@ -28,7 +28,7 @@ const INTERRUPT_ARM_RESET_MS: u64 = 2500;
 /// transcript; the notice is just the chat-level mode.
 fn plan_status_notice(state: &serde_json::Value) -> String {
     if state["active"] == serde_json::json!(true) {
-        "Plan Mode: on — propose a plan with a <proposed_plan> block".into()
+        "Plan Mode: on — propose a plan with the submit_plan tool".into()
     } else {
         "Plan Mode: off".into()
     }
@@ -1220,7 +1220,7 @@ mod tests {
         );
         assert_eq!(
             plan_status_notice(&serde_json::json!({ "active": true })),
-            "Plan Mode: on — propose a plan with a <proposed_plan> block"
+            "Plan Mode: on — propose a plan with the submit_plan tool"
         );
     }
 
