@@ -143,7 +143,7 @@ fn slash_error_message(err: &RpcError) -> SharedString {
             "Command listing isn't available — the engine doesn't support it yet".into()
         }
         RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => {
+        RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
             "Couldn't load this agent's commands".into()
         }
     }
@@ -156,7 +156,9 @@ fn skills_error_message(err: &RpcError) -> SharedString {
             "Skills aren't available — the engine doesn't support them yet".into()
         }
         RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => "Couldn't load skills".into(),
+        RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
+            "Couldn't load skills".into()
+        }
     }
 }
 

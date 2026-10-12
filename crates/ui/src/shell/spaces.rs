@@ -63,6 +63,19 @@ type ChatGroups = Vec<(Option<(String, String)>, Vec<ActiveChatRow>)>;
 /// `manual` ranks chat ids by [`UiSettings::sidebar_order`]; only
 /// [`SidebarSort::Manual`] reads it. Chats it has not ranked yet (new
 /// sessions) lead, newest first.
+/// A failed folder browse, translated where the `RpcError` is still typed:
+/// transport-shaped failures read as the engine being unreachable, while
+/// anything the engine said about the folder itself (a path that doesn't
+/// exist, permission walls) shows as itself.
+fn folder_browse_error(error: &holt_rpc::RpcError) -> String {
+    match error {
+        holt_rpc::RpcError::Transport(_) | holt_rpc::RpcError::Closed => {
+            "The engine didn't respond — is it running?".to_string()
+        }
+        _ => error.to_string(),
+    }
+}
+
 fn compare_sidebar_chats(
     sort: SidebarSort,
     manual: &std::collections::HashMap<&str, usize>,
@@ -1569,7 +1582,7 @@ impl Shell {
                             }
                             Err(err) => Loadable::Error(err.to_string()),
                         },
-                        Err(err) => Loadable::Error(err.to_string()),
+                        Err(err) => Loadable::Error(folder_browse_error(&err)),
                     };
                 }
                 cx.notify();
@@ -2099,16 +2112,10 @@ impl Shell {
                 ))
                 .into_any_element()
         } else if let Some(message) = load_error {
-            // Folder-level failures (typed path that doesn't exist, permission
-            // walls) show as themselves; only transport-shaped failures read
-            // as the engine being unreachable. The engine's folder errors all
-            // name the folder ("could not read that folder: …").
-            let engine_line = if message.contains("folder") {
-                message
-            } else {
-                "The engine didn't respond — is it running?".to_string()
-            };
-            popover::error_row(&theme, &engine_line)
+            // Classified at the write boundary (folder_browse_error): a
+            // transport-shaped failure already reads as the engine being
+            // unreachable; everything else is the engine's own folder error.
+            popover::error_row(&theme, &message)
                 .px(px(14.0))
                 .py(px(10.0))
                 .child(

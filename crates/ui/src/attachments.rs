@@ -185,7 +185,9 @@ pub(crate) fn search_files_error(err: &RpcError) -> SharedString {
             "File search isn't available — the engine doesn't support it yet".into()
         }
         RpcError::Transport(_) | RpcError::Closed => "The engine is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
+        RpcError::BadParams(_) | RpcError::Failed(_) | RpcError::Coded { .. } => {
+            "File search failed".into()
+        }
     }
 }
 
