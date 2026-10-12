@@ -592,6 +592,10 @@ impl Composer {
                                 // sent bubbles.
                                 let (title, references) = split_pending_prompt(item)
                                     .unwrap_or_else(|| ("/compact".to_string(), Vec::new()));
+                                // A `/goal` arming send queues the objective
+                                // plus the marker line: the row shows the
+                                // objective only, like its sent bubble.
+                                let title = crate::goal::strip_block(&title).unwrap_or(title);
                                 // A goal continuation (ADR-0044) reads as the
                                 // loop's round, never its machine prompt — the
                                 // transcript's loop-row projection.

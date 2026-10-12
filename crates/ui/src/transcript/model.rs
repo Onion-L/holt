@@ -627,23 +627,25 @@ pub fn rows_for_entry(
         // File mentions render as chips here too, not just in the composer.
         // The projection is pure over the text, so the raw-length row version
         // below stays a valid cache/diff key.
-        // The goal arming marker is always the FINAL block (`with_goal_block`
-        // appends it after everything the composer assembled); strip it first
-        // so the comment extractor still sees its own trailing blocks in a
-        // combined message. No pill replaces it: the renderer chips the `goal`
-        // directive inline at the bubble's head (the composer's treatment).
-        let (body, goal_chip) = match crate::goal::strip_block(&parsed.text) {
-            Some(objective) => (objective, true),
-            None => (parsed.text.clone(), false),
-        };
-        // Lifted before the mention projection, so a comment body's own
-        // Markdown never lands in the bubble.
-        let (body, badges) = crate::badges::split(&body);
+        // The composer folds its trailers in a fixed order — the goal
+        // arming marker onto the objective, then the comment block, then the
+        // path list — and each one is matched only as a TRAILING block, so
+        // they peel off in reverse.
+        //
         // The appended path list leaves the bubble entirely: it rides the
         // prompt for the model, but on screen the references render as an
         // attachment chip row above the bubble (one badge per target, full
         // path on hover), next to the comment badge.
-        let (body, references) = crate::path_refs::split_sent_references(&body);
+        let (body, references) = crate::path_refs::split_sent_references(&parsed.text);
+        // Lifted before the mention projection, so a comment body's own
+        // Markdown never lands in the bubble.
+        let (body, badges) = crate::badges::split(&body);
+        // No pill replaces the goal marker: the renderer chips the `goal`
+        // directive inline at the bubble's head (the composer's treatment).
+        let (body, goal_chip) = match crate::goal::strip_block(&body) {
+            Some(objective) => (objective, true),
+            None => (body, false),
+        };
         parsed.attachments.extend(
             references
                 .iter()
@@ -2085,6 +2087,29 @@ mod tests {
         assert_eq!(raw.as_ref(), "ship the login page");
         assert_eq!(rows[0].copy_text.as_deref(), Some("ship the login page"));
         assert!(!text.contains("Goal armed"));
+
+        // The composer appends the path list AFTER the goal marker: the
+        // trailers still peel, so the bubble neither leaks the marker
+        // sentence nor loses the chip.
+        let with_refs = crate::path_refs::append_references(
+            &crate::goal::with_goal_block("ship the login page"),
+            &[crate::path_refs::PathRef {
+                id: "r0".into(),
+                path: "/repo/src/login.rs".into(),
+                is_dir: false,
+                managed: false,
+            }],
+        );
+        entry.parts = vec![text_part("t0", &with_refs)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User {
+            text, goal_chip, ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert!(goal_chip, "the chip survives an appended path list");
+        assert_eq!(text.as_ref(), "ship the login page");
 
         // An ordinary prompt never chips.
         entry.parts = vec![text_part("t0", "just a prompt")];
