@@ -3,6 +3,8 @@
 Rust desktop UI shell for a coding agent. `crates/engine` runs the `pi-core-rs` agent loop
 behind the `RpcService` trait. `ARCHITECTURE.md` is the source of truth for crate topology
 and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, or the boot path.
+Before exploring, read `CONTEXT.md` (domain glossary) and the `docs/adr/` decision records
+touching your area.
 
 ## Commands
 
@@ -57,10 +59,5 @@ and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, 
   stamp (entries track `git log v<prev>..v<next> --oneline`), then commit
   `chore: bump workspace version to X.Y.Z`, tag `vX.Y.Z`, and push both;
   the site redeploys from `main`.
-
-## Agent skills
-
-- Issues are local Markdown under `.scratch/` (`docs/agents/issue-tracker.md`);
-  triage vocabulary: `docs/agents/triage-labels.md`.
-- Domain docs are single-context: read `CONTEXT.md` and the `docs/adr/`
-  entries touching your area before exploring (`docs/agents/domain.md`).
+- Issues are GitHub issues, filed through the `issue` skill; there is no local
+  tracker.

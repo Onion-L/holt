@@ -13,7 +13,6 @@ edge/dist/
 
 # Strip upstream git history from nested vendored crates.
 vendor/**/.git
-.scratch
 docs/research/
 docs/spark/
 .agents/skills/spark/

@@ -1,17 +1,12 @@
 ---
 name: issue
-description: "File, read, and manage issues on the project's GitHub repo via the `gh` CLI. Use when the user asks to open/report/file an issue on GitHub, check or search GitHub issues, or promote a local .scratch spec to a GitHub issue. Development-process tickets stay local in .scratch/ — do not use this skill for those."
+description: "File, read, and manage issues on the project's GitHub repo via the `gh` CLI — the project's only issue tracker. Use when the user asks to open/report/file/record an issue, or check or search issues."
 ---
 
 # GitHub Issue
 
-Two trackers, one job each:
-
-- **GitHub issues** (repo resolved by `gh` from the git remote): durable,
-  externally visible record — bug reports, feature requests, roadmap items.
-- **`.scratch/`** (see `docs/agents/issue-tracker.md`): development process —
-  specs, implementation tickets, wayfinding. Never publish these to GitHub
-  unless the user explicitly asks.
+GitHub issues (repo resolved by `gh` from the git remote) are the project's
+only issue tracker — bug reports, feature requests, roadmap items.
 
 ## Safety
 
@@ -61,7 +56,7 @@ write it precisely.>
 
 ## Notes
 <optional: expected vs actual if non-obvious, build/version if it matters,
-related issues, local .scratch paths>
+related issues>
 ```
 
 ### Feature body
@@ -75,7 +70,7 @@ related issues, local .scratch paths>
 This is what makes the idea actionable later.>
 
 ## Notes
-<optional: rough sketch, related issues, local .scratch paths>
+<optional: rough sketch, related issues>
 ```
 
 For `question` / `documentation` / other types there is no fixed body; keep
@@ -103,24 +98,13 @@ Rules:
   pick the dominant one and mention the other in the body.
 - These map to the commit vocabulary: `bug`≈fix, `enhancement`≈feat,
   `documentation`≈docs.
-- Do **not** confuse type labels with triage state. Lifecycle roles
-  (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
-  `wontfix`) live on the local `.scratch/` `Status:` line
-  (`docs/agents/triage-labels.md`), not as GitHub labels.
 - Non-type labels (`good first issue`, `help wanted`) are optional extras.
-
-## Linking with the local tracker
-
-When GitHub issue #N is about to be worked on:
-
-- create `.scratch/<feature-slug>/` per the local tracker doc, and
-- put `GitHub: #N <url>` near the top of the spec or first ticket.
-
-When the work finishes, offer to comment a closing summary on the issue
-(confirm the comment text first).
 
 ## Update / close
 
 State changes (close, reopen, label, edit, comment) are mutations: state the
 exact command, confirm, run. Never close an issue the user did not ask to
 close.
+
+When the work on an issue finishes, offer to comment a closing summary on it
+(confirm the comment text first).

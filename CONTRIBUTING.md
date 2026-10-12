@@ -8,8 +8,7 @@ welcome. Please note that this project follows a
 ## Before You Start
 
 - For bugs and feature requests, open a
-  [GitHub issue](https://github.com/Onion-L/holt/issues). (The Markdown files
-  under `.scratch/` are the maintainer's internal tracker, not the public one.)
+  [GitHub issue](https://github.com/Onion-L/holt/issues).
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) before touching `crates/rpc`,
   `crates/engine`, or the boot path — it is the source of truth for crate
   topology and the RPC contract.
