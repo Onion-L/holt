@@ -201,7 +201,16 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   goal, blocked parks
   it, continue enqueues an ordinary queue row flagged `goalContinuation`
   carrying the reason — visible, editable, and deleting it pauses the
-  goal. Evaluation is skipped while user-queued items pend or a question
+  goal. The row also carries the round as data (`goalRound`:
+  `{kind: continue, n} | resume | retry`, plus `goalReason`); admission
+  writes it into the user entry as a `goalRound` part, and the UI draws
+  that Turn as a loop row from it — never from the prompt text. Goal
+  lifecycle notices carry a `goal` tag (`achieved | blocked | paused |
+  cleared`) readers style from. The objective is stated in the History
+  once: the first continuation spells it out, later ones point back at
+  it, and a compaction summary newer than the row's `objectiveStatedAt`
+  makes the next one restate it. A resume's prompt never replays the
+  pre-pause verdict. All of these fields are additive. Evaluation is skipped while user-queued items pend or a question
   card is unanswered; interrupts and failed Turns pause; admission
   failure (a gone model) clears; the caps (20 iterations, 3 no-progress
   Turns, 3 consecutive verifier failures) pause with a Transcript notice.
