@@ -292,7 +292,7 @@ impl Queue {
             skill_name,
             extra_instructions,
             attended,
-            false,
+            None,
         )
     }
 
@@ -304,6 +304,8 @@ impl Queue {
         &mut self,
         request: RunRequest,
         message_id: String,
+        round: holt_proto::GoalRoundKind,
+        reason: String,
     ) -> Result<(), RpcError> {
         self.enqueue_inner(
             request,
@@ -312,7 +314,7 @@ impl Queue {
             None,
             None,
             false,
-            true,
+            Some((round, reason)),
         )
     }
 
@@ -325,7 +327,7 @@ impl Queue {
         skill_name: Option<String>,
         extra_instructions: Option<String>,
         attended: bool,
-        goal_continuation: bool,
+        goal_round: Option<(holt_proto::GoalRoundKind, String)>,
     ) -> Result<(), RpcError> {
         if self.record.accepted.contains(&message_id) {
             return if self.error.is_some() {
@@ -342,7 +344,12 @@ impl Queue {
             kind,
             skill_name,
             extra_instructions,
-            goal_continuation,
+            goal_continuation: goal_round.is_some(),
+            goal_reason: goal_round
+                .as_ref()
+                .map(|(_, reason)| reason.clone())
+                .unwrap_or_default(),
+            goal_round: goal_round.map(|(round, _)| round),
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -399,6 +406,8 @@ impl Queue {
             skill_name,
             extra_instructions,
             goal_continuation: false,
+            goal_round: None,
+            goal_reason: String::new(),
             submitted_at: chrono::Utc::now().timestamp_millis(),
             error: None,
         });
@@ -766,6 +775,7 @@ impl EngineService {
                 MessagePart::Notice {
                     id: "n0".into(),
                     message: "There is nothing to compact".into(),
+                    goal: None,
                 },
             );
             return (true, None);
@@ -858,6 +868,7 @@ impl EngineService {
                                 "Compaction failed ({reason}); the conversation was \
                                  left unchanged."
                             ),
+                            goal: None,
                         },
                     );
                     (false, Some(format!("Compaction failed ({reason})")))
@@ -978,16 +989,27 @@ impl EngineService {
                             // enum. The prompt's inline mentions resolve at
                             // admission inside `start_turn`.
                             let prompt = message.request.prompt.clone();
+                            let mut parts = vec![MessagePart::Text {
+                                id: "t0".into(),
+                                text: prompt.clone(),
+                            }];
+                            // A goal continuation's entry carries its round
+                            // as data (ADR-0044): the transcript draws the
+                            // loop row from it, never from the prompt text.
+                            if let Some(round) = message.goal_round {
+                                parts.push(MessagePart::GoalRound {
+                                    id: "g0".into(),
+                                    round,
+                                    reason: message.goal_reason.clone(),
+                                });
+                            }
                             let prepared = service
                                 .start_turn(
                                     &worker_chat.chat_id,
                                     worker_chat.clone(),
                                     message.request,
                                     message.message_id,
-                                    vec![MessagePart::Text {
-                                        id: "t0".into(),
-                                        text: prompt.clone(),
-                                    }],
+                                    parts,
                                     prompt.clone(),
                                     prompt.clone(),
                                     Some(prompt),

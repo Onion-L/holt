@@ -412,6 +412,14 @@ pub struct ChatGoalState {
     /// The last verdict's one-line reason, surfaced on the chip's menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reason: Option<String>,
+    /// When a continuation last spelled the objective out verbatim in the
+    /// History (epoch millis). `None` until the first one does — SetGoal can
+    /// ride any send, so the arming message is not assumed to carry it. A
+    /// compaction summary newer than this may have folded the objective
+    /// away, so the next continuation restates it in full; otherwise
+    /// continuations point back at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_stated_at: Option<i64>,
 }
 
 /// One step of the goal's verifier-maintained plan (ADR-0044).
@@ -423,11 +431,19 @@ pub struct GoalStep {
     pub done: bool,
 }
 
-/// What queued one goal-loop continuation (ADR-0044). The engine folds it
-/// into the continuation prompt as a trailing marker line
-/// ([`GoalRound::marker`]); the UI parses it back ([`GoalRound::parse`]) to
-/// draw the Turn as a light loop row instead of a user bubble.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Which goal-loop transition a lifecycle notice records (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalEvent {
+    Achieved,
+    Blocked,
+    Paused,
+    Cleared,
+}
+
+/// What queued one goal-loop continuation (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "n")]
 pub enum GoalRoundKind {
     /// A `CONTINUE` verdict queued round `n` (the card's "round n").
     Continue(u32),
@@ -435,55 +451,6 @@ pub enum GoalRoundKind {
     Resume,
     /// The verifier failed before reaching a verdict; the loop keeps going.
     Retry,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoalRound {
-    pub kind: GoalRoundKind,
-    /// What the verifier found missing; empty when there is nothing to say
-    /// (a resume before any verdict).
-    pub reason: String,
-}
-
-impl GoalRound {
-    const PREFIX: &'static str = "Goal loop · ";
-
-    /// The trailing marker line: one line, so the reason's own newlines
-    /// fold to spaces.
-    pub fn marker(&self) -> String {
-        let kind = match self.kind {
-            GoalRoundKind::Continue(n) => format!("round {n}"),
-            GoalRoundKind::Resume => "resumed".into(),
-            GoalRoundKind::Retry => "retry".into(),
-        };
-        let reason = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
-        if reason.is_empty() {
-            format!("{}{kind}", Self::PREFIX)
-        } else {
-            format!("{}{kind} · {reason}", Self::PREFIX)
-        }
-    }
-
-    /// The inverse of [`GoalRound::marker`] over a whole message: matches
-    /// only a final single-line block, so a prompt quoting the prefix
-    /// mid-body is left alone.
-    pub fn parse(text: &str) -> Option<GoalRound> {
-        let at = text.rfind(&format!("\n\n{}", Self::PREFIX))?;
-        let line = text[at + 2 + Self::PREFIX.len()..].trim_end();
-        if line.contains('\n') {
-            return None;
-        }
-        let (kind, reason) = line.split_once(" · ").unwrap_or((line, ""));
-        let kind = match kind {
-            "resumed" => GoalRoundKind::Resume,
-            "retry" => GoalRoundKind::Retry,
-            _ => GoalRoundKind::Continue(kind.strip_prefix("round ")?.parse().ok()?),
-        };
-        Some(GoalRound {
-            kind,
-            reason: reason.to_string(),
-        })
-    }
 }
 
 /// The `GetPlanMode` reply: the chat's Plan Mode view.
@@ -1372,46 +1339,6 @@ mod tests {
         assert_eq!(value["worktree"]["repoPath"], "/repo");
         assert_eq!(value["worktree"]["base"], "main");
         assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), bound);
-    }
-
-    #[test]
-    fn goal_round_markers_round_trip() {
-        for round in [
-            GoalRound {
-                kind: GoalRoundKind::Continue(3),
-                reason: "tests not run".into(),
-            },
-            GoalRound {
-                kind: GoalRoundKind::Resume,
-                reason: String::new(),
-            },
-            GoalRound {
-                kind: GoalRoundKind::Retry,
-                reason: "no verdict".into(),
-            },
-        ] {
-            let text = format!("Work toward this goal:\n\nship it\n\n{}", round.marker());
-            assert_eq!(GoalRound::parse(&text), Some(round));
-        }
-        // A multi-line reason folds into the one marker line.
-        let folded = GoalRound {
-            kind: GoalRoundKind::Continue(1),
-            reason: "a\nb".into(),
-        };
-        assert_eq!(
-            GoalRound::parse(&format!("x\n\n{}", folded.marker()))
-                .unwrap()
-                .reason,
-            "a b"
-        );
-    }
-
-    #[test]
-    fn goal_round_parse_ignores_mid_body_quotes() {
-        assert_eq!(GoalRound::parse("x\n\nGoal loop · round 2 · y\nmore"), None);
-        assert_eq!(GoalRound::parse("Goal loop · round 2 · y"), None);
-        assert_eq!(GoalRound::parse("x\n\nGoal loop · banana"), None);
-        assert_eq!(GoalRound::parse("plain prompt"), None);
     }
 
     #[test]

@@ -848,6 +848,7 @@ mod tests {
             eval_failures: 0,
             started_at: chrono::Utc::now(),
             last_reason: None,
+            objective_stated_at: None,
         }
     }
 

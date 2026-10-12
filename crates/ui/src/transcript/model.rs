@@ -273,6 +273,7 @@ pub enum RowKind {
     /// `goal-*` entry id.
     GoalEnd {
         message: SharedString,
+        event: holt_proto::GoalEvent,
     },
     /// A goal-loop continuation (ADR-0044): a User entry the loop queued,
     /// not the user. Drawn as a light, foldable loop row — round label and
@@ -597,16 +598,20 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        // A loop-queued continuation carries its round marker as the final
-        // line: it is the loop speaking, so it never draws as a user bubble.
-        if let Some(round) = holt_proto::GoalRound::parse(&raw) {
+        // A loop-queued continuation carries its round as a part (ADR-0044):
+        // it is the loop speaking, so it never draws as a user bubble.
+        let goal_round = entry.parts.iter().find_map(|p| match p {
+            MessagePart::GoalRound { round, reason, .. } => Some((*round, reason.clone())),
+            _ => None,
+        });
+        if let Some((round, reason)) = goal_round {
             rows.push(Row {
                 id: entry.id.clone().into(),
                 version: (raw.len() as u64) << 1 | pending as u64,
                 turn_start: true,
                 kind: RowKind::GoalRound {
-                    label: crate::goal::round_label(&round.kind).into(),
-                    reason: round.reason.into(),
+                    label: crate::goal::round_label(&round).into(),
+                    reason: reason.into(),
                     prompt: raw.into(),
                     footer_owner: None,
                 },
@@ -1027,13 +1032,16 @@ pub fn rows_for_entry(
                     MessagePart::Notice {
                         id: part_id,
                         message,
+                        goal,
                     } => {
-                        // The goal loop's terminal rows (ADR-0044) get the
-                        // band treatment; every other Notice stays a plain
-                        // housekeeping row.
-                        let kind = if entry.id.starts_with("goal-") {
+                        // The goal loop's lifecycle rows (ADR-0044) get the
+                        // band treatment, keyed on the part's transition
+                        // tag; every other Notice stays a plain housekeeping
+                        // row.
+                        let kind = if let Some(event) = goal {
                             RowKind::GoalEnd {
                                 message: message.clone().into(),
+                                event: *event,
                             }
                         } else {
                             RowKind::Notice {
@@ -1053,7 +1061,11 @@ pub fn rows_for_entry(
                     }
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
-                    MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    // A round tag only rides user entries (the loop row
+                    // above); on any other entry it draws nothing.
+                    MessagePart::Tool { .. }
+                    | MessagePart::Reasoning { .. }
+                    | MessagePart::GoalRound { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
@@ -2253,6 +2265,7 @@ mod tests {
             vec![MessagePart::Notice {
                 id: "n0".into(),
                 message: "Everything above this line is visible to you, but the model starts fresh after it.".into(),
+                goal: None,
             }],
         );
         entry.role = MessageRole::System;
@@ -2266,8 +2279,8 @@ mod tests {
         assert!(rows[0].copy_text.is_none());
     }
 
-    /// The goal loop's terminal Notice (ADR-0044) lands under a `goal-*`
-    /// entry id and renders as the band row, not a plain housekeeping row.
+    /// The goal loop's lifecycle Notice (ADR-0044) carries its transition
+    /// tag and renders as the band row, not a plain housekeeping row.
     #[test]
     fn a_goal_notice_renders_the_goal_end_band() {
         let mut entry = assistant(
@@ -2276,6 +2289,7 @@ mod tests {
             vec![MessagePart::Notice {
                 id: "n0".into(),
                 message: "Goal achieved · 1 round · 12 min · 45.2k tokens".into(),
+                goal: Some(holt_proto::GoalEvent::Achieved),
             }],
         );
         entry.role = MessageRole::System;
@@ -2283,9 +2297,21 @@ mod tests {
         let rows = rows_for_entry(&entry, false, &mut parse);
         assert_eq!(rows.len(), 1);
         match &rows[0].kind {
-            RowKind::GoalEnd { message } => assert!(message.contains("Goal achieved")),
+            RowKind::GoalEnd { message, event } => {
+                assert!(message.contains("Goal achieved"));
+                assert_eq!(*event, holt_proto::GoalEvent::Achieved);
+            }
             _other => panic!("expected the goal-end band row"),
         }
+        // The band keys on the part's tag, never the entry id or the text: a
+        // `goal-*` notice without a tag (pre-tag history) stays plain.
+        entry.parts = vec![MessagePart::Notice {
+            id: "n0".into(),
+            message: "Goal achieved · 1 round".into(),
+            goal: None,
+        }];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert!(matches!(rows[0].kind, RowKind::Notice { .. }));
     }
 
     fn goal_rows(id: &str, created_at: i64) -> Vec<Row> {
@@ -2295,9 +2321,34 @@ mod tests {
             vec![MessagePart::Notice {
                 id: "n0".into(),
                 message: "Goal achieved · 12 min".into(),
+                goal: Some(holt_proto::GoalEvent::Achieved),
             }],
         );
         entry.role = MessageRole::System;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn round_rows(
+        id: &str,
+        round: holt_proto::GoalRoundKind,
+        reason: &str,
+        created_at: i64,
+    ) -> Vec<Row> {
+        let mut entry = assistant(
+            id,
+            MessageStatus::Complete,
+            vec![
+                text_part("t0", "Keep working toward the goal stated earlier."),
+                MessagePart::GoalRound {
+                    id: "g0".into(),
+                    round,
+                    reason: reason.into(),
+                },
+            ],
+        );
+        entry.role = MessageRole::User;
         entry.status = None;
         entry.created_at = created_at;
         rows_for_entry(&entry, false, &mut parse)
@@ -2322,12 +2373,13 @@ mod tests {
     /// full prompt kept for the fold — never as a user bubble.
     #[test]
     fn goal_continuations_render_as_loop_rows() {
-        let round = holt_proto::GoalRound {
-            kind: holt_proto::GoalRoundKind::Continue(2),
-            reason: "tests not run".into(),
-        };
-        let prompt = format!("Work toward this goal:\n\nship it\n\n{}", round.marker());
-        let rows = user_rows("c1", &prompt, 5);
+        let rows = round_rows(
+            "c1",
+            holt_proto::GoalRoundKind::Continue(2),
+            "tests not run",
+            5,
+        );
+        let prompt = "Keep working toward the goal stated earlier.";
         assert_eq!(rows.len(), 1);
         let RowKind::GoalRound {
             label,
@@ -2347,13 +2399,9 @@ mod tests {
 
     #[test]
     fn a_goal_round_takes_the_previous_reply_footer() {
-        let round = holt_proto::GoalRound {
-            kind: holt_proto::GoalRoundKind::Resume,
-            reason: String::new(),
-        };
         let mut rows = user_rows("u1", "fix it", 1);
         rows.extend(reply_rows("m1", "done", 2));
-        rows.extend(user_rows("c1", &format!("x\n\n{}", round.marker()), 3));
+        rows.extend(round_rows("c1", holt_proto::GoalRoundKind::Resume, "", 3));
         rows.extend(reply_rows("m2", "more", 4));
         let before = rows.clone();
 
@@ -2378,12 +2426,13 @@ mod tests {
 
     #[test]
     fn a_goal_round_right_after_a_prompt_takes_nothing() {
-        let round = holt_proto::GoalRound {
-            kind: holt_proto::GoalRoundKind::Continue(1),
-            reason: "x".into(),
-        };
         let mut rows = user_rows("u1", "fix it", 1);
-        rows.extend(user_rows("c1", &format!("x\n\n{}", round.marker()), 3));
+        rows.extend(round_rows(
+            "c1",
+            holt_proto::GoalRoundKind::Continue(1),
+            "x",
+            3,
+        ));
         let before = rows.clone();
 
         hand_footers_to_goal_rounds(&mut rows);

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use holt_proto::{
-    Chat, ChatGoalState, GoalRound, GoalRoundKind, GoalStatus, GoalStep, TurnChangeSet,
+    Chat, ChatGoalState, GoalEvent, GoalRoundKind, GoalStatus, GoalStep, TurnChangeSet,
 };
 use holt_rpc::RpcError;
 use pi_core::agent::types::AgentMessage;
@@ -222,26 +222,57 @@ fn card_state_prompt(goal: &ChatGoalState) -> String {
     block
 }
 
-/// The verifier-driven continuation: the goal plus what the last check
-/// found missing, closed by the round's marker line — the UI draws the
-/// Turn as a loop row from it instead of a user bubble.
-pub(crate) fn continuation_prompt(text: &str, round: &GoalRound) -> String {
-    let status = match (&round.kind, round.reason.is_empty()) {
-        (GoalRoundKind::Retry, _) => {
-            "The last verification pass failed before reaching a verdict — keep working toward the goal.".to_string()
-        }
-        (GoalRoundKind::Resume, true) => "The user resumed the goal.".to_string(),
-        _ => format!(
-            "The verifier's last check found the goal not yet met: {}",
-            round.reason
+/// The continuation's prompt (ADR-0044). The objective is spelled out in
+/// the History once — the arming Turn's message — so a continuation points
+/// back at it; after a compaction may have folded that message into a
+/// summary (`restate`), the next one carries it verbatim again. A resume
+/// never replays the pre-pause verdict: the user may have changed the
+/// workspace or the direction since, so the model re-checks first.
+pub(crate) fn continuation_prompt(
+    text: &str,
+    round: GoalRoundKind,
+    reason: &str,
+    restate: bool,
+) -> String {
+    let head = if restate {
+        format!("Work toward this goal:\n\n{text}\n\n")
+    } else {
+        "Keep working toward the goal stated earlier in this conversation.\n\n".to_string()
+    };
+    let body = match round {
+        GoalRoundKind::Resume => "The user paused this goal and has now resumed it. If they \
+gave new direction in the meantime, follow it. Re-check the current state \
+before acting — re-read the relevant files and re-run checks rather than \
+trusting earlier context. If the goal already holds, say so and stop."
+            .to_string(),
+        GoalRoundKind::Retry => "The last verification pass failed before reaching a verdict. \
+Continue, judging your own progress by concrete evidence — files changed, \
+commands run, test results — not by plans or intentions."
+            .to_string(),
+        GoalRoundKind::Continue(_) => format!(
+            "The verifier's last check found the goal not yet met: {reason}\n\n\
+Continue. Judge your own progress by concrete evidence — files changed, \
+commands run, test results — not by plans or intentions."
         ),
     };
-    format!(
-        "Work toward this goal:\n\n{text}\n\n{status}\n\n\
-Continue. Judge your own progress by concrete evidence — files changed, \
-commands run, test results — not by plans or intentions.\n\n{}",
-        round.marker()
-    )
+    format!("{head}{body}")
+}
+
+/// When the chat's History was last compacted (epoch millis): the newest
+/// compaction summary it carries — matched by message type, never by text.
+/// The History is the persisted model record, so this survives restarts.
+fn latest_compaction_at(chat: &ChatRuntime) -> Option<i64> {
+    chat.history
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom(custom) if custom.role == "compactionSummary" => {
+                custom.value.get("timestamp").and_then(|at| at.as_i64())
+            }
+            _ => None,
+        })
+        .max()
 }
 
 /// The evidence the verifier judges: the History tail (the model-facing
@@ -440,7 +471,7 @@ pub(crate) fn clear_goal_state(service: &EngineService, chat: &Arc<ChatRuntime>)
 /// A goal lifecycle row in the Transcript (ADR-0010 housekeeping: for the
 /// reader, never the model — the continuation prompt carries what the model
 /// needs).
-fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, message: String) {
+fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, event: GoalEvent, message: String) {
     crate::decode::push_system_part(
         chat,
         &service.engine_info.device_id,
@@ -448,6 +479,8 @@ fn notice(service: &EngineService, chat: &Arc<ChatRuntime>, message: String) {
         holt_doc::parts::MessagePart::Notice {
             id: "n0".into(),
             message,
+            // The transition as data: readers style the row from it.
+            goal: Some(event),
         },
     );
 }
@@ -676,9 +709,10 @@ async fn run_check(
 pub(crate) fn enqueue_continuation(
     service: &EngineService,
     chat: &Arc<ChatRuntime>,
-    prompt: String,
+    round: GoalRoundKind,
+    reason: String,
 ) -> Result<(), RpcError> {
-    let request = {
+    let (request, restate) = {
         let chats = service
             .runtime
             .chats
@@ -696,25 +730,48 @@ pub(crate) fn enqueue_continuation(
             .cwd
             .clone()
             .ok_or_else(|| RpcError::Failed("the chat has no working directory".into()))?;
-        EngineService::queued_run_request(&config, &prompt, cwd)
+        let goal = row
+            .goal
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("the chat has no goal".into()))?;
+        let restate = match goal.objective_stated_at {
+            None => true,
+            Some(stated_at) => latest_compaction_at(chat).is_some_and(|at| at >= stated_at),
+        };
+        let prompt = continuation_prompt(&goal.text, round, &reason, restate);
+        (
+            EngineService::queued_run_request(&config, &prompt, cwd),
+            restate,
+        )
     };
     let paused = {
         let mut queue = chat.queue.lock().unwrap_or_else(|e| e.into_inner());
         if chat.is_removed() {
             return Err(RpcError::Failed("chat was deleted".into()));
         }
-        queue.enqueue_goal_continuation(request, uuid::Uuid::new_v4().to_string())?;
+        queue.enqueue_goal_continuation(
+            request,
+            uuid::Uuid::new_v4().to_string(),
+            round,
+            reason,
+        )?;
         queue.paused()
     };
+    if restate {
+        // The objective is spelled out again; later continuations point
+        // back at it until the next compaction.
+        let now = Utc::now().timestamp_millis();
+        mutate_goal_row(service, &chat.chat_id, |goal| {
+            goal.objective_stated_at = Some(now);
+        });
+    }
     if paused {
         // The queue's pause wins (ADR-0021): the row stays for the user to
         // inspect, but the loop stands down until resumed.
         mutate_goal_row(service, &chat.chat_id, |goal| {
             goal.status = GoalStatus::Paused;
         });
-        notice(
-            service,
-            chat,
+        notice(service, chat, GoalEvent::Paused,
             "Goal paused — the queue is paused. Continue the queue or resume the goal with /goal resume.".into(),
         );
     } else {
@@ -759,6 +816,7 @@ pub(crate) async fn after_turn_settled(
                 notice(
                     service,
                     chat,
+                    GoalEvent::Paused,
                     "Goal paused — the turn was interrupted. Resume with /goal resume.".into(),
                 );
             }
@@ -772,6 +830,7 @@ pub(crate) async fn after_turn_settled(
                 notice(
                     service,
                     chat,
+                    GoalEvent::Paused,
                     "Goal paused — the last turn failed. Resume with /goal resume.".into(),
                 );
             }
@@ -836,6 +895,7 @@ pub(crate) async fn after_turn_settled(
                 notice(
                     service,
                     chat,
+                    GoalEvent::Paused,
                     format!(
                         "Goal paused · {stats} — the verifier failed {MAX_EVAL_FAILURES} times in a row. Resume with /goal resume."
                     ),
@@ -856,19 +916,7 @@ pub(crate) async fn after_turn_settled(
             {
                 return;
             }
-            if enqueue_continuation(
-                service,
-                chat,
-                continuation_prompt(
-                    &goal.text,
-                    &GoalRound {
-                        kind: GoalRoundKind::Retry,
-                        reason: "the verifier couldn't reach a verdict".into(),
-                    },
-                ),
-            )
-            .is_err()
-            {
+            if enqueue_continuation(service, chat, GoalRoundKind::Retry, String::new()).is_err() {
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.status = GoalStatus::Paused;
                 });
@@ -888,7 +936,12 @@ pub(crate) async fn after_turn_settled(
             // only duplicate it as a paragraph. It stays in the log.
             let stats = goal_stats(chat, &goal);
             clear_goal_state(service, chat);
-            notice(service, chat, format!("Goal achieved · {stats}"));
+            notice(
+                service,
+                chat,
+                GoalEvent::Achieved,
+                format!("Goal achieved · {stats}"),
+            );
         }
         GoalVerdict::Blocked(reason) => {
             let stats = goal_stats(chat, &goal);
@@ -898,7 +951,12 @@ pub(crate) async fn after_turn_settled(
                 goal.last_reason = Some(reason.clone());
                 apply_card_state(goal, name, steps);
             });
-            notice(service, chat, format!("Goal blocked · {stats} — {reason}"));
+            notice(
+                service,
+                chat,
+                GoalEvent::Blocked,
+                format!("Goal blocked · {stats} — {reason}"),
+            );
         }
         GoalVerdict::Continue(reason) => {
             let called_tools = turn_called_tools(chat);
@@ -922,6 +980,7 @@ pub(crate) async fn after_turn_settled(
                 notice(
                     service,
                     chat,
+                    GoalEvent::Paused,
                     format!(
                         "Goal paused · {stats} — no progress in {MAX_NO_PROGRESS} turns (no tool calls, no workspace changes). Resume with /goal resume."
                     ),
@@ -936,6 +995,7 @@ pub(crate) async fn after_turn_settled(
                 notice(
                     service,
                     chat,
+                    GoalEvent::Paused,
                     format!(
                         "Goal paused · {stats} — reached the {MAX_ITERATIONS}-iteration cap. Resume with /goal resume."
                     ),
@@ -954,12 +1014,8 @@ pub(crate) async fn after_turn_settled(
             {
                 return;
             }
-            let round = GoalRound {
-                kind: GoalRoundKind::Continue(state.iteration + 1),
-                reason,
-            };
-            if enqueue_continuation(service, chat, continuation_prompt(&goal.text, &round)).is_ok()
-            {
+            let round = GoalRoundKind::Continue(state.iteration + 1);
+            if enqueue_continuation(service, chat, round, reason).is_ok() {
                 mutate_goal_row(service, &chat.chat_id, |goal| {
                     goal.iteration += 1;
                 });
@@ -995,6 +1051,7 @@ pub(crate) async fn after_admission_failure(
     notice(
         service,
         chat,
+        GoalEvent::Cleared,
         format!("Goal cleared — the turn could not start: {error}"),
     );
 }
@@ -1023,6 +1080,7 @@ pub(crate) fn pause_for_deleted_continuation(service: &EngineService, chat: &Arc
     notice(
         service,
         chat,
+        GoalEvent::Paused,
         "Goal paused — its queued continuation was deleted. Resume with /goal resume.".into(),
     );
 }
@@ -1177,6 +1235,7 @@ mod tests {
             eval_failures: 0,
             started_at: Utc::now(),
             last_reason: None,
+            objective_stated_at: None,
         };
         apply_card_state(
             &mut goal,
@@ -1206,6 +1265,7 @@ mod tests {
             eval_failures: 0,
             started_at: Utc::now(),
             last_reason: None,
+            objective_stated_at: None,
         };
         assert!(card_state_prompt(&goal).is_empty());
         goal.name = Some("Ship it".into());

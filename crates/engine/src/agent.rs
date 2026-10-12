@@ -305,6 +305,7 @@ impl ChatRuntime {
                 parts: vec![MessagePart::Notice {
                     id: "n0".into(),
                     message,
+                    goal: None,
                 }],
                 created_at: Utc::now().timestamp_millis(),
                 device_id: device_id.to_string(),
@@ -418,6 +419,7 @@ impl ChatRuntime {
                             parts: vec![MessagePart::Notice {
                                 id: "n0".into(),
                                 message: "Turn interrupted by restart".into(),
+                                goal: None,
                             }],
                             created_at: started.timestamp,
                             device_id: device_id.into(),
@@ -1651,6 +1653,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                         "Automatic compaction failed ({reason}); the Turn continues \
                          with the full conversation."
                     ),
+                    goal: None,
                 },
             );
         }
@@ -1751,6 +1754,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                                     "Automatic compaction failed ({reason}); the Turn \
                                      continues with the full conversation."
                                 ),
+                                goal: None,
                             },
                         );
                         return None;
@@ -2107,6 +2111,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                                   The next message will first compact the conversation \
                                   into a summary, then continue."
                             .into(),
+                        goal: None,
                     },
                 );
             }
@@ -2139,6 +2144,7 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
                                   Try sending the message again, or compact the \
                                   conversation if it keeps happening."
                             .into(),
+                        goal: None,
                     },
                 );
             }

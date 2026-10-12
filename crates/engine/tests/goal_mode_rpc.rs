@@ -126,12 +126,30 @@ async fn the_loop_runs_until_the_verifier_is_satisfied() {
             .any(|line| line.contains("the tests are still missing")),
         "continuation prompt lacks the reason: {continuation_prompt:?}"
     );
-    // ...and closes on the round marker the UI draws the loop row from.
+    // The first continuation spells the objective out (nothing earlier in
+    // the History is known to carry it verbatim), and the prompt carries no
+    // UI marker — the round rides the transcript entry as data instead.
+    let last_user = continuation_prompt
+        .iter()
+        .rev()
+        .find(|line| line.starts_with("user:"))
+        .expect("the continuation is a user message");
     assert!(
-        continuation_prompt
-            .iter()
-            .any(|line| line.contains("Goal loop · round 1 · the tests are still missing")),
-        "continuation prompt lacks the round marker: {continuation_prompt:?}"
+        last_user.contains("Work toward this goal:\n\nship the login page"),
+        "{last_user}"
+    );
+    assert!(!last_user.contains("Goal loop"), "{last_user}");
+    let doc = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(
+        doc.contains(r#""kind":"goalRound""#)
+            && doc.contains(r#""round":{"kind":"continue","n":1}"#),
+        "the continuation entry carries its round as data: {doc}"
+    );
+    assert!(
+        doc.contains(r#""goal":"achieved""#),
+        "the end notice carries its transition as data: {doc}"
     );
 
     assert_eq!(
@@ -490,4 +508,45 @@ async fn set_goal_rejects_the_wrong_chat_and_empty_text() {
         )
         .await;
     assert!(no_goal.is_err());
+}
+
+/// After the first continuation spelled the objective out, later ones
+/// point back at it instead of repeating it — until a compaction may have
+/// folded it away.
+#[tokio::test]
+async fn later_continuations_point_back_at_the_stated_objective() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("wrote the feature"),
+        ScriptedReply::text("CONTINUE: the tests are still missing"),
+        ScriptedReply::text("added the tests"),
+        ScriptedReply::text("CONTINUE: the docs are still missing"),
+        ScriptedReply::text("wrote the docs"),
+        ScriptedReply::text("COMPLETE: docs and tests landed"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    set_goal(&engine, "chat-1", "ship the login page").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start working").await;
+    common::wait_for_requests(&provider, 6).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    let requests = provider.requests();
+    let last_user = |ix: usize| {
+        common::summarize(&requests[ix].messages)
+            .into_iter()
+            .rev()
+            .find(|line| line.starts_with("user:"))
+            .unwrap()
+    };
+    let first = last_user(2);
+    let second = last_user(4);
+    assert!(first.contains("ship the login page"), "{first}");
+    assert!(
+        !second.contains("ship the login page"),
+        "the second continuation repeats the objective: {second}"
+    );
+    assert!(second.contains("the docs are still missing"), "{second}");
 }

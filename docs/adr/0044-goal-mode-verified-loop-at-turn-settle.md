@@ -15,11 +15,26 @@ never the raw objective — and lists the plan with each step's done state;
 and the composer projects an accepted `/goal` / `/plan` / `/provider`
 directive to a chip (the mode's icon + command name,
 `TextProjection::composer`). A continuation no longer draws as a user
-bubble: the prompt closes on a `Goal loop · round n · <reason>` marker line
-(`holt_proto::GoalRound`, also `resumed` / `retry`), and the transcript
-renders that Turn as a foldable loop row (round + the verifier's missing
-piece, the full prompt in the fold); the queue's pending row shows the same
-projection, and its delete tooltip says deleting pauses the goal. The loop
+bubble: its queue row carries the round as data (`PendingMessage::goal_round`
++ `goal_reason`, `holt_proto::GoalRoundKind` — continue n / resume / retry),
+admission writes it into the user entry as a `MessagePart::GoalRound`, and
+the transcript renders that Turn as a foldable loop row (round + the
+verifier's missing piece, the full prompt in the fold); the queue's pending
+row shows the same projection, and its delete tooltip says deleting pauses
+the goal. Lifecycle notices carry `Notice::goal` (`GoalEvent`: achieved /
+blocked / paused / cleared); readers style the band from that tag — never
+from the entry id or the message text. The prompt carries no UI marker.
+
+The objective is spelled out in the History once, not per round: the first
+continuation states it verbatim (SetGoal can ride any send, so the arming
+message is not assumed to carry it), later ones point back at "the goal
+stated earlier", and after a compaction summary newer than
+`ChatGoalState::objective_stated_at` the next one restates it in full —
+compactions are read off the History's own `compactionSummary` messages, so
+no compaction path has to remember to flag it. A resume never replays the
+pre-pause verdict: its prompt says the user paused and resumed, to follow
+any new direction they gave, and to re-check the current state before
+acting. The loop
 row takes over the previous reply's footer strip (its copy action, drawn
 inline at its right edge) so the reply's reserved lane leaves no hole above
 the light row (`hand_footers_to_goal_rounds`). The UI also reads a live

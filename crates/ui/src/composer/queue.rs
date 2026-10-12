@@ -595,10 +595,8 @@ impl Composer {
                                 // A goal continuation (ADR-0044) reads as the
                                 // loop's round, never its machine prompt — the
                                 // transcript's loop-row projection.
-                                let goal_round = item
-                                    .goal_continuation
-                                    .then(|| holt_proto::GoalRound::parse(&item.request.prompt))
-                                    .flatten();
+                                let goal_round = item.goal_round;
+                                let goal_reason = item.goal_reason.clone();
                                 let editing =
                                     editing_id.as_deref() == Some(item.message_id.as_str());
                                 let row = div()
@@ -670,17 +668,17 @@ impl Composer {
                                                                 .flex_none()
                                                                 .text_color(theme.text)
                                                                 .child(crate::goal::round_label(
-                                                                    &round.kind,
+                                                                    round,
                                                                 )),
                                                         )
-                                                        .when(!round.reason.is_empty(), |cell| {
+                                                        .when(!goal_reason.is_empty(), |cell| {
                                                             cell.child(
                                                                 div()
                                                                     .min_w_0()
                                                                     .flex_shrink(1.0)
                                                                     .truncate()
                                                                     .text_color(theme.text_muted)
-                                                                    .child(round.reason.clone()),
+                                                                    .child(goal_reason.clone()),
                                                             )
                                                         }),
                                                     );

@@ -466,6 +466,10 @@ impl EngineService {
                 eval_failures: 0,
                 started_at: chrono::Utc::now(),
                 last_reason: None,
+                // Unknown until a continuation spells it out: SetGoal can
+                // ride any send, so the arming message is not assumed to
+                // carry the objective verbatim.
+                objective_stated_at: None,
             });
             persist_chats(&self.data_dir, &chats)
                 .map_err(|error| RpcError::Failed(error.to_string()))?;
@@ -502,7 +506,7 @@ impl EngineService {
             .get("paused")
             .and_then(|value| value.as_bool())
             .ok_or_else(|| RpcError::BadParams("paused must be a bool".into()))?;
-        let (goal_text, goal_reason) = {
+        {
             let mut chats = self
                 .runtime
                 .chats
@@ -523,11 +527,9 @@ impl EngineService {
                 goal.eval_failures = 0;
                 goal.status = holt_proto::GoalStatus::Active;
             }
-            let result = (goal.text.clone(), goal.last_reason.clone());
             persist_chats(&self.data_dir, &chats)
                 .map_err(|error| RpcError::Failed(error.to_string()))?;
-            result
-        };
+        }
         self.runtime.publish_chats();
         let chat = self.runtime.chat(chat_id);
         crate::goal::cancel_check(&chat);
@@ -543,14 +545,13 @@ impl EngineService {
                 snapshot.pending.is_empty() && snapshot.active_message_id.is_none()
             };
             if no_work_queued {
-                let round = holt_proto::GoalRound {
-                    kind: holt_proto::GoalRoundKind::Resume,
-                    reason: goal_reason.unwrap_or_default(),
-                };
+                // The pre-pause verdict stays out of the prompt: the user
+                // may have changed the workspace or the direction since.
                 if let Err(error) = crate::goal::enqueue_continuation(
                     self,
                     &chat,
-                    crate::goal::continuation_prompt(&goal_text, &round),
+                    holt_proto::GoalRoundKind::Resume,
+                    String::new(),
                 ) {
                     tracing::warn!(target: "holt::goal", %error, "goal resume could not be queued");
                 }

@@ -619,7 +619,7 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
-            RowKind::GoalEnd { message } => goal_end_row(message.clone(), &theme),
+            RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
             RowKind::GoalRound {
                 label,
                 reason,
@@ -1639,8 +1639,8 @@ impl Transcript {
 /// says which transition it was (achieved, blocked, paused, cleared), so a
 /// pause never reads as the arc's end; a blocked row tints the warning.
 /// Wraps rather than truncates — the reason after the dash is the point.
-fn goal_end_row(message: SharedString, theme: &Theme) -> AnyElement {
-    let (icon, tint) = goal_band_glyph(&message, theme);
+fn goal_end_row(message: SharedString, event: holt_proto::GoalEvent, theme: &Theme) -> AnyElement {
+    let (icon, tint) = goal_band_glyph(event, theme);
     div()
         .py(px(4.0))
         .w_full()
@@ -1681,26 +1681,19 @@ fn goal_end_row(message: SharedString, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// The band's glyph and tint, read off the engine's message head (the
-/// engine owns the wording; `goal.rs` composes every one as
-/// `Goal <verb> …`).
-fn goal_band_glyph(message: &str, theme: &Theme) -> (&'static str, gpui::Hsla) {
-    if message.starts_with("Goal achieved") {
-        (
+/// The band's glyph and tint, from the notice's transition tag.
+fn goal_band_glyph(event: holt_proto::GoalEvent, theme: &Theme) -> (&'static str, gpui::Hsla) {
+    match event {
+        holt_proto::GoalEvent::Achieved => (
             crate::icons::CHECK,
             crate::theme::AccentColor::Green.primary(theme.appearance),
-        )
-    } else if message.starts_with("Goal blocked") {
-        (
+        ),
+        holt_proto::GoalEvent::Blocked => (
             crate::icons::DANGER_TRIANGLE,
             crate::theme::AccentColor::Orange.primary(theme.appearance),
-        )
-    } else if message.starts_with("Goal paused") {
-        (crate::icons::PAUSE, theme.text_muted)
-    } else if message.starts_with("Goal cleared") {
-        (crate::icons::CLOSE_CIRCLE, theme.text_muted)
-    } else {
-        (crate::icons::TARGET, theme.text_muted)
+        ),
+        holt_proto::GoalEvent::Paused => (crate::icons::PAUSE, theme.text_muted),
+        holt_proto::GoalEvent::Cleared => (crate::icons::CLOSE_CIRCLE, theme.text_muted),
     }
 }
 

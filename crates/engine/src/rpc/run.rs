@@ -491,11 +491,16 @@ impl EngineService {
                     if current != prompt {
                         prompt = current.clone();
                         preview = current.clone();
-                        // The queued entry's transcript shape is exactly one text part.
-                        parts = vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: current.clone(),
-                        }];
+                        // The queued entry's transcript shape is one text
+                        // part, plus a goal continuation's round tag.
+                        parts.retain(|part| !matches!(part, MessagePart::Text { .. }));
+                        parts.insert(
+                            0,
+                            MessagePart::Text {
+                                id: "t0".into(),
+                                text: current.clone(),
+                            },
+                        );
                         title_prompt = Some(current);
                     }
                     mentions = true;
@@ -898,6 +903,11 @@ impl EngineService {
                 ));
             }
             let mut replacement = latest.clone();
+            // An edited continuation is the user's own words now: it loses
+            // the loop's round tag and draws as an ordinary bubble.
+            replacement
+                .parts
+                .retain(|part| !matches!(part, MessagePart::GoalRound { .. }));
             let mut replaced = false;
             for part in &mut replacement.parts {
                 if let MessagePart::Text { text, .. } = part {

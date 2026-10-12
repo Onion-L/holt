@@ -399,6 +399,7 @@ mod tests {
                 vec![MessagePart::Notice {
                     id: "n1".into(),
                     message: "internal notice".into(),
+                    goal: None,
                 }],
             ),
         ];
