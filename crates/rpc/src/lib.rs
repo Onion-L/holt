@@ -504,10 +504,7 @@ pub enum RpcError {
     /// [`RpcErrorCode`] rides the wire beside the human-readable message, so
     /// classification never parses the Display text.
     #[error("{message}")]
-    Coded {
-        code: RpcErrorCode,
-        message: String,
-    },
+    Coded { code: RpcErrorCode, message: String },
     #[error("transport: {0}")]
     Transport(String),
     #[error("connection closed")]
@@ -761,7 +758,10 @@ mod tests {
                 "no turn recorded for this chat yet".into(),
                 Some("noTurnRecorded".into())
             ),
-            RpcError::Coded { code: RpcErrorCode::NoTurnRecorded, .. }
+            RpcError::Coded {
+                code: RpcErrorCode::NoTurnRecorded,
+                ..
+            }
         ));
         // An unknown code from a newer server degrades to the plain error.
         assert!(matches!(

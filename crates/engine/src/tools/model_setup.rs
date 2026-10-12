@@ -34,9 +34,29 @@ use crate::{
 
 /// Proposals kept per chat, newest last; older ones fall off.
 const PROPOSAL_CAP: usize = 5;
-/// A Write whose touched providers moved since the proposal was built.
+/// A Write's touched providers moved since the proposal was built.
 const STALE_PROPOSAL: &str = "provider settings changed since this proposal was created; \
 ask the assistant to propose again";
+
+/// Why executing catalog changes refused, typed at the source so the RPC
+/// boundary codes staleness (ADR-0029's gate) instead of matching message
+/// text.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ApplyError {
+    /// The touched providers moved between proposal and Write: the model
+    /// must propose again.
+    Stale(String),
+    /// Any other refusal, shown verbatim.
+    Other(String),
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ApplyError::Stale(message) | ApplyError::Other(message) => message,
+        })
+    }
+}
 /// The `/models` probe's whole-request budget.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Probe listings are research aids, not catalogs: cap what rides back.
@@ -706,18 +726,18 @@ pub(crate) fn apply_changes(
     providers: &ProviderAdapter,
     baseline: &ProviderSettingsSnapshot,
     changes: &[CatalogChange],
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ApplyError> {
     // The staleness gate (ADR-0029): the catalog must still accept the
     // batch as a real change — anything else means state moved between the
     // proposal and the approval, and the model must propose again.
-    match build_proposal(providers, changes)? {
+    match build_proposal(providers, changes).map_err(ApplyError::Other)? {
         ProposalOutcome::Changes { .. } => {}
         ProposalOutcome::NoChanges { .. } => {
-            return Err(
+            return Err(ApplyError::Stale(
                 "the catalog changed since this proposal (it is now a no-op); \
                  run model_proposal again"
                     .into(),
-            );
+            ));
         }
     }
     let mut next = baseline.clone();
@@ -752,10 +772,13 @@ pub(crate) fn apply_changes(
                 if !providers.catalog_has_provider(provider_id)
                     && !next.custom_providers.contains_key(provider_id)
                 {
-                    return Err(format!("unknown provider {provider_id}"));
+                    return Err(ApplyError::Other(format!("unknown provider {provider_id}")));
                 }
                 if let Some(problem) = provider_store::model_record_problem(provider_id, record) {
-                    return Err(format!("record {}/{}: {problem}", provider_id, record.id));
+                    return Err(ApplyError::Other(format!(
+                        "record {}/{}: {problem}",
+                        provider_id, record.id
+                    )));
                 }
                 let existing = next
                     .model_records
@@ -770,7 +793,9 @@ pub(crate) fn apply_changes(
             CatalogChange::UpsertCustomProvider { provider } => {
                 providers
                     .validate_custom_provider(provider)
-                    .map_err(|problem| format!("provider {}: {problem}", provider.id))?;
+                    .map_err(|problem| {
+                        ApplyError::Other(format!("provider {}: {problem}", provider.id))
+                    })?;
                 next.custom_providers
                     .insert(provider.id.clone(), provider.clone());
             }
@@ -801,7 +826,7 @@ pub(crate) fn apply_changes(
                 if !providers.catalog_has_provider(provider_id)
                     && !next.custom_providers.contains_key(provider_id)
                 {
-                    return Err(format!("unknown provider {provider_id}"));
+                    return Err(ApplyError::Other(format!("unknown provider {provider_id}")));
                 }
                 for model_id in model_ids {
                     let exists = providers.catalog_has_model(provider_id, model_id)
@@ -814,7 +839,9 @@ pub(crate) fn apply_changes(
                             .get(provider_id)
                             .is_some_and(|models| models.contains(model_id));
                     if !exists {
-                        return Err(format!("unknown model for {provider_id}: {model_id}"));
+                        return Err(ApplyError::Other(format!(
+                            "unknown model for {provider_id}: {model_id}"
+                        )));
                     }
                 }
                 if model_ids.is_empty() {
@@ -853,7 +880,10 @@ pub(crate) fn apply_changes(
     providers
         .settings
         .replace_if_unchanged(baseline, next)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error {
+            crate::EngineError::SettingsChanged => ApplyError::Stale(error.to_string()),
+            other => ApplyError::Other(other.to_string()),
+        })?;
     Ok(applied)
 }
 
@@ -1177,18 +1207,18 @@ pub(crate) fn apply_stored(
     providers: &ProviderAdapter,
     chat: &ChatRuntime,
     proposal_id: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ApplyError> {
     let proposal = stored_proposal(chat, proposal_id).ok_or_else(|| {
-        format!(
+        ApplyError::Other(format!(
             "no stored proposal {proposal_id:?} on this chat — proposals do not survive \
              a restart; ask the assistant to propose again"
-        )
+        ))
     })?;
     // Only the touched providers must be as proposed; the whole-snapshot
     // CAS inside `apply_changes` then guards just this read→write window.
     let live = providers.settings.snapshot();
     if baseline_fingerprint(&live, &touched_providers(&proposal.changes)) != proposal.baseline {
-        return Err(STALE_PROPOSAL.into());
+        return Err(ApplyError::Stale(STALE_PROPOSAL.into()));
     }
     let applied = apply_changes(providers, &live, &proposal.changes)?;
     discard_stored(chat, proposal_id);
@@ -2274,7 +2304,8 @@ mod tests {
             .unwrap();
 
         let error = apply_changes(&providers, &baseline, &[proposed]).unwrap_err();
-        assert!(error.contains("changed since this proposal"));
+        assert!(matches!(error, ApplyError::Stale(_)));
+        assert!(error.to_string().contains("changed since this proposal"));
         assert_eq!(
             providers
                 .resolve_model("openai", "openai/gpt-cas")
@@ -2318,7 +2349,11 @@ mod tests {
 
         apply_stored(&providers, &chat, &openai).unwrap();
         let error = apply_stored(&providers, &other_chat, &openai_again).unwrap_err();
-        assert!(error.contains("changed since this proposal"), "{error}");
+        assert!(matches!(error, ApplyError::Stale(_)));
+        assert!(
+            error.to_string().contains("changed since this proposal"),
+            "{error}"
+        );
         apply_stored(&providers, &chat, &anthropic).unwrap();
     }
 

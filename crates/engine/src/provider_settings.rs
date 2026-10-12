@@ -214,9 +214,7 @@ impl ProviderSettingsStore {
             .write()
             .unwrap_or_else(|error| error.into_inner());
         if &*settings != expected {
-            return Err(EngineError::Other(
-                "provider settings changed since this proposal was created".into(),
-            ));
+            return Err(EngineError::SettingsChanged);
         }
         let removed_providers: Vec<String> = settings
             .custom_providers

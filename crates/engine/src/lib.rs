@@ -96,6 +96,10 @@ pub type SearchBackendResolver = Arc<dyn Fn(&str) -> Option<Arc<dyn SearchBacken
 pub enum EngineError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A compare-and-swap on the live provider settings lost the race: the
+    /// snapshot the caller planned its write against is no longer current.
+    #[error("provider settings changed since this proposal was created")]
+    SettingsChanged,
     #[error("{0}")]
     Other(String),
 }

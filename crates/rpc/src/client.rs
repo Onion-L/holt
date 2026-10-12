@@ -329,7 +329,10 @@ pub(crate) fn wire_error(error: String, code: Option<String>) -> RpcError {
                 .unwrap_or(&error)
                 .to_owned(),
         ),
-        Some(code) => RpcError::Coded { code, message: error },
+        Some(code) => RpcError::Coded {
+            code,
+            message: error,
+        },
         None => error
             .strip_prefix("unknown method: ")
             .map(|method| RpcError::UnknownMethod(method.to_owned()))

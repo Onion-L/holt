@@ -99,7 +99,7 @@ impl EngineService {
                 // No snapshot (never ran, engine restarted) is an
                 // explicit error — never a silent empty diff.
                 let Some(record) = self.turn_changes.snapshot(chat_id) else {
-                    return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+                    return Err(no_turn_recorded());
                 };
                 let diff = self
                     .git
@@ -178,11 +178,11 @@ impl EngineService {
                         .snapshot(chat_id)
                         .is_some_and(|record| record.message_id == message_id);
                     if !is_current {
-                        return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+                        return Err(no_turn_recorded());
                     }
                 }
                 let Some(record) = self.turn_changes.snapshot(chat_id) else {
-                    return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+                    return Err(no_turn_recorded());
                 };
                 let text = self
                     .git
@@ -241,7 +241,7 @@ impl EngineService {
                 .map_err(git_fault)?
             {
                 Some(change_set) => RpcReply::value(&TurnChangeSetReply::Captured(change_set)),
-                None => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
+                None => Err(no_turn_recorded()),
             };
         };
         // Memory first (a live Turn, or the frozen current/last
@@ -266,7 +266,7 @@ impl EngineService {
         }
         match memory {
             Err(fault) => Err(git_fault(fault)),
-            Ok(_) => Err(RpcError::Failed(NO_TURN_RECORDED.into())),
+            Ok(_) => Err(no_turn_recorded()),
         }
     }
 
@@ -297,7 +297,7 @@ impl EngineService {
         let Some(record) =
             crate::turn_change_store::load(&self.data_dir, &request.chat_id, &request.message_id)
         else {
-            return Err(RpcError::Failed(NO_TURN_RECORDED.into()));
+            return Err(no_turn_recorded());
         };
         let root = self.turn_change_root(&request.chat_id)?;
         let workdir = self.git.workdir(&root).await.map_err(RpcError::Failed)?;
@@ -391,9 +391,18 @@ struct RestoreTurnChangesRequest {
 /// share (ADR-0024): an empty change set must never stand in for it.
 const NON_GIT_CHANGE_SET_REASON: &str = "the chat's working directory is not a Git work tree";
 
-/// The turn-diff scopes' soft-matchable phrase for a chat whose current Turn
-/// has no recorded baseline (never ran, engine restarted).
+/// The turn-diff scopes' failure for a chat whose current Turn has no
+/// recorded baseline (never ran, engine restarted): a coded error, so the
+/// UI classifies by [`holt_rpc::RpcErrorCode::NoTurnRecorded`] instead of
+/// matching this text.
 const NO_TURN_RECORDED: &str = "no turn recorded for this chat yet";
+
+fn no_turn_recorded() -> RpcError {
+    RpcError::Coded {
+        code: holt_rpc::RpcErrorCode::NoTurnRecorded,
+        message: NO_TURN_RECORDED.into(),
+    }
+}
 
 /// Report git capture faults at the right RPC severity: caller-input
 /// problems are bad params, repository failures are opaque errors.

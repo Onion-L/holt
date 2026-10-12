@@ -216,7 +216,13 @@ impl EngineService {
             return Err(RpcError::Failed(GONE_PROPOSAL.into()));
         }
         let applied = crate::tools::model_setup::apply_stored(&self.providers, &chat, proposal_id)
-            .map_err(RpcError::Failed)?;
+            .map_err(|error| match error {
+                crate::tools::model_setup::ApplyError::Stale(message) => RpcError::Coded {
+                    code: holt_rpc::RpcErrorCode::ProposalStale,
+                    message,
+                },
+                crate::tools::model_setup::ApplyError::Other(message) => RpcError::Failed(message),
+            })?;
         crate::provider_mode::stamp_proposal_card(
             &chat,
             proposal_id,
