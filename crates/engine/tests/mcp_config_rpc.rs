@@ -5,6 +5,7 @@
 //! kept literal, and the child's inherited environment carries no
 //! credential-shaped variables unless the server's own `env` grants them.
 
+#[path = "all/common/mod.rs"]
 mod common;
 
 use common::{ScriptedProvider, ScriptedReply};

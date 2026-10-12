@@ -7,6 +7,7 @@
 //! `initialized` notification with 202, and an open-but-silent SSE stream
 //! for the client's GET.
 
+#[path = "all/common/mod.rs"]
 mod common;
 
 use common::{ScriptedProvider, ScriptedReply};

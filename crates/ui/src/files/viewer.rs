@@ -1961,7 +1961,7 @@ mod image_tab_tests {
     /// Image files route to the read-only pixel surface on EVERY load path —
     /// never to a text editor, never to the binary unsupported state — and
     /// the tab is never a draft. (The fence itself is the engine's contract,
-    /// covered in crates/engine/tests/workspace_files_rpc.rs.)
+    /// covered in crates/engine/tests/all/workspace_files_rpc.rs.)
     #[gpui::test]
     fn image_files_route_to_the_pixel_surface(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(crate::theme::Theme::default()));

@@ -29,7 +29,7 @@ use holt_proto::ChatUsage;
 use holt_rpc::{RpcError, methods};
 
 #[cfg(test)]
-#[path = "../../engine/tests/common/mod.rs"]
+#[path = "../../engine/tests/all/common/mod.rs"]
 mod engine_fixture;
 
 /// Diameter of the ring, and of the square button that carries it — the
