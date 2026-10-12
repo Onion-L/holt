@@ -36,8 +36,9 @@ Repeated verifier failures show as a retry count, not the raw provider
 error. A blocked goal's card offers resume (play), not pause. The card starts
 folded to its capsule (`goal_card_expanded`, default false — the retired
 `goal_card_collapsed` key is ignored), so the loop's state never takes the
-user's view until asked; the capsule carries the name and the live phase
-(the word breathes while the loop moves; no dot). Unnamed, the objective's first line heads the card
+user's view until asked; the capsule carries only the glyph and the live
+phase (the word breathes while the loop moves; the name rides the tooltip),
+so it stays small enough not to cover the transcript. Unnamed, the objective's first line heads the card
 instead of a bare "Goal".
 
 ## Context

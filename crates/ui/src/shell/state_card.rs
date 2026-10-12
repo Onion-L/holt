@@ -204,9 +204,12 @@ impl Shell {
             card = card
                 .debug_selector(|| "goal-card-pill".to_string())
                 .cursor_pointer()
-                .tooltip(move |_, cx| {
-                    cx.new(|_| crate::popover::TextTooltip("Expand the card".into()))
-                        .into()
+                .tooltip({
+                    let title = goal_title(&goal);
+                    move |_, cx| {
+                        let title = title.clone();
+                        cx.new(|_| crate::popover::TextTooltip(title)).into()
+                    }
                 })
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.set_state_card_collapsed(false, cx);
@@ -336,8 +339,8 @@ impl Shell {
         .detach();
     }
 
-    /// The capsule's content row: identity glyph, the goal's name, the
-    /// loop's status word, and the expand affordance. Handlers live on the
+    /// The capsule's content row: identity glyph, the loop's status word,
+    /// and the expand affordance (the name rides the tooltip). Handlers live on the
     /// box (render_state_card adds them in collapsed mode).
     fn goal_pill(
         &mut self,
@@ -352,26 +355,18 @@ impl Shell {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(7.0))
-            .pl(px(10.0))
-            .pr(px(8.0))
+            .gap(px(6.0))
+            .pl(px(9.0))
+            .pr(px(7.0))
             .child(
                 crate::icons::icon(crate::icons::TARGET)
                     .size(px(12.0))
                     .flex_none()
                     .text_color(status_tint),
             )
-            .child(
-                div()
-                    .max_w(px(160.0))
-                    .truncate()
-                    .debug_selector(|| "goal-card-name".to_string())
-                    .text_size(px(12.0))
-                    .line_height(px(16.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(goal_title(goal)),
-            )
+            // Glyph + phase only: the name lives in the tooltip and the open
+            // card, so the folded capsule stays small enough to sit in the
+            // corner without covering the transcript.
             .child(goal_status(goal, phase, theme, cx))
             .child(
                 crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
