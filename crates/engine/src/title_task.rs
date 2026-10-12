@@ -43,10 +43,10 @@ const TITLE_MAX_TOKENS: u64 = 128;
 /// naming payload.
 const TITLE_INPUT_CHAR_LIMIT: usize = 2000;
 
-/// The composer's path-list trailer header. The UI owns the format
-/// (`append_references` in `crates/ui`); the engine only strips it from
-/// naming material.
-const REFS_HEADER: &str = "Referenced paths:";
+/// The composer's path-list trailer header, shared through `holt_doc`
+/// with the UI that appends the trailer (`append_references` in
+/// `crates/ui`); the engine only strips it from naming material.
+use holt_doc::references::REFS_HEADER;
 
 /// Everything the task needs, resolved at first-prompt acceptance so a
 /// misconfigured title model can never fail the Turn that triggered it.
