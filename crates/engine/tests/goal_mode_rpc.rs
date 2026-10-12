@@ -510,6 +510,98 @@ async fn set_goal_rejects_the_wrong_chat_and_empty_text() {
     assert!(no_goal.is_err());
 }
 
+/// A verifier pass that never answers is bounded by the wall-clock cap:
+/// the timeout counts as one evaluation failure (the reason lands on the
+/// row), the loop keeps moving with a Retry round, and the following pass
+/// can still finish the goal. Paused time makes the 120s cap fire at once.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_verifier_times_out_and_keeps_the_loop_moving() {
+    let fixture = common::Fixture::new();
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::text("did the work"),
+        ScriptedReply::Silent, // the verifier never answers
+        // The retry round's Turn is held on the gate so the row's mid-loop
+        // state is stable to read.
+        ScriptedReply::gated(gate.clone(), "tried again"),
+        ScriptedReply::text("COMPLETE: the tests pass"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+
+    set_goal(&engine, "chat-1", "ship it").await;
+    common::run_prompt(&engine, "chat-1", &fixture.cwd(), "start").await;
+
+    // The pass times out, the failure lands on the row, and the Retry
+    // round starts (request 3 is its Turn, held on the gate).
+    common::wait_for_requests(&provider, 3).await;
+    let goal = watched_goal(&engine, "chat-1").await;
+    assert_eq!(goal["status"], "active", "{goal}");
+    assert_eq!(goal["evalFailures"], 1, "{goal}");
+    assert!(
+        goal["lastReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("did not answer")),
+        "{goal}"
+    );
+
+    // The retry round settles, the next pass completes, the loop ends.
+    gate.notify_one();
+    common::wait_for_transcript_text(&mut transcript, "Goal achieved").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    common::wait_for_requests(&provider, 4).await;
+    assert_eq!(
+        watched_goal(&engine, "chat-1").await,
+        serde_json::Value::Null
+    );
+}
+
+/// A resume whose restart cannot be queued (the chat never captured model
+/// settings) must not leave the goal `active` with nothing to run — the
+/// loop can never restart itself, so it pauses with a Notice instead.
+#[tokio::test]
+async fn a_resume_that_cannot_queue_pauses_the_goal() {
+    let fixture = common::Fixture::new();
+    let provider = ScriptedProvider::new(vec![]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (mut transcript, _sessions) = common::subscribe(&engine, "chat-1").await;
+
+    // No Turn ever ran, so the chat carries no captured model settings —
+    // arming works, the resume's enqueue cannot.
+    set_goal(&engine, "chat-1", "ship it").await;
+    let RpcReply::Value(paused) = engine
+        .handle(
+            methods::SET_GOAL_PAUSED,
+            serde_json::json!({ "chatId": "chat-1", "paused": true }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SetGoalPaused did not return a value");
+    };
+    assert_eq!(paused["status"], "paused");
+
+    let RpcReply::Value(goal) = engine
+        .handle(
+            methods::SET_GOAL_PAUSED,
+            serde_json::json!({ "chatId": "chat-1", "paused": false }),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("SetGoalPaused did not return a value");
+    };
+    assert_eq!(goal["status"], "paused", "{goal}");
+    common::wait_for_transcript_text(&mut transcript, "could not be queued").await;
+    assert_eq!(watched_goal(&engine, "chat-1").await["status"], "paused");
+    let snapshot = queue_snapshot(&engine, "chat-1").await;
+    assert!(snapshot["pending"].as_array().unwrap().is_empty());
+    // Nothing ever reached the model.
+    assert_eq!(provider.requests().len(), 0);
+}
+
 /// After the first continuation spelled the objective out, later ones
 /// point back at it instead of repeating it — until a compaction may have
 /// folded it away.

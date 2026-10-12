@@ -36,6 +36,13 @@ pub(crate) const MAX_NO_PROGRESS: u32 = 3;
 /// Consecutive verifier failures (provider error or garbled verdict) before
 /// the loop pauses itself.
 pub(crate) const MAX_EVAL_FAILURES: u32 = 3;
+/// Wall-clock cap on one verification pass, start to verdict. Transport
+/// retries ride inside it, and exceeding it counts as one evaluation
+/// failure: the HTTP layer has no total timeout, the pass runs inline in
+/// the queue driver's iteration, and Stop cannot reach its token — without
+/// this a hung stream would stall the chat's queue until the user paused
+/// the goal by hand.
+const GOAL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Byte cap on the History tail the verifier reads.
 const EVIDENCE_TAIL_BYTES: usize = 6000;
 /// Byte cap on one tool result's excerpt inside the evidence tail.
@@ -619,10 +626,49 @@ async fn check_transport(
     Ok((model, api_key, cwd))
 }
 
+/// The partial message the newest non-terminal event carries — the best
+/// usage snapshot a cut-short pass has (terminal events carry the full
+/// message; `run_check` books those on the completed path instead).
+fn partial_message(
+    event: &pi_core::ai::types::AssistantMessageEvent,
+) -> Option<&pi_core::ai::types::AssistantMessage> {
+    use pi_core::ai::types::AssistantMessageEvent as Event;
+    Some(match event {
+        Event::Start { partial }
+        | Event::TextStart { partial, .. }
+        | Event::TextDelta { partial, .. }
+        | Event::TextEnd { partial, .. }
+        | Event::ThinkingStart { partial, .. }
+        | Event::ThinkingDelta { partial, .. }
+        | Event::ThinkingEnd { partial, .. }
+        | Event::ToolcallStart { partial, .. }
+        | Event::ToolcallDelta { partial, .. }
+        | Event::ToolcallEnd { partial, .. } => partial,
+        Event::Done { .. } | Event::Error { .. } => return None,
+    })
+}
+
+/// Book what a cancelled or timed-out pass had already burned, if anything:
+/// a snapshot with no tokens at all would only add noise to the ledger.
+fn book_burned_usage(
+    chat: &Arc<ChatRuntime>,
+    partial: &std::sync::Mutex<Option<pi_core::ai::types::AssistantMessage>>,
+) {
+    let Some(message) = partial.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return;
+    };
+    let usage = &message.usage;
+    if usage.input + usage.output + usage.cache_read + usage.cache_write == 0 {
+        return;
+    }
+    crate::usage::record_goal_check(chat, &message);
+}
+
 /// One verification pass: a single completion, no tools, bounded tokens,
 /// silent provider retries (the auto-review pass's shape). The reply is
 /// booked to the chat's ledger immediately — the Turn's batch settled
-/// before this ran, so the capture buffer would strand the record.
+/// before this ran, so the capture buffer would strand the record — and a
+/// cancelled or timed-out pass books whatever its newest partial burned.
 async fn run_check(
     service: &EngineService,
     chat: &Arc<ChatRuntime>,
@@ -677,18 +723,33 @@ async fn run_check(
         .unwrap_or_else(crate::stream::default_stream_fn);
     let stream = stream_fn(&model, &context, Some(&options))
         .map_err(|error| format!("the verifier could not start: {error}"))?;
+    // The newest partial rides in a shared slot so a cancelled or timed-out
+    // pass can still book the tokens it burned — the full usage only
+    // exists on a completed reply.
+    let partial = std::sync::Mutex::new(None);
     let consume = async {
         while let Some(event) = stream.next().await {
             if event.is_terminal() {
                 break;
             }
+            *partial.lock().unwrap_or_else(|e| e.into_inner()) = partial_message(&event).cloned();
+        }
+        stream.result().await
+    };
+    let response = tokio::select! {
+        response = consume => response,
+        _ = cancel.cancelled() => {
+            book_burned_usage(chat, &partial);
+            return Err("cancelled".into());
+        }
+        _ = tokio::time::sleep(GOAL_CHECK_TIMEOUT) => {
+            book_burned_usage(chat, &partial);
+            return Err(format!(
+                "the verifier did not answer within {} seconds",
+                GOAL_CHECK_TIMEOUT.as_secs()
+            ));
         }
     };
-    tokio::select! {
-        _ = consume => {}
-        _ = cancel.cancelled() => return Err("cancelled".into()),
-    }
-    let response = stream.result().await;
     crate::usage::record_goal_check(chat, &response);
     let text = response
         .content
@@ -916,10 +977,10 @@ pub(crate) async fn after_turn_settled(
             {
                 return;
             }
-            if enqueue_continuation(service, chat, GoalRoundKind::Retry, String::new()).is_err() {
-                mutate_goal_row(service, &chat.chat_id, |goal| {
-                    goal.status = GoalStatus::Paused;
-                });
+            if let Err(error) =
+                enqueue_continuation(service, chat, GoalRoundKind::Retry, String::new())
+            {
+                pause_on_failed_enqueue(service, chat, &error);
             }
             return;
         }
@@ -1015,13 +1076,41 @@ pub(crate) async fn after_turn_settled(
                 return;
             }
             let round = GoalRoundKind::Continue(state.iteration + 1);
-            if enqueue_continuation(service, chat, round, reason).is_ok() {
-                mutate_goal_row(service, &chat.chat_id, |goal| {
-                    goal.iteration += 1;
-                });
+            match enqueue_continuation(service, chat, round, reason) {
+                Ok(()) => {
+                    mutate_goal_row(service, &chat.chat_id, |goal| {
+                        goal.iteration += 1;
+                    });
+                }
+                Err(error) => pause_on_failed_enqueue(service, chat, &error),
             }
         }
     }
+}
+
+/// A continuation that could not be queued leaves an `active` goal with
+/// nothing to run — continuations are born only at a Turn settle, so the
+/// loop can never restart itself (until the boot reconciliation pauses
+/// it). Every enqueue path (a settle's Continue/Retry round, a resume's
+/// restart) lands here: pause, keeping the objective, with a Notice that
+/// says why.
+pub(crate) fn pause_on_failed_enqueue(
+    service: &EngineService,
+    chat: &Arc<ChatRuntime>,
+    error: &RpcError,
+) {
+    tracing::warn!(target: "holt::goal", %error, "goal continuation could not be queued");
+    mutate_goal_row(service, &chat.chat_id, |goal| {
+        goal.status = GoalStatus::Paused;
+    });
+    notice(
+        service,
+        chat,
+        GoalEvent::Paused,
+        format!(
+            "Goal paused — the loop's next step could not be queued ({error}). Resume with /goal resume."
+        ),
+    );
 }
 
 /// The second hook (ADR-0044): a Message item's admission failure — the

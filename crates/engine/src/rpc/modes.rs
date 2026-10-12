@@ -553,7 +553,10 @@ impl EngineService {
                     holt_proto::GoalRoundKind::Resume,
                     String::new(),
                 ) {
-                    tracing::warn!(target: "holt::goal", %error, "goal resume could not be queued");
+                    // An active goal that cannot queue its restart would
+                    // sit stalled — the same pause-with-Notice every other
+                    // enqueue path takes.
+                    crate::goal::pause_on_failed_enqueue(self, &chat, &error);
                 }
             }
         }

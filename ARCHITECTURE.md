@@ -213,9 +213,12 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   pre-pause verdict. All of these fields are additive. Evaluation is skipped while user-queued items pend or a question
   card is unanswered; interrupts and failed Turns pause; admission
   failure (a gone model) clears; the caps (20 iterations, 3 no-progress
-  Turns, 3 consecutive verifier failures) pause with a Transcript notice.
-  Verifier passes book usage as `goal-check` immediately (never the
-  Turn's settled batch). `/goal <objective>` arms the goal and sends the
+  Turns, 3 consecutive verifier failures) pause with a Transcript notice,
+  one pass is wall-clock capped (120s — exceeding it counts as one
+  verifier failure), and a continuation that cannot be enqueued at all
+  pauses the same way. Verifier passes book usage as `goal-check`
+  immediately (never the Turn's settled batch); a cancelled or timed-out
+  pass books what its newest partial carried. `/goal <objective>` arms the goal and sends the
   objective as the first Turn's message — the new-chat canvas included
   (`SetGoal` rides after createChat, before the queue, like the plan
   enter); `/goal off | pause | resume` and the top-right goal card's

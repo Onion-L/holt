@@ -142,7 +142,11 @@ record on the chat's last Turn.
   SAME failure: `evalFailures` increments (a successful verdict resets it)
   and the loop keeps moving — the next step is queued so the following
   settle re-verifies, never leaving an `active` goal with nothing queued;
-  at 3 the goal pauses with a Notice.
+  at 3 the goal pauses with a Notice. A continuation that cannot be
+  ENQUEUED at all (no captured model settings, a queue persist failure)
+  pauses the goal with a Notice on every enqueue path — a settle's
+  Continue or Retry round, and a resume's restart — because an `active`
+  goal with nothing queued can never run again.
 - **The evaluation is bounded and not user-interruptible.** The Turn's
   cancel token is already cleared at settle, and Stop between Turns pauses
   the queue only. The verifier rides its own `CancellationToken` (stored on
@@ -150,7 +154,13 @@ record on the chat's last Turn.
   pausing, `SetGoal` replacing the objective, chat deletion, shutdown, and
   a new Turn's admission superseding an in-flight check. Inline placement
   is chosen for ordering determinism; `catch_unwind` covers a panic; the
-  token-and-retry caps bound the wait.
+  token-and-retry caps bound the wait, and a wall-clock cap
+  (`GOAL_CHECK_TIMEOUT`, 120s) bounds the pass itself — the HTTP layer has
+  no total timeout and Stop cannot reach the verifier's token, so without
+  it a hung stream would stall the queue driver's iteration until the user
+  paused the goal by hand. Exceeding it counts as one evaluation failure
+  (transport retries ride inside it), and a cancelled or timed-out pass
+  books whatever usage its newest partial carried.
 - **Restart reconciliation is lazy, at runtime open** (`AgentRuntime::chat`
   — before then nothing can run the queue anyway): an `active` goal whose
   queue holds no goal-flagged pending or started item flips to `paused`.
