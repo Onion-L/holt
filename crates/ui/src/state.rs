@@ -320,6 +320,11 @@ impl Default for AppState {
     }
 }
 
+/// The one failure text for "no engine handle" — shared by every
+/// `engine()` guard site, and matched by the composer's offline styling
+/// (amber vs red) instead of each site re-spelling the literal.
+pub(crate) const ENGINE_NOT_CONNECTED: &str = "Engine not connected";
+
 impl AppState {
     pub fn new() -> Self {
         Self {

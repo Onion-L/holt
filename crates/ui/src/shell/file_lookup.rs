@@ -148,7 +148,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             lookup.loading = false;
             lookup.results.clear();
-            lookup.error = Some("Engine not connected".into());
+            lookup.error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
             cx.notify();
             return;
         };

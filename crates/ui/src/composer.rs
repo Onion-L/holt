@@ -778,7 +778,7 @@ impl Render for Composer {
                 // DangerTriangle — a subtle tinted wash, not a bare red
                 // stroke. Amber for the offline-ish case (engine not
                 // connected), red for send/run failures. Click dismisses.
-                let offline = message.as_ref() == "Engine not connected";
+                let offline = message.as_ref() == crate::state::ENGINE_NOT_CONNECTED;
                 let (border_c, wash, text_c) = if offline {
                     let amber = theme.warning; // amber-400
                     let amber_200 = theme.warning_muted;

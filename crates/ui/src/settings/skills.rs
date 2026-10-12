@@ -116,7 +116,7 @@ impl SkillsPage {
     /// the picked space's folder).
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.listing = Loadable::Error("Engine not connected".into());
+            self.listing = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
             return;
         };
         let cwd = self.state.read(cx).skills_cwd();
