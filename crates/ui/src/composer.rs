@@ -546,9 +546,30 @@ impl Composer {
                 }
             }
         }
+        // The idle prompt says what typing does while a goal loop runs
+        // (ADR-0044): a message steers it — the loop judges again once the
+        // reply settles — and the stop is one directive away. The wizard and
+        // the approval bar own the input while they are up.
+        if self.wizard.is_none() && self.approval_bar.is_none() {
+            let idle = match crate::goal::loop_phase(self.state.read(cx)) {
+                Some(
+                    crate::goal::LoopPhase::Working
+                    | crate::goal::LoopPhase::Checking
+                    | crate::goal::LoopPhase::Queued,
+                ) => GOAL_PLACEHOLDER,
+                _ => "Do anything…",
+            };
+            if self.input.read(cx).placeholder().as_ref() != idle {
+                self.input
+                    .update(cx, |input, cx| input.set_placeholder(idle, cx));
+            }
+        }
         cx.notify();
     }
 }
+
+/// The idle placeholder while a goal loop is live.
+const GOAL_PLACEHOLDER: &str = "Steer the goal — or /goal pause to stop it";
 
 /// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
 /// the focused terminal panel is hidden — route here).

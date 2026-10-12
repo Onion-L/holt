@@ -171,6 +171,152 @@ impl Transcript {
         column.into_any_element()
     }
 
+    /// A goal-loop continuation (ADR-0044): the loop, not the user, opened
+    /// this Turn, so it reads as a flush-left process row in the
+    /// skill-invocation language — target glyph, the round, the verifier's
+    /// missing piece — never a bubble. Expanding shows the exact prompt the
+    /// model received; collapsing tweens like the other folds. `footer` is
+    /// the previous reply's strip the row took over, drawn at its right edge.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_goal_round(
+        &mut self,
+        row_id: &SharedString,
+        label: &SharedString,
+        reason: &SharedString,
+        prompt: &SharedString,
+        footer: Option<AnyElement>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fold = self.folds.get(row_id).copied().unwrap_or_default();
+        let open = fold.open.unwrap_or(false);
+        let closing = !open
+            && fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
+        let toggle_row_id = row_id.clone();
+        let toggle =
+            div()
+                .id(SharedString::from(format!("{row_id}#goal-round-toggle")))
+                .debug_selector(|| "goal-round-toggle".to_string())
+                .h(px(CHIP_HEIGHT))
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_skill_fold(toggle_row_id.clone(), cx)
+                }))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(px(12.0))
+                        .line_height(px(18.0))
+                        // The tool-group header's geometry (4px pad + an
+                        // 18px glyph slot): the target centers over the
+                        // chevrons above and the label starts on their
+                        // summary's x.
+                        .px(px(4.0))
+                        .child(
+                            div()
+                                .size(px(18.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    crate::icons::icon(crate::icons::TARGET)
+                                        .size(px(13.0))
+                                        .text_color(theme.text_muted.opacity(0.85)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text_muted)
+                                .child(label.clone()),
+                        )
+                        .when(!reason.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .min_w_0()
+                                    .flex_shrink(1.0)
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .text_color(theme.text_muted.opacity(0.65))
+                                    .child(reason.clone()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.0))
+                                .text_color(theme.text_muted.opacity(0.8))
+                                .child(SharedString::from(if open { "▾" } else { "▸" })),
+                        ),
+                );
+        // The taken-over footer sits at the right edge, outside the toggle.
+        let header = div()
+            .h(px(CHIP_HEIGHT))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .child(toggle)
+            .children(footer);
+
+        let mut column = div().w_full().flex().flex_col().child(header);
+        if open || closing {
+            let scroll = self.nested_scroll_handle(row_id);
+            let body = div().flex().flex_col().child(
+                div()
+                    .w_full()
+                    .mb(px(6.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(crate::theme::ink(0.03))
+                    .id(SharedString::from(format!("{row_id}#goal-round-body")))
+                    .max_h(px(320.0))
+                    .overflow_y_scroll()
+                    // Nested reading viewport (ADR-0013): occlude, then chain
+                    // the unabsorbed wheel remainder to the list.
+                    .occlude()
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(cx.listener(move |this, _, _, cx| {
+                        this.chain_nested_scroll(&scroll, cx);
+                    }))
+                    .font_family(theme.font_mono.clone())
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .line_height(crate::typography::ui_rems(16.0))
+                    .text_color(theme.text_muted.opacity(0.9))
+                    .child(prompt.clone()),
+            );
+            if open {
+                column = column.child(body);
+            } else {
+                let from = (fold.from - CHIP_HEIGHT).max(0.0);
+                column = column.child(div().overflow_hidden().child(body).with_animation(
+                    SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
+                    RESIZE.animation(),
+                    move |el, t| el.h(px(motion::lerp(from, 0.0, t))),
+                ));
+            }
+        }
+        column.into_any_element()
+    }
+
     fn compaction_label(
         &self,
         compacting: bool,
@@ -359,7 +505,7 @@ impl Transcript {
             row_id,
             SharedString::from(full),
             Arc::new(mentions),
-            Some(chip),
+            Some(LeadingChip::Skill(chip)),
             theme,
             clicks,
         )
@@ -503,6 +649,37 @@ impl Transcript {
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.retry_send(cx)))
                         .child(SharedString::from("Not delivered — click to retry"))
+                        .into_any_element(),
+                );
+            }
+            // Between goal-loop Turns the verifier judges the settled one
+            // (ADR-0044): say so, or the chat looks idle right before a
+            // Turn starts by itself.
+            if self.state.read(cx).indicator_for(&chat_id, now) != crate::state::Indicator::Working
+                && crate::goal::loop_phase(self.state.read(cx))
+                    == Some(crate::goal::LoopPhase::Checking)
+            {
+                let theme = Theme::of(cx).clone();
+                return Some(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(Theme::SPACE_SM))
+                        .pt(px(Theme::SPACE_LG))
+                        .child(crate::loaders::gradient_spinner(
+                            "goal-check-indicator",
+                            &theme,
+                            2.5,
+                            cx.entity_id(),
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from("Checking the goal…")),
+                        )
                         .into_any_element(),
                 );
             }

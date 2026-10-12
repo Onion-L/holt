@@ -195,6 +195,7 @@ impl Transcript {
                 attachments,
                 badges,
                 skill,
+                goal_chip,
                 pending,
             } => {
                 let attachments = attachments.clone();
@@ -203,6 +204,7 @@ impl Transcript {
                 let raw = raw.clone();
                 let mentions = mentions.clone();
                 let skill = skill.clone();
+                let goal_chip = *goal_chip;
                 let pending = *pending;
                 let mut targets: Vec<crate::image_viewer::ViewerTarget> = attachments
                     .iter()
@@ -394,11 +396,14 @@ impl Transcript {
                             skill_open: Some(skill_open),
                             copy_map,
                         };
-                        match skill {
-                            Some(skill) => self.render_user_skill(
+                        match (skill, goal_chip) {
+                            (Some(skill), _) => self.render_user_skill(
                                 &row.id, &skill, &text, &mentions, &theme, clicks,
                             ),
-                            None => user_bubble_text_with_chip(
+                            (None, true) => {
+                                render_user_goal(&row.id, text, mentions, &theme, clicks)
+                            }
+                            (None, false) => user_bubble_text_with_chip(
                                 &row.id, text, mentions, None, &theme, clicks,
                             )
                             .into_any_element(),
@@ -614,6 +619,16 @@ impl Transcript {
                 error,
             } => retry_chip(*attempt, *max_retries, *delay_secs, error.clone(), &theme),
             RowKind::Notice { message } => notice_row(message.clone(), &theme),
+            RowKind::GoalEnd { message, event } => goal_end_row(message.clone(), *event, &theme),
+            RowKind::GoalRound {
+                label,
+                reason,
+                prompt,
+                footer_owner,
+            } => {
+                let footer = self.goal_round_footer(&row, footer_owner.as_ref(), &theme, cx);
+                self.render_goal_round(&row.id, label, reason, prompt, footer, &theme, cx)
+            }
             RowKind::CompactionDivider { summary } => {
                 self.render_compaction_divider(&row.id, summary, &theme, window, cx)
             }
@@ -724,47 +739,16 @@ impl Transcript {
         // timestamp, edit, or copy affordances underneath it.
         let strip = row
             .timestamp
+            .filter(|_| !matches!(row.kind, RowKind::GoalRound { .. }))
             .filter(|_| {
                 self.message_edit
                     .as_ref()
                     .is_none_or(|edit| edit.message_id != row.entry_id.as_ref())
             })
             .map(|ms| {
-                let timestamp = div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted.opacity(0.55))
-                    .child(SharedString::from(format_timestamp(ms, &chrono::Local)));
+                let timestamp = footer_timestamp(ms, &theme);
                 let copy = copy_text.map(|text| {
-                    let entry_id = copy_entry_id.clone();
-                    let fade_key = format!("copy-message-hover-{entry_id}");
-                    div()
-                        .id(SharedString::from(format!("copy-message-{entry_id}")))
-                        .size(px(Theme::SPACE_MD * 2.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .cursor_pointer()
-                        // Same quiet icon-button treatment as the copy action
-                        // over transcript code blocks.
-                        .bg(motion::hover_blend(
-                            &fade_key,
-                            gpui::transparent_black(),
-                            crate::theme::ink(0.08),
-                        ))
-                        .on_hover(motion::hover_listener(fade_key))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy_message(entry_id.clone(), text.clone(), cx)
-                        }))
-                        .child(
-                            crate::icons::icon(if copied_message {
-                                crate::icons::CHECK
-                            } else {
-                                crate::icons::COPY
-                            })
-                            .size(px(14.0))
-                            .text_color(theme.text_muted),
-                        )
+                    self.footer_copy_button(copy_entry_id.clone(), text, copied_message, &theme, cx)
                 });
                 let metadata = div()
                     .flex()
@@ -1102,6 +1086,24 @@ struct SkillChipRun {
     open_url: Option<String>,
 }
 
+/// A leading directive chip at the bubble text's head: the legacy `/skill`
+/// invocation (accent ink on the accent wash, a click-through to its source
+/// file) or a `/goal` arming (white ink on a neutral wash with the target
+/// icon in the gutter — the composer's own treatment, never the accent).
+enum LeadingChip {
+    Skill(SkillChipRun),
+    Goal(std::ops::Range<usize>),
+}
+
+impl LeadingChip {
+    fn range(&self) -> std::ops::Range<usize> {
+        match self {
+            LeadingChip::Skill(chip) => chip.range.clone(),
+            LeadingChip::Goal(range) => range.clone(),
+        }
+    }
+}
+
 type ImageOpen = Rc<dyn Fn(&str, &mut Window, &mut gpui::App)>;
 
 /// A skill mention chip's click-through: emits the shell-facing file-open
@@ -1131,7 +1133,7 @@ fn user_bubble_text_with_chip(
     row_id: &SharedString,
     text: SharedString,
     mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
-    skill: Option<SkillChipRun>,
+    leading: Option<LeadingChip>,
     theme: &Theme,
     clicks: BubbleClicks,
 ) -> AnyElement {
@@ -1168,9 +1170,15 @@ fn user_bubble_text_with_chip(
     };
     let mut runs = Vec::with_capacity(mentions.len() * 2 + 2);
     let mut at = 0;
-    if let Some(chip) = &skill {
-        runs.push(skill_run(chip.range.len()));
-        at = chip.range.end;
+    if let Some(chip) = &leading {
+        let range = chip.range();
+        runs.push(match chip {
+            LeadingChip::Skill(_) => skill_run(range.len()),
+            // White sans ink — the body's own run. The neutral wash and the
+            // gutter icon carry the chip's identity (the composer's recipe).
+            LeadingChip::Goal(_) => body_run(range.len()),
+        });
+        at = range.end;
     }
     for span in mentions.iter() {
         if at < span.range.start {
@@ -1188,12 +1196,12 @@ fn user_bubble_text_with_chip(
     }
     let styled = StyledText::new(text.clone()).with_runs(runs);
     let layout = styled.layout().clone();
-    let skill_range = skill.as_ref().map(|chip| chip.range.clone());
+    let leading_range = leading.as_ref().map(LeadingChip::range);
     let mut links: Vec<(std::ops::Range<usize>, String, BubbleLinkKind)> = Vec::new();
-    if let Some(chip) = skill
-        && let Some(url) = chip.open_url
+    if let Some(LeadingChip::Skill(chip)) = &leading
+        && let Some(url) = chip.open_url.clone()
     {
-        links.push((chip.range, url, BubbleLinkKind::Url));
+        links.push((chip.range.clone(), url, BubbleLinkKind::Url));
     }
     for span in mentions.iter() {
         if span.is_skill {
@@ -1237,6 +1245,9 @@ fn user_bubble_text_with_chip(
     };
     let wash = theme.code_wash;
     let skill_wash = theme.accent_wash;
+    // The goal chip's neutral fill — white ink, never the skill's accent
+    // (the composer's `element_hover`).
+    let goal_wash = theme.element_hover;
     let sel_key: std::sync::Arc<str> = format!("{row_id}:u").into();
     let sel_theme = theme.clone();
     let underlay = canvas(
@@ -1254,8 +1265,33 @@ fn user_bubble_text_with_chip(
                     ));
                 }
             };
-            if let Some(range) = &skill_range {
-                paint(window, range, skill_wash);
+            if let Some(range) = &leading_range {
+                let goal = matches!(leading, Some(LeadingChip::Goal(_)));
+                paint(window, range, if goal { goal_wash } else { skill_wash });
+                // The goal chip leads with the mode's target glyph — painted
+                // in the label's gutter NBSPs, white like the ink (the
+                // composer's recipe; the display text is the bare name).
+                if goal
+                    && let Some(rect) = render::range_rects(&layout, range, 0.0, 2.0)
+                        .first()
+                        .copied()
+                {
+                    let icon = px(14.0);
+                    let _ = window.paint_svg(
+                        Bounds::new(
+                            point(
+                                rect.origin.x + px(2.5),
+                                rect.origin.y + (rect.size.height - icon) / 2.0,
+                            ),
+                            size(icon, icon),
+                        ),
+                        crate::icons::TARGET.into(),
+                        None,
+                        gpui::TransformationMatrix::unit(),
+                        sel_theme.text,
+                        cx,
+                    );
+                }
             }
             for span in mentions.iter() {
                 let color = if span.is_skill { skill_wash } else { wash };
@@ -1306,6 +1342,48 @@ fn user_bubble_text_with_chip(
         .child(underlay)
         .child(text_el)
         .into_any_element()
+}
+
+/// The `/goal` arming inside the user bubble: the white `goal` chip at the
+/// head of the text flow (icon gutter + bare name over NBSP pads — the
+/// composer's own projection, never the accent), then the objective. The
+/// arming marker itself never reaches the bubble (`model.rs` strips it), and
+/// no pill rides above it — the chip IS the provenance.
+fn render_user_goal(
+    row_id: &SharedString,
+    text: SharedString,
+    mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+    theme: &Theme,
+    clicks: BubbleClicks,
+) -> AnyElement {
+    // The composer's chip layout: one side pad + a four-NBSP icon gutter +
+    // the bare name + the trailing pad. NBSPs only — every chip character
+    // must exist in Geist (exotic whitespace collapsed a chip once already).
+    let label = "\u{00A0}\u{00A0}\u{00A0}\u{00A0}\u{00A0}goal\u{00A0}";
+    let chip = LeadingChip::Goal(0..label.len());
+    let (full, mentions) = if text.is_empty() {
+        (label.to_string(), Vec::new())
+    } else {
+        // Mention spans are in display-byte terms; the composed prefix shifts
+        // them by the label plus the joining space.
+        let offset = label.len() + 1;
+        let shifted = mentions
+            .iter()
+            .map(|span| crate::composer::SentMentionSpan {
+                range: span.range.start + offset..span.range.end + offset,
+                ..span.clone()
+            })
+            .collect();
+        (format!("{label} {text}"), shifted)
+    };
+    user_bubble_text_with_chip(
+        row_id,
+        SharedString::from(full),
+        Arc::new(mentions),
+        Some(chip),
+        theme,
+        clicks,
+    )
 }
 
 /// The transcript ErrorChip — a port of holt chat-view.tsx `ErrorChip`
@@ -1475,6 +1553,148 @@ fn notice_row(message: SharedString, theme: &Theme) -> AnyElement {
                 .child(message),
         )
         .into_any_element()
+}
+
+/// The hover strip's timestamp label.
+fn footer_timestamp(ms: i64, theme: &Theme) -> gpui::Div {
+    div()
+        .text_size(crate::typography::ui_rems(12.0))
+        .text_color(theme.text_muted.opacity(0.55))
+        .child(SharedString::from(format_timestamp(ms, &chrono::Local)))
+}
+
+impl Transcript {
+    /// The hover strip's copy action for `entry_id`'s message.
+    fn footer_copy_button(
+        &self,
+        entry_id: SharedString,
+        text: SharedString,
+        copied: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let fade_key = format!("copy-message-hover-{entry_id}");
+        div()
+            .id(SharedString::from(format!("copy-message-{entry_id}")))
+            .size(px(Theme::SPACE_MD * 2.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(Theme::CONTROL_RADIUS))
+            .cursor_pointer()
+            // Same quiet icon-button treatment as the copy action over
+            // transcript code blocks.
+            .bg(motion::hover_blend(
+                &fade_key,
+                gpui::transparent_black(),
+                crate::theme::ink(0.08),
+            ))
+            .on_hover(motion::hover_listener(fade_key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.copy_message(entry_id.clone(), text.clone(), cx)
+            }))
+            .child(
+                crate::icons::icon(if copied {
+                    crate::icons::CHECK
+                } else {
+                    crate::icons::COPY
+                })
+                .size(px(14.0))
+                .text_color(theme.text_muted),
+            )
+    }
+
+    /// A loop row's inline footer: the copy action of the previous reply
+    /// whose strip it took over (`hand_footers_to_goal_rounds`), lit by
+    /// hovering either that reply or the row itself. No timestamp — the row
+    /// is a process marker, not a message. `None` when there is nothing to
+    /// copy.
+    fn goal_round_footer(
+        &self,
+        row: &Row,
+        owner: Option<&SharedString>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let owner = owner?.clone();
+        let text = row.copy_text.clone()?;
+        let lit = self
+            .hovered_entry
+            .as_ref()
+            .is_some_and(|(_, entry)| entry == &owner || entry == &row.entry_id);
+        if !lit {
+            return None;
+        }
+        let copied = self.copied_message.as_ref() == Some(&owner);
+        let copy = self.footer_copy_button(owner, text, copied, theme, cx);
+        Some(
+            motion::fade_quick(SharedString::from(format!("meta-{}", row.id)), copy)
+                .into_any_element(),
+        )
+    }
+}
+
+/// The goal loop's lifecycle row (ADR-0044): the goal card's settled form
+/// landed in the transcript — the question chip's passive band. The glyph
+/// says which transition it was (achieved, blocked, paused, cleared), so a
+/// pause never reads as the arc's end; a blocked row tints the warning.
+/// Wraps rather than truncates — the reason after the dash is the point.
+fn goal_end_row(message: SharedString, event: holt_proto::GoalEvent, theme: &Theme) -> AnyElement {
+    let (icon, tint) = goal_band_glyph(event, theme);
+    div()
+        .py(px(4.0))
+        .w_full()
+        .child(
+            div()
+                .min_h(px(28.0))
+                .w_full()
+                .flex()
+                .items_start()
+                .gap(px(8.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(crate::theme::hairline(0.08))
+                .bg(crate::theme::ink(0.045))
+                .px(px(6.0))
+                .py(px(4.0))
+                .text_size(px(12.0))
+                .line_height(px(18.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(18.0))
+                        .rounded(px(5.0))
+                        .bg(crate::theme::ink(0.09))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::icons::icon(icon).size(px(11.0)).text_color(tint)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_color(theme.text_muted.opacity(0.9))
+                        .child(message),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The band's glyph and tint, from the notice's transition tag.
+fn goal_band_glyph(event: holt_proto::GoalEvent, theme: &Theme) -> (&'static str, gpui::Hsla) {
+    match event {
+        holt_proto::GoalEvent::Achieved => (
+            crate::icons::CHECK,
+            crate::theme::AccentColor::Green.primary(theme.appearance),
+        ),
+        holt_proto::GoalEvent::Blocked => (
+            crate::icons::DANGER_TRIANGLE,
+            crate::theme::AccentColor::Orange.primary(theme.appearance),
+        ),
+        holt_proto::GoalEvent::Paused => (crate::icons::PAUSE, theme.text_muted),
+        holt_proto::GoalEvent::Cleared => (crate::icons::CLOSE_CIRCLE, theme.text_muted),
+    }
 }
 
 /// A passive one-line chip marking a question the agent asked — the

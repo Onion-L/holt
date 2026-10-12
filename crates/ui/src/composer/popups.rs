@@ -725,44 +725,15 @@ impl Composer {
         let title = candidate.title();
         // `/compact` and `/init` take no arguments, so a selection sends
         // them right away instead of staging one in the input for review;
-        // anything else (skills, argument-taking commands) still fills.
-        let plan_now = matches!(
-            super::slash::parse(&title),
-            super::slash::Parsed::Plan {
-                action: super::slash::PlanAction::Enter
-            }
-        );
-        let provider_now = matches!(
-            super::slash::parse(&title),
-            super::slash::Parsed::Provider {
-                action: super::slash::ProviderAction::Enter
-            }
-        );
+        // anything else — skills, argument-taking commands, and the mode
+        // directives — still fills, so the submitted form is what the user
+        // saw.
         let send_now = matches!(
             super::slash::parse(&title),
             super::slash::Parsed::Compact | super::slash::Parsed::Init
         );
         self.reset_slash(None, cx);
-        if provider_now {
-            self.input.update(cx, |input, cx| {
-                input.replace_plain_token(token.range, "", cx)
-            });
-            self.provider_command(true, cx);
-        } else if plan_now {
-            self.input.update(cx, |input, cx| {
-                input.replace_plain_token(token.range, "", cx)
-            });
-            self.pickers.update(cx, |pickers, cx| {
-                pickers.plan_mode_draft = true;
-                pickers.provider_mode_draft = false;
-                cx.notify();
-            });
-            if self.state.read(cx).selected_chat.is_some() {
-                self.plan_command("enter", None, cx);
-            } else {
-                self.plan_mode_draft = true;
-            }
-        } else if send_now {
+        if send_now {
             // Dispatch the completed command directly. Writing it into the
             // input first makes the command flash in the composer and also
             // causes failed compact requests to be restored as draft text.
@@ -877,18 +848,14 @@ impl Composer {
                         // style): bold name, muted truncating description,
                         // the source root as a quiet right-aligned tag.
                         .child(
-                            crate::icons::icon(if is_skill {
-                                crate::icons::CUBE
-                            } else {
-                                crate::icons::COMMAND
-                            })
-                            .size(px(15.0))
-                            .flex_none()
-                            .text_color(if is_skill {
-                                theme.accent
-                            } else {
-                                theme.text_muted
-                            }),
+                            crate::icons::icon(candidate.icon())
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(if is_skill {
+                                    theme.accent
+                                } else {
+                                    theme.text_muted
+                                }),
                         )
                         .child(
                             div()

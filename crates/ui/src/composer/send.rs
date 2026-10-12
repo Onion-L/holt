@@ -163,13 +163,12 @@ impl Composer {
                 cx.notify();
                 return;
             }
-            // The bare /plan form dispatches itself (ADR-0025).
+            // The /plan mode-only forms dispatch themselves (ADR-0025).
             // They send no message, so they never reach the send path —
             // a draft chat has nothing to enter or query yet.
             super::slash::Parsed::Plan { action } => match action {
                 super::slash::PlanAction::Enter => {
                     self.pickers.update(cx, |pickers, cx| {
-                        pickers.plan_mode_draft = true;
                         pickers.provider_mode_draft = false;
                         cx.notify();
                     });
@@ -177,10 +176,15 @@ impl Composer {
                         self.plan_command("enter", None, cx);
                     } else {
                         self.plan_mode_draft = true;
-                        self.pickers.update(cx, |pickers, cx| {
-                            pickers.plan_mode_draft = true;
-                            cx.notify();
-                        });
+                    }
+                    return;
+                }
+                super::slash::PlanAction::Exit => {
+                    if self.state.read(cx).selected_chat.is_some() {
+                        self.plan_command("exit", None, cx);
+                    } else {
+                        // Canvas draft: drop it, like /provider off.
+                        self.plan_mode_draft = false;
                     }
                     return;
                 }
@@ -197,6 +201,23 @@ impl Composer {
                 }
                 super::slash::ProviderAction::Task(_) => {}
             },
+            super::slash::Parsed::MalformedGoal => {
+                self.failure = Some("Usage: /goal <objective> | off | pause | resume".into());
+                self.failure_key = self.state.read(cx).selected_chat.clone();
+                cx.notify();
+                return;
+            }
+            // `/goal off|pause|resume` dispatch themselves (ADR-0044);
+            // `/goal <objective>` falls through to the send path, which
+            // arms the goal and sends the objective as the first Turn —
+            // the raw directive never becomes prompt text.
+            super::slash::Parsed::Goal {
+                action: super::slash::GoalAction::Set(_),
+            } => {}
+            super::slash::Parsed::Goal { action } => {
+                self.goal_command(action, cx);
+                return;
+            }
             _ => {}
         }
         let no_content = !composer_has_content(
@@ -215,6 +236,57 @@ impl Composer {
             SendButtonMode::Send | SendButtonMode::Queue => self.send(text, cx),
         }
     }
+    /// The control-only `/goal` forms (`off` / `pause` / `resume`,
+    /// ADR-0044) — `/goal <objective>` rides the send path instead. These
+    /// need an existing chat: there is no loop to drive on the canvas.
+    pub(crate) fn goal_command(
+        &mut self,
+        action: super::slash::GoalAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.failure = Some("Engine not connected".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            self.failure = Some("No chat here yet — /goal <objective> starts one".into());
+            self.failure_key = None;
+            cx.notify();
+            return;
+        };
+        let params = match &action {
+            super::slash::GoalAction::Set(text) => {
+                serde_json::json!({ "chatId": chat_id, "text": text })
+            }
+            super::slash::GoalAction::Clear => serde_json::json!({ "chatId": chat_id }),
+            super::slash::GoalAction::Pause => {
+                serde_json::json!({ "chatId": chat_id, "paused": true })
+            }
+            super::slash::GoalAction::Resume => {
+                serde_json::json!({ "chatId": chat_id, "paused": false })
+            }
+        };
+        let method = match action {
+            super::slash::GoalAction::Set(_) => methods::SET_GOAL,
+            super::slash::GoalAction::Clear => methods::CLEAR_GOAL,
+            _ => methods::SET_GOAL_PAUSED,
+        };
+        self.input.update(cx, |input, cx| input.set_text("", cx));
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = engine.client().call(method, params).await {
+                tracing::warn!(error = %error, "/goal command failed");
+                let _ = this.update(cx, |this, cx| {
+                    this.failure = Some(format!("/goal failed: {error}").into());
+                    this.failure_key = Some(chat_id.clone());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Durably enqueue an ordinary message. New chats
     /// thread the picked config in: worktree creation (when the isolated toggle
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
@@ -309,6 +381,8 @@ impl Composer {
                 cx.notify();
             });
         }
+        // `/goal <objective>` arms after createChat (ADR-0044).
+        let mut goal_set: Option<String> = None;
         let restore_text;
         if let super::slash::Parsed::Plan {
             action: super::slash::PlanAction::Task(task),
@@ -328,6 +402,23 @@ impl Composer {
             text = task.clone();
             slash = super::slash::Parsed::Plain;
             provider_enter = true;
+        } else if let super::slash::Parsed::Goal {
+            action: super::slash::GoalAction::Set(objective),
+        } = &slash
+        {
+            // `/goal <objective>` (ADR-0044): the objective IS the first
+            // Turn's message; the SetGoal RPC rides the async block below
+            // (after createChat, before the queue) so the Turn settles into
+            // an armed loop. A failed SetGoal restores the ORIGINAL
+            // directive, never the bare objective — resubmitting that as an
+            // ordinary message would silently skip the goal. The queued
+            // message carries the goal marker block so the transcript lifts
+            // it back out as the 🎯 pill (the comments pipeline).
+            let objective = objective.clone();
+            restore_text = Some(text.clone());
+            text = crate::goal::with_goal_block(&objective);
+            slash = super::slash::Parsed::Plain;
+            goal_set = Some(objective);
         } else if matches!(slash, super::slash::Parsed::Init) {
             // `/init`: the queued message's prompt is the bundled template
             // (codex's `include_str!` shape) — the directive itself never
@@ -590,6 +681,23 @@ impl Composer {
                 {
                     return Err(format!("/provider failed: {err}"));
                 }
+                // `/goal <objective>` (ADR-0044): armed after createChat,
+                // before the run is queued, so the first Turn settles into
+                // the loop. Fatal like the plan enter — a failed SetGoal
+                // restores the directive instead of sending the objective
+                // as an ordinary message.
+                if let Some(goal_text) = &goal_set
+                    && let Err(err) = attachments::call_with_timeout(
+                        &engine,
+                        cx.background_executor(),
+                        methods::SET_GOAL,
+                        serde_json::json!({ "chatId": chat_id, "text": goal_text }),
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+                {
+                    return Err(format!("/goal failed: {err}"));
+                }
 
                 let command = match &slash {
                     // `/compact` rides the same queue as a typed command
@@ -840,7 +948,7 @@ impl Composer {
             {
                 Ok(state) => {
                     let notice = match action {
-                        "enter" => String::new(),
+                        "enter" => "Plan Mode on".to_string(),
                         "exit" => "Plan Mode off — plan documents are kept".to_string(),
                         _ => plan_status_notice(&state),
                     };
@@ -869,7 +977,7 @@ impl Composer {
 
     /// The mode-only `/provider` forms (ADR-0037). On the new-chat canvas
     /// they only flip the draft the first send enters with; on a chat they
-    /// call the engine, whose chat-row republish moves the chip.
+    /// call the engine and the notice line confirms the switch.
     pub(crate) fn provider_command(&mut self, enter: bool, cx: &mut Context<Self>) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             if enter {
@@ -877,9 +985,6 @@ impl Composer {
             }
             self.pickers.update(cx, |pickers, cx| {
                 pickers.provider_mode_draft = enter;
-                if enter {
-                    pickers.plan_mode_draft = false;
-                }
                 cx.notify();
             });
             cx.notify();
@@ -901,16 +1006,24 @@ impl Composer {
                 .client()
                 .call(method, serde_json::json!({ "chatId": chat_id }))
                 .await;
-            // Success needs no notice: the chat row's republish moves the
-            // chip. Only a failure takes the (red) banner.
-            if let Err(err) = result {
-                tracing::warn!(error = %err, "/provider command failed");
-                let _ = this.update(cx, |this, cx| {
-                    this.failure = Some(format!("/provider failed: {err}").into());
-                    this.failure_key = Some(chat_id.clone());
-                    cx.notify();
-                });
-            }
+            let notice = if enter {
+                "Provider Mode on"
+            } else {
+                "Provider Mode off"
+            };
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    // Chat-scoped like failed sends: chat A's switch must not
+                    // render under chat B.
+                    Ok(_) => this.failure = Some(notice.into()),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "/provider command failed");
+                        this.failure = Some(format!("/provider failed: {err}").into());
+                    }
+                }
+                this.failure_key = Some(chat_id.clone());
+                cx.notify();
+            });
         })
         .detach();
     }

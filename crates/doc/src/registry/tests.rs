@@ -280,6 +280,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         worktree: None,
         provider_mode: false,
         routine_run: None,
+        goal: None,
     }
 }
 

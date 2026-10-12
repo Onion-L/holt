@@ -338,6 +338,7 @@ mod tests {
             worktree: None,
             provider_mode: false,
             routine_run: None,
+            goal: None,
         }
     }
 
@@ -398,6 +399,7 @@ mod tests {
                 vec![MessagePart::Notice {
                     id: "n1".into(),
                     message: "internal notice".into(),
+                    goal: None,
                 }],
             ),
         ];

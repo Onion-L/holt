@@ -285,6 +285,10 @@ pub struct Transcript {
     selection_scroll_task: Option<Task<()>>,
     /// MessageRail width gate (set by the shell from the container width).
     rail_enabled: bool,
+    /// Whether the last row carried the goal-check trailer (ADR-0044) at the
+    /// previous sync: the verifier's pass changes no row, so its flip has to
+    /// remeasure the last row itself.
+    goal_checking: bool,
     /// Height of the shell's composer/status/terminal stack overlaying the
     /// transcript's bottom (measured last frame): the last row pads past it
     /// so pinned content rests above the glass chrome it scrolls under.
@@ -525,6 +529,7 @@ impl Transcript {
             selection_drag_position: None,
             selection_scroll_task: None,
             rail_enabled,
+            goal_checking: false,
             bottom_clearance: 0.0,
             rail_hover: None,
             rail_active_id: None,
@@ -1539,6 +1544,14 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        let goal_checking = self.doc_override.is_none()
+            && crate::goal::loop_phase(self.state.read(cx))
+                == Some(crate::goal::LoopPhase::Checking);
+        if goal_checking != self.goal_checking {
+            self.goal_checking = goal_checking;
+            self.remeasure_last_row();
+            cx.notify();
+        }
         let (selected, entries, echoes, replay, turn_change_sets, turn_restores, turn_retry) = {
             let s = self.state.read(cx);
             match &self.doc_override {
@@ -1695,6 +1708,9 @@ impl Transcript {
         for echo in &echoes {
             new_rows.extend(self.rows_for(echo, true));
         }
+
+        model::hand_footers_to_goal_bands(&mut new_rows);
+        model::hand_footers_to_goal_rounds(&mut new_rows);
 
         // Text already streamed before this (re)attach is the veil BASELINE:
         // its rows' veils seed instead of fading (render creates them from

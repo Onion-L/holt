@@ -1007,8 +1007,11 @@ async fn uses_retry_after_seconds_for_sse_retries() {
 #[tokio::test(start_paused = true)]
 async fn uses_retry_after_http_date_for_sse_retries() {
     // The TS test freezes Date.now() and sends now + 45s; the Rust port reads
-    // the wall clock when parsing the HTTP date, so the observed delay is
-    // 45s minus the test's own overhead — assert a tight window around it.
+    // the wall clock when parsing the HTTP date, so the observed delay is 45s
+    // minus whatever real time passes before the client parses the header,
+    // and fmt_http_date floors the date to a whole second. On a loaded CI
+    // runner that overhead reaches past a second, so the window needs slack
+    // on both sides: no retry before ~35s, retry by ~50s.
     let retry_at = std::time::SystemTime::now() + Duration::from_secs(45);
     let retry_after = httpdate::fmt_http_date(retry_at);
 
@@ -1032,13 +1035,13 @@ async fn uses_retry_after_http_date_for_sse_retries() {
 
     let stream = stream_codex(&model, &context, Some(&options));
     let mut result = std::pin::pin!(stream.result());
-    tokio::time::sleep(Duration::from_millis(45_000 - 1_000)).await;
+    tokio::time::sleep(Duration::from_millis(45_000 - 10_000)).await;
     assert_eq!(
         fetch.request_count(),
         1,
         "retry must not fire before the HTTP-date delay"
     );
-    let result = tokio::time::timeout(Duration::from_millis(3_000), result.as_mut())
+    let result = tokio::time::timeout(Duration::from_millis(15_000), result.as_mut())
         .await
         .expect("retry must fire at the HTTP-date delay");
 

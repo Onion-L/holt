@@ -8,7 +8,7 @@ use super::layout::{
     caret_visible, input_drag_scroll_delta, input_max_scroll, input_scroll_offset,
     input_scroll_offset_for_cursor, press_intent,
 };
-use super::mentions::{TextProjection, local_file_link};
+use super::mentions::{ChipStyle, TextProjection, local_file_link};
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -569,7 +569,7 @@ impl ComposerInput {
         self.projection = if self.masked {
             TextProjection::masked(&self.content)
         } else if self.mentions_enabled {
-            TextProjection::new(&self.content)
+            TextProjection::composer(&self.content)
         } else {
             TextProjection::plain(&self.content)
         };
@@ -724,6 +724,10 @@ impl ComposerInput {
     ) {
         self.placeholder = placeholder.into();
         cx.notify();
+    }
+
+    pub fn placeholder(&self) -> &SharedString {
+        &self.placeholder
     }
 
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
@@ -1710,28 +1714,30 @@ impl ComposerInput {
         let font_size = style.font_size.to_pixels(window.rem_size());
         self.line_height = px(INPUT_LINE_HEIGHT);
 
-        // Chips read as inline code: the markdown renderer's recipe (mono font
-        // + the spectrum's `code_text`) over the rounded `code_wash` beneath.
-        // Skill chips are the exception — accent-coloured label in the UI
-        // font, matching the transcript's skill chip.
-        let (chip_font, chip_color, skill_color) = {
+        // File mentions read as inline code: the markdown renderer's recipe
+        // (mono font + the spectrum's `code_text`) over the rounded
+        // `code_wash` beneath. Skill chips wear the accent instead; the
+        // mode-directive chip stays plain text ink — three distinct looks.
+        let (chip_font, chip_color, skill_color, command_color) = {
             let theme = Theme::of(cx);
             (
                 gpui::font(theme.font_mono.clone()),
                 theme.code_text,
                 theme.accent,
+                theme.text,
             )
         };
-        let run_for = |len: usize, underline: bool, chip: Option<bool>| TextRun {
+        let run_for = |len: usize, underline: bool, chip: Option<ChipStyle>| TextRun {
             len,
-            font: if chip == Some(false) {
+            font: if chip == Some(ChipStyle::Code) {
                 chip_font.clone()
             } else {
                 style.font()
             },
             color: match chip {
-                Some(false) => chip_color,
-                Some(true) => skill_color,
+                Some(ChipStyle::Code) => chip_color,
+                Some(ChipStyle::Skill) => skill_color,
+                Some(ChipStyle::Command) => command_color,
                 None => style.color,
             },
             // Rounded mention washes are painted explicitly beneath the text;
@@ -1761,11 +1767,11 @@ impl ComposerInput {
             _ => {
                 let mut runs = Vec::new();
                 let mut at = 0;
-                for (chip, is_skill) in self.projection.chip_spans() {
+                for (chip, style) in self.projection.chip_spans() {
                     if at < chip.start {
                         runs.push(run_for(chip.start - at, false, None));
                     }
-                    runs.push(run_for(chip.len(), false, Some(is_skill)));
+                    runs.push(run_for(chip.len(), false, Some(style)));
                     at = chip.end;
                 }
                 if at < display.len() {

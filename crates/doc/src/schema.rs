@@ -79,6 +79,15 @@ struct DocPartJson {
     resolved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    /// Goal lifecycle tag on `kind: "notice"` rows (additive, ADR-0044).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal_event: Option<crate::parts::GoalEvent>,
+    /// `kind: "goalRound"` payload (additive, ADR-0044): the round and the
+    /// verifier's reason. Never `text`, so old readers' fallback stays empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal_round: Option<crate::parts::GoalRoundKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    goal_reason: Option<String>,
     /// Tool output summary (additive — absent on old rows and old writers;
     /// pre-strip writers stored up to 4KB of capped output here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,10 +252,18 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             message: Some(message.clone()),
             ..Default::default()
         },
-        MessagePart::Notice { id, message } => DocPartJson {
+        MessagePart::Notice { id, message, goal } => DocPartJson {
             id: id.clone(),
             kind: "notice".into(),
             message: Some(message.clone()),
+            goal_event: *goal,
+            ..Default::default()
+        },
+        MessagePart::GoalRound { id, round, reason } => DocPartJson {
+            id: id.clone(),
+            kind: "goalRound".into(),
+            goal_round: Some(*round),
+            goal_reason: Some(reason.clone()),
             ..Default::default()
         },
         MessagePart::CompactionDivider {
@@ -362,6 +379,18 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
         "notice" => MessagePart::Notice {
             id: p.id,
             message: p.message.unwrap_or_default(),
+            goal: p.goal_event,
+        },
+        "goalRound" => match p.goal_round {
+            Some(round) => MessagePart::GoalRound {
+                id: p.id,
+                round,
+                reason: p.goal_reason.unwrap_or_default(),
+            },
+            None => MessagePart::Text {
+                id: p.id,
+                text: String::new(),
+            },
         },
         "compactionDivider" => MessagePart::CompactionDivider {
             id: p.id,

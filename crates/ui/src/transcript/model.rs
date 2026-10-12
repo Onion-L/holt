@@ -209,6 +209,10 @@ pub enum RowKind {
         badges: Arc<Vec<crate::badges::MessageBadge>>,
         /// Skill invocation metadata when the turn was launched via `/skill`.
         skill: Option<Arc<UserSkill>>,
+        /// The arming send (`/goal <objective>`): the bubble heads its text
+        /// with the white `goal` chip (icon gutter + bare name — the
+        /// composer's own treatment) instead of a pill above it.
+        goal_chip: bool,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -261,6 +265,29 @@ pub enum RowKind {
     /// the Turn it sits in; it states where the model's memory begins.
     Notice {
         message: SharedString,
+    },
+    /// The goal loop's terminal row (ADR-0044): the goal card's settled
+    /// form landed in the transcript — the same target glyph on a
+    /// passive band, so it reads as the arc's conclusion, not housekeeping
+    /// noise. Model-side it is a `Notice` the engine pushed under a
+    /// `goal-*` entry id.
+    GoalEnd {
+        message: SharedString,
+        event: holt_proto::GoalEvent,
+    },
+    /// A goal-loop continuation (ADR-0044): a User entry the loop queued,
+    /// not the user. Drawn as a light, foldable loop row — round label and
+    /// the verifier's missing piece — instead of a user bubble; the fold
+    /// shows the full prompt the model got.
+    GoalRound {
+        label: SharedString,
+        reason: SharedString,
+        prompt: SharedString,
+        /// The entry whose footer strip (timestamp + copy) the row took over
+        /// ([`hand_footers_to_goal_rounds`]): drawn inline at the row's
+        /// right edge and lit by hovering that entry. Kept apart from the
+        /// row's own `entry_id`, which anchors the Turn it opens.
+        footer_owner: Option<SharedString>,
     },
     /// The Compaction divider (ADR-0011): where the model's verbatim memory
     /// begins. Collapsed by default; expands to the exact summary the model
@@ -571,20 +598,54 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // A loop-queued continuation carries its round as a part (ADR-0044):
+        // it is the loop speaking, so it never draws as a user bubble.
+        let goal_round = entry.parts.iter().find_map(|p| match p {
+            MessagePart::GoalRound { round, reason, .. } => Some((*round, reason.clone())),
+            _ => None,
+        });
+        if let Some((round, reason)) = goal_round {
+            rows.push(Row {
+                id: entry.id.clone().into(),
+                version: (raw.len() as u64) << 1 | pending as u64,
+                turn_start: true,
+                kind: RowKind::GoalRound {
+                    label: crate::goal::round_label(&round).into(),
+                    reason: reason.into(),
+                    prompt: raw.into(),
+                    footer_owner: None,
+                },
+                entry_id,
+                timestamp: None,
+                copy_text: None,
+            });
+            return rows;
+        }
         // Attachment refs ride the plain text (the `withAttachments`
         // transport); split them back out for the thumbnail strip.
         let mut parsed = crate::attachments::parse_user_message_images(&raw);
         // File mentions render as chips here too, not just in the composer.
         // The projection is pure over the text, so the raw-length row version
         // below stays a valid cache/diff key.
-        // Lifted before the mention projection, so a comment body's own
-        // Markdown never lands in the bubble.
-        let (body, badges) = crate::badges::split(&parsed.text);
+        // The composer folds its trailers in a fixed order — the goal
+        // arming marker onto the objective, then the comment block, then the
+        // path list — and each one is matched only as a TRAILING block, so
+        // they peel off in reverse.
+        //
         // The appended path list leaves the bubble entirely: it rides the
         // prompt for the model, but on screen the references render as an
         // attachment chip row above the bubble (one badge per target, full
         // path on hover), next to the comment badge.
-        let (body, references) = crate::path_refs::split_sent_references(&body);
+        let (body, references) = crate::path_refs::split_sent_references(&parsed.text);
+        // Lifted before the mention projection, so a comment body's own
+        // Markdown never lands in the bubble.
+        let (body, badges) = crate::badges::split(&body);
+        // No pill replaces the goal marker: the renderer chips the `goal`
+        // directive inline at the bubble's head (the composer's treatment).
+        let (body, goal_chip) = match crate::goal::strip_block(&body) {
+            Some(objective) => (objective, true),
+            None => (body, false),
+        };
         parsed.attachments.extend(
             references
                 .iter()
@@ -655,6 +716,7 @@ pub fn rows_for_entry(
                     attachments: Arc::new(parsed.attachments),
                     badges: Arc::new(badges),
                     skill,
+                    goal_chip,
                     pending,
                 },
                 entry_id,
@@ -972,15 +1034,28 @@ pub fn rows_for_entry(
                     MessagePart::Notice {
                         id: part_id,
                         message,
+                        goal,
                     } => {
+                        // The goal loop's lifecycle rows (ADR-0044) get the
+                        // band treatment, keyed on the part's transition
+                        // tag; every other Notice stays a plain housekeeping
+                        // row.
+                        let kind = if let Some(event) = goal {
+                            RowKind::GoalEnd {
+                                message: message.clone().into(),
+                                event: *event,
+                            }
+                        } else {
+                            RowKind::Notice {
+                                // Engine-authored prose; the row wraps.
+                                message: message.clone().into(),
+                            }
+                        };
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
                             turn_start: false,
-                            kind: RowKind::Notice {
-                                // Engine-authored prose; the row wraps.
-                                message: message.clone().into(),
-                            },
+                            kind,
                             entry_id: entry_id.clone(),
                             timestamp: None,
                             copy_text: None,
@@ -988,7 +1063,11 @@ pub fn rows_for_entry(
                     }
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
-                    MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
+                    // A round tag only rides user entries (the loop row
+                    // above); on any other entry it draws nothing.
+                    MessagePart::Tool { .. }
+                    | MessagePart::Reasoning { .. }
+                    | MessagePart::GoalRound { .. } => {}
                     MessagePart::ModelProposal {
                         id: part_id,
                         proposal_id,
@@ -1240,6 +1319,89 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
         suffix += 1;
     }
     Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
+}
+
+/// The goal loop's band (ADR-0044) concludes the Turn it caps: lift the
+/// settled message's footer strip (timestamp + copy) down under the band, so
+/// the block reads message → verdict → footer as one unit. The band entry's
+/// own strip (its push time, nothing to copy) is replaced. The walk skips
+/// footerless rows (a change-set card can sit between) and stops at a User
+/// row, a loop row, or an earlier band — a band never claims a prompt's
+/// footer, an earlier Turn's, or another band's; with no owner it keeps its
+/// own strip. The band
+/// also takes the owner's `entry_id`: the strip's hover reveal and copied
+/// feedback key on it, so hovering the message lights the strip under the
+/// band. Version bit 61 marks the handoff (bit 62 is the model's own footer
+/// flag), so the row diff re-renders both affected rows. Pure over the
+/// freshly rebuilt rows, so reapplying it every sync can't drift.
+pub fn hand_footers_to_goal_bands(rows: &mut [Row]) {
+    for ix in 0..rows.len() {
+        if !matches!(rows[ix].kind, RowKind::GoalEnd { .. }) {
+            continue;
+        }
+        let mut owner = None;
+        for back in (0..ix).rev() {
+            let row = &rows[back];
+            if matches!(
+                row.kind,
+                RowKind::User { .. } | RowKind::GoalRound { .. } | RowKind::GoalEnd { .. }
+            ) {
+                break;
+            }
+            if row.timestamp.is_some() || row.copy_text.is_some() {
+                owner = Some(back);
+                break;
+            }
+        }
+        let Some(owner) = owner else { continue };
+        let timestamp = rows[owner].timestamp.take();
+        let copy_text = rows[owner].copy_text.take();
+        let entry_id = rows[owner].entry_id.clone();
+        rows[owner].version ^= 1 << 61;
+        let band = &mut rows[ix];
+        band.entry_id = entry_id;
+        band.timestamp = timestamp;
+        band.copy_text = copy_text;
+        band.version ^= 1 << 61;
+    }
+}
+
+/// A loop row (ADR-0044) opens its Turn right under the previous reply,
+/// whose reserved footer lane would leave a hole above the light,
+/// flush-left row. The row takes that footer over instead: the reply drops
+/// its lane, the row draws its copy action inline at the right edge.
+/// The walk skips footerless rows and may take a goal band's (already
+/// handed-over) footer, but stops at a User row or another loop row. Runs
+/// after [`hand_footers_to_goal_bands`]; version bit 61 marks the handoff.
+pub fn hand_footers_to_goal_rounds(rows: &mut [Row]) {
+    for ix in 0..rows.len() {
+        if !matches!(rows[ix].kind, RowKind::GoalRound { .. }) {
+            continue;
+        }
+        let mut owner = None;
+        for back in (0..ix).rev() {
+            let row = &rows[back];
+            if matches!(row.kind, RowKind::User { .. } | RowKind::GoalRound { .. }) {
+                break;
+            }
+            if row.timestamp.is_some() || row.copy_text.is_some() {
+                owner = Some(back);
+                break;
+            }
+        }
+        let Some(owner) = owner else { continue };
+        let timestamp = rows[owner].timestamp.take();
+        let copy_text = rows[owner].copy_text.take();
+        let entry_id = rows[owner].entry_id.clone();
+        rows[owner].version ^= 1 << 61;
+        let round = &mut rows[ix];
+        round.timestamp = timestamp;
+        round.copy_text = copy_text;
+        round.version ^= 1 << 61;
+        if let RowKind::GoalRound { footer_owner, .. } = &mut round.kind {
+            *footer_owner = Some(entry_id);
+        }
+    }
 }
 
 /// The card row for one Turn's change set (ADR-0024 ticket 03). `entry_id`
@@ -1894,6 +2056,70 @@ mod tests {
         ));
     }
 
+    /// A `/goal` arming send chips the directive inline at the bubble's head
+    /// instead of lifting a pill above it: the marker block leaves the text
+    /// entirely, the row flags the chip, and the copy strip stays the bare
+    /// objective.
+    #[test]
+    fn user_rows_chip_the_goal_directive_inline() {
+        let mut entry = assistant("u9", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part(
+            "t0",
+            &crate::goal::with_goal_block("ship the login page"),
+        )];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::User {
+            text,
+            raw,
+            badges,
+            goal_chip,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert!(goal_chip, "the row chips the goal directive inline");
+        assert!(badges.is_empty(), "no pill rides above the bubble");
+        assert_eq!(text.as_ref(), "ship the login page");
+        assert_eq!(raw.as_ref(), "ship the login page");
+        assert_eq!(rows[0].copy_text.as_deref(), Some("ship the login page"));
+        assert!(!text.contains("Goal armed"));
+
+        // The composer appends the path list AFTER the goal marker: the
+        // trailers still peel, so the bubble neither leaks the marker
+        // sentence nor loses the chip.
+        let with_refs = crate::path_refs::append_references(
+            &crate::goal::with_goal_block("ship the login page"),
+            &[crate::path_refs::PathRef {
+                id: "r0".into(),
+                path: "/repo/src/login.rs".into(),
+                is_dir: false,
+                managed: false,
+            }],
+        );
+        entry.parts = vec![text_part("t0", &with_refs)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User {
+            text, goal_chip, ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert!(goal_chip, "the chip survives an appended path list");
+        assert_eq!(text.as_ref(), "ship the login page");
+
+        // An ordinary prompt never chips.
+        entry.parts = vec![text_part("t0", "just a prompt")];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User { goal_chip, .. } = &rows[0].kind else {
+            panic!("expected a user row");
+        };
+        assert!(!goal_chip);
+    }
+
     #[test]
     fn user_rows_split_attachment_refs_from_text() {
         let content = crate::attachments::with_attachments(
@@ -2064,6 +2290,7 @@ mod tests {
             vec![MessagePart::Notice {
                 id: "n0".into(),
                 message: "Everything above this line is visible to you, but the model starts fresh after it.".into(),
+                goal: None,
             }],
         );
         entry.role = MessageRole::System;
@@ -2075,6 +2302,237 @@ mod tests {
             _other => panic!("expected a notice row"),
         }
         assert!(rows[0].copy_text.is_none());
+    }
+
+    /// The goal loop's lifecycle Notice (ADR-0044) carries its transition
+    /// tag and renders as the band row, not a plain housekeeping row.
+    #[test]
+    fn a_goal_notice_renders_the_goal_end_band() {
+        let mut entry = assistant(
+            "goal-abc",
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Goal achieved · 1 round · 12 min · 45.2k tokens".into(),
+                goal: Some(holt_proto::GoalEvent::Achieved),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        match &rows[0].kind {
+            RowKind::GoalEnd { message, event } => {
+                assert!(message.contains("Goal achieved"));
+                assert_eq!(*event, holt_proto::GoalEvent::Achieved);
+            }
+            _other => panic!("expected the goal-end band row"),
+        }
+        // The band keys on the part's tag, never the entry id or the text: a
+        // `goal-*` notice without a tag (pre-tag history) stays plain.
+        entry.parts = vec![MessagePart::Notice {
+            id: "n0".into(),
+            message: "Goal achieved · 1 round".into(),
+            goal: None,
+        }];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert!(matches!(rows[0].kind, RowKind::Notice { .. }));
+    }
+
+    fn goal_rows(id: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(
+            id,
+            MessageStatus::Complete,
+            vec![MessagePart::Notice {
+                id: "n0".into(),
+                message: "Goal achieved · 12 min".into(),
+                goal: Some(holt_proto::GoalEvent::Achieved),
+            }],
+        );
+        entry.role = MessageRole::System;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn round_rows(
+        id: &str,
+        round: holt_proto::GoalRoundKind,
+        reason: &str,
+        created_at: i64,
+    ) -> Vec<Row> {
+        let mut entry = assistant(
+            id,
+            MessageStatus::Complete,
+            vec![
+                text_part("t0", "Keep working toward the goal stated earlier."),
+                MessagePart::GoalRound {
+                    id: "g0".into(),
+                    round,
+                    reason: reason.into(),
+                },
+            ],
+        );
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn user_rows(id: &str, text: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(id, MessageStatus::Complete, vec![text_part("t0", text)]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    fn reply_rows(id: &str, text: &str, created_at: i64) -> Vec<Row> {
+        let mut entry = assistant(id, MessageStatus::Complete, vec![text_part("t0", text)]);
+        entry.created_at = created_at;
+        rows_for_entry(&entry, false, &mut parse)
+    }
+
+    /// A loop-queued continuation (ADR-0044) is the loop speaking: it draws
+    /// as the loop row — round label plus the verifier's missing piece, the
+    /// full prompt kept for the fold — never as a user bubble.
+    #[test]
+    fn goal_continuations_render_as_loop_rows() {
+        let rows = round_rows(
+            "c1",
+            holt_proto::GoalRoundKind::Continue(2),
+            "tests not run",
+            5,
+        );
+        let prompt = "Keep working toward the goal stated earlier.";
+        assert_eq!(rows.len(), 1);
+        let RowKind::GoalRound {
+            label,
+            reason,
+            prompt: kept,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected the loop row");
+        };
+        assert_eq!(label.as_ref(), "Round 2");
+        assert_eq!(reason.as_ref(), "tests not run");
+        assert_eq!(kept.as_ref(), prompt);
+        assert!(rows[0].turn_start);
+        assert!(rows[0].timestamp.is_none() && rows[0].copy_text.is_none());
+    }
+
+    #[test]
+    fn a_goal_round_takes_the_previous_reply_footer() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        rows.extend(round_rows("c1", holt_proto::GoalRoundKind::Resume, "", 3));
+        rows.extend(reply_rows("m2", "more", 4));
+        let before = rows.clone();
+
+        hand_footers_to_goal_rounds(&mut rows);
+
+        let (reply, loop_row) = (&rows[1], &rows[2]);
+        assert!(reply.timestamp.is_none() && reply.copy_text.is_none());
+        assert_eq!(loop_row.timestamp, Some(2));
+        assert_eq!(loop_row.copy_text.as_deref(), Some("done"));
+        // The row keeps its own entry id (it anchors its Turn); the owner
+        // rides the kind.
+        assert_eq!(loop_row.entry_id.as_ref(), "c1");
+        assert!(matches!(
+            &loop_row.kind,
+            RowKind::GoalRound { footer_owner: Some(owner), .. } if owner.as_ref() == "m1"
+        ));
+        assert_eq!(reply.version, before[1].version ^ 1 << 61);
+        assert_eq!(loop_row.version, before[2].version ^ 1 << 61);
+        // The reply after the loop row keeps its own strip.
+        assert_eq!(rows[3].timestamp, Some(4));
+    }
+
+    #[test]
+    fn a_goal_round_right_after_a_prompt_takes_nothing() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(round_rows(
+            "c1",
+            holt_proto::GoalRoundKind::Continue(1),
+            "x",
+            3,
+        ));
+        let before = rows.clone();
+
+        hand_footers_to_goal_rounds(&mut rows);
+
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert!(rows[1].timestamp.is_none());
+        assert_eq!(rows[0].version, before[0].version);
+        assert_eq!(rows[1].version, before[1].version);
+    }
+
+    #[test]
+    fn a_goal_band_takes_the_settled_reply_footer() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        // A footerless row between (a change-set card's shape) is skipped.
+        rows.push(Row {
+            id: "turn1#tcs".into(),
+            version: 7,
+            turn_start: false,
+            kind: RowKind::Notice {
+                message: "card".into(),
+            },
+            entry_id: "m1".into(),
+            timestamp: None,
+            copy_text: None,
+        });
+        rows.extend(goal_rows("goal-a", 3));
+        let before = rows.clone();
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        let (reply, band) = (&rows[1], &rows[3]);
+        assert!(reply.timestamp.is_none() && reply.copy_text.is_none());
+        assert_eq!(band.timestamp, Some(2));
+        assert_eq!(band.copy_text.as_deref(), Some("done"));
+        // One hover unit with the message it caps.
+        assert_eq!(band.entry_id.as_ref(), "m1");
+        assert_eq!(reply.version, before[1].version ^ 1 << 61);
+        assert_eq!(band.version, before[3].version ^ 1 << 61);
+        // The prompt and the card are untouched.
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert_eq!(rows[2].version, before[2].version);
+    }
+
+    #[test]
+    fn a_goal_band_right_after_the_prompt_keeps_its_own_footer() {
+        // "Goal cleared — the turn could not start": no reply to own.
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(goal_rows("goal-a", 3));
+        let before = rows.clone();
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        assert_eq!(rows[0].timestamp, Some(1));
+        assert_eq!(rows[0].copy_text.as_deref(), Some("fix it"));
+        assert_eq!(rows[1].timestamp, Some(3));
+        assert_eq!(rows[1].entry_id.as_ref(), "goal-a");
+        assert_eq!(rows[0].version, before[0].version);
+        assert_eq!(rows[1].version, before[1].version);
+    }
+
+    #[test]
+    fn adjacent_goal_bands_never_take_each_others_footer() {
+        let mut rows = user_rows("u1", "fix it", 1);
+        rows.extend(reply_rows("m1", "done", 2));
+        rows.extend(goal_rows("goal-a", 3));
+        rows.extend(goal_rows("goal-b", 4));
+
+        hand_footers_to_goal_bands(&mut rows);
+
+        assert_eq!(rows[2].timestamp, Some(2));
+        assert_eq!(rows[2].copy_text.as_deref(), Some("done"));
+        assert_eq!(rows[3].timestamp, Some(4));
+        assert!(rows[3].copy_text.is_none());
+        assert_eq!(rows[3].entry_id.as_ref(), "goal-b");
     }
 
     /// The Compaction divider (ADR-0011) renders as one quiet row carrying

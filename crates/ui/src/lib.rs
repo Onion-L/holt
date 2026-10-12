@@ -29,6 +29,7 @@ pub mod file_dialog;
 pub mod files;
 pub mod frost;
 pub mod git_panel;
+pub mod goal;
 pub mod history;
 pub mod icons;
 pub mod image_viewer;

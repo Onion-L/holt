@@ -1,0 +1,213 @@
+# Goal mode: a chat-scoped loop with an evidence-based verifier at Turn settle
+
+**Status:** the loop design stands; the UI half of "a slash entry plus a
+composer chip" moved (2026-10): the footer chip became a pinned top-right
+goal card (objective, status, round, last verdict, pause/clear —
+`crates/ui/src/shell/goal_card.rs`), and the arming message folds a goal
+block the transcript strips, chipping the `goal` directive inline at the
+bubble's head — icon gutter + bare name in white ink, the composer's own
+treatment — instead of a pill above the objective (`crates/ui/src/goal.rs`,
+`transcript/render.rs`'s `render_user_goal`). The
+`/goal` slash forms are unchanged. The card-facing half grew since
+(2026-10): the verifier's reply carries a `NAME:`/`STEPS:` block the row
+stores (`name`, `steps`), so the card heads the verifier-given name —
+never the raw objective — and lists the plan with each step's done state;
+and the composer projects an accepted `/goal` / `/plan` / `/provider`
+directive to a chip (the mode's icon + command name,
+`TextProjection::composer`). A continuation no longer draws as a user
+bubble: its queue row carries the round as data (`PendingMessage::goal_round`
++ `goal_reason`, `holt_proto::GoalRoundKind` — continue n / resume / retry),
+admission writes it into the user entry as a `MessagePart::GoalRound`, and
+the transcript renders that Turn as a foldable loop row (round + the
+verifier's missing piece, the full prompt in the fold); the queue's pending
+row shows the same projection, and its delete tooltip says deleting pauses
+the goal. Lifecycle notices carry `Notice::goal` (`GoalEvent`: achieved /
+blocked / paused / cleared); readers style the band from that tag — never
+from the entry id or the message text. The prompt carries no UI marker.
+
+The objective is spelled out in the History once, not per round: the first
+continuation states it verbatim (SetGoal can ride any send, so the arming
+message is not assumed to carry it), later ones point back at "the goal
+stated earlier", and after a compaction summary newer than
+`ChatGoalState::objective_stated_at` the next one restates it in full —
+compactions are read off the History's own `compactionSummary` messages, so
+no compaction path has to remember to flag it. A resume never replays the
+pre-pause verdict: its prompt says the user paused and resumed, to follow
+any new direction they gave, and to re-check the current state before
+acting. The loop
+row takes over the previous reply's footer strip (its copy action, drawn
+inline at its right edge) so the reply's reserved lane leaves no hole above
+the light row (`hand_footers_to_goal_rounds`). The UI also reads a live
+loop phase off state it already watches — queue, transcript, send overlay
+(`crate::goal::loop_phase`): working, checking (the queue's active item
+clears before the verifier runs, so an idle queue after a settled reply IS
+the pass), queued behind the user's work, waiting on a question, paused,
+blocked. The card's status line, a "Checking the goal…" transcript trailer,
+and the composer's idle placeholder ("Steer the goal — or /goal pause to
+stop it") all follow it — no new wire state. Lifecycle bands take a glyph
+per transition (achieved / blocked / paused / cleared) so a pause no longer
+reads as the arc's end, and they wrap instead of truncating the reason.
+Repeated verifier failures show as a retry count, not the raw provider
+error. A blocked goal's card offers resume (play), not pause. The card starts
+folded to its capsule (`goal_card_expanded`, default false — the retired
+`goal_card_collapsed` key is ignored), so the loop's state never takes the
+user's view until asked; the capsule carries only the glyph and the live
+phase (the word breathes while the loop moves; the name rides the tooltip),
+so it stays small enough not to cover the transcript. Unnamed, the objective's first line heads the card
+instead of a bare "Goal".
+
+## Context
+
+Agent harnesses converge on a "goal mode": the user states an objective, the
+agent loops on it, and an independent per-Turn check decides whether the work
+verifiably holds. The consensus skeleton: a durable chat-scoped objective, an
+evidence-only evaluation after each Turn, a small state machine
+(active/paused/blocked), hard iteration caps, and interrupt-means-pause.
+
+Two Holt specifics shape the port. First, the queue is durable, visible, and
+user-editable (ADR-0021), so a continuation that rides a hidden channel would
+be an alien mechanism — the user could see Turns starting with no row to
+inspect or delete. Second, ADR-0024 already freezes each Turn's change set at
+settle, so the verifier gets real workspace evidence (file status and line
+counts) instead of judging from conversation text alone, which is what every
+other harness feeds its evaluator.
+
+Review surfaced three traps the design must close: the evaluation must not
+reorder the settled Turn's card frame against its verdict marker (the
+`final_signal` grace exists for exactly this ordering); the restart invariant
+is NOT "the queue reloads paused" — `Queue::load` clears the pause of an
+empty queue — but "a continuation exists only because a Turn settle enqueued
+it"; and the usage batch settles BEFORE the terminal event publishes, so a
+verifier booking through the Turn's capture buffer would silently lose its
+record on the chat's last Turn.
+
+## Decisions
+
+- **The goal is chat-scoped durable state on the chat row** (`Chat::goal`,
+  following `plan_mode`'s precedent): the objective text, a status
+  (`active`/`paused`/`blocked`), the iteration and no-progress counters, a
+  consecutive evaluation-failure counter, `startedAt`, and the last verdict's
+  reason. There is no verdict history store — terminal transitions land as
+  Transcript `Notice` rows (the reader-facing housekeeping row, ADR-0010),
+  so history survives restarts through the record that already persists.
+  Each end row is one line: the outcome, the round count, the wall time,
+  and the goal's gross tokens since it was armed (every usage record since
+  `startedAt` — Turns, verifier passes, compactions). The Turn's own final
+  message is the summary, so the verifier's evidence stays out of the chat
+  — it would only duplicate that summary as a paragraph.
+- **The verifier is one model pass at Turn settle, after
+  `clear_final_signal`, inside the same queue-driver iteration** — before
+  the next pick, so the continuation it may enqueue cannot race the next
+  admission, and after the settled card's frame grace, so the verdict's
+  Notice can never overtake the Turn's own card. The pass rides the chat's
+  own model and transport (the auto-review `ReviewTransport` shape: one
+  completion, no tools, a small max-tokens cap, silent provider retries).
+  Its input is the goal text, a byte-capped Transcript tail, the Turn's tool
+  calls, and the settled Turn's frozen change-set summary. The rubric
+  admits only concrete evidence — files changed, command output, test
+  results; plans and intentions do not count. It answers exactly one line:
+  `COMPLETE: <evidence>`, `CONTINUE: <the missing piece>`, or
+  `BLOCKED: <reason>`; a bare `COMPLETE` without evidence is no verdict at
+  all — clearing the objective is the one destructive transition, so it
+  must cite what settled it.
+- **Evaluation happens only when the queue holds no pending item at
+  settle.** Any pending row — user-typed or an orphaned continuation — means
+  the next step is already spoken for: the user queueing work is the user
+  taking the wheel, and the loop resumes judging at the first settle that
+  finds the queue empty. A Turn that ends on an unanswered question card
+  (`has_pending_question`, the Routine `Waiting` precedent) is not
+  evaluated either; the settle after the answer is. Open approvals need no
+  check: the gate blocks the loop, so a Succeeded Turn cannot carry one.
+- **A `CONTINUE` verdict enqueues an ordinary, visible queue item** — the
+  plan follow-up's path — carrying the goal text and the verifier's reason,
+  flagged `goalContinuation` on the `PendingMessage` (additive,
+  serde-defaulted). Deleting that item pauses the goal; editing it keeps
+  the flag. `ClearGoal` or pausing sweeps every goal-flagged pending row,
+  so "off" never leaves a last Turn to run. A continuation landing in a
+  paused queue (ADR-0021's attended-send re-pause included) flips the goal
+  to paused — the queue's pause wins.
+- **Caps: `MAX_ITERATIONS = 20` is the primary backstop; no-progress is the
+  secondary one.** A Succeeded Turn with zero tool calls and an empty
+  change set increments `noProgress` (anything else resets it); at 3 the
+  goal pauses. Zero-tool-call is deliberately weak — a research goal reads
+  files for many Turns legitimately, and a wrong pause costs more than a
+  few extra iterations under the hard cap.
+- **Failure taxonomy.** Turn interrupted → goal paused (the user stopped
+  it; resumption is explicit). Turn failed — a driver-iteration panic
+  included — → goal paused, kept. A Message
+  item's admission failure (the model or credential is gone) → goal
+  cleared with a Notice — retrying cannot fix a missing model; a manual
+  Compaction's failure on the same `DriverOutcome::Settled` path never
+  touches the goal. A garbled verdict and a failed evaluation call are the
+  SAME failure: `evalFailures` increments (a successful verdict resets it)
+  and the loop keeps moving — the next step is queued so the following
+  settle re-verifies, never leaving an `active` goal with nothing queued;
+  at 3 the goal pauses with a Notice. A continuation that cannot be
+  ENQUEUED at all (no captured model settings, a queue persist failure)
+  pauses the goal with a Notice on every enqueue path — a settle's
+  Continue or Retry round, and a resume's restart — because an `active`
+  goal with nothing queued can never run again.
+- **The evaluation is bounded and not user-interruptible.** The Turn's
+  cancel token is already cleared at settle, and Stop between Turns pauses
+  the queue only. The verifier rides its own `CancellationToken` (stored on
+  the `ChatRuntime` like the Title task's), cancelled by `ClearGoal`,
+  pausing, `SetGoal` replacing the objective, chat deletion, shutdown, and
+  a new Turn's admission superseding an in-flight check. Inline placement
+  is chosen for ordering determinism; `catch_unwind` covers a panic; the
+  token-and-retry caps bound the wait, and a wall-clock cap
+  (`GOAL_CHECK_TIMEOUT`, 120s) bounds the pass itself — the HTTP layer has
+  no total timeout and Stop cannot reach the verifier's token, so without
+  it a hung stream would stall the queue driver's iteration until the user
+  paused the goal by hand. Exceeding it counts as one evaluation failure
+  (transport retries ride inside it), and a cancelled or timed-out pass
+  books whatever usage its newest partial carried.
+- **Restart reconciliation is lazy, at runtime open** (`AgentRuntime::chat`
+  — before then nothing can run the queue anyway): an `active` goal whose
+  queue holds no goal-flagged pending or started item flips to `paused`.
+  The durable invariant is that continuations are born only at a Turn
+  settle, never revived.
+- **Mutual exclusion is rejection, both ways** — a deliberate break from
+  Provider Mode's "entering exits the other": a goal is durable state with
+  a queue footprint, and silently clearing it costs the objective, the
+  counters, and any queued continuation. `SetGoal` rejects a planning,
+  provider-mode, or routine-run chat; entering Plan or Provider Mode
+  rejects a chat with any goal state.
+- **Usage books through `record_immediate` under a new `goal-check`
+  kind** — never the Turn's capture buffer, whose batch settled before the
+  verifier ran (the Title task's precedent).
+- **The UI is a slash entry plus a composer chip, not a mode.** `/goal`
+  joins `ListCommands` with an input hint. `/goal <objective>` arms the
+  goal and sends the objective as the first Turn's message — the
+  objective IS the task, and `SetGoal` rides after createChat, before the
+  queue (the plan enter's shape), so the new-chat canvas works and a
+  failed `SetGoal` aborts the send with the directive restored. `/goal
+  off`, `/goal pause`, and `/goal resume` drive the loop on an existing
+  chat. The chip rides `WatchChats` like Plan
+  Mode's, shows the iteration count, and its ×
+  clears. Resume from `paused` or `blocked` sets `active`, grants a fresh
+  budget (the counters reset), and enqueues a continuation when the chat
+  is idle, so the loop visibly restarts. Goal
+  mode changes no tool gating, no system prompt, and no input behavior —
+  it is a process attached to the chat, not a state the user is in.
+
+## Consequences
+
+The loop runs with no new transport, store, or wire type beyond the
+chat-row field and the queue flag: state rides `WatchChats`, verdicts ride
+`Notice` rows old builds already render, and the continuation is a queue
+row the user can inspect, edit, or delete. The verifier's one pass per
+evaluated Turn is billed visibly under its own usage kind. A goal never
+survives what should kill it (a missing model clears it; an interrupt
+pauses it), and never spins past the iteration cap even if the verifier
+keeps finding "one more thing". Adding a `MessagePart` variant was
+considered for structured verdicts and rejected: it would touch parts,
+schema, salvage, and every renderer for a row `Notice` already expresses,
+and old builds would read the new kind through their unknown-kind fallback.
+A configurable verifier model and a goal queue (`/goal next`) are
+deliberate follow-ups, not part of this ADR. The verifier-model half
+landed (2026-10): `goal-settings.json` + `GetGoalSettings`/
+`SaveGoalSettings` (the Title-settings pattern), a pinned lowest
+reasoning level, and a silent fallback to the chat's own model when the
+configured one cannot be served — the decision's reasoning (a separate,
+ideally cross-provider judge catches what the worker misses) holds
+unchanged.

@@ -386,6 +386,7 @@ impl EngineService {
                     missed_fires: fire.missed_fires,
                     manual: fire.manual,
                 }),
+                goal: None,
             });
         let started = self
             .runtime

@@ -15,6 +15,15 @@ use holt_proto::{SkillListing, SkillRoot, SlashCommand};
 /// AGENTS.md itself. Bundled, never read from the filesystem.
 pub(crate) const INIT_PROMPT: &str = include_str!("init_prompt.md");
 
+/// The mode directives' identity glyphs (the state card's icons): the slash
+/// menu's rows and the composer's directive chip share them, so picking
+/// `/goal` reads the same as the goal card it arms.
+pub(crate) const MODE_COMMANDS: [(&str, &str); 3] = [
+    ("goal", crate::icons::TARGET),
+    ("plan", crate::icons::CHECKLIST),
+    ("provider", crate::icons::CLOUD),
+];
+
 /// What the composer learned from one input string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Parsed {
@@ -26,8 +35,8 @@ pub(crate) enum Parsed {
     /// `/compact` with arguments — still intercepted, with the usage
     /// message for the composer to surface.
     MalformedCompact,
-    /// `/plan [<task>]` — intercepted; the raw directive never becomes
-    /// prompt text (ADR-0025).
+    /// `/plan [off | <task>]` — intercepted; the raw directive never
+    /// becomes prompt text (ADR-0025).
     Plan { action: PlanAction },
     /// `/init` — intercepted; the send path swaps it for [`INIT_PROMPT`]
     /// and queues that as an ordinary message.
@@ -38,6 +47,24 @@ pub(crate) enum Parsed {
     /// `/provider [off | <task>]` — Provider Mode (ADR-0037); the raw
     /// directive never becomes prompt text.
     Provider { action: ProviderAction },
+    /// `/goal` forms (ADR-0044); the raw directive never becomes prompt text.
+    Goal { action: GoalAction },
+    /// `/goal` with nothing after it — intercepted, with the usage message
+    /// for the composer to surface.
+    MalformedGoal,
+}
+
+/// One `/goal` form (ADR-0044).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GoalAction {
+    /// `/goal <objective>` — set or replace the chat's goal.
+    Set(String),
+    /// `/goal off` — drop it (queued continuations are swept).
+    Clear,
+    /// `/goal pause` / `/goal resume` — stop or restart the loop while
+    /// keeping the objective.
+    Pause,
+    Resume,
 }
 
 /// One `/plan` form (ADR-0025).
@@ -45,6 +72,9 @@ pub(crate) enum Parsed {
 pub(crate) enum PlanAction {
     /// `/plan` — enter Plan Mode on the current chat.
     Enter,
+    /// `/plan off` — leave Plan Mode on the current chat (or drop the
+    /// canvas draft).
+    Exit,
     /// `/plan <task>` — enter Plan Mode and send the task as the first
     /// planning input.
     Task(String),
@@ -83,6 +113,19 @@ pub(crate) enum SlashCandidate {
 }
 
 impl SlashCandidate {
+    /// The row's identity glyph: skills carry the cube; a mode directive
+    /// carries its state-card icon, any other command the generic glyph.
+    pub(crate) fn icon(&self) -> &'static str {
+        match self {
+            SlashCandidate::Skill { .. } => crate::icons::CUBE,
+            SlashCandidate::Command { name, .. } => MODE_COMMANDS
+                .iter()
+                .find(|(command, _)| command == name)
+                .map(|(_, icon)| *icon)
+                .unwrap_or(crate::icons::COMMAND),
+        }
+    }
+
     /// What accepting fills into the composer: the skill's linked mention
     /// form `[$name](SKILL.md path)` (ADR-0035) — ready for surrounding
     /// instructions and submit — or `/name` for a command (`/compact` and
@@ -212,9 +255,9 @@ fn parse_compact(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/plan` forms (ADR-0025): bare `/plan` enters, and `/plan <task>` enters
-/// with the task as the first planning input. `/planner`-style longer words and mid-text
-/// directives stay ordinary text.
+/// `/plan` forms (ADR-0025): bare `/plan` enters, `/plan off` leaves, and
+/// `/plan <task>` enters with the task as the first planning input.
+/// `/planner`-style longer words and mid-text directives stay ordinary text.
 fn parse_plan(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/plan") else {
         return parse_init(text);
@@ -229,9 +272,12 @@ fn parse_plan(text: &str) -> Parsed {
         return Parsed::Plain;
     }
     let rest = rest.trim();
-    Parsed::Plan {
-        action: PlanAction::Task(rest.to_string()),
-    }
+    let action = if rest == "off" {
+        PlanAction::Exit
+    } else {
+        PlanAction::Task(rest.to_string())
+    };
+    Parsed::Plan { action }
 }
 
 /// `/init` takes no arguments (same shape as `/compact`);
@@ -249,10 +295,11 @@ fn parse_init(text: &str) -> Parsed {
     Parsed::Plain
 }
 
-/// `/provider` forms (ADR-0037), shaped like `/plan` plus `off`.
+/// `/provider` forms (ADR-0037): bare enters, `off` leaves, the rest is the
+/// first task.
 fn parse_provider(text: &str) -> Parsed {
     let Some(rest) = text.trim_start().strip_prefix("/provider") else {
-        return Parsed::Plain;
+        return parse_goal(text);
     };
     if rest.trim().is_empty() {
         return Parsed::Provider {
@@ -269,6 +316,29 @@ fn parse_provider(text: &str) -> Parsed {
         ProviderAction::Task(rest.to_string())
     };
     Parsed::Provider { action }
+}
+
+/// `/goal` forms (ADR-0044): `/goal <objective>` sets, `off` clears,
+/// `pause`/`resume` drive the loop. A bare `/goal` is the usage message;
+/// `/goalkeeper`-style longer words stay ordinary text.
+fn parse_goal(text: &str) -> Parsed {
+    let Some(rest) = text.trim_start().strip_prefix("/goal") else {
+        return Parsed::Plain;
+    };
+    if rest.trim().is_empty() {
+        return Parsed::MalformedGoal;
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return Parsed::Plain;
+    }
+    let rest = rest.trim();
+    let action = match rest {
+        "off" => GoalAction::Clear,
+        "pause" => GoalAction::Pause,
+        "resume" => GoalAction::Resume,
+        _ => GoalAction::Set(rest.to_string()),
+    };
+    Parsed::Goal { action }
 }
 
 #[cfg(test)]
@@ -300,6 +370,12 @@ mod tests {
             parse("  /plan   "),
             Parsed::Plan {
                 action: PlanAction::Enter
+            }
+        );
+        assert_eq!(
+            parse("/plan off"),
+            Parsed::Plan {
+                action: PlanAction::Exit
             }
         );
         assert_eq!(
@@ -337,6 +413,22 @@ mod tests {
         );
         assert_eq!(parse("/providers"), Parsed::Plain);
         assert_eq!(parse("please /provider"), Parsed::Plain);
+    }
+
+    #[test]
+    fn recognizes_goal_forms() {
+        let goal = |action| Parsed::Goal { action };
+        assert_eq!(
+            parse("/goal ship the login page"),
+            goal(GoalAction::Set("ship the login page".into()))
+        );
+        assert_eq!(parse("  /goal  off "), goal(GoalAction::Clear));
+        assert_eq!(parse("/goal pause"), goal(GoalAction::Pause));
+        assert_eq!(parse("/goal resume"), goal(GoalAction::Resume));
+        assert_eq!(parse("/goal"), Parsed::MalformedGoal);
+        assert_eq!(parse("/goal   "), Parsed::MalformedGoal);
+        assert_eq!(parse("/goalkeeper"), Parsed::Plain);
+        assert_eq!(parse("please /goal off"), Parsed::Plain);
     }
 
     #[test]
@@ -412,6 +504,32 @@ mod tests {
         // Filtering matches name+description for both sources.
         assert!(candidates[1].filter_label().contains("Grill a plan."));
         assert!(candidates[0].filter_label().starts_with("compact"));
+    }
+
+    #[test]
+    fn mode_commands_carry_their_state_card_icons() {
+        let icon_of = |name: &str| {
+            SlashCandidate::Command {
+                name: name.into(),
+                description: String::new(),
+                input_hint: None,
+            }
+            .icon()
+        };
+        assert_eq!(icon_of("goal"), crate::icons::TARGET);
+        assert_eq!(icon_of("plan"), crate::icons::CHECKLIST);
+        assert_eq!(icon_of("provider"), crate::icons::CLOUD);
+        assert_eq!(icon_of("compact"), crate::icons::COMMAND);
+        assert_eq!(
+            SlashCandidate::Skill {
+                name: "grill".into(),
+                description: String::new(),
+                file: "/roots/grill/SKILL.md".into(),
+                root: SkillRoot::Personal,
+            }
+            .icon(),
+            crate::icons::CUBE
+        );
     }
 
     /// The Home space never offers `/init` (ADR-0039): the flag drops that

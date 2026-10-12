@@ -317,6 +317,21 @@ pub struct PendingMessage {
     pub skill_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_instructions: Option<String>,
+    /// Goal mode (ADR-0044): this row is the verifier's continuation, not a
+    /// user-typed message. Deleting it pauses the goal; `ClearGoal`/pausing
+    /// sweeps every flagged row. Additive — queue files from before goal
+    /// mode decode with `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_continuation: bool,
+    /// What queued a goal continuation (ADR-0044): the transcript entry and
+    /// the queue row draw the loop row from it — never by parsing the
+    /// prompt. `None` on every other row and on continuations queued before
+    /// the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_round: Option<crate::GoalRoundKind>,
+    /// The verifier's missing piece the round carries (empty on a resume).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub goal_reason: String,
     pub submitted_at: i64,
     pub error: Option<String>,
 }

@@ -64,28 +64,13 @@ handling, deferred responses, prompt-cache metadata, and usage accounting.
 - Rust 1.88 or newer
 - Network access only for live provider requests or OAuth flows
 
-### Build and run the offline examples
+### Build
 
 From the repository root:
 
 ```bash
 cargo build
-
-# In-memory telemetry with nested spans
-cargo run --example telemetry_basic
-
-# A scripted agent turn using the credential-free faux provider
-cargo run --example agent_core_basic
 ```
-
-The agent example also records the conversation as a v4 JSONL session in a
-temporary directory and prints the persisted records.
-
-The examples are available in [`examples/`](examples/):
-
-- [`telemetry_basic.rs`](examples/telemetry_basic.rs) — basic span creation
-- [`agent_core_basic.rs`](examples/agent_core_basic.rs) — agent events, a faux
-  provider, and JSONL session persistence
 
 ## Use it as a library
 
@@ -203,7 +188,6 @@ src/
 ├── ai/                        # providers, streaming, models, auth, images
 ├── agent/                     # agent loop and harness
 └── bin/pi-ai.rs               # OAuth helper binary
-examples/                      # runnable offline examples
 tests/all/                     # single integration target: parity,
                                # conformance, and live-gated suites
 tests/goldens/                 # serialized-output fixtures from the port
@@ -211,7 +195,7 @@ tests/goldens/                 # serialized-output fixtures from the port
 
 ## Verification
 
-Run the focused examples while developing, then the full checks from the
+Run the focused test suites while developing, then the full checks from the
 workspace root:
 
 ```bash

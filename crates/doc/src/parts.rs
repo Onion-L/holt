@@ -108,6 +108,10 @@ pub enum MessageStatus {
     Aborted,
 }
 
+// The goal loop's tags live in holt-proto (the queue row carries the round
+// too); re-exported so doc readers name them from here.
+pub use holt_proto::{GoalEvent, GoalRoundKind};
+
 /// Lifecycle of a spawned subagent, carried on its spawn chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -403,6 +407,23 @@ pub enum MessagePart {
     Notice {
         id: String,
         message: String,
+        /// Set on the goal loop's lifecycle rows (ADR-0044): which
+        /// transition the row records, so readers style it from data, never
+        /// by parsing `message`. Absent on every other notice and on goal
+        /// rows written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal: Option<GoalEvent>,
+    },
+    /// The loop's own marker on a goal continuation's user entry (ADR-0044):
+    /// what queued this Turn and the verifier's missing piece, as data.
+    /// Readers draw the entry as a loop row from it; the model never sees
+    /// it (the prompt text is the entry's text part). Old readers fall back
+    /// to an empty text part.
+    GoalRound {
+        id: String,
+        round: GoalRoundKind,
+        #[serde(default)]
+        reason: String,
     },
     /// The Compaction divider (ADR-0011): marks where the model's verbatim
     /// memory begins. The Transcript never loses rows — this row is
@@ -494,6 +515,7 @@ impl MessagePart {
             | MessagePart::Skill { id, .. }
             | MessagePart::Error { id, .. }
             | MessagePart::Notice { id, .. }
+            | MessagePart::GoalRound { id, .. }
             | MessagePart::CompactionDivider { id, .. }
             | MessagePart::PlanApproval { id, .. }
             | MessagePart::ModelProposal { id, .. }
@@ -534,6 +556,7 @@ impl MessagePart {
             MessagePart::Error { message, .. } | MessagePart::Notice { message, .. } => {
                 message.len()
             }
+            MessagePart::GoalRound { reason, .. } => reason.len() + 8,
             MessagePart::CompactionDivider { summary, .. } => summary.len(),
             // The state rides the estimate: pending and settled cards
             // differ here, which is what the transcript's entry

@@ -1338,6 +1338,7 @@ rename to new_name.rs
             worktree: None,
             provider_mode: false,
             routine_run: None,
+            goal: None,
         }
     }
 

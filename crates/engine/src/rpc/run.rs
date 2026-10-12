@@ -22,7 +22,7 @@ impl EngineService {
     /// swapped in — the one shape every engine-side enqueue uses (the
     /// composer's sends arrive pre-built; the plan follow-up and the Key
     /// request's settle notices build here).
-    pub(super) fn queued_run_request(
+    pub(crate) fn queued_run_request(
         config: &holt_proto::ChatConfig,
         prompt: &str,
         cwd: String,
@@ -151,6 +151,7 @@ impl EngineService {
                     provider_mode: false,
                     worktree: Some(spec.clone()),
                     routine_run: None,
+                    goal: None,
                 }),
             }
         }
@@ -490,11 +491,16 @@ impl EngineService {
                     if current != prompt {
                         prompt = current.clone();
                         preview = current.clone();
-                        // The queued entry's transcript shape is exactly one text part.
-                        parts = vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: current.clone(),
-                        }];
+                        // The queued entry's transcript shape is one text
+                        // part, plus a goal continuation's round tag.
+                        parts.retain(|part| !matches!(part, MessagePart::Text { .. }));
+                        parts.insert(
+                            0,
+                            MessagePart::Text {
+                                id: "t0".into(),
+                                text: current.clone(),
+                            },
+                        );
                         title_prompt = Some(current);
                     }
                     mentions = true;
@@ -897,6 +903,11 @@ impl EngineService {
                 ));
             }
             let mut replacement = latest.clone();
+            // An edited continuation is the user's own words now: it loses
+            // the loop's round tag and draws as an ordinary bubble.
+            replacement
+                .parts
+                .retain(|part| !matches!(part, MessagePart::GoalRound { .. }));
             let mut replaced = false;
             for part in &mut replacement.parts {
                 if let MessagePart::Text { text, .. } = part {
@@ -1195,8 +1206,15 @@ impl EngineService {
             if chat.is_removed() {
                 return Err(RpcError::Failed("chat was deleted".into()));
             }
+            let was_goal_continuation = queue.is_goal_continuation(message_id);
             queue.delete(message_id)?;
-            queue.snapshot()
+            let snapshot = queue.snapshot();
+            drop(queue);
+            if was_goal_continuation {
+                // Deleting the loop's next step is a stop request (ADR-0044).
+                crate::goal::pause_for_deleted_continuation(self, &chat);
+            }
+            snapshot
         };
         RpcReply::value(&snapshot)
     }

@@ -86,3 +86,11 @@ dialog and fixing its layout — the history, key-order, and modal-in-modal
 problems are structural; mounting the catalog tools in every chat —
 ADR-0030's prompt-injection reason; and keeping proposals in memory — cards
 in a persisted history would dead-end after a restart.
+
+Amendment (2026-10-11): the composer's Plan and Provider footer chips are
+gone. The modes are entered and left through the composer's directives —
+`/provider` and `/provider off`, `/plan` and `/plan off` — so the footer
+carries no mode flag chips and the exit no longer reports through
+`PickerEvent`; the engine RPCs and the transcript's cards are unchanged.
+The exits' button forms live on the top-right chat-state card (the Goal
+card's column), keyed to the chat row.

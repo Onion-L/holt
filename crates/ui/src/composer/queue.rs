@@ -592,6 +592,15 @@ impl Composer {
                                 // sent bubbles.
                                 let (title, references) = split_pending_prompt(item)
                                     .unwrap_or_else(|| ("/compact".to_string(), Vec::new()));
+                                // A `/goal` arming send queues the objective
+                                // plus the marker line: the row shows the
+                                // objective only, like its sent bubble.
+                                let title = crate::goal::strip_block(&title).unwrap_or(title);
+                                // A goal continuation (ADR-0044) reads as the
+                                // loop's round, never its machine prompt — the
+                                // transcript's loop-row projection.
+                                let goal_round = item.goal_round;
+                                let goal_reason = item.goal_reason.clone();
                                 let editing =
                                     editing_id.as_deref() == Some(item.message_id.as_str());
                                 let row = div()
@@ -648,6 +657,36 @@ impl Composer {
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(6.0));
+                                                if let Some(round) = goal_round.as_ref() {
+                                                    return el.child(
+                                                        cell.child(
+                                                            crate::icons::icon(
+                                                                crate::icons::TARGET,
+                                                            )
+                                                            .size(px(12.0))
+                                                            .flex_none()
+                                                            .text_color(theme.text_muted),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_none()
+                                                                .text_color(theme.text)
+                                                                .child(crate::goal::round_label(
+                                                                    round,
+                                                                )),
+                                                        )
+                                                        .when(!goal_reason.is_empty(), |cell| {
+                                                            cell.child(
+                                                                div()
+                                                                    .min_w_0()
+                                                                    .flex_shrink(1.0)
+                                                                    .truncate()
+                                                                    .text_color(theme.text_muted)
+                                                                    .child(goal_reason.clone()),
+                                                            )
+                                                        }),
+                                                    );
+                                                }
                                                 if !references.is_empty() {
                                                     cell = cell.child(
                                                         crate::icons::icon(crate::icons::PAPERCLIP)
@@ -743,7 +782,11 @@ impl Composer {
                                 }
                                 let delete = queue_row_action(
                                     format!("queue-delete-{}", item.message_id),
-                                    "Delete queued message",
+                                    if item.goal_continuation {
+                                        "Delete — pauses the goal"
+                                    } else {
+                                        "Delete queued message"
+                                    },
                                     crate::icons::TRASH_BIN_MINIMALISTIC,
                                     theme.glass_hover(),
                                     theme.text_muted,

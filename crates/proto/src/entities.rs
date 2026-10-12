@@ -163,6 +163,30 @@ pub struct TitleSettingsState {
     pub warning: Option<String>,
 }
 
+/// Engine-owned goal-verifier configuration (ADR-0044 follow-up): the
+/// optional provider-qualified model the goal loop's verification pass
+/// rides instead of the chat's own. `None` — the default — keeps the
+/// zero-config behavior: every chat's verifier runs on its own model.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSettings {
+    /// Provider-qualified model id (`"kimi/k2"`); `None` = the chat's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+}
+
+/// Goal settings plus the engine's live validation view of them — the
+/// reply shape of both the read and the save RPC. A warning (missing
+/// provider credentials) never blocks goal loops: the verifier silently
+/// falls back to the chat's own model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSettingsState {
+    pub settings: GoalSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 /// One search backend the Settings picker offers (ADR-0023), built-in or
 /// user-defined:
 /// `id` is both the backend kind and its entry id, `name` is its label,
@@ -327,6 +351,12 @@ pub struct Chat {
     /// other chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine_run: Option<crate::RoutineRunMarker>,
+    /// Goal mode (ADR-0044): the chat's durable objective and its loop
+    /// state. `None` — no goal was ever set, or the verifier judged the
+    /// last one complete. Restored by restart; reconciliation at boot
+    /// pauses an `Active` goal whose queue holds no continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<ChatGoalState>,
 }
 
 /// A chat's Plan Mode state (ADR-0025): the permission mode captured on
@@ -337,6 +367,90 @@ pub struct Chat {
 #[serde(rename_all = "camelCase")]
 pub struct ChatPlanState {
     pub entry_permission_mode: PermissionMode,
+}
+
+/// Where a chat's goal loop stands (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalStatus {
+    /// Turn settles run the verifier; `CONTINUE` verdicts enqueue the next
+    /// step.
+    Active,
+    /// The loop is stopped but the objective is kept: interrupted or failed
+    /// Turn, a paused queue swallowing the continuation, the caps, or the
+    /// user. `SetGoalPaused(false)` resumes it.
+    Paused,
+    /// The verifier judged the goal unmeetable. Kept so the user sees the
+    /// verdict; resuming re-enters `Active`.
+    Blocked,
+}
+
+/// A chat's Goal Mode state (ADR-0044): the durable objective plus the
+/// loop's counters. There is no verdict history — terminal transitions land
+/// as Transcript Notice rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGoalState {
+    pub text: String,
+    /// The verifier-given short name the card shows instead of the raw
+    /// objective. `None` until the first verifier pass names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The verifier-maintained plan, refreshed on every pass: a step flips
+    /// to `done` only on concrete evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<GoalStep>,
+    pub status: GoalStatus,
+    /// Continuations enqueued so far (the chip's "round n").
+    pub iteration: u32,
+    /// Consecutive Succeeded Turns with no tool call and no change set.
+    pub no_progress: u32,
+    /// Consecutive evaluation failures (provider error or garbled verdict);
+    /// a parsed verdict resets it.
+    pub eval_failures: u32,
+    pub started_at: DateTime<Utc>,
+    /// The last verdict's one-line reason, surfaced on the chip's menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reason: Option<String>,
+    /// When a continuation last spelled the objective out verbatim in the
+    /// History (epoch millis). `None` until the first one does — SetGoal can
+    /// ride any send, so the arming message is not assumed to carry it. A
+    /// compaction summary newer than this may have folded the objective
+    /// away, so the next continuation restates it in full; otherwise
+    /// continuations point back at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_stated_at: Option<i64>,
+}
+
+/// One step of the goal's verifier-maintained plan (ADR-0044).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalStep {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+}
+
+/// Which goal-loop transition a lifecycle notice records (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalEvent {
+    Achieved,
+    Blocked,
+    Paused,
+    Cleared,
+}
+
+/// What queued one goal-loop continuation (ADR-0044).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "n")]
+pub enum GoalRoundKind {
+    /// A `CONTINUE` verdict queued round `n` (the card's "round n").
+    Continue(u32),
+    /// The user resumed a paused or blocked goal.
+    Resume,
+    /// The verifier failed before reaching a verdict; the loop keeps going.
+    Retry,
 }
 
 /// The `GetPlanMode` reply: the chat's Plan Mode view.
@@ -1225,6 +1339,47 @@ mod tests {
         assert_eq!(value["worktree"]["repoPath"], "/repo");
         assert_eq!(value["worktree"]["base"], "main");
         assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), bound);
+    }
+
+    #[test]
+    fn goal_state_name_and_steps_are_additive() {
+        // Rows stored before the verifier named goals and kept their plan
+        // decode with `name: None` and no steps.
+        let legacy = json!({
+            "text": "ship the login page",
+            "status": "active",
+            "iteration": 2,
+            "noProgress": 0,
+            "evalFailures": 0,
+            "startedAt": "2026-10-10T00:00:00Z"
+        });
+        let goal: ChatGoalState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(goal.name, None);
+        assert!(goal.steps.is_empty());
+
+        let named = ChatGoalState {
+            name: Some("Ship the login page".into()),
+            steps: vec![
+                GoalStep {
+                    text: "Build the form".into(),
+                    done: true,
+                },
+                GoalStep {
+                    text: "Add tests".into(),
+                    done: false,
+                },
+            ],
+            ..goal
+        };
+        let value = serde_json::to_value(&named).unwrap();
+        assert_eq!(value["name"], "Ship the login page");
+        assert_eq!(value["steps"][0]["text"], "Build the form");
+        assert_eq!(value["steps"][0]["done"], true);
+        assert_eq!(value["steps"][1]["done"], false);
+        assert_eq!(
+            serde_json::from_value::<ChatGoalState>(value).unwrap(),
+            named
+        );
     }
 
     #[test]
