@@ -794,45 +794,23 @@ fn goal_status(
     theme: &Theme,
     cx: &mut Context<Shell>,
 ) -> AnyElement {
-    let tint = goal_status_tint(phase, theme);
-    // A live loop breathes (the compaction label's pulse); a parked one
-    // holds a steady dot.
+    // A live loop's word breathes (the compaction label's pulse); a parked
+    // one holds still. No dot — the word is the whole signal.
     let live = matches!(phase, LoopPhase::Working | LoopPhase::Checking);
-    let dot_opacity = if live {
+    let opacity = if live {
         let beat = motion::pulse_delta(&motion::HOLT_PULSE, cx.entity_id(), cx);
-        motion::lerp(0.35, 1.0, motion::pulse_wave(beat))
+        motion::lerp(0.5, 1.0, motion::pulse_wave(beat))
     } else {
         1.0
     };
     div()
         .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(6.0))
         .text_size(px(11.0))
         .line_height(px(16.0))
-        .text_color(theme.text_muted)
-        .child(
-            div()
-                .flex_none()
-                .size(px(6.0))
-                .rounded_full()
-                .bg(goal_dot_color(phase, theme))
-                .opacity(dot_opacity),
-        )
-        .child(div().text_color(tint).child(goal_status_label(goal, phase)))
+        .text_color(goal_status_tint(phase, theme))
+        .opacity(opacity)
+        .child(goal_status_label(goal, phase))
         .into_any_element()
-}
-
-/// The status dot: the accent while the loop moves, orange when blocked,
-/// the accent again when it needs the user, faint when parked.
-fn goal_dot_color(phase: LoopPhase, theme: &Theme) -> gpui::Hsla {
-    match phase {
-        LoopPhase::Working | LoopPhase::Checking | LoopPhase::AwaitingAnswer => theme.accent,
-        LoopPhase::Blocked => crate::theme::AccentColor::Orange.primary(theme.appearance),
-        LoopPhase::Queued | LoopPhase::Paused => theme.text_faint,
-    }
 }
 
 /// Blocked reads at a glance (the verifier parked the loop) and an open
