@@ -603,8 +603,11 @@ async fn cleanup_terminates_active_shell_processes() {
     let root = common::create_temp_dir();
     let env = Arc::new(env_for(&root));
     let exec_env = Arc::clone(&env);
+    // `exec` keeps the shell from forking after the marker: a group SIGKILL
+    // that lands while bash is still forking `sleep` misses the new child,
+    // which then holds stdout open for the full 60s.
     let mut execution =
-        tokio::spawn(async move { exec_env.exec("touch started; sleep 60", None).await });
+        tokio::spawn(async move { exec_env.exec("touch started; exec sleep 60", None).await });
     let mut attempts = 0;
     while attempts < 100 && !env.exists("started", None).await.unwrap() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -690,7 +693,7 @@ async fn returns_timeout_errors_for_commands_exceeding_the_timeout() {
     let env = env_for(&root);
     let error = env
         .exec(
-            "sleep 5",
+            "exec sleep 5",
             Some(&ShellExecOptions {
                 timeout: Some(0.01),
                 ..Default::default()
@@ -771,7 +774,7 @@ async fn returns_an_aborted_result_for_aborted_commands() {
         abort_signal: Some(signal.clone()),
         ..Default::default()
     };
-    let execution = env.exec("sleep 5", Some(&options));
+    let execution = env.exec("exec sleep 5", Some(&options));
     signal.cancel();
     let error = execution.await.unwrap_err();
     assert_eq!(

@@ -580,7 +580,7 @@ async fn bash_reports_nonzero_exits_and_timeouts() {
 
     let error = run(
         &create_bash_tool(BashToolOptions::default()),
-        json!({ "command": "sleep 5", "timeout": 0.01 }),
+        json!({ "command": "exec sleep 5", "timeout": 0.01 }),
         &context,
     )
     .await
@@ -602,7 +602,7 @@ async fn bash_preserves_truncated_output_when_a_command_times_out() {
     write_file(
         env_of(&context),
         "slow-output.sh",
-        &format!("printf '%s\\n' \"{lines}\"\nsleep 5\n"),
+        &format!("printf '%s\\n' \"{lines}\"\nexec sleep 5\n"),
     )
     .await;
     std::fs::set_permissions(
