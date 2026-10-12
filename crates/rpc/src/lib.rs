@@ -500,10 +500,64 @@ pub enum RpcError {
     BadParams(String),
     #[error("{0}")]
     Failed(String),
+    /// A failure whose kind a client must branch on: the machine-readable
+    /// [`RpcErrorCode`] rides the wire beside the human-readable message, so
+    /// classification never parses the Display text.
+    #[error("{message}")]
+    Coded {
+        code: RpcErrorCode,
+        message: String,
+    },
     #[error("transport: {0}")]
     Transport(String),
     #[error("connection closed")]
     Closed,
+}
+
+impl RpcError {
+    /// The machine-readable kind, for errors that carry one.
+    pub fn code(&self) -> Option<RpcErrorCode> {
+        match self {
+            RpcError::UnknownMethod(_) => Some(RpcErrorCode::UnknownMethod),
+            RpcError::Coded { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+}
+
+/// Machine-readable failure kinds that ride the wire frame beside the error
+/// text ([`ServerFrame::err_code`]). Wire names are stable strings: an
+/// unknown name parses to `None` and the text still arrives, so a newer
+/// server never breaks an older client's frame decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcErrorCode {
+    UnknownMethod,
+    /// A turn-diff scope on a chat whose Turn has no recorded baseline
+    /// (never ran, engine restarted).
+    NoTurnRecorded,
+    /// A stored model proposal whose touched providers moved before the
+    /// Write button executed (ADR-0029's staleness gate).
+    ProposalStale,
+}
+
+impl RpcErrorCode {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            RpcErrorCode::UnknownMethod => "unknownMethod",
+            RpcErrorCode::NoTurnRecorded => "noTurnRecorded",
+            RpcErrorCode::ProposalStale => "proposalStale",
+        }
+    }
+
+    /// Lenient parse: an unknown wire name is `None`, never an error.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "unknownMethod" => Some(RpcErrorCode::UnknownMethod),
+            "noTurnRecorded" => Some(RpcErrorCode::NoTurnRecorded),
+            "proposalStale" => Some(RpcErrorCode::ProposalStale),
+            _ => None,
+        }
+    }
 }
 
 /// A client-originated frame.
@@ -526,6 +580,10 @@ pub struct ServerFrame {
     pub ok: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub err: Option<String>,
+    /// The failing call's [`RpcErrorCode`] wire name, when it carries one —
+    /// classification without parsing `err`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub err_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -631,6 +689,10 @@ mod tests {
                 }
                 "Never" => Ok(RpcReply::Stream(futures::stream::pending().boxed())),
                 "Boom" => Err(RpcError::Failed("boom".into())),
+                "CodedBoom" => Err(RpcError::Coded {
+                    code: RpcErrorCode::NoTurnRecorded,
+                    message: "no turn recorded for this chat yet".into(),
+                }),
                 other => Err(RpcError::UnknownMethod(other.into())),
             }
         }
@@ -668,6 +730,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::Failed(m) if m == "boom"));
+    }
+
+    #[tokio::test]
+    async fn coded_errors_round_trip_with_their_code() {
+        let client = memory_client(Arc::new(TestService));
+
+        let err = client
+            .call("CodedBoom", serde_json::Value::Null)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(RpcErrorCode::NoTurnRecorded));
+        assert_eq!(err.to_string(), "no turn recorded for this chat yet");
+
+        // UnknownMethod keeps its typed shape (method included) without
+        // relying on the Display prefix alone.
+        let err = client
+            .call("Future", serde_json::Value::Null)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::UnknownMethod(method) if method == "Future"));
+    }
+
+    #[tokio::test]
+    async fn wire_error_decodes_codes_and_tolerates_unknown_names() {
+        use crate::client::wire_error;
+
+        assert!(matches!(
+            wire_error(
+                "no turn recorded for this chat yet".into(),
+                Some("noTurnRecorded".into())
+            ),
+            RpcError::Coded { code: RpcErrorCode::NoTurnRecorded, .. }
+        ));
+        // An unknown code from a newer server degrades to the plain error.
+        assert!(matches!(
+            wire_error("something new".into(), Some("brandNewKind".into())),
+            RpcError::Failed(message) if message == "something new"
+        ));
+        // A code-less frame from an older server still classifies the
+        // legacy prefix.
+        assert!(matches!(
+            wire_error("unknown method: ListFolders".into(), None),
+            RpcError::UnknownMethod(method) if method == "ListFolders"
+        ));
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::{ClientFrame, RpcError, RpcReply, RpcService, ServerFrame};
+use crate::{ClientFrame, RpcError, RpcErrorCode, RpcReply, RpcService, ServerFrame};
 
 /// Serve one connection: read client frames from `inbound`, write server frames to `out`.
 /// Returns when `inbound` closes; all in-flight request tasks are aborted on exit.
@@ -119,12 +119,13 @@ async fn handle_request(
             .await;
         }
         Err(err) => {
-            let _ = send(ServerFrame {
+            let mut frame = ServerFrame {
                 id,
                 err: Some(err.to_string()),
                 ..Default::default()
-            })
-            .await;
+            };
+            frame.err_code = err.code().map(RpcErrorCode::wire_name).map(str::to_owned);
+            let _ = send(frame).await;
         }
     }
 }
