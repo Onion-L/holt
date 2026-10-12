@@ -7,10 +7,27 @@
 //! the same chips. Supported images render as thumbnails; everything else
 //! keeps its badge-style chip.
 
+/// Whether a structured reference still holds a managed image: a chip in
+/// any draft's path references, or a failed submission's frozen payload
+/// (the queue's durable record holds the file only once it accepts). Pure —
+/// unit-tested.
+fn managed_image_held(
+    path: &Path,
+    path_refs: &HashMap<String, Vec<PathRef>>,
+    failed_submissions: &HashMap<String, FailedSubmission>,
+) -> bool {
+    path_refs.values().flatten().any(|r| r.path == path)
+        || failed_submissions
+            .values()
+            .any(|failed| failed.managed_refs.iter().any(|r| r.path == path))
+}
+
 use super::Composer;
+use super::FailedSubmission;
 use super::layout::{REF_CHIP_LABEL_MAX, STRIP_GAP, STRIP_PAD_TOP, STRIP_PAD_X, STRIP_THUMB};
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     App, Context, ObjectFit, PathPromptOptions, SharedString, StyledImage as _, div, img,
@@ -147,6 +164,11 @@ impl Composer {
     /// A staged chip was removed. Managed images are released best-effort
     /// through the engine, which keeps the file if any durable store still
     /// references it — removing one chip never invalidates another use.
+    /// The UI gate is structural: a chip in any draft, or a failed
+    /// submission's frozen payload (the queue's durable record holds the
+    /// file only once it accepts). A managed name is a uuid stem, so a
+    /// hand-typed mention in draft text is not a real reference shape —
+    /// and the engine's durable scan backstops everything post-send.
     pub(super) fn remove_path_ref(&mut self, id: &str, cx: &mut Context<Self>) {
         let mut released: Option<PathBuf> = None;
         if let Some(list) = self.path_refs.get_mut(&self.current_key) {
@@ -163,26 +185,7 @@ impl Composer {
         cx.notify();
         if let Some(path) = released
             && !self.sending
-            && !self.path_refs.values().flatten().any(|r| r.path == path)
-            && !self.input.read(cx).text().contains(
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .as_ref(),
-            )
-            && !self.drafts.values().any(|text| {
-                text.contains(
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .as_ref(),
-                )
-            })
-            && !self.failed_submissions.values().any(|(_, payload)| {
-                payload
-                    .to_string()
-                    .contains(path.to_string_lossy().as_ref())
-            })
+            && !managed_image_held(&path, &self.path_refs, &self.failed_submissions)
             && let Some(engine) = self.state.read(cx).engine().cloned()
         {
             cx.spawn(async move |_, _cx| {
@@ -493,6 +496,49 @@ impl Composer {
 mod tests {
     use super::*;
     use crate::state::AppState;
+
+    #[test]
+    fn a_managed_image_is_held_by_chips_and_frozen_retries_only() {
+        let image = PathBuf::from("/holt/images/abc.png");
+        let reference = |path: &Path| PathRef {
+            id: "r1".into(),
+            path: path.to_path_buf(),
+            is_dir: false,
+            managed: true,
+        };
+        let empty_refs: HashMap<String, Vec<PathRef>> = HashMap::new();
+        let empty_failed: HashMap<String, FailedSubmission> = HashMap::new();
+
+        // Nothing references it: releasable.
+        assert!(!managed_image_held(&image, &empty_refs, &empty_failed));
+
+        // A chip in any draft holds it.
+        let with_chip = HashMap::from([("chat-2".to_string(), vec![reference(&image)])]);
+        assert!(managed_image_held(&image, &with_chip, &empty_failed));
+
+        // A failed submission's frozen payload holds it — the queue's
+        // durable record exists only once the retry is accepted.
+        let with_failed = HashMap::from([(
+            "chat-1".to_string(),
+            FailedSubmission {
+                text: "look at this".into(),
+                params: serde_json::json!({}),
+                managed_refs: vec![reference(&image)],
+            },
+        )]);
+        assert!(managed_image_held(&image, &empty_refs, &with_failed));
+
+        // A different image in the failed payload holds only itself.
+        let other = HashMap::from([(
+            "chat-1".to_string(),
+            FailedSubmission {
+                text: String::new(),
+                params: serde_json::json!({}),
+                managed_refs: vec![reference(&PathBuf::from("/holt/images/other.png"))],
+            },
+        )]);
+        assert!(!managed_image_held(&image, &empty_refs, &other));
+    }
 
     /// Ticket 09's composer seam: a dragged/attached tree entry stages as a
     /// path reference — bound to its live target, deduplicated per draft —

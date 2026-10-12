@@ -2,6 +2,7 @@
 //! durable-delivery retries, and Stop/interrupt.
 
 use super::Composer;
+use super::FailedSubmission;
 use super::send_mode::{
     EscInterruptOutcome, SendButtonMode, composer_has_content, esc_interrupt_outcome,
     send_button_mode,
@@ -119,7 +120,7 @@ impl Composer {
         if self
             .failed_submissions
             .get(&self.current_key)
-            .is_some_and(|(original, _)| original == &text)
+            .is_some_and(|failed| failed.text == text)
         {
             self.retry_submission(cx);
             return;
@@ -444,8 +445,8 @@ impl Composer {
         let retry = self
             .failed_submissions
             .get(&chat_id)
-            .filter(|(previous, _)| previous == &typed)
-            .map(|(_, params)| params.clone());
+            .filter(|failed| failed.text == typed)
+            .map(|failed| failed.params.clone());
         let keeps_stash = travels_alone || retry.is_some();
         // `/compact` (and a retry, per above) leaves path references staged
         // for a later message; ordinary messages and skill invocations
@@ -468,6 +469,21 @@ impl Composer {
             })
         };
         let submission_text = typed.clone();
+        // A retry re-freezes the original payload; its managed references
+        // carry over structurally from the failed entry (the chips were
+        // consumed by the first attempt).
+        let failed_managed_refs = if retry.is_some() {
+            self.failed_submissions
+                .get(&chat_id)
+                .map(|failed| failed.managed_refs.clone())
+                .unwrap_or_default()
+        } else {
+            references
+                .iter()
+                .filter(|reference| reference.managed)
+                .cloned()
+                .collect()
+        };
         // Inline `@` mention links become readable absolute paths in place
         // BEFORE anything else folds in — the internal `holt-file:` scheme
         // never reaches the queue, the Transcript, or the model.
@@ -757,7 +773,14 @@ impl Composer {
                 // skill invocations, and Compaction alike.
                 if let Some(retry) = retry { params = retry; }
                 this.update(cx, |composer, _| {
-                    composer.failed_submissions.insert(chat_id.clone(), (submission_text.clone(), params.clone()));
+                    composer.failed_submissions.insert(
+                        chat_id.clone(),
+                        FailedSubmission {
+                            text: submission_text.clone(),
+                            params: params.clone(),
+                            managed_refs: failed_managed_refs.clone(),
+                        },
+                    );
                 }).ok();
                 // Deadline-bounded: QueueCommand is a local write, but a
                 // parked backend handle can stall forever —

@@ -126,9 +126,10 @@ impl Composer {
             return;
         }
         let chat_id = self.current_key.clone();
-        let Some((text, params)) = self.failed_submissions.get(&chat_id).cloned() else {
+        let Some(failed) = self.failed_submissions.get(&chat_id).cloned() else {
             return;
         };
+        let (text, params) = (failed.text, failed.params);
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
