@@ -7,7 +7,7 @@ Status: Accepted
 pi-core-rs deliberately ships no web tools (upstream's stance: the model
 can curl), so holt's agent had no web capability. A five-way survey of
 Claude Code, Codex, opencode, Kimi CLI, and pi
-(`docs/research/web-tools-2026-09-10.md`) framed the choices: summarize
+(`docs/research/web-tools.md`) framed the choices: summarize
 versus full text, provider-locked versus pluggable search, and where
 fetch sits relative to the ADR-0014 permission gate.
 

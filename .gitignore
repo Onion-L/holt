@@ -10,12 +10,3 @@ node_modules
 .wrangler
 build/
 edge/dist/
-
-# Strip upstream git history from nested vendored crates.
-vendor/**/.git
-docs/research/
-docs/spark/
-.agents/skills/spark/
-
-video/
-/evals/
