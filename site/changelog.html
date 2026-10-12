@@ -110,6 +110,34 @@
 
   <ol class="vers">
 
+    <li class="ver" id="v0.5.0">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.5.0">0.5.0</a>
+        <span class="vdate mono">Oct 12, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>Goal mode: /goal &lt;objective&gt; arms a verified objective loop that keeps the agent working at Turn settle</li>
+            <li>The goal card rides the composer, folded to its glyph and phase, and shows what the loop is doing between and during Turns</li>
+            <li>Goal continuations draw as loop rows instead of user bubbles; the sent objective chips inline in the transcript</li>
+            <li>A configurable cross-provider goal verifier model</li>
+            <li>Plan and provider modes ride slash directives, with a top-right state card</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>The goal loop stays alive through verifier failures and pauses when a round fails to enqueue</li>
+            <li>A /goal send with path refs keeps its chip and hides the marker</li>
+            <li>The goal band joins the turn&rsquo;s footer strip without claiming a prompt&rsquo;s or another band&rsquo;s</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.4.2">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.4.2">0.4.2</a>
