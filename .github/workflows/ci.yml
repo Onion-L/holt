@@ -15,6 +15,12 @@ concurrency:
 jobs:
   check:
     runs-on: macos-latest
+    env:
+      # sccache caches per-rustc-call by content hash, so the vendored gpui
+      # crates (path deps outside the workspace, which rust-cache evicts)
+      # stop recompiling on every run.
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
 
     steps:
       - name: Check out repository
@@ -25,8 +31,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
