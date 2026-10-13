@@ -1,5 +1,6 @@
-# Deploy the landing page (site/) to the `holt` Cloudflare Worker on push.
-# Needs the CLOUDFLARE_API_TOKEN repo secret ("Edit Cloudflare Workers" template).
+# Deploy the landing page (site/, built with Astro) to the `holt` Cloudflare
+# Worker on push. Needs the CLOUDFLARE_API_TOKEN repo secret ("Edit Cloudflare
+# Workers" template).
 name: deploy
 
 on:
@@ -20,7 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Build
+        working-directory: site
+        run: |
+          npm ci
+          npm run build
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: site
           wranglerVersion: "4" # assets-only deploy needs wrangler 4 (no main entry-point)

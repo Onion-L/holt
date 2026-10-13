@@ -1,0 +1,259 @@
+---
+import HeroController from "../components/HeroController";
+---
+
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Holt is an agent.</title>
+        <meta
+            name="description"
+            content="Holt is a native desktop coding agent for macOS. Every step visible, every line yours to review."
+        />
+        <meta property="og:title" content="Holt is an agent." />
+        <meta
+            property="og:description"
+            content="A native desktop coding agent for macOS."
+        />
+        <!-- Crawlers (X, Slack, …) ignore relative URLs; keep these absolute. -->
+        <meta
+            property="og:url"
+            content="https://holt.onionl5236.workers.dev/"
+        />
+        <meta property="og:type" content="website" />
+        <meta
+            property="og:image"
+            content="https://holt.onionl5236.workers.dev/assets/og.png"
+        />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Holt is an agent." />
+        <meta
+            name="twitter:description"
+            content="A native desktop coding agent for macOS."
+        />
+        <meta
+            name="twitter:image"
+            content="https://holt.onionl5236.workers.dev/assets/og.png"
+        />
+        <meta name="theme-color" content="#f6f1e6" />
+        <link rel="icon" type="image/png" href="/assets/favicon.png" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap"
+            rel="stylesheet"
+        />
+        <style is:inline>
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+            }
+            :root {
+                --ink: #17233b;
+                --cream: #f6f1e6;
+                --paper: #fbf7ee;
+                --blue: #0a4c9c;
+                --deep: #072f66;
+                --pink: #e34d83;
+                --grey: #8a867c;
+            }
+            html,
+            body {
+                margin: 0;
+            }
+            body {
+                background: var(--cream);
+                font-family:
+                    Geist,
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    sans-serif;
+                -webkit-font-smoothing: antialiased;
+            }
+            a {
+                color: inherit;
+                text-decoration: none;
+            }
+            img {
+                display: block;
+            }
+            .mono {
+                font-family: "Geist Mono", Menlo, monospace;
+            }
+
+            /* ================= A — Billboard ================= */
+            .va {
+                position: relative;
+                overflow: hidden;
+                min-height: 100vh;
+                color: #fff;
+                display: flex;
+                flex-direction: column;
+            }
+            .va-bg {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                object-position: 50% 40%;
+            }
+            .va-scrim {
+                position: absolute;
+                inset: 0;
+                background: linear-gradient(
+                    180deg,
+                    rgba(5, 25, 55, 0.3),
+                    rgba(5, 25, 55, 0) 32%,
+                    rgba(5, 25, 55, 0) 48%,
+                    rgba(5, 20, 50, 0.66)
+                );
+            }
+            .va-top {
+                position: relative;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 26px clamp(20px, 4vw, 48px);
+            }
+            .va-logo {
+                font:
+                    400 26px Anton,
+                    Impact,
+                    sans-serif;
+                letter-spacing: 0.04em;
+            }
+            .va-nav {
+                display: flex;
+                gap: 26px;
+                font-size: 12.5px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+            .va-nav a {
+                border-bottom: 1px solid transparent;
+                padding-bottom: 2px;
+            }
+            .va-nav a:hover {
+                border-color: #fff;
+            }
+            .va-hero {
+                position: relative;
+                margin-top: auto;
+                padding: 0 clamp(20px, 4.5vw, 64px) clamp(40px, 7vh, 72px);
+            }
+            .va-kicker {
+                margin: 0;
+                font-size: 12px;
+                letter-spacing: 0.18em;
+                text-transform: uppercase;
+                opacity: 0.9;
+            }
+            .va-title {
+                margin: 12px 0 26px;
+                font:
+                    700 clamp(48px, 7.6vw, 104px)/0.98 Geist,
+                    sans-serif;
+                letter-spacing: -0.045em;
+                text-shadow: 0 2px 34px rgba(5, 25, 55, 0.45);
+            }
+            .va-cta {
+                display: flex;
+                gap: 14px;
+                flex-wrap: wrap;
+            }
+            .va-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.5em;
+                padding: 14px 26px;
+                border-radius: 999px;
+                font-weight: 700;
+                font-size: 15px;
+                transition:
+                    transform 0.15s,
+                    box-shadow 0.15s,
+                    background 0.15s;
+            }
+            .va-btn.solid {
+                background: #fff;
+                color: var(--deep);
+            }
+            .va-btn.solid:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 12px 26px rgba(5, 25, 55, 0.35);
+            }
+            .va-btn.ghost {
+                border: 1.5px solid rgba(255, 255, 255, 0.85);
+                color: #fff;
+            }
+            .va-btn.ghost:hover {
+                background: rgba(255, 255, 255, 0.15);
+            }
+            .va-sub {
+                margin: 18px 0 0;
+                font-size: 12px;
+                letter-spacing: 0.05em;
+                opacity: 0.85;
+            }
+            .va-sub a {
+                text-decoration: underline;
+                text-underline-offset: 3px;
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                *,
+                *::before,
+                *::after {
+                    transition-duration: 0s !important;
+                    animation-duration: 0s !important;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <!-- ============ A — Billboard ============ -->
+        <section class="va">
+            <img
+                class="va-bg"
+                src="/assets/hero-coast.jpg"
+                alt="City Pop illustration of a girl with headphones overlooking a sunny coastal highway"
+            />
+            <div class="va-scrim"></div>
+            <header class="va-top">
+                <span class="va-logo">HOLT</span>
+                <nav class="va-nav mono">
+                    <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
+                    <a href="/changelog">Changelog ↗</a>
+                </nav>
+            </header>
+            <div class="va-hero">
+                <h1 class="va-title">Holt is an agent.</h1>
+                <div class="va-cta">
+                    <a
+                        class="va-btn solid"
+                        data-arch="arm64"
+                        href="https://github.com/Onion-L/holt/releases/latest"
+                    >
+                        ↓ Download for macOS
+                    </a>
+                    <a
+                        class="va-btn ghost"
+                        href="https://github.com/Onion-L/holt"
+                    >
+                        Star on GitHub ↗
+                    </a>
+                </div>
+                <p class="va-sub mono">
+                    Apple Silicon &amp; Intel · GPL-3.0 ·{" "}
+                    <a href="/changelog">what's new ↗</a>
+                </p>
+            </div>
+        </section>
+        <HeroController client:load />
+    </body>
+</html>

@@ -1,0 +1,4 @@
+# The Astro build moved the old flat pages to clean routes; keep inbound
+# .html links working.
+/changelog.html /changelog 301
+/og.html /og 301

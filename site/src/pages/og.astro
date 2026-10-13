@@ -1,0 +1,53 @@
+---
+---
+
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="robots" content="noindex" />
+<title>Holt — OG card</title>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=block" rel="stylesheet" />
+<style is:inline>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    --ink: #17233b; --cream: #f6f1e6; --paper: #fffdf8;
+    --blue: #0a4c9c; --deep: #072f66; --pink: #e34d83; --grey: #8a867c; --line: rgba(23,35,59,.14);
+  }
+  html, body { margin: 0; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden; position: relative;
+    font-family: Geist, sans-serif; -webkit-font-smoothing: antialiased;
+    background: var(--cream); color: var(--ink);
+  }
+  a { color: inherit; text-decoration: none; }
+  img { display: block; }
+  .mono { font-family: "Geist Mono", Menlo, monospace; }
+
+  /* ============ A — Billboard ============ */
+  .va { position: absolute; inset: 0; display: block; color: #fff; }
+  .va-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 42%; }
+  .va-scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(5,25,55,.32), rgba(5,25,55,0) 34%, rgba(5,25,55,0) 52%, rgba(5,20,50,.68)); }
+  .va-top { position: absolute; top: 34px; left: 44px; right: 44px; display: flex; justify-content: space-between; align-items: center; }
+  .va-logo { font: 400 28px Anton, Impact, sans-serif; letter-spacing: .04em; }
+  .va-top .mono { font-size: 15px; letter-spacing: .1em; }
+  .va-hero { position: absolute; left: 44px; right: 44px; bottom: 40px; }
+  .va-kicker { margin: 0; font-size: 14px; letter-spacing: .18em; text-transform: uppercase; opacity: .92; }
+  .va-title { margin: 10px 0 0; font: 700 96px/0.98 Geist, sans-serif; letter-spacing: -.045em; text-shadow: 0 2px 30px rgba(5,25,55,.45); }
+</style>
+</head>
+<body>
+<!-- ============ A — Billboard ============ -->
+<section class="va">
+  <img class="va-bg" src="/assets/hero-coast.jpg" alt="" />
+  <div class="va-scrim"></div>
+  <div class="va-top">
+    <span class="va-logo">HOLT</span>
+    <span class="mono">github.com/Onion-L/holt ↗</span>
+  </div>
+  <div class="va-hero">
+    <p class="va-kicker mono">Native coding agent — macOS</p>
+    <h1 class="va-title">Holt is an agent.</h1>
+  </div>
+</section>
+</body>
+</html>

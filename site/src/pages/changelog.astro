@@ -1,112 +1,110 @@
-<!doctype html>
-<!--
-  Holt changelog — the same risograph sheet as the poster, torn into per-version strips.
-  Static, no build step. Preview: open site/changelog.html
-  Keep entries in sync with the tags: `git log v<prev>..v<next> --oneline`.
--->
+---
+import ChangelogController from '../components/ChangelogController';
+---
+
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Holt — Changelog</title>
 <meta name="description" content="Every Holt release: features and fixes, version by version." />
-<meta property="og:title" content="Holt — Changelog." />
-<meta property="og:description" content="Every Holt release: features and fixes, version by version." />
-<!-- Crawlers (X, Slack, …) ignore relative URLs; keep these absolute. -->
-<meta property="og:url" content="https://holt.onionl5236.workers.dev/changelog.html" />
-<meta property="og:type" content="website" />
-<meta property="og:image" content="https://holt.onionl5236.workers.dev/assets/og.png" />
-<meta property="og:image:width" content="1200" />
-<meta property="og:image:height" content="630" />
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Holt — Changelog." />
-<meta name="twitter:description" content="Every Holt release: features and fixes, version by version." />
-<meta name="twitter:image" content="https://holt.onionl5236.workers.dev/assets/og.png" />
-<meta name="theme-color" content="#1a1917" />
-<link rel="icon" type="image/png" href="assets/favicon.png" />
+<link rel="icon" type="image/png" href="/assets/favicon.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet" />
-<style>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Geist:wght@400;700&family=Geist+Mono:wght@500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet" />
+<style is:inline>
   *, *::before, *::after { box-sizing: border-box; }
-  :root { --wall: #1a1917; --paper: #f4efe3; --blue: #0078bf; --pink: #ff48b0; }
+  :root {
+    --ink: #17233b; --cream: #f6f1e6; --paper: #fffdf8;
+    --blue: #0a4c9c; --deep: #072f66; --pink: #e34d83; --grey: #8a867c; --line: rgba(23,35,59,.14);
+  }
   html, body { margin: 0; }
   body {
-    background: var(--wall); min-height: 100vh; padding: 56px 16px 72px; overflow-x: hidden;
     font-family: Geist, -apple-system, BlinkMacSystemFont, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: antialiased; color: var(--ink);
+    background: var(--cream);
   }
   a { color: inherit; text-decoration: none; }
   a:focus-visible { outline: 2px solid var(--pink); outline-offset: 3px; }
   .mono { font-family: "Geist Mono", Menlo, monospace; }
 
-  .sheet {
-    container-type: inline-size; position: relative; isolation: isolate;
-    width: min(760px, 100%); margin: 0 auto; padding: 5cqw 5cqw 6cqw; color: var(--blue);
-    background:
-      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .09 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"),
-      var(--paper);
-    box-shadow: 0 2px 0 #0003, 0 40px 90px -20px #000;
-    transform: rotate(-.6deg);
-  }
-  .tape { position: absolute; top: -14px; width: 120px; height: 30px; background: #ffffff55; box-shadow: 0 1px 2px #0002; z-index: 2; }
-  .tape.l { left: 8%; transform: rotate(-6deg); }
-  .tape.r { right: 8%; transform: rotate(5deg); }
-  .meta { display: flex; justify-content: space-between; font-size: max(10px, 1.6cqw); letter-spacing: .08em; text-transform: uppercase; }
-
-  .title {
-    margin: 6cqw 0 0; text-align: center; letter-spacing: -0.01em; color: var(--blue); mix-blend-mode: multiply;
-    font: 400 24cqw/.8 Anton, Impact, sans-serif;
-  }
-  .title span { color: var(--pink); }
-
-  .note {
-    text-align: right; margin: 2cqw 2cqw 3cqw 0; transform: rotate(-3deg); transform-origin: right;
-    font: italic 400 max(18px, 4.2cqw)/1 "Instrument Serif", serif; color: var(--pink); mix-blend-mode: multiply;
-  }
-  .note::after { content: " ↘"; font-style: normal; font-size: .8em; }
-
+  .wrap { width: min(var(--ww, 760px), 100% - 32px); margin: 0 auto; padding-bottom: 90px; }
   .vers { list-style: none; margin: 0; padding: 0; }
-  .ver { position: relative; border-top: 2px dashed var(--blue); padding: 3.2cqw 0 3cqw; }
-  .ver:first-child::before {
-    content: "✂"; position: absolute; left: 1.2cqw; top: -.62em; font-size: max(14px, 2.4cqw);
-    background: var(--paper); line-height: 1; padding: 0 .2em;
-  }
-
-  .vhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 1cqw 2.4cqw; }
-  .vnum { font: 400 max(44px, 9cqw)/1 Anton, Impact, sans-serif; letter-spacing: -0.01em; color: var(--pink); mix-blend-mode: multiply; }
-  .vnum:hover, .vnum:focus-visible { color: var(--blue); }
-  .vdate { font-size: max(10px, 1.7cqw); letter-spacing: .08em; text-transform: uppercase; }
-  .stamp {
-    align-self: center; padding: .5cqw 1.4cqw; border: 2px solid var(--pink); color: var(--pink);
-    font-size: max(9px, 1.5cqw); letter-spacing: .12em; text-transform: uppercase;
-    transform: rotate(4deg); mix-blend-mode: multiply;
-  }
-
-  .vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(max(240px, 30cqw), 1fr)); gap: 2.4cqw 5cqw; margin-top: 2.2cqw; }
-  .cat { margin: 0 0 1.4cqw; font-size: max(10px, 1.6cqw); font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
-  .cat::before { margin-right: .6em; }
-  .f .cat { color: var(--pink); }
-  .f .cat::before { content: "+"; }
-  .x .cat::before { content: "–"; }
   .vcol ul { margin: 0; padding: 0; list-style: none; }
-  .vcol li { position: relative; padding-left: 2.6cqw; margin-bottom: 1.1cqw; font: 500 max(12px, 1.9cqw)/1.45 "Geist Mono", Menlo, monospace; }
-  .vcol li:last-child { margin-bottom: 0; }
-  .f li::before { content: "+"; position: absolute; left: 0; color: var(--pink); }
-  .x li::before { content: "–"; position: absolute; left: 0; }
+  .vcol li { position: relative; }
 
-  .foot { text-align: center; margin-top: 44px; font-size: 12px; color: #8a867c; letter-spacing: .04em; }
-  .foot a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
-  .foot a:hover { color: var(--paper); }
+  /* shared topbar */
+  .topbar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; letter-spacing: .08em; }
+  .topbar .brand { font: 400 20px Anton, Impact, sans-serif; letter-spacing: .05em; }
+  .topbar nav { display: flex; gap: 22px; text-transform: uppercase; color: #5b6472; }
+  .topbar nav a { border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  .topbar nav a:hover { color: var(--blue); border-color: var(--blue); }
+
+  /* shared head text */
+  .thead p { margin: 0; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--grey); }
+  .thead p b { color: var(--blue); font-weight: 500; }
+
+  /* shared +/– semantics (restyled per variant) */
+  .f .cat { color: var(--pink); }
+  .f li::before { content: "+"; color: var(--pink); }
+  .x li::before { content: "–"; color: var(--grey); }
+
+  .foot { text-align: center; margin-top: 60px; font-size: 11.5px; color: var(--grey); letter-spacing: .04em; }
+  .foot a { text-decoration: underline; text-underline-offset: 3px; }
+  .foot a:hover { color: var(--blue); }
+
+  /* ============ D — Coast road ============ */
+  [data-variant="d"] {
+    --ww: 860px;
+    background: linear-gradient(180deg, #b9d9f0 0%, #e9f4fb 320px, var(--cream) 720px);
+  }
+  [data-variant="d"] .topbar { padding: 26px 2px; width: min(860px, 100% - 32px); margin: 0 auto; }
+  [data-variant="d"] .thead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 14px 0 36px; }
+  [data-variant="d"] .thead h1 { margin: 0; font: 700 clamp(44px, 6.5vw, 68px)/0.95 Geist, sans-serif; letter-spacing: -.045em; }
+  [data-variant="d"] .thead h1 span { color: var(--pink); }
+  [data-variant="d"] .vers { position: relative; padding-left: 36px; }
+  [data-variant="d"] .vers::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; border-left: 2px dashed rgba(10,76,156,.45); }
+  [data-variant="d"] .ver {
+    position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px 26px 24px; margin-bottom: 20px; box-shadow: 0 12px 32px -20px rgba(23,35,59,.35);
+  }
+  [data-variant="d"] .ver::before {
+    content: ""; position: absolute; left: -34px; top: 30px; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--pink); border: 2.5px solid #fff; box-shadow: 0 0 0 2px rgba(10,76,156,.35);
+  }
+  [data-variant="d"] .vhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; }
+  [data-variant="d"] .vnum { font: 700 26px/1 Geist, sans-serif; letter-spacing: -.03em; color: var(--blue); }
+  [data-variant="d"] .vnum:hover { color: var(--pink); }
+  [data-variant="d"] .vdate { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--grey); }
+  [data-variant="d"] .stamp { margin-left: auto; align-self: center; padding: 3px 10px; border: 1.5px solid var(--pink); border-radius: 999px; color: var(--pink); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+  [data-variant="d"] .vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px 40px; margin-top: 16px; }
+  [data-variant="d"] .cat { margin: 0 0 9px; font-size: 10.5px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; }
+  [data-variant="d"] .x .cat { color: #5b6472; }
+  [data-variant="d"] .cat::before { margin-right: .6em; }
+  [data-variant="d"] .f .cat::before { content: "+"; }
+  [data-variant="d"] .x .cat::before { content: "–"; }
+  [data-variant="d"] .vcol li { padding-left: 16px; margin-bottom: 7px; font: 500 12.5px/1.55 "Geist Mono", Menlo, monospace; color: #3c4658; }
+  [data-variant="d"] .vcol li::before { position: absolute; left: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+  }
 </style>
 </head>
-<body>
+<body data-variant="d">
 
-<main class="sheet">
-  <i class="tape l"></i><i class="tape r"></i>
-  <div class="meta mono"><span>Holt</span><span>Release notes</span><span>Vol. <span data-version>x.x.x</span></span></div>
-  <h1 class="title">WHAT&rsquo;S<br /><span>NEW</span></h1>
-  <div class="note">every version, every fix</div>
+<div class="topbar mono">
+  <span class="brand">HOLT</span>
+  <nav>
+    <a href="/">← Back</a>
+    <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
+  </nav>
+</div>
+
+<div class="wrap">
+  <div class="thead">
+    <h1>Changelog<span>.</span></h1>
+  </div>
 
   <ol class="vers">
 
@@ -142,7 +140,6 @@
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.4.2">0.4.2</a>
         <span class="vdate mono">Oct 11, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol x">
@@ -672,17 +669,9 @@
     </li>
 
   </ol>
-</main>
-<div class="foot mono">v<span data-version>x.x.x</span> · signed &amp; notarized · GPL-3.0 · <a href="index.html">back to the poster ↖</a></div>
 
-<script>
-  // The real version resolves from the latest GitHub release at load; the static value is an x.x.x placeholder.
-  fetch('https://api.github.com/repos/Onion-L/holt/releases/latest')
-    .then(r => r.ok ? r.json() : Promise.reject())
-    .then(rel => {
-      document.querySelectorAll('[data-version]').forEach(el => el.textContent = rel.tag_name.replace(/^v/, ''));
-    })
-    .catch(() => {});
-</script>
+  <div class="foot mono">v<span data-version>x.x.x</span> · signed &amp; notarized · GPL-3.0 · <a href="/">back to the coast ↖</a></div>
+</div>
+<ChangelogController client:load />
 </body>
 </html>
