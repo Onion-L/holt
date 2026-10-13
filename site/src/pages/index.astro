@@ -64,6 +64,7 @@ import HeroController from "../components/HeroController";
             html,
             body {
                 margin: 0;
+                overflow-x: hidden;
             }
             body {
                 background: var(--cream);
@@ -89,6 +90,8 @@ import HeroController from "../components/HeroController";
             .va {
                 position: relative;
                 overflow: hidden;
+                width: 100%;
+                max-width: 100vw;
                 min-height: 100vh;
                 color: #fff;
                 display: flex;
@@ -107,10 +110,11 @@ import HeroController from "../components/HeroController";
                 inset: 0;
                 background: linear-gradient(
                     180deg,
-                    rgba(5, 25, 55, 0.3),
-                    rgba(5, 25, 55, 0) 32%,
-                    rgba(5, 25, 55, 0) 48%,
-                    rgba(5, 20, 50, 0.66)
+                    rgba(5, 25, 55, 0.35) 0%,
+                    rgba(5, 25, 55, 0.05) 28%,
+                    rgba(5, 25, 55, 0) 45%,
+                    rgba(5, 20, 50, 0.58) 78%,
+                    rgba(5, 20, 50, 0.78) 100%
                 );
             }
             .va-top {
@@ -119,83 +123,183 @@ import HeroController from "../components/HeroController";
                 justify-content: flex-end;
                 align-items: center;
                 padding: 26px clamp(20px, 4vw, 48px);
+                z-index: 10;
             }
             .va-nav {
                 display: flex;
-                gap: 26px;
-                font-size: 12.5px;
+                align-items: center;
+                gap: 22px;
+                font-size: 12px;
                 letter-spacing: 0.1em;
                 text-transform: uppercase;
+                background: rgba(5, 25, 55, 0.28);
+                backdrop-filter: blur(12px);
+                -webkit-backdrop-filter: blur(12px);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                padding: 8px 18px;
+                border-radius: 999px;
             }
             .va-nav a {
+                color: rgba(255, 255, 255, 0.88);
+                transition: color 0.15s, border-color 0.15s;
                 border-bottom: 1px solid transparent;
-                padding-bottom: 2px;
+                padding-bottom: 1px;
             }
             .va-nav a:hover {
-                border-color: #fff;
+                color: #fff;
+                border-color: rgba(255, 255, 255, 0.6);
+            }
+            .va-nav a:focus-visible {
+                outline: 2px solid #fff;
+                outline-offset: 3px;
+                border-radius: 2px;
             }
             .va-hero {
                 position: relative;
                 margin-top: auto;
                 padding: 0 clamp(20px, 4.5vw, 64px) clamp(40px, 7vh, 72px);
+                z-index: 10;
             }
             .va-kicker {
                 margin: 0;
                 font-size: 12px;
                 letter-spacing: 0.18em;
                 text-transform: uppercase;
-                opacity: 0.9;
+                color: rgba(255, 255, 255, 0.9);
+                text-shadow: 0 1px 12px rgba(5, 25, 55, 0.6);
             }
             .va-title {
                 margin: 12px 0 26px;
                 font:
-                    700 clamp(48px, 7.6vw, 104px)/0.98 Geist,
+                    700 clamp(36px, 7.6vw, 104px)/0.98 Geist,
                     sans-serif;
                 letter-spacing: -0.045em;
-                text-shadow: 0 2px 34px rgba(5, 25, 55, 0.45);
+                text-shadow:
+                    0 2px 18px rgba(5, 25, 55, 0.65),
+                    0 8px 40px rgba(5, 25, 55, 0.45);
             }
             .va-cta {
                 display: flex;
                 gap: 14px;
                 flex-wrap: wrap;
+                align-items: center;
             }
             .va-btn {
                 display: inline-flex;
                 align-items: center;
                 gap: 0.5em;
-                padding: 14px 26px;
+                padding: 13.5px 26px;
                 border-radius: 999px;
                 font-weight: 700;
-                font-size: 15px;
+                font-size: 14.5px;
+                line-height: 1;
+                cursor: pointer;
+                user-select: none;
                 transition:
-                    transform 0.15s,
-                    box-shadow 0.15s,
-                    background 0.15s;
+                    transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                    box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                    background-color 0.18s,
+                    border-color 0.18s;
+            }
+            .va-btn:focus-visible {
+                outline: 2px solid #fff;
+                outline-offset: 3px;
             }
             .va-btn.solid {
                 background: #fff;
                 color: var(--deep);
+                box-shadow:
+                    0 2px 8px rgba(5, 25, 55, 0.2),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.9);
             }
             .va-btn.solid:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 12px 26px rgba(5, 25, 55, 0.35);
+                box-shadow: 0 12px 28px -4px rgba(5, 25, 55, 0.42);
+                background: #ffffff;
+            }
+            .va-btn.solid:active {
+                transform: translateY(0);
+                box-shadow: 0 4px 12px rgba(5, 25, 55, 0.25);
             }
             .va-btn.ghost {
-                border: 1.5px solid rgba(255, 255, 255, 0.85);
+                border: 1.5px solid rgba(255, 255, 255, 0.7);
                 color: #fff;
+                background: rgba(255, 255, 255, 0.08);
+                backdrop-filter: blur(12px);
+                -webkit-backdrop-filter: blur(12px);
             }
             .va-btn.ghost:hover {
-                background: rgba(255, 255, 255, 0.15);
+                background: rgba(255, 255, 255, 0.2);
+                border-color: #fff;
+                transform: translateY(-2px);
+                box-shadow: 0 12px 28px -4px rgba(5, 25, 55, 0.35);
+            }
+            .va-btn.ghost:active {
+                transform: translateY(0);
+                box-shadow: 0 4px 12px rgba(5, 25, 55, 0.2);
             }
             .va-sub {
-                margin: 18px 0 0;
+                margin: 20px 0 0;
                 font-size: 12px;
                 letter-spacing: 0.05em;
-                opacity: 0.85;
+                color: rgba(255, 255, 255, 0.88);
+                text-shadow: 0 1px 8px rgba(5, 25, 55, 0.45);
+                word-break: break-word;
             }
             .va-sub a {
+                color: #fff;
                 text-decoration: underline;
                 text-underline-offset: 3px;
+                transition: color 0.15s;
+            }
+            .va-sub a:hover {
+                color: var(--pink);
+            }
+            .va-sub a:focus-visible {
+                outline: 2px solid var(--pink);
+                outline-offset: 2px;
+            }
+
+            @media (max-width: 640px) {
+                .va-top {
+                    padding: 16px 16px;
+                }
+                .va-nav {
+                    gap: 14px;
+                    padding: 6px 14px;
+                    font-size: 11px;
+                }
+                .va-hero {
+                    padding: 0 18px 32px;
+                }
+                .va-kicker {
+                    font-size: 11px;
+                    letter-spacing: 0.15em;
+                }
+                .va-title {
+                    margin: 8px 0 20px;
+                    font-size: clamp(34px, 10vw, 44px);
+                }
+                .va-cta {
+                    flex-direction: column;
+                    align-items: stretch;
+                    max-width: 290px;
+                    gap: 10px;
+                }
+                .va-btn {
+                    justify-content: center;
+                    padding: 13px 20px;
+                    font-size: 14px;
+                }
+                .va-bg {
+                    object-position: 72% 35%;
+                }
+                .va-sub {
+                    margin: 16px 0 0;
+                    font-size: 11px;
+                    line-height: 1.6;
+                    max-width: 320px;
+                }
             }
 
             @media (prefers-reduced-motion: reduce) {
@@ -224,6 +328,7 @@ import HeroController from "../components/HeroController";
                 </nav>
             </header>
             <div class="va-hero">
+                <p class="va-kicker mono">Native coding agent · macOS</p>
                 <h1 class="va-title">Holt is an agent.</h1>
                 <div class="va-cta">
                     <a
