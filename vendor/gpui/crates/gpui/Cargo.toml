@@ -120,7 +120,7 @@ core-graphics = "0.24"
 core-video.workspace = true
 core-text = "21"
 # WARNING: If you change this, you must also publish a new version of zed-font-kit to crates.io
-font-kit = { path = "../../vendor/font-kit", package = "zed-font-kit", optional = true }
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed", optional = true }
 foreign-types = "0.5"
 log.workspace = true
 media.workspace = true

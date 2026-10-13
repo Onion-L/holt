@@ -1,11 +1,10 @@
 # Trimmed workspace: only the crates this project's gpui dependency needs.
 # The fork root's [patch.crates-io] and .cargo/config.toml deliberately do NOT
 # carry over — they never applied when gpui was consumed as a git dependency.
-# xim-rs / font-kit / scap are vendored under vendor/ so no dependency resolves
-# from git.
+# xim / font-kit / scap resolve from crates.io (zed's published forks), pinned
+# by Cargo.lock checksums — no dependency resolves from git.
 [workspace]
 resolver = "2"
-exclude = ["vendor"]
 members = [
     "crates/collections",
     "crates/gpui",
@@ -205,7 +204,7 @@ rust-embed = { version = "8.11", features = ["include-exclude"] }
 rustc-hash = "2.1.0"
 rustls = { version = "0.23.26" }
 rustls-platform-verifier = "0.5.0"
-scap = { path = "vendor/scap", default-features = false, package = "zed-scap" }
+scap = { version = "0.0.8-zed", default-features = false, package = "zed-scap" }
 scheduler = { path = "crates/scheduler" }
 schemars = { version = "1.0", features = ["indexmap2"] }
 semver = { version = "1.0", features = ["serde"] }

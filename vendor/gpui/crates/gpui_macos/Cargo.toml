@@ -39,7 +39,7 @@ ctor.workspace = true
 derive_more.workspace = true
 dispatch2 = "0.3.1"
 etagere = "0.2"
-font-kit = { path = "../../vendor/font-kit", package = "zed-font-kit", optional = true }
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed", optional = true }
 foreign-types = "0.5"
 futures.workspace = true
 gpui_util.workspace = true

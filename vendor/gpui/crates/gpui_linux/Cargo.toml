@@ -127,7 +127,7 @@ x11rb = { version = "0.13.1", features = [
     "sync",
     "dri3",
 ], optional = true }
-xim = { path = "../../vendor/xim-rs", features = [
+xim = { features = [
     "x11rb-xcb",
     "x11rb-client",
 ], package = "zed-xim", version = "0.4.0-zed", optional = true }
