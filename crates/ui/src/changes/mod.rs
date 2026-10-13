@@ -230,6 +230,20 @@ struct CommentDraft {
     _events: Subscription,
 }
 
+/// A scoped-capture failure, classified where the `RpcError` is still
+/// typed — the render never re-parses Display text.
+#[derive(Debug, Clone)]
+pub(crate) enum ScopedDiffError {
+    /// The chat's current Turn has no recorded baseline (never ran,
+    /// engine restarted) — the expected pre-first-turn state, not an error.
+    NoTurnRecorded,
+    /// The connected engine predates the scoped diff methods (version
+    /// skew — a still-running daemon after an app update).
+    VersionSkew,
+    /// Anything else, shown verbatim.
+    Other(SharedString),
+}
+
 /// The Changes pane entity. Lazy: no RPC until [`Changes::ensure_watch`] runs
 /// (the shell calls it when the pane first opens).
 pub struct Changes {
@@ -268,7 +282,7 @@ pub struct Changes {
     /// One-shot scoped capture (Branch / Latest turn) + its fetch key.
     scoped: Option<CheckoutDiff>,
     scoped_for: Option<String>,
-    scoped_error: Option<SharedString>,
+    scoped_error: Option<ScopedDiffError>,
     scoped_inflight: Option<String>,
     scoped_task: Option<Task<()>>,
     scope_menu: Popup<()>,

@@ -29,9 +29,19 @@ pub(super) struct ProviderCardUi {
 }
 
 /// The apply-time staleness gate's refusal reads as an instruction, not a
-/// fault: the assistant re-proposes against the current catalog.
-fn proposal_error_text(error: &str) -> String {
-    if error.contains("changed since this proposal") {
+/// fault: the assistant re-proposes against the current catalog. Classified
+/// by the wire error's code; the phrase fallback covers a legacy peer that
+/// predates error codes — both ends ship in one binary, so it is a shim,
+/// not the contract.
+fn proposal_error_text(error: &holt_rpc::RpcError) -> String {
+    let stale = match error {
+        holt_rpc::RpcError::Coded {
+            code: holt_rpc::RpcErrorCode::ProposalStale,
+            ..
+        } => true,
+        other => other.to_string().contains("changed since this proposal"),
+    };
+    if stale {
         "Catalog changed — ask to re-propose.".to_string()
     } else {
         error.to_string()
@@ -656,7 +666,7 @@ impl Transcript {
                     ui.error = result
                         .as_ref()
                         .err()
-                        .map(|error| proposal_error_text(&error.to_string()).into());
+                        .map(|error| proposal_error_text(error).into());
                 }
                 if apply && result.is_ok() {
                     crate::pickers::bump_provider_catalog(cx);
@@ -920,11 +930,27 @@ mod tests {
 
     #[test]
     fn the_staleness_refusal_reads_as_an_instruction() {
+        let stale = holt_rpc::RpcError::Coded {
+            code: holt_rpc::RpcErrorCode::ProposalStale,
+            message: "provider settings changed since this proposal was created".into(),
+        };
         assert_eq!(
-            proposal_error_text("provider settings changed since this proposal was created"),
+            proposal_error_text(&stale),
             "Catalog changed — ask to re-propose."
         );
-        assert_eq!(proposal_error_text("boom"), "boom");
+        // The engine's second staleness wording codes the same.
+        let no_op = holt_rpc::RpcError::Coded {
+            code: holt_rpc::RpcErrorCode::ProposalStale,
+            message: "the catalog changed since this proposal (it is now a no-op)".into(),
+        };
+        assert_eq!(
+            proposal_error_text(&no_op),
+            "Catalog changed — ask to re-propose."
+        );
+        assert_eq!(
+            proposal_error_text(&holt_rpc::RpcError::Failed("boom".into())),
+            "boom"
+        );
     }
 
     /// Records the card RPCs.

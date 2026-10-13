@@ -76,7 +76,7 @@ impl WebSearchGroup {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.web_search = Loadable::Error("Engine not connected".into());
+            self.web_search = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
             return;
         };
         self.web_search = Loadable::Loading;
@@ -236,7 +236,7 @@ impl WebSearchGroup {
     /// Send a web-search RPC that replies the settings state.
     fn call(&mut self, method: &'static str, params: serde_json::Value, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.set_error("Engine not connected".into(), cx);
+            self.set_error(crate::state::ENGINE_NOT_CONNECTED.into(), cx);
             return;
         };
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -289,7 +289,7 @@ impl WebSearchGroup {
 
     fn reveal_key(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.set_error("Engine not connected".into(), cx);
+            self.set_error(crate::state::ENGINE_NOT_CONNECTED.into(), cx);
             return;
         };
         let Some(id) = self.key_kind() else {

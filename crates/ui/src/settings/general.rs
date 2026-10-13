@@ -194,9 +194,9 @@ impl GeneralPage {
 
     fn load(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.settings = Loadable::Error("Engine not connected".into());
-            self.models = Loadable::Error("Engine not connected".into());
-            self.goal_settings = Loadable::Error("Engine not connected".into());
+            self.settings = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.models = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
+            self.goal_settings = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
             return;
         };
         self.settings = Loadable::Loading;
@@ -283,7 +283,7 @@ impl GeneralPage {
         cx: &mut Context<Self>,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.save_error = Some("Engine not connected".into());
+            self.save_error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
             cx.notify();
             return;
         };
@@ -445,7 +445,7 @@ impl GeneralPage {
     /// chosen model (or the default), the reply refreshing the warning.
     fn save_verifier_model(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.verifier_save_error = Some("Engine not connected".into());
+            self.verifier_save_error = Some(crate::state::ENGINE_NOT_CONNECTED.into());
             cx.notify();
             return;
         };

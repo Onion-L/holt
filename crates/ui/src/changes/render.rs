@@ -33,7 +33,7 @@ use super::{
     ACCENT_BAR_WIDTH, BODY_BOTTOM_PAD, Changes, CommentDraft, DIFF_LINE_HEIGHT, DIFF_TEXT_SIZE,
     DiffHighlightState, DiffMode, FILE_HEADER_HEIGHT, FOLD_TWEEN_MAX_PX, FileFold,
     HUNK_HEADER_HEIGHT, HighlightSlot, MARKER_WIDTH, NOTICE_HEIGHT, RefMenu, SPLIT_DIVIDER_WIDTH,
-    SPLIT_MARKER_WIDTH, STICKY_FILE_HEADER_BLUR,
+    SPLIT_MARKER_WIDTH, STICKY_FILE_HEADER_BLUR, ScopedDiffError,
 };
 
 impl Changes {
@@ -2057,31 +2057,26 @@ impl Render for Changes {
             diff_phase(active.as_ref())
         };
         let error = self.error.clone();
-        // Scoped fetch failures replace the content area. "no turn recorded"
-        // is the expected pre-first-turn state, not an error; "unknown
-        // method" is version skew — the connected engine predates
-        // GetCheckoutDiff (a still-running daemon after an app update) — say
-        // that instead of leaking the raw RPC error (user report).
+        // Scoped fetch failures replace the content area, classified at
+        // the sync boundary (ScopedDiffError): "no turn recorded" is the
+        // expected pre-first-turn state, not an error; version skew — the
+        // connected engine predates GetCheckoutDiff (a still-running daemon
+        // after an app update) — says that instead of leaking the raw RPC
+        // error (user report).
         let scoped_notice: Option<(SharedString, bool)> = (!no_chat
             && scope != DiffScope::WorkingTree)
             .then(|| self.scoped_error.clone())
             .flatten()
-            .map(|message| {
-                if message.contains("no turn recorded") {
-                    (
-                        SharedString::from("No turn recorded yet — send a message first"),
-                        false,
-                    )
-                } else if message.contains("unknown method") {
-                    (
-                        SharedString::from(
-                            "This Holt build doesn't support branch and turn diffs yet",
-                        ),
-                        false,
-                    )
-                } else {
-                    (message, true)
-                }
+            .map(|error| match error {
+                ScopedDiffError::NoTurnRecorded => (
+                    SharedString::from("No turn recorded yet — send a message first"),
+                    false,
+                ),
+                ScopedDiffError::VersionSkew => (
+                    SharedString::from("This Holt build doesn't support branch and turn diffs yet"),
+                    false,
+                ),
+                ScopedDiffError::Other(message) => (message, true),
             });
 
         let content: AnyElement = if let Some((message, warn)) = scoped_notice {

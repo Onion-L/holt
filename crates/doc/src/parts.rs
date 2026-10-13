@@ -203,10 +203,11 @@ pub enum GateVerdict {
     Aborted,
 }
 
-/// The Plan Mode approval card (ADR-0025): one card per plan submission,
-/// appended as its own transcript entry when `submit_plan` lands. Unlike
-/// the ADR-0014 tool gate this resolution is pure state — no run is
-/// blocked — so a pending card survives a restart and stays answerable.
+/// The Plan Mode approval card (ADR-0025): one card per plan submission —
+/// a `submit_plan` tool result, or a folded `<proposed_plan>` block from
+/// the legacy text convention. Unlike the ADR-0014 tool gate this
+/// resolution is pure state — no run is blocked — so a pending card
+/// survives a restart and stays answerable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PlanApprovalState {

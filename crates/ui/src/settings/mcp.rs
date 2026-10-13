@@ -361,7 +361,7 @@ impl McpPage {
         then: impl FnOnce(&mut Self, serde_json::Value, &mut Context<Self>) + 'static,
     ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.servers = Loadable::Error("Engine not connected".into());
+            self.servers = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
             return;
         };
         self.tasks.push(cx.spawn(async move |this, cx| {

@@ -95,8 +95,9 @@ pub fn format_reference(path: &str, is_dir: bool) -> String {
     out
 }
 
-/// The header line introducing the appended path list.
-pub const REFS_HEADER: &str = "Referenced paths:";
+/// The header line introducing the appended path list — shared with the
+/// engine's title task through `holt_doc` so the format cannot drift.
+pub use holt_doc::references::REFS_HEADER;
 
 /// Append the explicit path list to the message body (spec: one list at the
 /// end of the prompt, riding it as plain text). The queue editor lifts the

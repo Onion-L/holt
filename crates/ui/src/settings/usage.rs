@@ -812,7 +812,7 @@ impl UsagePage {
         }
         self.reloading = true;
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.stats = Loadable::Error("Engine not connected".into());
+            self.stats = Loadable::Error(crate::state::ENGINE_NOT_CONNECTED.into());
             self.reloading = false;
             return;
         };

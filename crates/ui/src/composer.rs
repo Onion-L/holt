@@ -111,7 +111,7 @@ pub struct Composer {
     /// Plan Mode selected on the new-chat canvas before a chat exists.
     plan_mode_draft: bool,
     sending: bool,
-    failed_submissions: std::collections::HashMap<String, (String, serde_json::Value)>,
+    failed_submissions: std::collections::HashMap<String, FailedSubmission>,
     failure: Option<SharedString>,
     /// The chat key `failure` belongs to (`None` = global, e.g. "Engine not
     /// connected"). Chat-scoped failures survive navigation and render only
@@ -203,6 +203,23 @@ pub struct Composer {
     _pickers_observe: Subscription,
     _input_events: Subscription,
 }
+
+/// A send whose QueueCommand reply never arrived or failed: the frozen
+/// payload for the retry, with the managed image references it carries —
+/// tracked structurally (never by scanning draft or payload text) so a
+/// staged image outlives its chip until the retry resolves.
+#[derive(Clone)]
+pub(crate) struct FailedSubmission {
+    /// The composer text at send time — the retry fires when the draft
+    /// still matches it verbatim.
+    pub(crate) text: String,
+    /// The frozen QueueCommand params, retried verbatim.
+    pub(crate) params: serde_json::Value,
+    /// The managed image references riding the payload; the release gate
+    /// in `staging` holds their files until the retry resolves.
+    pub(crate) managed_refs: Vec<PathRef>,
+}
+
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
@@ -761,7 +778,7 @@ impl Render for Composer {
                 // DangerTriangle — a subtle tinted wash, not a bare red
                 // stroke. Amber for the offline-ish case (engine not
                 // connected), red for send/run failures. Click dismisses.
-                let offline = message.as_ref() == "Engine not connected";
+                let offline = message.as_ref() == crate::state::ENGINE_NOT_CONNECTED;
                 let (border_c, wash, text_c) = if offline {
                     let amber = theme.warning; // amber-400
                     let amber_200 = theme.warning_muted;

@@ -2,10 +2,11 @@
 //! the permission mode. The state rides the chat row (`Chat::plan_mode`,
 //! restored by restart); this module owns the planning-turn shaping the run
 //! loop applies to a Turn admitted under Plan Mode: the read-only tool
-//! whitelist and the system-prompt block that makes a `<proposed_plan>`
-//! Markdown block the only submission channel. The plan itself is ordinary
-//! assistant text — no plan documents, no plan tools — and the transcript
-//! folds each complete block into an approval card the user resolves.
+//! whitelist and the system-prompt block that names `submit_plan` as the
+//! submission channel. A submitted plan is typed data — the tool result
+//! carries the Markdown straight into the approval card; the legacy
+//! `<proposed_plan>` text convention stays as the fallback, its complete
+//! blocks folded into cards the same way.
 
 use holt_doc::MessagePart;
 use holt_doc::parts::{PlanApprovalState, PlanApprovalVerdict};
@@ -34,28 +35,30 @@ pub(crate) fn read_only_tool_allowed(name: &str) -> bool {
 }
 
 /// The planning system-prompt block: read-only exploration plus the
-/// `<proposed_plan>` convention — ordinary text never reaches approval
-/// (ADR-0025), and each block fully replaces the previous one.
+/// `submit_plan` submission channel — ordinary text never reaches approval
+/// (ADR-0025), and each submission fully replaces the previous one. The
+/// `<proposed_plan>` text convention stays as the fallback for a model
+/// that writes the block instead of calling the tool.
 pub(crate) fn planning_system_block() -> String {
-    format!(
+    String::from(
         "## Plan Mode (active)\n\n\
 This turn is a PLANNING turn. Explore the workspace and produce an \
 implementation plan for the user to review and approve. You must not \
 change the workspace.\n\n\
 - Your tools are read-only exploration (`ls`, `read`, `grep`, \
-`read_chat`, `web_fetch`, and `web_search` when available). `bash`, \
-`write`, `edit`, and subagent delegation are unavailable; do not \
-attempt workarounds.\n\
+`read_chat`, `web_fetch`, and `web_search` when available) plus \
+`submit_plan`. `bash`, `write`, `edit`, and subagent delegation are \
+unavailable; do not attempt workarounds.\n\
 - Settle intent and tradeoffs with the user in ordinary text before \
 finalizing; ask rather than guess when an ambiguity is high-impact.\n\
-- When the plan is decision complete, present it as ONE complete \
-Markdown block wrapped in `{PROPOSED_PLAN_OPEN}` and \
-`{PROPOSED_PLAN_CLOSE}`. Only a complete block reaches approval — \
-ordinary text, questions, and progress notes never do.\n\
-- Each new block fully replaces the previous one; never fragment a \
-plan across several blocks in one turn.\n\
+- When the plan is decision complete, call `submit_plan` with the whole \
+plan as ONE complete Markdown string — the approval card shows exactly \
+that Markdown, and only a submission reaches approval — questions and \
+progress notes never do. STOP your turn after calling.\n\
+- Each submission fully replaces the previous one; never fragment a \
+plan across several submissions in one turn.\n\
 - Do not ask \"should I proceed?\". The user will approve the plan or \
-reply with feedback; revising on feedback is a normal planning turn.\n"
+reply with feedback; revising on feedback is a normal planning turn.\n",
     )
 }
 
@@ -204,11 +207,11 @@ mod tests {
     }
 
     #[test]
-    fn the_planning_block_makes_the_block_the_only_submission_channel() {
+    fn the_planning_block_makes_submit_plan_the_submission_channel() {
         let block = planning_system_block();
         assert!(block.contains("## Plan Mode (active)"));
-        assert!(block.contains(PROPOSED_PLAN_OPEN));
-        assert!(block.contains("Only a complete block reaches approval"));
+        assert!(block.contains("submit_plan"));
+        assert!(block.contains("only a submission reaches approval"));
         assert!(block.contains("read-only exploration"));
     }
 

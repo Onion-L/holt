@@ -22,8 +22,25 @@ use super::model::{
 };
 use super::rows::{DiffRow, body_height_with, body_rows, flatten_rows};
 use super::{
-    Changes, ChangesEvent, DIFF_LINE_HEIGHT, FOLD_TWEEN_WINDOW, ParsedDiff, persist_split,
+    Changes, ChangesEvent, DIFF_LINE_HEIGHT, FOLD_TWEEN_WINDOW, ParsedDiff, ScopedDiffError,
+    persist_split,
 };
+
+/// Classify a scoped-capture failure while the `RpcError` is still typed:
+/// its code and variant carry the decision, never its Display text. The
+/// phrase fallback covers a legacy peer that predates error codes — both
+/// ends ship in one binary, so it is a shim, not the contract.
+fn classify_scoped_error(error: &holt_rpc::RpcError) -> ScopedDiffError {
+    match error {
+        holt_rpc::RpcError::Coded {
+            code: holt_rpc::RpcErrorCode::NoTurnRecorded,
+            ..
+        } => ScopedDiffError::NoTurnRecorded,
+        holt_rpc::RpcError::UnknownMethod(_) => ScopedDiffError::VersionSkew,
+        _ if error.to_string().contains("no turn recorded") => ScopedDiffError::NoTurnRecorded,
+        _ => ScopedDiffError::Other(error.to_string().into()),
+    }
+}
 
 impl Changes {
     /// Start the `WatchCheckoutDiffs` subscription (idempotent). Retries with
@@ -313,7 +330,7 @@ impl Changes {
                     }
                     Err(err) => {
                         changes.scoped = None;
-                        changes.scoped_error = Some(err.to_string().into());
+                        changes.scoped_error = Some(classify_scoped_error(&err));
                     }
                 }
                 changes.scoped_for = Some(key);

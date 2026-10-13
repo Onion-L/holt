@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{ClientFrame, RpcError, ServerFrame};
+use crate::{ClientFrame, RpcError, RpcErrorCode, ServerFrame};
 
 /// Per-stream queue depth. Bounded: route_frame awaits a full queue, pausing
 /// the connection reader — transport backpressure instead of unbounded growth
@@ -247,7 +247,7 @@ impl Drop for RpcClient {
 async fn route_frame(shared: &Arc<Shared>, out: &mpsc::Sender<String>, frame: ServerFrame) {
     let id = frame.id;
     if let Some(err) = frame.err {
-        let error = wire_error(err);
+        let error = wire_error(err, frame.err_code);
         match shared.lock().remove(&id) {
             Some(Pending::Call(tx)) => {
                 let _ = tx.send(Err(error));
@@ -319,9 +319,27 @@ async fn route_frame(shared: &Arc<Shared>, out: &mpsc::Sender<String>, frame: Se
     }
 }
 
-fn wire_error(error: String) -> RpcError {
-    error
-        .strip_prefix("unknown method: ")
-        .map(|method| RpcError::UnknownMethod(method.to_owned()))
-        .unwrap_or(RpcError::Failed(error))
+/// Decode a wire error: the code field classifies exactly; the Display
+/// prefix fallback decodes frames from a peer that predates codes.
+pub(crate) fn wire_error(error: String, code: Option<String>) -> RpcError {
+    match code.as_deref().map(RpcErrorCode::parse) {
+        Some(Some(RpcErrorCode::UnknownMethod)) => RpcError::UnknownMethod(
+            error
+                .strip_prefix("unknown method: ")
+                .unwrap_or(&error)
+                .to_owned(),
+        ),
+        Some(Some(code)) => RpcError::Coded {
+            code,
+            message: error,
+        },
+        // A code this build doesn't know: the text is all the server
+        // vouches for. The legacy prefix speaks only for peers that
+        // predate the code field, so it never applies here.
+        Some(None) => RpcError::Failed(error),
+        None => error
+            .strip_prefix("unknown method: ")
+            .map(|method| RpcError::UnknownMethod(method.to_owned()))
+            .unwrap_or(RpcError::Failed(error)),
+    }
 }

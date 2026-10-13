@@ -1382,16 +1382,25 @@ impl RunSink {
         );
         // Provider Mode cards (ADR-0037): a stored proposal or a
         // shown Key request lands as a card after its tool part;
-        // the question card (ADR-0040) lands the same way.
+        // the question card (ADR-0040) and the plan approval card
+        // (ADR-0025's submit_plan) land the same way.
         if !is_error
-            && let Some(card) = crate::provider_mode::tool_card(
-                &tool_call_id,
-                &tool_name,
-                &result.details,
-            )
-            .or_else(|| {
-                crate::tools::ask_user::tool_card(&tool_call_id, &tool_name, &result.details)
-            })
+            && let Some(card) =
+                crate::provider_mode::tool_card(&tool_call_id, &tool_name, &result.details)
+                    .or_else(|| {
+                        crate::tools::ask_user::tool_card(
+                            &tool_call_id,
+                            &tool_name,
+                            &result.details,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::tools::submit_plan::tool_card(
+                            &tool_call_id,
+                            &tool_name,
+                            &result.details,
+                        )
+                    })
         {
             let proposal_card = matches!(card, MessagePart::ModelProposal { .. });
             match card {
@@ -1891,14 +1900,17 @@ async fn run_agent_command_inner(run: AgentRun) -> TurnEnd {
     } else {
         None
     };
-    // The planning-turn shaping (ADR-0025): the `<proposed_plan>` submit
-    // convention appended to the system prompt and the toolset cut down to
-    // the read-only exploration surface. The plan itself is ordinary
-    // assistant text; assistant_parts folds complete blocks into cards.
+    // The planning-turn shaping (ADR-0025): the planning block appended to
+    // the system prompt, the toolset cut down to the read-only exploration
+    // surface, and `submit_plan` — the structured submission channel whose
+    // typed result becomes the approval card (the `<proposed_plan>` text
+    // convention stays as the fallback; assistant_parts folds complete
+    // blocks into cards either way).
     if plan_mode {
         system_prompt.push('\n');
         system_prompt.push_str(&crate::plan_mode::planning_system_block());
         tools.retain(|tool| crate::plan_mode::read_only_tool_allowed(&tool.name));
+        tools.push(crate::tools::submit_plan::create_submit_plan_tool());
     }
     if provider_mode {
         system_prompt.push('\n');

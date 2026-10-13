@@ -12,6 +12,7 @@ pub mod commands;
 pub mod constants;
 pub mod parts;
 pub mod rebuild;
+pub mod references;
 pub mod registry;
 pub mod registry_contract;
 pub mod schema;

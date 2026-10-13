@@ -104,35 +104,36 @@ async fn a_planning_turn_mounts_only_read_only_tools() {
     );
 
     // The turn admitted after Plan Mode was entered runs PLANNED: the
-    // read-only exploration surface only. bash, write, edit, delegation —
-    // and the plan itself is text, so no plan tools exist at all.
+    // read-only exploration surface plus `submit_plan`, the structured
+    // submission channel. bash, write, edit, and delegation stay out —
+    // and no other plan tool exists.
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
     enter_plan_mode(&engine, "chat-1").await;
     run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
     wait_for_requests(&provider, 2).await;
     let planned = &provider.requests()[1];
-    for name in [
-        "bash",
-        "write",
-        "edit",
-        "Agent",
-        "write_plan",
-        "submit_plan",
-    ] {
+    for name in ["bash", "write", "edit", "Agent", "write_plan"] {
         assert!(
             !planned.tool_names.iter().any(|candidate| candidate == name),
             "planning turns must not mount {name}: {:?}",
             planned.tool_names
         );
     }
-    for name in ["ls", "read", "grep", "read_chat", "web_fetch"] {
+    for name in [
+        "ls",
+        "read",
+        "grep",
+        "read_chat",
+        "web_fetch",
+        "submit_plan",
+    ] {
         assert!(planned.tool_names.iter().any(|candidate| candidate == name));
     }
     common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
 }
 
 #[tokio::test]
-async fn the_planning_prompt_makes_a_proposed_plan_block_the_only_submission_channel() {
+async fn the_planning_prompt_makes_submit_plan_the_submission_channel() {
     let fixture = Fixture::new();
     let provider = ScriptedProvider::new(vec![
         ScriptedReply::text("ordinary reply"),
@@ -158,9 +159,16 @@ async fn the_planning_prompt_makes_a_proposed_plan_block_the_only_submission_cha
     let requests = provider.requests();
     let prompt = requests[1].system_prompt.as_deref().unwrap_or_default();
     assert!(prompt.contains("## Plan Mode (active)"));
-    assert!(prompt.contains("<proposed_plan>"));
-    assert!(prompt.contains("Only a complete block reaches approval"));
+    assert!(prompt.contains("submit_plan"));
+    assert!(prompt.contains("only a submission reaches approval"));
     assert!(prompt.contains("read-only exploration"));
+    // Ordinary turns never see the tool.
+    assert!(
+        !requests[0]
+            .tool_names
+            .iter()
+            .any(|name| name == "submit_plan")
+    );
 }
 
 #[tokio::test]
@@ -189,6 +197,56 @@ async fn a_proposed_plan_block_folds_into_a_pending_card() {
 
     // The card is display state only: the resolve guard counts pending
     // cards, which this test's sibling (resolution_refuses…) exercises.
+}
+
+#[tokio::test]
+async fn a_submitted_plan_tool_call_lands_the_card_and_approval_runs_it() {
+    let fixture = Fixture::new();
+    let provider = ScriptedProvider::new(vec![
+        ScriptedReply::tool_call(
+            "call-1",
+            "submit_plan",
+            serde_json::json!({ "plan": "# Plan\n- tool step" }),
+        ),
+        ScriptedReply::text("that is my plan"),
+        ScriptedReply::text("implementing"),
+    ]);
+    let engine = fixture.engine(&provider);
+    common::setup_chat(&engine, "chat-1").await;
+    let (_transcript, mut sessions) = common::subscribe(&engine, "chat-1").await;
+    enter_plan_mode(&engine, "chat-1").await;
+
+    run_prompt(&engine, "chat-1", &fixture.cwd(), "plan this").await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+
+    // The typed result became a pending approval card carrying the plan's
+    // Markdown verbatim — no tags, no text parsing.
+    let transcript = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(transcript.contains("planApproval"), "card: {transcript}");
+    assert!(transcript.contains("# Plan") && transcript.contains("tool step"));
+    assert!(
+        transcript.contains("pending"),
+        "starts pending: {transcript}"
+    );
+
+    // Resolution is the same lifecycle the text convention feeds.
+    resolve(&engine, "chat-1", "approve", None).await.unwrap();
+    let state = get_state(&engine, "chat-1").await;
+    assert_eq!(state["active"], serde_json::json!(false));
+
+    wait_for_requests(&provider, 3).await;
+    common::wait_for_session_status(&mut sessions, "chat-1", "idle").await;
+    let implementation = &provider.requests()[2];
+    assert!(
+        format!("{:?}", implementation.messages).contains("tool step"),
+        "the implementation turn reads the submitted plan from History"
+    );
+    let settled = common::transcript_snapshot(&engine, "chat-1")
+        .await
+        .to_string();
+    assert!(settled.contains("approved"), "card settled: {settled}");
 }
 
 #[tokio::test]

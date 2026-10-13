@@ -224,8 +224,7 @@ pub mod methods {
     /// Entering records the chat's current permission mode for restoration
     /// on approval — the stored mode itself does not move. `GetPlanMode`
     /// (same params) is the pure query. A mid-Turn switch affects only the
-    /// next Turn; exiting retires the active plan reference but keeps the
-    /// plan documents on disk.
+    /// next Turn; exiting settles pending approval cards as dismissed.
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
@@ -248,16 +247,17 @@ pub mod methods {
     pub const ENTER_PROVIDER_MODE: &str = "EnterProviderMode";
     pub const EXIT_PROVIDER_MODE: &str = "ExitProviderMode";
     pub const GET_PROVIDER_MODE: &str = "GetProviderMode";
-    /// Resolve a submitted plan (ADR-0025): params `{chatId, planId,
-    /// verdict, feedback?}` where verdict is `"approve" | "reject" |
-    /// "remain"`. Approve exits Plan Mode, restores the entry permission
-    /// mode, and pins the plan document for injection into the next
-    /// implementation Turn. Reject retires the revision (the document
-    /// stays), keeps the chat planning, and a non-empty `feedback` is
-    /// enqueued as the revision's next planning input. Remain returns the
-    /// plan to drafting without starting anything. Unknown chat, a
-    /// superseded planId, or a plan not awaiting approval fails; every
-    /// path settles the transcript's approval cards for that plan.
+    /// Resolve a submitted plan (ADR-0025): params `{chatId, verdict,
+    /// feedback?}` where verdict is `"approve" | "reject" | "remain"`, and
+    /// requires a planning chat with a pending approval card (a
+    /// `submit_plan` result, or a folded legacy `<proposed_plan>` block).
+    /// Approve exits Plan Mode, restores the entry permission mode, and
+    /// enqueues an approval follow-up prompt as an ordinary run — the plan
+    /// is already in the conversation History, so the implementation Turn
+    /// reads it without injection. Reject keeps the chat planning, and a
+    /// non-empty `feedback` is enqueued as the revision's next planning
+    /// input. Remain changes nothing but the cards; every path settles the
+    /// transcript's pending approval cards together.
     pub const RESOLVE_PLAN_APPROVAL: &str = "ResolvePlanApproval";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
@@ -500,10 +500,61 @@ pub enum RpcError {
     BadParams(String),
     #[error("{0}")]
     Failed(String),
+    /// A failure whose kind a client must branch on: the machine-readable
+    /// [`RpcErrorCode`] rides the wire beside the human-readable message, so
+    /// classification never parses the Display text.
+    #[error("{message}")]
+    Coded { code: RpcErrorCode, message: String },
     #[error("transport: {0}")]
     Transport(String),
     #[error("connection closed")]
     Closed,
+}
+
+impl RpcError {
+    /// The machine-readable kind, for errors that carry one.
+    pub fn code(&self) -> Option<RpcErrorCode> {
+        match self {
+            RpcError::UnknownMethod(_) => Some(RpcErrorCode::UnknownMethod),
+            RpcError::Coded { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+}
+
+/// Machine-readable failure kinds that ride the wire frame beside the error
+/// text ([`ServerFrame::err_code`]). Wire names are stable strings: an
+/// unknown name parses to `None` and the text still arrives, so a newer
+/// server never breaks an older client's frame decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcErrorCode {
+    UnknownMethod,
+    /// A turn-diff scope on a chat whose Turn has no recorded baseline
+    /// (never ran, engine restarted).
+    NoTurnRecorded,
+    /// A stored model proposal whose touched providers moved before the
+    /// Write button executed (ADR-0029's staleness gate).
+    ProposalStale,
+}
+
+impl RpcErrorCode {
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            RpcErrorCode::UnknownMethod => "unknownMethod",
+            RpcErrorCode::NoTurnRecorded => "noTurnRecorded",
+            RpcErrorCode::ProposalStale => "proposalStale",
+        }
+    }
+
+    /// Lenient parse: an unknown wire name is `None`, never an error.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "unknownMethod" => Some(RpcErrorCode::UnknownMethod),
+            "noTurnRecorded" => Some(RpcErrorCode::NoTurnRecorded),
+            "proposalStale" => Some(RpcErrorCode::ProposalStale),
+            _ => None,
+        }
+    }
 }
 
 /// A client-originated frame.
@@ -526,6 +577,10 @@ pub struct ServerFrame {
     pub ok: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub err: Option<String>,
+    /// The failing call's [`RpcErrorCode`] wire name, when it carries one —
+    /// classification without parsing `err`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub err_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -631,6 +686,10 @@ mod tests {
                 }
                 "Never" => Ok(RpcReply::Stream(futures::stream::pending().boxed())),
                 "Boom" => Err(RpcError::Failed("boom".into())),
+                "CodedBoom" => Err(RpcError::Coded {
+                    code: RpcErrorCode::NoTurnRecorded,
+                    message: "no turn recorded for this chat yet".into(),
+                }),
                 other => Err(RpcError::UnknownMethod(other.into())),
             }
         }
@@ -668,6 +727,59 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RpcError::Failed(m) if m == "boom"));
+    }
+
+    #[tokio::test]
+    async fn coded_errors_round_trip_with_their_code() {
+        let client = memory_client(Arc::new(TestService));
+
+        let err = client
+            .call("CodedBoom", serde_json::Value::Null)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(RpcErrorCode::NoTurnRecorded));
+        assert_eq!(err.to_string(), "no turn recorded for this chat yet");
+
+        // UnknownMethod keeps its typed shape (method included) without
+        // relying on the Display prefix alone.
+        let err = client
+            .call("Future", serde_json::Value::Null)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RpcError::UnknownMethod(method) if method == "Future"));
+    }
+
+    #[tokio::test]
+    async fn wire_error_decodes_codes_and_tolerates_unknown_names() {
+        use crate::client::wire_error;
+
+        assert!(matches!(
+            wire_error(
+                "no turn recorded for this chat yet".into(),
+                Some("noTurnRecorded".into())
+            ),
+            RpcError::Coded {
+                code: RpcErrorCode::NoTurnRecorded,
+                ..
+            }
+        ));
+        // An unknown code from a newer server degrades to the plain error —
+        // and never to the legacy prefix, which speaks only for peers that
+        // predate the code field.
+        assert!(matches!(
+            wire_error("something new".into(), Some("brandNewKind".into())),
+            RpcError::Failed(message) if message == "something new"
+        ));
+        assert!(matches!(
+            wire_error("unknown method: ListFolders".into(), Some("brandNewKind".into())),
+            RpcError::Failed(message) if message == "unknown method: ListFolders"
+        ));
+        // A code-less frame from an older server still classifies the
+        // legacy prefix.
+        assert!(matches!(
+            wire_error("unknown method: ListFolders".into(), None),
+            RpcError::UnknownMethod(method) if method == "ListFolders"
+        ));
     }
 
     #[tokio::test]

@@ -1832,7 +1832,12 @@ async fn turn_without_a_baseline_is_an_explicit_error_not_an_empty_diff() {
     };
     assert!(
         error.to_string().contains("no turn recorded"),
-        "the UI soft-matches this phrase: {error}"
+        "the message stays soft-readable: {error}"
+    );
+    assert_eq!(
+        error.code(),
+        Some(holt_rpc::RpcErrorCode::NoTurnRecorded),
+        "the UI classifies by code, never by matching this text"
     );
 }
 

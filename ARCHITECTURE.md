@@ -165,10 +165,11 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   moved by the entry itself). `EnterPlanMode` / `ExitPlanMode`
   (`{chatId}`; both idempotent) and `GetPlanMode` reply the
   `PlanModeState` view (`active`, the entry mode). A planning Turn runs
-  the read-only exploration toolset with a prompt that makes a complete
-  `<proposed_plan>` Markdown block in the assistant's ordinary text the
-  only submission channel; the transcript folds each block into an
-  approval card. `ResolvePlanApproval` (`{chatId, verdict, feedback?}`,
+  the read-only exploration toolset plus the `submit_plan` tool: the
+  whole plan rides the tool result as typed data straight into the
+  approval card (the `ask_user` landing); a complete `<proposed_plan>`
+  Markdown block in the assistant's ordinary text still folds into a
+  card as the legacy fallback. `ResolvePlanApproval` (`{chatId, verdict, feedback?}`,
   verdict `approve | reject | remain`, requires a planning chat with a
   pending card) applies the verdict: approve exits Plan Mode restoring
   the entry mode and enqueues an approval follow-up prompt as an
@@ -182,7 +183,9 @@ Defined by `crates/rpc/src/lib.rs::methods` and consumed by
   Turn. (2026-09-12: simplified from plan documents on disk +
   write/submit tools + injection to the conversational `<proposed_plan>`
   convention after reviewing Codex's plan mode; the enforced read-only
-  toolset and the approval cards stay.)
+  toolset and the approval cards stay. 2026-10-13: submission became
+  structured again — the `submit_plan` tool is the primary channel, the
+  text block the fallback.)
 - Goal Mode (ADR-0044): a chat-scoped durable objective on the chat row
   (`goal`: text, `active|paused|blocked` status, iteration / no-progress
   / evaluation-failure counters, plus the verifier-maintained `name` and

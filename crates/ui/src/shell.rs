@@ -1364,7 +1364,11 @@ impl Shell {
     /// Fire a Mutate op; failures surface in the sidebar notice strip.
     fn mutate(&mut self, params: serde_json::Value, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.push_holt_notice(HoltNoticeKind::Error, "Engine not connected".into(), cx);
+            self.push_holt_notice(
+                HoltNoticeKind::Error,
+                crate::state::ENGINE_NOT_CONNECTED.into(),
+                cx,
+            );
             cx.notify();
             return;
         };
