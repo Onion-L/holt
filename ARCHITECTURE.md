@@ -997,11 +997,12 @@ compaction, and overflow behavior are asserted without a real provider
 
 ## Provenance notes
 
-- gpui is vendored under `vendor/gpui/` (25 crates + `tooling/perf`, its own
-  trimmed workspace root; `vendor/` additionally holds the xim-rs / font-kit /
-  scap sources gpui's platform backends need) — a snapshot of a zed fork
+- gpui is vendored under `third_party/gpui/` (25 crates + `tooling/perf`, its
+  own trimmed workspace root) — a snapshot of a zed fork
   carrying the glass/edge-fade patches the UI depends on. It is a frozen
-  asset: edit it in place when needed; no dependency resolves from git.
+  asset: edit it in place when needed; no dependency resolves from git —
+  the platform backends' xim / font-kit / scap come from zed's crates.io
+  packages, pinned by `Cargo.lock` checksums.
 - `LICENSE` is GPL-3.0; upstream attribution for the vendored sources rides
   that license and the README credits. The exception is `crates/core`, which
   keeps the MIT license of the pi packages it was ported from (ADR-0043).

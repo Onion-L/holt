@@ -17,11 +17,11 @@ GPUI 是一个 Rust 原生、GPU 加速、混合 immediate/retained mode 的 UI 
 
 ## 2. 版本与资料边界
 
-本地 `gpui` crate 声明版本为 `0.2.2`，默认特性包含 `font-kit`、Wayland、X11 和 Windows manifest；测试、benchmark、profiler 是单独特性。[S17] `ARCHITECTURE.md` 进一步说明 `vendor/gpui` 是 Zed fork 的冻结快照，包含 Holt 依赖的 glass/edge-fade 补丁，不从 git 解析依赖。[S0]
+本地 `gpui` crate 声明版本为 `0.2.2`，默认特性包含 `font-kit`、Wayland、X11 和 Windows manifest；测试、benchmark、profiler 是单独特性。[S17] `ARCHITECTURE.md` 进一步说明 `third_party/gpui` 是 Zed fork 的冻结快照，包含 Holt 依赖的 glass/edge-fade 补丁，不从 git 解析依赖。[S0]
 
 官方 README 明确提示 GPUI 仍在快速开发、版本间经常有破坏性变化。[S1] 因而本文的优先级是：
 
-1. `vendor/gpui` 的源码与示例；
+1. `third_party/gpui` 的源码与示例；
 2. Holt 当前调用代码；
 3. Zed 官方仓库和 `gpui.rs`，只用于背景与交叉验证。
 
@@ -361,7 +361,7 @@ GPUI 会跟踪 view 读取的 entity 并复用未变子树，但这不是忽略�
 
 | 反模式 | 后果 | 替代方案 |
 | --- | --- | --- |
-| 根据最新博客复制 API 到 Holt | pre-1.0 API 与 fork 补丁不匹配 | 先查 `vendor/gpui` 和本地 examples |
+| 根据最新博客复制 API 到 Holt | pre-1.0 API 与 fork 补丁不匹配 | 先查 `third_party/gpui` 和本地 examples |
 | 在 `render` 中启动 task、订阅或改 entity | 每次重绘重复 side effect，可能形成循环 | 在 constructor/显式事件方法中创建并保存句柄 |
 | mutation 后忘记 `notify` | view 保留旧画面 | 在一次逻辑 mutation 末尾通知一次 |
 | 无变化也持续 `notify` | 失去 view cache 和 paint reuse | 比较新旧值或在 reducer 返回 changed flag |
@@ -382,7 +382,7 @@ Holt 当前方向总体符合 GPUI 模型：一个根 `AppState` 连接 engine�
 
 后续按优先级建议：
 
-1. **继续坚持 vendored API-first。** 新增 GPUI 用法先在 `vendor/gpui/crates/gpui/examples` 和本地调用点搜索；升级应作为独立工作，记录 fork patch，而不是局部混入上游新 API。[S0][S1]
+1. **继续坚持 vendored API-first。** 新增 GPUI 用法先在 `third_party/gpui/crates/gpui/examples` 和本地调用点搜索；升级应作为独立工作，记录 fork patch，而不是局部混入上游新 API。[S0][S1]
 2. **拆分高频变化的依赖。** `AppState` 很大；如果 profiler 显示根状态通知导致广泛 dirty，优先把高频 transcript、terminal、changes 等拆成 child entity，根 state 只保留句柄和导航选择。是否拆分以 dirty-view 数据为准。[S7][S8][S16]
 3. **保持纯 reducer 可脱离 GPUI 测试。** `state.rs` 已明确这么做，应继续让 GPUI glue 只负责 subscription/task/notify。[S16]
 4. **系统化 task ownership。** 搜索/加载/parse 等可替换任务保存为字段；应用级 URL pump、注册 scheme 等才 detach。Holt 已有大量 `Option<Task<_>>`，继续统一这一约定。[S11][S16]
@@ -398,24 +398,24 @@ Holt 当前方向总体符合 GPUI 模型：一个根 `AppState` 连接 engine�
 ### 本仓库
 
 - [S0] [`ARCHITECTURE.md:55-62`](../../ARCHITECTURE.md#L55-L62)：vendored fork、冻结快照和 docs 定位。
-- [S1] [`vendor/gpui/crates/gpui/README.md:1-98`](../../vendor/gpui/crates/gpui/README.md#L1-L98)：定位、启动方式、entity/view/element 三层、executor 与测试。
-- [S2] [`vendor/gpui/crates/gpui/docs/contexts.md:1-33`](../../vendor/gpui/crates/gpui/docs/contexts.md#L1-L33)：各 context、`Window`、`Entity` 的职责。
-- [S3] [`vendor/gpui/crates/gpui/src/_ownership_and_data_flow.rs:1-138`](../../vendor/gpui/crates/gpui/src/_ownership_and_data_flow.rs#L1-L138)：所有权、read/update、observe/notify、subscribe/emit。
-- [S4] [`vendor/gpui/crates/gpui/src/app/context.rs:20-269`](../../vendor/gpui/crates/gpui/src/app/context.rs#L20-L269)、[`Context::emit:765-779`](../../vendor/gpui/crates/gpui/src/app/context.rs#L765-L779)：entity context、listener、spawn 与事件。
-- [S5] [`vendor/gpui/crates/gpui/src/app.rs:225-309`](../../vendor/gpui/crates/gpui/src/app.rs#L225-L309)、[`App::spawn:1847-1895`](../../vendor/gpui/crates/gpui/src/app.rs#L1847-L1895)、[`App::on_action:2145-2185`](../../vendor/gpui/crates/gpui/src/app.rs#L2145-L2185)：运行、executor、传播语义。
-- [S6] [`vendor/gpui/crates/gpui/src/element.rs:1-184`](../../vendor/gpui/crates/gpui/src/element.rs#L1-L184)：element 生命周期、自定义 element、`Render`/`RenderOnce`。
-- [S7] [`vendor/gpui/crates/gpui/src/view.rs:285-481`](../../vendor/gpui/crates/gpui/src/view.rs#L285-L481)：view cache、dirty 判断、prepaint/paint reuse。
-- [S8] [`vendor/gpui/crates/gpui/src/window.rs:88-205`](../../vendor/gpui/crates/gpui/src/window.rs#L88-L205)、[`Window::draw:2719-2868`](../../vendor/gpui/crates/gpui/src/window.rs#L2719-L2868)、[`draw_roots:2893-2970`](../../vendor/gpui/crates/gpui/src/window.rs#L2893-L2970)：传播、失效、帧管线和 scene 提交。
-- [S9] [`vendor/gpui/crates/gpui/docs/key_dispatch.md:1-88`](../../vendor/gpui/crates/gpui/docs/key_dispatch.md#L1-L88)：action、key context、binding。
-- [S10] [`vendor/gpui/crates/gpui/src/key_dispatch.rs:1-50`](../../vendor/gpui/crates/gpui/src/key_dispatch.rs#L1-L50)、[`DispatchTree:68-223`](../../vendor/gpui/crates/gpui/src/key_dispatch.rs#L68-L223)、[`FocusHandle/Focusable`](../../vendor/gpui/crates/gpui/src/window.rs#L383-L565)：嵌套 action、dispatch tree 与焦点。
-- [S11] [`vendor/gpui/crates/gpui/src/executor.rs:1-122`](../../vendor/gpui/crates/gpui/src/executor.rs#L1-L122)、[`vendor/gpui/crates/scheduler/src/executor.rs:178-339`](../../vendor/gpui/crates/scheduler/src/executor.rs#L178-L339)：前后台 executor、`Task` 取消与 detach。
-- [S12] [`vendor/gpui/crates/gpui_platform/src/gpui_platform.rs:1-60`](../../vendor/gpui/crates/gpui_platform/src/gpui_platform.rs#L1-L60)、[`Platform`](../../vendor/gpui/crates/gpui/src/platform.rs#L125-L320)、[`PlatformWindow`](../../vendor/gpui/crates/gpui/src/platform.rs#L794-L958)：平台选择与抽象面。
-- [S13] [`vendor/gpui/crates/gpui/examples/testing.rs:1-346`](../../vendor/gpui/crates/gpui/examples/testing.rs#L1-L346)：当前 API 的 view/action/async/test 完整示例。
-- [S14] [`vendor/gpui/crates/gpui/src/elements/list.rs:1-37`](../../vendor/gpui/crates/gpui/src/elements/list.rs#L1-L37)、[`uniform_list.rs:22-126`](../../vendor/gpui/crates/gpui/src/elements/uniform_list.rs#L22-L126)：不同高度/固定高度列表的约束。
-- [S15] [`vendor/gpui/crates/gpui/src/subscription.rs:147-194`](../../vendor/gpui/crates/gpui/src/subscription.rs#L147-L194)：subscription drop/detach 语义。
+- [S1] [`third_party/gpui/crates/gpui/README.md:1-98`](../../third_party/gpui/crates/gpui/README.md#L1-L98)：定位、启动方式、entity/view/element 三层、executor 与测试。
+- [S2] [`third_party/gpui/crates/gpui/docs/contexts.md:1-33`](../../third_party/gpui/crates/gpui/docs/contexts.md#L1-L33)：各 context、`Window`、`Entity` 的职责。
+- [S3] [`third_party/gpui/crates/gpui/src/_ownership_and_data_flow.rs:1-138`](../../third_party/gpui/crates/gpui/src/_ownership_and_data_flow.rs#L1-L138)：所有权、read/update、observe/notify、subscribe/emit。
+- [S4] [`third_party/gpui/crates/gpui/src/app/context.rs:20-269`](../../third_party/gpui/crates/gpui/src/app/context.rs#L20-L269)、[`Context::emit:765-779`](../../third_party/gpui/crates/gpui/src/app/context.rs#L765-L779)：entity context、listener、spawn 与事件。
+- [S5] [`third_party/gpui/crates/gpui/src/app.rs:225-309`](../../third_party/gpui/crates/gpui/src/app.rs#L225-L309)、[`App::spawn:1847-1895`](../../third_party/gpui/crates/gpui/src/app.rs#L1847-L1895)、[`App::on_action:2145-2185`](../../third_party/gpui/crates/gpui/src/app.rs#L2145-L2185)：运行、executor、传播语义。
+- [S6] [`third_party/gpui/crates/gpui/src/element.rs:1-184`](../../third_party/gpui/crates/gpui/src/element.rs#L1-L184)：element 生命周期、自定义 element、`Render`/`RenderOnce`。
+- [S7] [`third_party/gpui/crates/gpui/src/view.rs:285-481`](../../third_party/gpui/crates/gpui/src/view.rs#L285-L481)：view cache、dirty 判断、prepaint/paint reuse。
+- [S8] [`third_party/gpui/crates/gpui/src/window.rs:88-205`](../../third_party/gpui/crates/gpui/src/window.rs#L88-L205)、[`Window::draw:2719-2868`](../../third_party/gpui/crates/gpui/src/window.rs#L2719-L2868)、[`draw_roots:2893-2970`](../../third_party/gpui/crates/gpui/src/window.rs#L2893-L2970)：传播、失效、帧管线和 scene 提交。
+- [S9] [`third_party/gpui/crates/gpui/docs/key_dispatch.md:1-88`](../../third_party/gpui/crates/gpui/docs/key_dispatch.md#L1-L88)：action、key context、binding。
+- [S10] [`third_party/gpui/crates/gpui/src/key_dispatch.rs:1-50`](../../third_party/gpui/crates/gpui/src/key_dispatch.rs#L1-L50)、[`DispatchTree:68-223`](../../third_party/gpui/crates/gpui/src/key_dispatch.rs#L68-L223)、[`FocusHandle/Focusable`](../../third_party/gpui/crates/gpui/src/window.rs#L383-L565)：嵌套 action、dispatch tree 与焦点。
+- [S11] [`third_party/gpui/crates/gpui/src/executor.rs:1-122`](../../third_party/gpui/crates/gpui/src/executor.rs#L1-L122)、[`third_party/gpui/crates/scheduler/src/executor.rs:178-339`](../../third_party/gpui/crates/scheduler/src/executor.rs#L178-L339)：前后台 executor、`Task` 取消与 detach。
+- [S12] [`third_party/gpui/crates/gpui_platform/src/gpui_platform.rs:1-60`](../../third_party/gpui/crates/gpui_platform/src/gpui_platform.rs#L1-L60)、[`Platform`](../../third_party/gpui/crates/gpui/src/platform.rs#L125-L320)、[`PlatformWindow`](../../third_party/gpui/crates/gpui/src/platform.rs#L794-L958)：平台选择与抽象面。
+- [S13] [`third_party/gpui/crates/gpui/examples/testing.rs:1-346`](../../third_party/gpui/crates/gpui/examples/testing.rs#L1-L346)：当前 API 的 view/action/async/test 完整示例。
+- [S14] [`third_party/gpui/crates/gpui/src/elements/list.rs:1-37`](../../third_party/gpui/crates/gpui/src/elements/list.rs#L1-L37)、[`uniform_list.rs:22-126`](../../third_party/gpui/crates/gpui/src/elements/uniform_list.rs#L22-L126)：不同高度/固定高度列表的约束。
+- [S15] [`third_party/gpui/crates/gpui/src/subscription.rs:147-194`](../../third_party/gpui/crates/gpui/src/subscription.rs#L147-L194)：subscription drop/detach 语义。
 - [S16] [`crates/ui/src/lib.rs:75-185`](../../crates/ui/src/lib.rs#L75-L185)、[`crates/ui/src/state.rs:1-18`](../../crates/ui/src/state.rs#L1-L18)：Holt 启动、runtime 桥接与 state 分层。
-- [S17] [`vendor/gpui/crates/gpui/Cargo.toml:1-42`](../../vendor/gpui/crates/gpui/Cargo.toml#L1-L42)：本地版本和 feature。
-- [S18] [`vendor/gpui/crates/gpui/src/app/entity_map.rs:134-207`](../../vendor/gpui/crates/gpui/src/app/entity_map.rs#L134-L207)、[`Entity/WeakEntity:414-800`](../../vendor/gpui/crates/gpui/src/app/entity_map.rs#L414-L800)：entity lease/read、强弱句柄与 double-lease 检查。
+- [S17] [`third_party/gpui/crates/gpui/Cargo.toml:1-42`](../../third_party/gpui/crates/gpui/Cargo.toml#L1-L42)：本地版本和 feature。
+- [S18] [`third_party/gpui/crates/gpui/src/app/entity_map.rs:134-207`](../../third_party/gpui/crates/gpui/src/app/entity_map.rs#L134-L207)、[`Entity/WeakEntity:414-800`](../../third_party/gpui/crates/gpui/src/app/entity_map.rs#L414-L800)：entity lease/read、强弱句柄与 double-lease 检查。
 
 ### 官方外部资料
 
@@ -425,24 +425,24 @@ Holt 当前方向总体符合 GPUI 模型：一个根 `AppState` 连接 engine�
 - [U4] [Zed 官方仓库中的 GPUI crate](https://github.com/zed-industries/zed/tree/main/crates/gpui)
 
 [S0]: ../../ARCHITECTURE.md#L55-L62
-[S1]: ../../vendor/gpui/crates/gpui/README.md#L1-L98
-[S2]: ../../vendor/gpui/crates/gpui/docs/contexts.md#L1-L33
-[S3]: ../../vendor/gpui/crates/gpui/src/_ownership_and_data_flow.rs#L1-L138
-[S4]: ../../vendor/gpui/crates/gpui/src/app/context.rs#L20-L269
-[S5]: ../../vendor/gpui/crates/gpui/src/app.rs#L225-L309
-[S6]: ../../vendor/gpui/crates/gpui/src/element.rs#L1-L184
-[S7]: ../../vendor/gpui/crates/gpui/src/view.rs#L285-L481
-[S8]: ../../vendor/gpui/crates/gpui/src/window.rs#L2719-L2970
-[S9]: ../../vendor/gpui/crates/gpui/docs/key_dispatch.md#L1-L88
-[S10]: ../../vendor/gpui/crates/gpui/src/key_dispatch.rs#L1-L223
-[S11]: ../../vendor/gpui/crates/gpui/src/executor.rs#L1-L122
-[S12]: ../../vendor/gpui/crates/gpui_platform/src/gpui_platform.rs#L1-L60
-[S13]: ../../vendor/gpui/crates/gpui/examples/testing.rs#L1-L346
-[S14]: ../../vendor/gpui/crates/gpui/src/elements/list.rs#L1-L37
-[S15]: ../../vendor/gpui/crates/gpui/src/subscription.rs#L147-L194
+[S1]: ../../third_party/gpui/crates/gpui/README.md#L1-L98
+[S2]: ../../third_party/gpui/crates/gpui/docs/contexts.md#L1-L33
+[S3]: ../../third_party/gpui/crates/gpui/src/_ownership_and_data_flow.rs#L1-L138
+[S4]: ../../third_party/gpui/crates/gpui/src/app/context.rs#L20-L269
+[S5]: ../../third_party/gpui/crates/gpui/src/app.rs#L225-L309
+[S6]: ../../third_party/gpui/crates/gpui/src/element.rs#L1-L184
+[S7]: ../../third_party/gpui/crates/gpui/src/view.rs#L285-L481
+[S8]: ../../third_party/gpui/crates/gpui/src/window.rs#L2719-L2970
+[S9]: ../../third_party/gpui/crates/gpui/docs/key_dispatch.md#L1-L88
+[S10]: ../../third_party/gpui/crates/gpui/src/key_dispatch.rs#L1-L223
+[S11]: ../../third_party/gpui/crates/gpui/src/executor.rs#L1-L122
+[S12]: ../../third_party/gpui/crates/gpui_platform/src/gpui_platform.rs#L1-L60
+[S13]: ../../third_party/gpui/crates/gpui/examples/testing.rs#L1-L346
+[S14]: ../../third_party/gpui/crates/gpui/src/elements/list.rs#L1-L37
+[S15]: ../../third_party/gpui/crates/gpui/src/subscription.rs#L147-L194
 [S16]: ../../crates/ui/src/lib.rs#L75-L185
-[S17]: ../../vendor/gpui/crates/gpui/Cargo.toml#L1-L42
-[S18]: ../../vendor/gpui/crates/gpui/src/app/entity_map.rs#L134-L207
+[S17]: ../../third_party/gpui/crates/gpui/Cargo.toml#L1-L42
+[S18]: ../../third_party/gpui/crates/gpui/src/app/entity_map.rs#L134-L207
 [U1]: https://github.com/zed-industries/zed/blob/399258feeaf90ad8a3a208c99221ee87b6452f38/crates/gpui/README.md
 [U2]: https://github.com/zed-industries/zed/blob/399258feeaf90ad8a3a208c99221ee87b6452f38/crates/gpui/docs/contexts.md
 [U3]: https://gpui.rs/

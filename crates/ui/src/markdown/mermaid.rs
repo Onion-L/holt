@@ -333,7 +333,7 @@ fn rasterize(svg: &str, svg_renderer: &SvgRenderer, zoom: f32) -> Option<Arc<Ren
 }
 
 /// gpui's SVG rasterizer silently clamps pixmaps to 8192 device pixels per
-/// axis (vendor/gpui svg_renderer.rs — `log::warn` only, then truncation).
+/// axis (third_party/gpui svg_renderer.rs — `log::warn` only, then truncation).
 /// Bitmap px are natural × zoom × 2, so a raster zoom above
 /// `MAX_RASTER_EDGE / 2 / max(natural_w, natural_h)` gets invisibly clamped
 /// while `raster_zoom` records the requested value; the renderer then

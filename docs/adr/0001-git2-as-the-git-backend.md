@@ -10,9 +10,9 @@ installed, invites porcelain-parsing fragility, and drifts across versions.
 ## Consequences
 
 - The workspace gains its first C dependency (`libgit2-sys`, vendored
-  source built by cargo) in a repo that otherwise freezes vendored assets.
-  This is deliberate: it is a crates.io build, not another snapshot to
-  maintain under `vendor/`.
+  source built by cargo) in a repo that otherwise freezes third-party
+  assets. This is deliberate: it is a crates.io build, not another snapshot
+  to maintain under `third_party/`.
 - Checksums and patch shapes (ADR-0003, `CheckoutDiff`) are produced by
   libgit2's diff printer; swapping the git backend later re-opens those
   semantics.

@@ -49,7 +49,7 @@ or error handling just to make a test pass.
 - **The engine slice is intentionally narrow.** Worktrees, change requests,
   and uploads are rendered by the UI but unserved — those RPCs reply
   `UnknownMethod` by design, not regression.
-- **gpui is a frozen vendored snapshot** under `vendor/gpui`. Edit it in place
+- **gpui is a frozen third-party snapshot** under `third_party/gpui`. Edit it in place
   when needed; never resolve gpui from git, and check the vendored sources
   rather than online docs for its API.
 - **Commits** follow `type(crate): summary` — e.g. `feat(ui): …`,
