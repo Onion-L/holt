@@ -100,8 +100,8 @@ nearby comment only when the invariant is otherwise non-obvious.
 ## Local evidence commands
 
 ```text
-rg "cx\\.notify|cx\\.spawn|background_spawn|on_action|track_focus|occlude" crates/ui vendor/gpui
-rg "fn request_layout|fn prepaint|fn paint" vendor/gpui/crates/gpui/src
+rg "cx\\.notify|cx\\.spawn|background_spawn|on_action|track_focus|occlude" crates/ui third_party/gpui
+rg "fn request_layout|fn prepaint|fn paint" third_party/gpui/crates/gpui/src
 cargo test -p holt-ui -- <focused-test-name>
 ```
 

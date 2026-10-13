@@ -16,7 +16,7 @@ jobs:
   check:
     runs-on: macos-latest
     env:
-      # sccache caches per-rustc-call by content hash, so the vendored gpui
+      # sccache caches per-rustc-call by content hash, so the third_party gpui
       # crates (path deps outside the workspace, which rust-cache evicts)
       # stop recompiling on every run.
       SCCACHE_GHA_ENABLED: "true"

@@ -129,7 +129,7 @@ crate::icons::icon(crate::icons::CLOSE)
 
 Parent text color is not inherited by the SVG paint path. Without an explicit
 color, `Svg::paint` skips drawing entirely; see
-`vendor/gpui/crates/gpui/src/elements/svg.rs`.
+`third_party/gpui/crates/gpui/src/elements/svg.rs`.
 
 When changing icon styling, verify that the icons reach SVG painting as well
 as checking button interaction. The regression test

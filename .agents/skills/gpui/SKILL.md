@@ -10,7 +10,7 @@ pre-1.0 and Holt uses a patched snapshot, so verify APIs against the checkout.
 
 ## Source order
 
-1. `vendor/gpui` source and examples (Holt's API truth).
+1. `third_party/gpui` source and examples (Holt's API truth).
 2. Existing `crates/ui` call sites and `docs/research/gpui.md`.
 3. Upstream docs only for background; confirm signatures locally.
 

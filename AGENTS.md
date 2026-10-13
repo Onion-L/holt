@@ -38,7 +38,7 @@ touching your area.
 
 ## Gotchas
 
-- gpui is a frozen vendored snapshot under `vendor/gpui` (excluded from the
+- gpui is a frozen third-party snapshot under `third_party/gpui` (excluded from the
   workspace; carries the glass/edge-fade patches the UI depends on). Edit it
   in place; never resolve gpui from git or guess its pre-1.0 API from online
   docs — `docs/research/gpui.md` and the vendored sources are the API truth.
