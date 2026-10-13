@@ -106,11 +106,35 @@ import ChangelogController from '../components/ChangelogController';
 
   <ol class="vers">
 
+    <li class="ver" id="v0.5.1">
+      <div class="vhead">
+        <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.5.1">0.5.1</a>
+        <span class="vdate mono">Oct 13, 2026</span>
+        <span class="stamp mono">current</span>
+      </div>
+      <div class="vgrid">
+        <section class="vcol f">
+          <h3 class="cat mono">Features</h3>
+          <ul>
+            <li>RPC failures carry typed error codes — diff, restore, and proposal errors classify by code instead of matching display text</li>
+            <li>Plan mode submits through submit_plan: the plan rides structured data into the approval card, with the &lt;proposed_plan&gt; text convention kept as a fallback</li>
+            <li>Landing page rebuilt on Astro, with a chip-aware download button</li>
+          </ul>
+        </section>
+        <section class="vcol x">
+          <h3 class="cat mono">Fixes</h3>
+          <ul>
+            <li>The auto-review verdict matches as a clean whole word — a longer word containing it no longer counts</li>
+            <li>The release workflow retries DMG detach when the volume is busy</li>
+          </ul>
+        </section>
+      </div>
+    </li>
+
     <li class="ver" id="v0.5.0">
       <div class="vhead">
         <a class="vnum" href="https://github.com/Onion-L/holt/releases/tag/v0.5.0">0.5.0</a>
         <span class="vdate mono">Oct 12, 2026</span>
-        <span class="stamp mono">current</span>
       </div>
       <div class="vgrid">
         <section class="vcol f">
