@@ -34,8 +34,7 @@ import ChangelogController from '../components/ChangelogController';
   .vcol li { position: relative; }
 
   /* shared topbar */
-  .topbar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; letter-spacing: .08em; }
-  .topbar .brand { font: 400 20px Anton, Impact, sans-serif; letter-spacing: .05em; }
+  .topbar { display: flex; justify-content: flex-end; align-items: center; font-size: 12px; letter-spacing: .08em; }
   .topbar nav { display: flex; gap: 22px; text-transform: uppercase; color: #5b6472; }
   .topbar nav a { border-bottom: 1px solid transparent; padding-bottom: 2px; }
   .topbar nav a:hover { color: var(--blue); border-color: var(--blue); }
@@ -94,7 +93,6 @@ import ChangelogController from '../components/ChangelogController';
 <body data-variant="d">
 
 <div class="topbar mono">
-  <span class="brand">HOLT</span>
   <nav>
     <a href="/">← Back</a>
     <a href="https://github.com/Onion-L/holt">GitHub ↗</a>
