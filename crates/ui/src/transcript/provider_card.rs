@@ -30,14 +30,21 @@ pub(super) struct ProviderCardUi {
 
 /// The apply-time staleness gate's refusal reads as an instruction, not a
 /// fault: the assistant re-proposes against the current catalog. Classified
-/// by the wire error's code, never by its text.
+/// by the wire error's code; the phrase fallback covers a legacy peer that
+/// predates error codes — both ends ship in one binary, so it is a shim,
+/// not the contract.
 fn proposal_error_text(error: &holt_rpc::RpcError) -> String {
-    match error {
+    let stale = match error {
         holt_rpc::RpcError::Coded {
             code: holt_rpc::RpcErrorCode::ProposalStale,
             ..
-        } => "Catalog changed — ask to re-propose.".to_string(),
-        _ => error.to_string(),
+        } => true,
+        other => other.to_string().contains("changed since this proposal"),
+    };
+    if stale {
+        "Catalog changed — ask to re-propose.".to_string()
+    } else {
+        error.to_string()
     }
 }
 

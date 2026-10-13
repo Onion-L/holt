@@ -103,15 +103,15 @@ _Avoid_: double-Esc stop
 - **Always-allow**: a chat-scoped, in-memory grant that passes matching mutating calls through the gate for the rest of the app session — bash matches by command prefix, write/edit by exact file path. Checked before the gatekeeper, so it holds across mode switches; cleared on restart and never persisted.
 _Avoid_: sandbox (nothing is OS-sandboxed), trust level, ACL
 
-- **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, write a pending plan document, and request approval before implementation; it is independent of the chat's Permission mode. Entered with `/plan`; `/plan off` — or the chat-state card's off button — leaves it.
+- **Plan Mode**: a chat state in which the agent may inspect and reason about the workspace, then submit a plan for approval before implementation; it is independent of the chat's Permission mode. Entered with `/plan`; `/plan off` — or the chat-state card's off button — leaves it.
 _Avoid_: planning permission mode, read-only permission mode
 - **Goal Mode**: a chat-scoped durable objective the agent loops on (ADR-0044): after each settled Turn an independent verifier pass judges the goal from concrete evidence (files changed, tool results) and the engine queues the next step itself — a visible, deletable queue row. Set with `/goal <objective>`, controlled with `/goal off | pause | resume` or the chat-state card's pause/clear buttons. It is not a mode in the Plan Mode sense: no tool gating, no system-prompt change. Mutually exclusive with Plan Mode, Provider Mode, and routine runs.
 _Avoid_: goal as a permission/mode concept, loop mode, autopilot
-- **Plan document**: a versioned Markdown document under the chat's working directory at `.holt/plans`, representing one proposed implementation plan.
+- **Plan**: the Markdown of one proposed implementation plan — submitted through the `submit_plan` tool (a legacy `<proposed_plan>` text block still folds into a card).
 _Avoid_: todo list, task list
-- **Plan submission**: the explicit runtime action that submits the active Plan document for user approval.
+- **Plan submission**: the `submit_plan` tool call that hands a complete plan to the approval card as typed data.
 _Avoid_: plan text, plan output
-- **Active plan**: the one plan document currently associated with a chat's Plan Mode state; a chat may retain older plans for audit.
+- **Approval card**: the transcript card a plan submission lands; the user approves, rejects with feedback, or leaves it pending.
 _Avoid_: current todo
 - **Usage record**: the token measurements of one provider round-trip — input, output, and cache tokens — attributed to the Chat that caused it and stamped with its source (Turn work, Subagent, Compaction, Auto-review, Title task), provider, and model. Every model call a chat causes produces one; an interrupted Turn keeps whatever the provider reported.
 _Avoid_: cost, spend (token counts only — no prices)

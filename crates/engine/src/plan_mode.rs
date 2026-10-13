@@ -53,8 +53,8 @@ unavailable; do not attempt workarounds.\n\
 finalizing; ask rather than guess when an ambiguity is high-impact.\n\
 - When the plan is decision complete, call `submit_plan` with the whole \
 plan as ONE complete Markdown string — the approval card shows exactly \
-that Markdown, and only a submission reaches approval. Ordinary text, \
-questions, and progress notes never do. STOP your turn after calling.\n\
+that Markdown, and only a submission reaches approval — questions and \
+progress notes never do. STOP your turn after calling.\n\
 - Each submission fully replaces the previous one; never fragment a \
 plan across several submissions in one turn.\n\
 - Do not ask \"should I proceed?\". The user will approve the plan or \

@@ -224,8 +224,7 @@ pub mod methods {
     /// Entering records the chat's current permission mode for restoration
     /// on approval — the stored mode itself does not move. `GetPlanMode`
     /// (same params) is the pure query. A mid-Turn switch affects only the
-    /// next Turn; exiting retires the active plan reference but keeps the
-    /// plan documents on disk.
+    /// next Turn; exiting settles pending approval cards as dismissed.
     pub const ENTER_PLAN_MODE: &str = "EnterPlanMode";
     pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
     pub const GET_PLAN_MODE: &str = "GetPlanMode";
@@ -248,16 +247,17 @@ pub mod methods {
     pub const ENTER_PROVIDER_MODE: &str = "EnterProviderMode";
     pub const EXIT_PROVIDER_MODE: &str = "ExitProviderMode";
     pub const GET_PROVIDER_MODE: &str = "GetProviderMode";
-    /// Resolve a submitted plan (ADR-0025): params `{chatId, planId,
-    /// verdict, feedback?}` where verdict is `"approve" | "reject" |
-    /// "remain"`. Approve exits Plan Mode, restores the entry permission
-    /// mode, and pins the plan document for injection into the next
-    /// implementation Turn. Reject retires the revision (the document
-    /// stays), keeps the chat planning, and a non-empty `feedback` is
-    /// enqueued as the revision's next planning input. Remain returns the
-    /// plan to drafting without starting anything. Unknown chat, a
-    /// superseded planId, or a plan not awaiting approval fails; every
-    /// path settles the transcript's approval cards for that plan.
+    /// Resolve a submitted plan (ADR-0025): params `{chatId, verdict,
+    /// feedback?}` where verdict is `"approve" | "reject" | "remain"`, and
+    /// requires a planning chat with a pending approval card (a
+    /// `submit_plan` result, or a folded legacy `<proposed_plan>` block).
+    /// Approve exits Plan Mode, restores the entry permission mode, and
+    /// enqueues an approval follow-up prompt as an ordinary run — the plan
+    /// is already in the conversation History, so the implementation Turn
+    /// reads it without injection. Reject keeps the chat planning, and a
+    /// non-empty `feedback` is enqueued as the revision's next planning
+    /// input. Remain changes nothing but the cards; every path settles the
+    /// transcript's pending approval cards together.
     pub const RESOLVE_PLAN_APPROVAL: &str = "ResolvePlanApproval";
     /// User-driven delivery retry for a chat with unadopted queued sends:
     /// fresh chat2 socket, host nudge, drain pass, and a new delivery escort
@@ -763,10 +763,16 @@ mod tests {
                 ..
             }
         ));
-        // An unknown code from a newer server degrades to the plain error.
+        // An unknown code from a newer server degrades to the plain error —
+        // and never to the legacy prefix, which speaks only for peers that
+        // predate the code field.
         assert!(matches!(
             wire_error("something new".into(), Some("brandNewKind".into())),
             RpcError::Failed(message) if message == "something new"
+        ));
+        assert!(matches!(
+            wire_error("unknown method: ListFolders".into(), Some("brandNewKind".into())),
+            RpcError::Failed(message) if message == "unknown method: ListFolders"
         ));
         // A code-less frame from an older server still classifies the
         // legacy prefix.

@@ -27,7 +27,9 @@ use super::{
 };
 
 /// Classify a scoped-capture failure while the `RpcError` is still typed:
-/// its code and variant carry the decision, never its Display text.
+/// its code and variant carry the decision, never its Display text. The
+/// phrase fallback covers a legacy peer that predates error codes — both
+/// ends ship in one binary, so it is a shim, not the contract.
 fn classify_scoped_error(error: &holt_rpc::RpcError) -> ScopedDiffError {
     match error {
         holt_rpc::RpcError::Coded {
@@ -35,6 +37,7 @@ fn classify_scoped_error(error: &holt_rpc::RpcError) -> ScopedDiffError {
             ..
         } => ScopedDiffError::NoTurnRecorded,
         holt_rpc::RpcError::UnknownMethod(_) => ScopedDiffError::VersionSkew,
+        _ if error.to_string().contains("no turn recorded") => ScopedDiffError::NoTurnRecorded,
         _ => ScopedDiffError::Other(error.to_string().into()),
     }
 }
