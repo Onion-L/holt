@@ -178,8 +178,8 @@ mod gate_tests {
             "CONTEXT.md"
         );
         assert_eq!(
-            display_path("/Users/onion/workbench/holt/docs/adr", cwd),
-            "docs/adr"
+            display_path("/Users/onion/workbench/holt/docs/decisions.md", cwd),
+            "docs/decisions.md"
         );
         // The root itself, with and without a trailing slash.
         assert_eq!(display_path("/Users/onion/workbench/holt", cwd), ".");
@@ -427,7 +427,7 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 /// Display form of a tool-call path: a path under `cwd` renders cwd-relative
-/// (`docs/adr`, or `.` for the root itself), anything else verbatim. The
+/// (`docs/decisions.md`, or `.` for the root itself), anything else verbatim. The
 /// match is a plain string prefix on purpose — tool paths come straight from
 /// the agent, which builds them from the chat's own cwd — and a non-match
 /// (path outside the workspace, or `cwd` unknown) just keeps the absolute.

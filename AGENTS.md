@@ -3,8 +3,8 @@
 Rust desktop UI shell for a coding agent. `crates/engine` runs the `pi-core-rs` agent loop
 behind the `RpcService` trait. `ARCHITECTURE.md` is the source of truth for crate topology
 and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, or the boot path.
-Before exploring, read `CONTEXT.md` (domain glossary) and the `docs/adr/` decision records
-touching your area.
+Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
+(`docs/decisions.md`) entries touching your area.
 
 ## Commands
 
@@ -26,7 +26,7 @@ touching your area.
   `UnknownMethod` by design, not regression. The git surface (branches, checkout diffs in all
   four modes, history, fetch) IS served on the git2 backend.
 - `crates/ui` is agent-agnostic: it renders `MessagePart`s from `holt-doc`, never raw agent events.
-- Git2 access lives in `crates/engine/src/git.rs` (ADR-git2-as-the-git-backend).
+- Git2 access lives in `crates/engine/src/git.rs` (decision: git2-as-the-git-backend).
 
 ## Code style
 
@@ -45,9 +45,9 @@ touching your area.
 - GPUI nested scroll containers do not contain wheel events automatically: `.overflow_y_scroll()`
   inside a `List` must use `.occlude()` or one wheel gesture can move both the child and the outer
   list. A bubble-phase `.on_scroll_wheel()` handler is insufficient because the outer List listener
-  may run first. See ADR-nested-scroll-containers-isolate-wheel-events.
+  may run first (decision: nested-scroll-containers-isolate-wheel-events).
 - The agent loop itself lives in `crates/core` (package `pi-core-rs`, lib
-  `pi_core`; merged in as a workspace member, ADR-agent-core-is-a-holt-owned-workspace-crate); `crates/engine`
+  `pi_core`; merged in as a workspace member, decision agent-core-is-a-holt-owned-workspace-crate); `crates/engine`
   only adapts it — run wiring, tools via `engine::tools`, credentials,
   provider settings.
 - Commits follow `type(crate): summary` (e.g. `feat(ui): …`); scopes in use:

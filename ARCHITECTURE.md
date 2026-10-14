@@ -1007,5 +1007,5 @@ compaction, and overflow behavior are asserted without a real provider
   that license and the README credits. The exception is `crates/core`, which
   keeps the MIT license of the pi packages it was ported from (ADR-agent-core-is-a-holt-owned-workspace-crate).
 - Historical design docs for removed subsystems (sync, agent drivers, edge)
-  were deleted with them; `docs/adr` keeps the decision records and
+  were deleted with them; `docs/decisions.md` keeps the decision log and
   `docs/research` keeps the UI/gpui and domain research notes.
