@@ -195,7 +195,8 @@ no SSRF filter either (localhost is a first-class use; bash already reaches
 the network). Amendments: keyless Exa is active before any setup and off
 persists (`95fa5e8`); user-defined backends describe the service's own
 shape (a request template + JSON Pointers, or one MCP tool) in a separate
-keyless file that never fails startup (`3bb8c3a`).
+keyless file that never fails startup (`3bb8c3a`). Survey: docs/research/web-tools.md (five-way comparison —
+Claude Code, Codex, opencode, Kimi, pi).
 
 ## turn-change-sets-and-review
 
@@ -268,7 +269,7 @@ mutating by prefix. Rejected: trusting `readOnlyHint` (the spec calls
 annotations untrusted) and never gating (foreign code with zero audit
 surface). Lazy lifecycle, no background restart loop; stdio children get a
 sanitized environment (a Dock-launched app inherits launchd's PATH, which
-cannot resolve `npx` at all).
+cannot resolve `npx` at all). Survey: docs/research/mcp.md.
 
 ## skill-invocation-is-an-inline-mention
 
@@ -297,7 +298,8 @@ a top-right state card (`06b8a00`).
 whose synthetic pair marks the Turn's snapshot. Rejected: a per-provider
 conditional bootstrap, a static catalog in the system prompt (busts the
 cache prefix on every config change), and a per-tool deferral flag in
-`mcp.json` (user-tunable fragmentation of a harness invariant).
+`mcp.json` (user-tunable fragmentation of a harness invariant). Survey:
+docs/research/mcp.md.
 
 ## session-worktrees-are-chat-owned-isolation
 
