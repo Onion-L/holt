@@ -1,11 +1,27 @@
 # Holt
 
 Rust desktop UI shell for a coding agent. `crates/engine` runs the `pi-core-rs` agent loop
-behind the `RpcService` trait. `ARCHITECTURE.md` owns topology and the hard boundaries;
-the per-method contract lives in the owning subsystem page (`docs/subsystems/`) — read
-both before touching `crates/rpc`, `crates/engine`, or the boot path.
-Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
-(`docs/decisions.md`) entries touching your area.
+behind the `RpcService` trait.
+
+## Documentation
+
+| Question | Home |
+| --- | --- |
+| How does X run today? | `docs/subsystems/` — one page per subsystem, three groups |
+| Why was X decided, and what was rejected? | `docs/decisions.md` (+ surveys under `docs/research/`) |
+| What does this word mean? | `CONTEXT.md` |
+| Topology and hard fences | `ARCHITECTURE.md` |
+
+Before changing a documented subsystem, read its page and verify the linked
+sources against the code you are about to edit. A change that alters a
+documented responsibility, interface, state transition, runtime path,
+compatibility rule, or failure behavior updates the owning page **in the same
+PR**; a refactor that preserves them needs no prose change. Full rules:
+`docs/subsystems/README.md`.
+
+A new decision earns a `docs/decisions.md` entry only if it names a rejected
+alternative, spans modules or a serialized format, or someone might
+relitigate it — otherwise it belongs in a code comment.
 
 ## Commands
 
@@ -27,7 +43,10 @@ Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
   `UnknownMethod` by design, not regression. The git surface (branches, checkout diffs in all
   four modes, history, fetch) IS served on the git2 backend.
 - `crates/ui` is agent-agnostic: it renders `MessagePart`s from `holt-doc`, never raw agent events.
-- Git2 access lives in `crates/engine/src/git.rs` (decision: git2-as-the-git-backend).
+- Git2 access lives only in `crates/engine/src/git.rs` (decision:
+  git2-as-the-git-backend); the workspace filesystem lives only in
+  `crates/engine/src/files` — and the UI never touches the user's repository
+  or working files.
 
 ## Code style
 
@@ -43,10 +62,9 @@ Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
   workspace; carries the glass/edge-fade patches the UI depends on). Edit it
   in place; never resolve gpui from git or guess its pre-1.0 API from online
   docs — `docs/research/gpui.md` and the vendored sources are the API truth.
-- GPUI nested scroll containers do not contain wheel events automatically: `.overflow_y_scroll()`
-  inside a `List` must use `.occlude()` or one wheel gesture can move both the child and the outer
-  list. A bubble-phase `.on_scroll_wheel()` handler is insufficient because the outer List listener
-  may run first (decision: nested-scroll-containers-isolate-wheel-events).
+- GPUI nested scroll containers do not contain wheel events automatically:
+  a scrollable inside a `List` must `.occlude()` — a bubble-phase wheel
+  handler is insufficient (decision: nested-scroll-containers-isolate-wheel-events).
 - The agent loop itself lives in `crates/core` (package `pi-core-rs`, lib
   `pi_core`; merged in as a workspace member, decision agent-core-is-a-holt-owned-workspace-crate); `crates/engine`
   only adapts it — run wiring, tools via `engine::tools`, credentials,

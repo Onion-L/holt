@@ -2,7 +2,7 @@
 
 A desktop-only UI shell. The frontend talks to a small in-process engine over a typed RPC contract; its first real capability is the `pi-core-rs` agent loop. README.md covers the project overview and quick start.
 
-How the system runs today is documented per subsystem in [docs/subsystems](docs/subsystems/README.md); this file owns only topology, the hard boundaries, and the maps between them.
+This file owns topology, the hard boundaries, and the maps between them. How the system runs today lives in [docs/subsystems](docs/subsystems/README.md).
 
 ## Topology
 
@@ -81,12 +81,3 @@ Plain JSON/JSONL under the data dir; each record written by the engine, atomical
 
 - gpui is vendored under `third_party/gpui/` — a frozen snapshot of a Zed fork carrying the glass/edge-fade patches the UI depends on. Edit it in place; never resolve gpui from git. [docs/research/gpui.md](docs/research/gpui.md) and the vendored sources are the API truth.
 - `LICENSE` is GPL-3.0; the exception is `crates/core`, which keeps the MIT license of the pi packages it was ported from.
-
-## Where everything lives
-
-| Question | Home |
-| --- | --- |
-| How does X run today? | [docs/subsystems](docs/subsystems/README.md) |
-| Why was X decided, and what was rejected? | [docs/decisions.md](docs/decisions.md) (+ surveys under `docs/research/`) |
-| What does this word mean? | [CONTEXT.md](CONTEXT.md) |
-| Topology and hard fences | this file |
