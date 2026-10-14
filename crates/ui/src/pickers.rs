@@ -60,8 +60,8 @@ pub(crate) use logic::normalize_model_rows;
 pub use logic::{
     CheckoutKind, CheckoutPlan, DraftConfig, ResolvedRunConfig, SwitchDialogContent, breadcrumbs,
     browser_rows, child_path, clamp_reasoning, completion_prefix_len, default_model,
-    default_reasoning, offered_providers, parent_path, reasoning_label, segment_target,
-    traits_customized, traits_summary, typed_path_target,
+    default_reasoning, model_belongs_to, offered_providers, parent_path, reasoning_label,
+    segment_target, traits_customized, traits_summary, typed_path_target,
 };
 pub use mode::{MODE_TIERS, mode_description, mode_icon, mode_index, mode_label};
 pub(crate) use mode::{resolve_permission_mode, set_chat_permission_mode};
@@ -433,14 +433,33 @@ impl Pickers {
             .and_then(|list| offered_providers(list).first().map(|d| d.id.clone()))
     }
 
-    /// Effective model id: the draft pick, the selected chat's config, or (on
-    /// the new-chat canvas) the remembered last-used model for the provider.
-    fn effective_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
-        if let Some(id) = self.config.model.as_deref() {
+    /// The explicit model pick: the draft's, else the selected chat's
+    /// config, else none. A pick belonging to another provider is
+    /// discarded — a draft provider switch on an existing chat leaves the
+    /// chat's old id as the effective one, and pairing it with the new
+    /// provider assembles a request the engine rejects ("provider and
+    /// model do not match").
+    fn explicit_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        let picked = self.config.model.as_deref().or_else(|| {
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|chat| chat.config.as_ref().map(|config| config.model.as_str()))
+        });
+        let provider = self.effective_provider(cx);
+        if let (Some(id), Some(provider)) = (picked, provider.as_ref())
+            && model_belongs_to(id, provider.as_str())
+        {
             return Some(id);
         }
-        if let Some(chat) = self.state.read(cx).selected_chat_row() {
-            return chat.config.as_ref().map(|c| c.model.as_str());
+        None
+    }
+
+    /// Effective model id: the explicit pick, else (on the new-chat canvas)
+    /// the remembered last-used model for the provider.
+    fn effective_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        if let Some(id) = self.explicit_model_id(cx) {
+            return Some(id);
         }
         let provider = self.effective_provider(cx)?;
         self.defaults
@@ -556,11 +575,30 @@ impl Pickers {
             model: self
                 .selected_model(cx)
                 .map(|m| m.id.clone())
-                // Catalog not loaded (offline): still send the id we know.
-                .or_else(|| self.effective_model_id(cx).map(str::to_string)),
+                // No listed row is selected: fall back to the id we know.
+                .or_else(|| self.unlisted_model_id(cx)),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
         }
+    }
+
+    /// The fallback for [`Self::resolved`] when no listed row is selected.
+    /// An explicit pick (draft or chat config) rides even a loaded list:
+    /// hiding is cosmetic, a hidden model leaves the listing only and the
+    /// engine keeps resolving a configured chat's model, so a
+    /// fully-hidden provider (a loaded, empty list) must not strand it.
+    /// The remembered default is an offline memory — once the provider's
+    /// list is loaded, a default the list does not offer is not sendable
+    /// (queueing it would die at the engine's "unknown model").
+    fn unlisted_model_id(&self, cx: &App) -> Option<String> {
+        if let Some(id) = self.explicit_model_id(cx) {
+            return Some(id.to_string());
+        }
+        let provider = self.effective_provider(cx)?;
+        if matches!(self.models.get(&provider), Some(Loadable::Ready(_))) {
+            return None;
+        }
+        self.effective_model_id(cx).map(str::to_string)
     }
 
     // ---- open/close ----
@@ -1247,19 +1285,29 @@ impl Render for Pickers {
         } else {
             let loaded = self.selected_model(cx).map(|m| m.label.clone());
             let label = loaded.or_else(|| {
-                let remembered = self
-                    .effective_provider(cx)
-                    .and_then(|provider| self.defaults.model_for(provider.as_str()));
-                match self.effective_model_id(cx) {
-                    Some(id) => Some(
-                        remembered
+                // Mirror `unlisted_model_id`: an explicit pick stays named
+                // even when the loaded list hides it (hiding is cosmetic),
+                // the remembered default names the chip only while the
+                // list has not loaded, and a loaded-and-empty provider
+                // with no pick wears its provider mark alone instead of
+                // naming a model it cannot send.
+                if let Some(id) = self.explicit_model_id(cx) {
+                    return Some(
+                        self.effective_provider(cx)
+                            .and_then(|provider| self.defaults.model_for(provider.as_str()))
                             .filter(|m| m.id == id)
                             .map(|m| m.label.clone())
                             .or_else(|| self.defaults.label_for(id).map(str::to_string))
                             .unwrap_or_else(|| id.to_string()),
-                    ),
-                    None => remembered.map(|m| m.label.clone()),
+                    );
                 }
+                let provider = self.effective_provider(cx)?;
+                if matches!(self.models.get(&provider), Some(Loadable::Ready(_))) {
+                    return None;
+                }
+                self.defaults
+                    .model_for(provider.as_str())
+                    .map(|m| m.label.clone())
             });
             label.map(SharedString::from).unwrap_or_default()
         };
@@ -1394,5 +1442,202 @@ impl Render for Pickers {
             // is justify_between's third item — which centers the model chip
             // in the pill instead of pinning it to the right edge.
             .child(div().absolute().child(switch_dialog))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use holt_proto::{Chat, ChatConfig, ChatScope, ProviderVariant, TitleSource};
+
+    fn chat_on(provider: &str, model: &str) -> Chat {
+        Chat {
+            id: "c1".into(),
+            device_id: "dev".into(),
+            title: None,
+            title_source: TitleSource::default(),
+            title_task_started: false,
+            archived: false,
+            pinned: false,
+            cwd: Some("/project".into()),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: Some(ChatConfig {
+                provider: ProviderId(provider.into()),
+                model: model.into(),
+                reasoning: None,
+                model_options: Default::default(),
+                permission_mode: PermissionMode::default(),
+                scope: ChatScope::default(),
+            }),
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            space_id: Some("space".into()),
+            last_seen_at: None,
+            room_gen: None,
+            compact_before_next_turn: false,
+            plan_mode: None,
+            worktree: None,
+            provider_mode: false,
+            routine_run: None,
+            goal: None,
+        }
+    }
+
+    /// A configured provider row shaped the way the engine serves it: one
+    /// concrete variant under the organization row.
+    fn provider_row(id: &str) -> Provider {
+        Provider {
+            id: ProviderId(id.into()),
+            name: id.into(),
+            abbreviation: id[..2].to_ascii_uppercase(),
+            configured: true,
+            variants: vec![ProviderVariant {
+                id: ProviderId(id.into()),
+                name: id.into(),
+                configured: true,
+            }],
+            custom: false,
+            logo: None,
+        }
+    }
+
+    fn model_row(id: &str, label: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            provider: ProviderId(id.split('/').next().unwrap_or(id).into()),
+            label: label.to_string(),
+            description: None,
+            reasoning_levels: Vec::new(),
+            default_reasoning: None,
+            options: Vec::new(),
+            custom: false,
+            context_window: None,
+            image_capability: holt_proto::ImageCapability::Unknown,
+        }
+    }
+
+    /// The provider-switch regression (user report 2026-10-14): an existing
+    /// chat whose provider tab was switched to a provider with a loaded and
+    /// EMPTY model list queued `provider: ollama, model:
+    /// zai-coding-cn/glm-5.3-flash` — the draft provider paired with the
+    /// chat config's model — and the run died at the engine's
+    /// "provider and model do not match".
+    #[gpui::test]
+    fn resolved_never_pairs_a_provider_with_another_providers_model(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |s, _| {
+            s.chats
+                .push(chat_on("zai-coding-cn", "zai-coding-cn/glm-5.3-flash"));
+            s.selected_chat = Some("c1".into());
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+
+        pickers.update(cx, |this, cx| {
+            this.providers =
+                Loadable::Ready(vec![provider_row("zai-coding-cn"), provider_row("ollama")]);
+            this.models.insert(
+                ProviderId("zai-coding-cn".into()),
+                Loadable::Ready(vec![model_row(
+                    "zai-coding-cn/glm-5.3-flash",
+                    "GLM-5.3-Flash",
+                )]),
+            );
+            // Ollama exists but carries no model records: an empty LOADED
+            // list, exactly the report.
+            this.models
+                .insert(ProviderId("ollama".into()), Loadable::Ready(Vec::new()));
+            // The remembered ollama pick is provider-consistent but absent
+            // from that empty list.
+            this.defaults.remember_model(
+                "ollama".into(),
+                "ollama/qwen3.5:0.8b".into(),
+                "Qwen3.5 0.8B".into(),
+            );
+
+            // Without a draft provider pick the chat's own pair resolves.
+            let resolved = this.resolved(cx);
+            assert_eq!(
+                resolved.provider.as_ref().map(|p| p.as_str()),
+                Some("zai-coding-cn")
+            );
+            assert_eq!(
+                resolved.model.as_deref(),
+                Some("zai-coding-cn/glm-5.3-flash")
+            );
+            assert!(this.can_send(cx));
+
+            // The report's state: the Ollama tab picked on the existing chat.
+            this.config.provider = Some(ProviderId("ollama".into()));
+            // The foreign chat id is dropped; the provider's remembered
+            // model stands in as the effective id.
+            assert_eq!(this.effective_model_id(cx), Some("ollama/qwen3.5:0.8b"));
+            // But nothing is sendable against a loaded empty list: the
+            // chat's id is foreign and a remembered default is only an
+            // offline memory — no cross-provider pair, no queue entry that
+            // dies at resolution.
+            let resolved = this.resolved(cx);
+            assert_eq!(
+                resolved.provider.as_ref().map(|p| p.as_str()),
+                Some("ollama")
+            );
+            assert_eq!(
+                resolved.model, None,
+                "no explicit pick is sendable and the remembered default is offline-only"
+            );
+            assert!(!this.can_send(cx));
+
+            // Offline fallback intact: with the list not loaded the id we
+            // know still rides the request.
+            this.models
+                .insert(ProviderId("ollama".into()), Loadable::Loading);
+            let resolved = this.resolved(cx);
+            assert_eq!(resolved.model.as_deref(), Some("ollama/qwen3.5:0.8b"));
+            assert!(this.can_send(cx));
+        });
+    }
+
+    /// The hidden-model contract (provider-transport: "hiding is cosmetic —
+    /// a hidden model leaves listings only; resolution keeps working so a
+    /// configured chat never breaks"): a provider whose every model is
+    /// hidden lists as empty, and the configured chat must still send on
+    /// its own model id.
+    #[gpui::test]
+    fn a_fully_hidden_provider_keeps_a_configured_chat_sendable(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |s, _| {
+            s.chats
+                .push(chat_on("zai-coding-cn", "zai-coding-cn/glm-5.3-flash"));
+            s.selected_chat = Some("c1".into());
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+
+        pickers.update(cx, |this, cx| {
+            this.providers = Loadable::Ready(vec![provider_row("zai-coding-cn")]);
+            // Every model hidden: the listing arrives loaded and empty.
+            this.models.insert(
+                ProviderId("zai-coding-cn".into()),
+                Loadable::Ready(Vec::new()),
+            );
+            let resolved = this.resolved(cx);
+            assert_eq!(
+                resolved.provider.as_ref().map(|p| p.as_str()),
+                Some("zai-coding-cn")
+            );
+            assert_eq!(
+                resolved.model.as_deref(),
+                Some("zai-coding-cn/glm-5.3-flash"),
+                "the chat's configured id stays sendable — hiding is cosmetic"
+            );
+            assert!(this.can_send(cx));
+            // The persisted config round-trips the same pair.
+            let config = resolved.chat_config().expect("a sendable chat config");
+            assert_eq!(config.provider.as_str(), "zai-coding-cn");
+            assert_eq!(config.model, "zai-coding-cn/glm-5.3-flash");
+        });
     }
 }

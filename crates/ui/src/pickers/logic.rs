@@ -96,6 +96,15 @@ pub fn default_model(models: &[Model]) -> Option<&Model> {
     models.first()
 }
 
+/// Whether a qualified wire id (`provider/model`) belongs to `provider`.
+/// Provider ids cannot contain '/', so a `provider/` prefix test is
+/// unambiguous even when the model id itself carries slashes — the same
+/// ownership rule the engine's `resolve_model` enforces.
+pub fn model_belongs_to(id: &str, provider: &str) -> bool {
+    id.strip_prefix(provider)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// A model's default reasoning: X-High when the ladder offers it (holt
 /// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
 /// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
@@ -1297,6 +1306,20 @@ mod tests {
             Some("a/flagship")
         );
         assert_eq!(default_model(&[]), None);
+    }
+
+    #[test]
+    fn model_belongs_to_tests_the_provider_prefix() {
+        assert!(model_belongs_to("ollama/qwen3.5:0.8b", "ollama"));
+        // A slashful model id stays addressable under its own provider.
+        assert!(model_belongs_to("Magpie/gemini/gemini-2.5-flash", "Magpie"));
+        // A provider id that is a strict prefix of another provider's never
+        // matches, and a foreign provider's id never matches.
+        assert!(!model_belongs_to("openai/gpt-5", "open"));
+        assert!(!model_belongs_to("ollama/qwen3.5:0.8b", "zai-coding-cn"));
+        // An unqualified id belongs to no provider (the engine rejects it
+        // before ownership is even asked).
+        assert!(!model_belongs_to("qwen3.5:0.8b", "qwen3.5:0.8b"));
     }
 
     #[test]
