@@ -95,7 +95,7 @@ struct DocPartJson {
     /// Capped inline tool diff (additive; pre-strip writers only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diff: Option<serde_json::Value>,
-    /// Sidecar key of the full output (additive, dormant sync-era design A1).
+    /// Sidecar key of the full output (additive, A1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_ref: Option<String>,
     /// Full-output byte length (additive).
