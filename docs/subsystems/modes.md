@@ -32,7 +32,7 @@ Not here: the permission gate that audits mutating calls (see permission-gate �
 - **No file tools in either mode** — planning explores, catalog setup proposes; neither writes the workspace.
 - **A proposal is validated twice**: at creation against the catalog, and again at apply against a baseline narrowed to the touched providers. A catalog that moved underneath refuses (`stale`) rather than writing a change the user never saw.
 - **Keys never enter History, a tool argument, or the transcript.** The persisted mode state carries destinations and requests, never values; the credential store is the only home for a key.
-- **Mutual exclusion is rejection, not eviction**: entering one mode rejects a chat carrying the other (and Provider Mode rejects a chat with a goal), so nothing is silently cleared.
+- **Mutual exclusion is rejection, not eviction**: entering one mode rejects a chat carrying the other (and Provider Mode rejects a chat with a goal), so nothing is silently cleared. Legacy `model-setup` chat rows are deleted at startup — the superseded design leaves no residue.
 - **A mode switch never rewinds a running Turn** — the flag is read at admission.
 - The Title task, Compaction, and subagent runs mount no mode toolset and never see these paths.
 

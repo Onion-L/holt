@@ -41,4 +41,4 @@ cargo test -p holt-engine mcp
 cargo test -p holt-engine --test all mcp
 ```
 
-The suites cover the execution environment contract, the grep traversal, web-fetch caps and error taxonomy, the search adapters' result mapping and the custom-definition reader, MCP config parsing and tolerant loads, the lazy pool and its caps, the deferred-schema loader, and the sanitized child environment.
+The suites cover the execution environment contract, the grep traversal, web-fetch caps and error taxonomy, the search adapters' result mapping and the custom-definition reader, MCP's strict startup parse with last-good hand-edit tolerance, the lazy pool and its caps, the deferred-schema loader, and the sanitized child environment.

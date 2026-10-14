@@ -1,8 +1,9 @@
 # Holt
 
 Rust desktop UI shell for a coding agent. `crates/engine` runs the `pi-core-rs` agent loop
-behind the `RpcService` trait. `ARCHITECTURE.md` is the source of truth for crate topology
-and the RPC contract — read it before touching `crates/rpc`, `crates/engine`, or the boot path.
+behind the `RpcService` trait. `ARCHITECTURE.md` owns topology and the hard boundaries;
+the per-method contract lives in the owning subsystem page (`docs/subsystems/`) — read
+both before touching `crates/rpc`, `crates/engine`, or the boot path.
 Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
 (`docs/decisions.md`) entries touching your area.
 
@@ -21,7 +22,7 @@ Before exploring, read `CONTEXT.md` (domain glossary) and the decision log
 - The UI never links backend logic. It talks the typed RPC contract in `crates/rpc` over the
   in-process memory transport; `rpc::methods` is the full UI↔backend surface. `LocalEngine` in
   `crates/engine` serves it today; a different backend can slot in behind the same trait.
-- The engine slice is intentionally narrow (see "The RPC contract" in `ARCHITECTURE.md`):
+- The engine slice is intentionally narrow (see "The RPC surface" in `ARCHITECTURE.md`):
   worktrees, change requests, and uploads are rendered by the UI but unserved — those RPCs reply
   `UnknownMethod` by design, not regression. The git surface (branches, checkout diffs in all
   four modes, history, fetch) IS served on the git2 backend.
