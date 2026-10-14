@@ -5,8 +5,32 @@ responsibilities, runtime paths, state, contracts, and failure behavior.
 They are living documents — updated in the same change as the code they
 describe, never after the fact, and never in advance of it.
 
-Before changing a documented subsystem, read its page and verify the linked
-sources against the code you are about to edit.
+## When to read
+
+Three triggers, in order of frequency:
+
+1. **Before changing code.** Start with the page relevant to your task,
+   then follow its source links to verify the implementation you are about
+   to change — the page gives the contract, the links give the truth, and
+   both must agree before the page is read. Reading the page and reading
+   the code are bound; neither alone is enough.
+2. **Before preparing a PR.** The description names each affected
+   subsystem's observable change, trigger, and before/after (see
+   Describing a change below) — you cannot write that without knowing what
+   the page says.
+3. **When reviewing a change.** The checklist starts by identifying the
+   affected subsystem and the actual runtime path, and checks that changed
+   contracts appear in the owning page with links that still resolve.
+
+Two implied moments: **diagnosing a report** (the page is how you tell
+which code actually runs — paired with AGENTS.md's "What the engine
+actually serves"), and the reverse of reading — **a change that alters a
+documented contract writes back to the owning page in the same PR**.
+
+The negative space is equally explicit: an internal refactor that
+preserves the documented contracts requires no page work — but judging
+"does this change a contract?" already requires knowing the contract, so
+a scan first stays worth its cost.
 
 | Group | Pages |
 | --- | --- |

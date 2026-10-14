@@ -18,11 +18,13 @@ sources — never online docs, never git.
 
 ## Subsystem design and review
 
-Before changing a documented subsystem, read its page under
-[docs/subsystems/](docs/subsystems/README.md) and verify the linked sources
-against the code you are about to edit. When preparing or reviewing a PR,
-follow the same README's update, semantic-change-description, and review
-rules — including its deletion rules for pages that lose their subsystem.
+Three reading triggers, all defined in the [subsystems README](docs/subsystems/README.md):
+**before changing code** — read the task's page and follow its source links
+against the implementation you are about to edit; **before preparing a PR**
+— the description gives each affected subsystem's observable change,
+trigger, and before/after; **when reviewing one** — identify the affected
+subsystem and the actual runtime path, and check the page and its links.
+The same README's deletion rules apply to pages that lose their subsystem.
 
 ## Decisions
 
