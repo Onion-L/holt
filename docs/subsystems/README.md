@@ -56,6 +56,18 @@ outgrows a screen, split the subsystem or link out; do not grow the page.
   module's behavior that its source file already explains does not need a
   page — extend the neighboring page or leave it to comments.
 - **One fact, one home.** Link to it from everywhere else; never copy it.
+  If a fact appears in two places, one of them is wrong — fix the wrong
+  one; prose that duplicates what code or another page already says gets
+  deleted, not paraphrased.
+
+## Deleting a page
+
+- **A page dies with its subsystem**, in the same PR as the removal —
+  pages for removed behavior are deleted, not archived.
+- A research note with no landing (no decision entry cites it, nothing
+  references it) is deleted rather than kept.
+- When deleting or renaming any document, fix every reference to it in
+  the same commit; grep for the old name.
 
 | Layer | Owns | Frequency |
 | --- | --- | --- |

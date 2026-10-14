@@ -1,62 +1,62 @@
 # Holt
 
-AGENTS.md is the manual for working in this repository: where to read, and
-the rules for writing, updating, and deleting. What this project **is** —
-topology, crates, hard fences — is [ARCHITECTURE.md](ARCHITECTURE.md)'s
-first section; start there before touching `crates/rpc`, `crates/engine`,
-or the boot path.
+AGENTS.md is the manual for working in this repository. The general sections
+come first — each points at one document an agent must read before the
+relevant work; the one domain section after them carries the knowledge that
+is easiest to waste work on. What this project **is** starts in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Reading
+## Subsystem design and review
 
-| Question | Home |
-| --- | --- |
-| What is this project? Topology, hard fences | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| How does X run today? | [docs/subsystems/](docs/subsystems/README.md) — one page per subsystem, three groups; its README is the entry and holds the full page rules |
-| Why was X decided, and what was rejected? | [docs/DECISION.md](docs/DECISION.md) — the decision log, anchored to landing commits |
-| What does this word mean? | [CONTEXT.md](CONTEXT.md) |
-| What went wrong before, and what would have caught it? | [docs/RETROS.md](docs/RETROS.md) |
-| What did the surveys find? | [docs/research/](docs/research/) — point-in-time evidence behind decisions |
-| The gpui API truth | [docs/research/gpui.md](docs/research/gpui.md) and the vendored sources — never online docs, never git |
+Before changing a documented subsystem, read its page under
+[docs/subsystems/](docs/subsystems/README.md) and verify the linked sources
+against the code you are about to edit. When preparing or reviewing a PR,
+follow the same README's update, semantic-change-description, and review
+rules — including its deletion rules for pages that lose their subsystem.
 
-Reading discipline: before changing a documented subsystem, read its page
-and verify the linked sources against the code you are about to edit. A
-page's Verification commands must actually run.
+## Architecture and vocabulary
 
-## Writing rules
+[ARCHITECTURE.md](ARCHITECTURE.md) holds the topology, the four hard
+boundaries (UI talks only `rpc::methods`; `engine` is `core`'s only adapter;
+git2 only in `engine::git` and the workspace filesystem only in
+`engine::files`; all disk writes are engine-owned), and the RPC-surface map
+to the owning pages. Terms live in [CONTEXT.md](CONTEXT.md); the gpui API
+truth is [docs/research/gpui.md](docs/research/gpui.md) and the vendored
+sources — never online docs, never git.
 
-These live here because an agent that skipped every other document must
-still not break them.
+## Decisions
 
-- **Update the owning subsystem page in the same PR** when a change alters
-  a documented responsibility, interface, state transition, runtime path,
-  compatibility rule, or failure behavior. A refactor that preserves those
-  contracts needs no prose change.
-- **A new subsystem page** is earned by a behavior domain an implementer
-  must cross crate boundaries to follow, with a runtime path or state of
-  its own. A single module's behavior that its source file already explains
-  extends a neighboring page or stays in comments.
-- **A new decision-log entry** only when the decision names a rejected
-  alternative, spans modules or a serialized format, or someone might
-  relitigate it — otherwise it belongs in a code comment. The log is
-  append-only: a changed decision appends a new entry and leaves an inline
-  superseded line on the old one; entries are never edited in place.
-- **One fact, one home.** If a fact appears in two places, one of them is
-  wrong — fix the wrong one; do not keep them in sync. Prose that duplicates
-  what code or another page already says gets deleted, not paraphrased.
-- A lesson lands in [docs/RETROS.md](docs/RETROS.md) when merged work got
-  something wrong that a rule would have caught: one entry naming the rule,
-  the why, and the evidence.
+Before changing code, read the [docs/DECISION.md](docs/DECISION.md) entries
+touching your area: they record why it is the way it is and what was
+rejected. A new entry is earned only by a decision that names a rejected
+alternative, spans modules or a serialized format, or someone might
+relitigate — otherwise it belongs in a code comment. The log is append-only:
+a changed decision appends a new entry and leaves an inline superseded line
+on the old one.
 
-## Deletion rules
+## Lessons
 
-- **A subsystem page dies with its subsystem**, in the same PR as the
-  removal — pages for removed behavior are deleted, not archived.
-- **DECISION.md entries are never deleted**, even when superseded; the
-  supersession line is the tombstone.
-- **A research note with no landing** — no decision entry cites it and
-  nothing references it — is deleted rather than kept.
-- When deleting or renaming any document, fix every reference to it in the
-  same commit; grep for the old name.
+Before changing code, read [docs/RETROS.md](docs/RETROS.md) — what recent
+merged work got wrong and the rule that would have caught it. When your own
+merged work got something wrong that a rule would have caught, add one
+entry: the rule, the why, the evidence.
+
+## What the engine actually serves
+
+The UI renders more than the engine serves. Changing UI code against an
+unserved RPC, or "fixing" an `UnknownMethod` reply, is work on code that
+does not run.
+
+- **Served**: the whole chat/space/session surface, the queue and Turn loop,
+  provider configuration, the git surface (branches, all four diff modes,
+  history, fetch), the file sidebar, terminals, usage, Turn change sets,
+  plan/provider/goal modes, routines, self-update.
+- **Deliberately unserved** (the UI keeps rendering them; `UnknownMethod`
+  is the contract, not a regression): the sync and account surface —
+  sign-in, orgs, repos, clone, uploads — and worktree lifecycle beyond
+  creation-on-demand.
+- The per-method contract for anything served lives in its owning
+  subsystem page; the method names themselves live in `rpc::methods`.
 
 ## Commands
 
