@@ -35,8 +35,8 @@ days is promoted into it.
 ## Decisions
 
 Before changing code, read the [docs/DECISION.md](docs/DECISION.md) entries
-touching your area: they record why it is the way it is and what was
-rejected. A new entry is earned only by a decision that names a rejected
+its index lists under your area's subsystem page: they record why it is the
+way it is and what was rejected. A new entry is earned only by a decision that names a rejected
 alternative, spans modules or a serialized format, or someone might
 relitigate — otherwise it belongs in a code comment. The log is append-only:
 a changed decision appends a new entry and leaves an inline superseded line
